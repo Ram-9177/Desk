@@ -97,7 +97,7 @@ async function portal(slug, q, view, code) {
   if (pick) return raiseForm(slug, tenant, pick);
   if (view !== 'raise') {
     const opt = (href, ic, cls, title, sub) => `<a class="svc" href="${href}"><span class="chip ${cls}">${I(ic, 22)}</span><span class="t"><b>${title}</b><span class="muted small">${sub}</span></span><span class="chev">${I('chev')}</span></a>`;
-    app.innerHTML = `<div class="wrap hero"><div class="logo">${I('grid', 26)}</div>
+    app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
@@ -201,7 +201,7 @@ async function ticketPage(slug, no, q) {
 function logout() { localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; location.hash = '#/login'; }
 function login() {
   document.body.className = 'console';
-  app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><div class="logo">${I('grid', 26)}</div>
+  app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Your Desk,<br><span>Organized</span> in One Place</h1><p class="muted">Sign in to see your service queue, act on tickets and track your progress.</p>
     <form id="f" class="card"><label style="margin-top:0">Email</label><input name="email" type="email" required autofocus><label>Password</label><input name="password" type="password" required>
     <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form></div>`;
@@ -223,7 +223,7 @@ async function shell(active, render, title) {
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   const initials = u.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
   const bn = (h, l, ic) => `<a href="#/${h}" class="${active === h ? 'on' : ''}">${I(ic, 22)}${l}</a>`;
-  app.innerHTML = `<div class="top"><span class="logo"><i>${I('grid', 18)}</i>ONE Desk</span>
+  app.innerHTML = `<div class="top"><span class="logo"><img src="logo-mark.png" alt="">ONE Desk</span>
     <nav>${nav.map(([h, l, ic]) => `<a href="#/${h}" class="${active === h ? 'on' : ''}">${I(ic, 17)}${l}</a>`).join('')}</nav>
     <span class="sp"></span>${sa ? `<select id="tsw">${S.me.tenants.map(t => `<option value="${t.id}" ${t.id === S.tenant ? 'selected' : ''}>${esc(t.code)}</option>`).join('')}</select>` : ''}
     <a href="#/c/me" title="${esc(u.name)}" style="display:flex;gap:10px;align-items:center;color:var(--ink)"><span class="who" style="text-align:right;line-height:1.2"><b style="font-size:13.5px">${esc(u.name)}</b><br><span class="muted small">${u.role.replace('_', ' ')}</span></span><span class="avatar">${initials}</span></a></div>
@@ -568,7 +568,7 @@ async function users(main, { sa }) {
 
 function setOwnPassword() {
   document.body.className = 'console';
-  app.innerHTML = `<div class="wrap hero" style="max-width:440px;padding-top:48px"><div class="logo">${I('shield', 26)}</div>
+  app.innerHTML = `<div class="wrap hero" style="max-width:440px;padding-top:48px"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Set your <span>new password</span></h1><p class="muted">Hi ${esc(S.me.user.name.split(' ')[0])}, you signed in with a temporary password. Choose your own to continue.</p>
     <form id="f" class="card"><label style="margin-top:0">New password <small>(8+ characters, letters and numbers)</small></label><input name="password" type="password" required autofocus autocomplete="new-password">
     <label>Confirm new password</label><input name="confirm" type="password" required autocomplete="new-password">
@@ -848,9 +848,9 @@ async function route() {
     document.body.className = '';
     const camps = await api('/public');
     if (camps.length === 1) return location.replace(`#/d/${camps[0].slug}`);
-    if (!camps.length) { app.innerHTML = `<div class="wrap hero"><div class="logo">${I('grid', 26)}</div><h1>ONE <span>Desk</span></h1>
+    if (!camps.length) { app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University"><h1>ONE <span>Desk</span></h1>
       <p class="muted">The service desk is being set up. Please check back soon.</p><p class="muted" style="margin-top:20px">Staff? <a href="#/login">Sign in</a></p></div>`; return; }
-    app.innerHTML = `<div class="wrap hero"><div class="logo">${I('grid', 26)}</div><h1>ONE <span>Desk</span></h1><p class="muted">St. Mary's Group service desk. Choose your campus.</p>
+    app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University"><h1>ONE <span>Desk</span></h1><p class="muted">St. Mary's Group service desk. Choose your campus.</p>
       ${camps.map((c, i) => `<a class="svc" href="#/d/${c.slug}"><span class="chip c${i % 5}">${I('building', 22)}</span><span class="t"><b>${esc(c.name)}</b><span class="muted small">${esc(c.code)}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}
       <p class="muted" style="text-align:center;margin-top:20px">Staff? <a href="#/login">Sign in</a></p></div>`;
   } catch (e) { app.innerHTML = `<div class="wrap"><h1>Not found</h1><p class="muted">${esc(e.message)}</p><a href="#/">Home</a></div>`; }

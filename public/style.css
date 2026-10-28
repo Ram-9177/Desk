@@ -44,7 +44,7 @@ input[type=checkbox]{width:auto;min-height:0;accent-color:var(--brand)}
 .tab.on{background:var(--brand);color:#fff}
 
 /* public */
-.hero .logo{width:52px;height:52px;border-radius:16px;background:var(--brand);color:#fff;display:grid;place-items:center;box-shadow:0 8px 20px rgba(30,75,143,.35);margin-bottom:18px}
+.hero .logo{display:block;height:84px;width:auto;max-width:100%;margin-bottom:20px}
 .hero h1{font-size:34px}.hero h1 span{color:var(--green)}
 .svc{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin:10px 0;cursor:pointer;box-shadow:var(--shadow);transition:transform .15s}
 .svc:hover{transform:translateY(-2px)}.svc .t{flex:1;min-width:0}.svc b{display:block;font-size:15px}.svc .chev{color:var(--muted)}
@@ -68,7 +68,7 @@ input[type=checkbox]{width:auto;min-height:0;accent-color:var(--brand)}
 
 /* console shell */
 .top{display:flex;align-items:center;gap:6px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;flex-wrap:wrap}
-.top .logo{display:flex;align-items:center;gap:8px;font-weight:800;margin-right:14px}.top .logo i{width:32px;height:32px;border-radius:10px;background:var(--brand);color:#fff;display:grid;place-items:center}
+.top .logo{display:flex;align-items:center;gap:8px;font-weight:800;margin-right:14px}.top .logo img{height:34px;width:auto}
 .top nav{display:flex;gap:2px;flex-wrap:wrap}.top nav a{color:var(--muted);padding:8px 12px;border-radius:12px;font-size:13.5px;font-weight:600;display:flex;gap:6px;align-items:center}
 .top nav a.on{color:var(--brand);background:var(--brand-2)}.top .sp{flex:1}.top select{width:auto;min-height:36px;padding:4px 10px;border-radius:10px}
 .avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#2d63b3,#1e4b8f);color:#fff;display:grid;place-items:center;font-weight:700;font-size:14px;flex-shrink:0}
@@ -199,7 +199,3 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 #to{text-overflow:ellipsis}
 /* busy top bar (super admin): the menu takes its own row instead of being clipped */
 @media(max-width:1280px) and (min-width:761px){.top{flex-wrap:wrap}.top nav{order:3;flex-basis:100%;flex-wrap:wrap;overflow:visible}}
-
-/* logo tile: navy with an orange accent, like the university crest */
-.hero .logo,.top .logo i{position:relative;overflow:hidden}.hero .logo::after,.top .logo i::after{content:'';position:absolute;left:0;right:0;bottom:0;height:22%;background:var(--accent)}
-.hero .logo svg,.top .logo i svg{position:relative;z-index:1}
