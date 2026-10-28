@@ -1,15 +1,22 @@
-// End-to-end test. Starts ONE Desk on a throwaway database in a temp folder (no email flow connected, so
+// End-to-end test. Starts ONE Desk on a throwaway Postgres database (created and dropped here; set TEST_DATABASE_URL
+// to a server you can CREATE DATABASE on, default postgres://localhost/postgres) and a temp uploads folder (no email flow connected, so
 // nothing is sent), runs every role's flow through the API, then loads each screen in headless Chrome
 // when one is installed. Run with: npm test
 import { spawn } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4397, APP = `http://localhost:${PORT}`, API = APP + '/api';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'onedesk-e2e-'));
-const DB = path.join(TMP, 'desk.db'), UPLOADS = path.join(TMP, 'uploads');
+const UPLOADS = path.join(TMP, 'uploads');
+const ADMIN_URL = process.env.TEST_DATABASE_URL || 'postgres://localhost/postgres', DB_NAME = `onedesk_e2e_${process.pid}`;
+const DB_URL = Object.assign(new URL(ADMIN_URL), { pathname: '/' + DB_NAME }).href;
+const admin = new pg.Client({ connectionString: ADMIN_URL }); await admin.connect();
+await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME}`); await admin.query(`CREATE DATABASE ${DB_NAME}`);
+pg.types.setTypeParser(20, Number);
+const testDb = new pg.Pool({ connectionString: DB_URL, max: 2 });
 const ENV = { NODE_ENV: 'production', JWT_SECRET: 'e2e-' + 'x'.repeat(40) };
 const SUPER = { email: 'super@example.com', password: 'SuperSecret123' };
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -35,23 +42,24 @@ const fails = async (name, p, opts, status, msg) => { const r = await api(p, opt
   const good = r.status === status && (!msg || (r.error?.message || '').toLowerCase().includes(msg.toLowerCase()));
   check(name, good, `got ${r.status} ${r.error?.message || JSON.stringify(r.data) || ''}`); return r; };
 const login = async (email, password) => (await api('/auth/login', { method: 'POST', body: { email, password } })).data?.token;
-const db = () => new DatabaseSync(DB);
-const q = (sql, ...a) => { const d = db(); try { return d.prepare(sql).all(...a); } finally { d.close(); } };
-const run = (sql, ...a) => { const d = db(); try { return d.prepare(sql).run(...a); } finally { d.close(); } };
-const mailsFor = no => q(`SELECT template_key k, recipient, status, subject, last_error FROM notifications WHERE subject LIKE ? ORDER BY created_at, rowid`, `%[${no}]%`);
-const waitFor = async (fn, ms = 4000) => { const t0 = Date.now(); let v; while (Date.now() - t0 < ms) { v = fn(); if (v) return v; await sleep(250); } return fn(); };
+const toPg = sql => { let i = 0; return sql.replace(/\?/g, () => '$' + ++i); };
+const q = async (sql, ...a) => (await testDb.query(toPg(sql), a)).rows;
+const run = (sql, ...a) => testDb.query(toPg(sql), a);
+const mailsFor = no => q(`SELECT template_key k, recipient, status, subject, last_error FROM notifications WHERE subject LIKE ? ORDER BY created_at`, `%[${no}]%`);
+const waitFor = async (fn, ms = 4000) => { const t0 = Date.now(); let v; while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await sleep(250); } return fn(); };
 
 // ---------- server control ----------
+const pgEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('PG'))); // libpq-style settings (PGUSER, PGPASSWORD …)
 let server = null;
 async function start(extra = {}, { expectExit } = {}) {
   const proc = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'server.js')],
-    { cwd: TMP, env: { PATH: process.env.PATH, HOME: process.env.HOME, DB_FILE: DB, UPLOAD_DIR: UPLOADS, PORT: String(PORT), ...ENV, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd: TMP, env: { PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER, ...pgEnv, DATABASE_URL: DB_URL, UPLOAD_DIR: UPLOADS, PORT: String(PORT), ...ENV, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; proc.stdout.on('data', d => out += d); proc.stderr.on('data', d => out += d);
   if (expectExit) return { code: await new Promise(r => proc.on('exit', r)), out };
   for (let i = 0; i < 60; i++) { await sleep(100); try { if ((await fetch(API + '/health')).ok) break; } catch { /* not up yet */ } }
   server = proc; return { out: () => out };
 }
-const stop = () => new Promise(r => { if (!server) return r(); const p = server; server = null; p.on('exit', () => r()); p.kill(); });
+const stop = () => new Promise(r => { if (!server) return r(); const p = server; server = null; if (p.exitCode !== null || p.signalCode) return r(); p.on('exit', () => r()); p.kill(); });
 
 // ---------- a stand-in for the Power Automate flow ----------
 const flow = { key: 'test-secret-key-0123456789abcdef', received: [] };
@@ -97,7 +105,7 @@ try {
   const bina = await mkUser(Bt, 'Bina Admin', 'bina@example.com', 'tenant_admin');
   check('temporary passwords are issued', [asha, pavan, lata, bina].every(u => u.temp?.length >= 8));
   await fails('duplicate staff email is 409', '/users', { ...A, method: 'POST', body: { name: 'Dup', email: 'pavan@example.com', role: 'provider' } }, 409);
-  check('invite emails were queued', q("SELECT count(*) n FROM notifications WHERE template_key='invite'")[0].n === 4);
+  check('invite emails were queued', (await q("SELECT count(*) n FROM notifications WHERE template_key='invite'"))[0].n === 4);
 
   sec('Services and form types');
   const mkSvc = async (t, body) => ok(`create service ${body.code}`, '/services', { ...t, method: 'POST', body });
@@ -162,14 +170,14 @@ try {
   check('ticket page shows provider, location and the stamped photo', p1.providers[0].name === 'Pavan Provider' && p1.location === 'Main block · 2nd floor · Room 214' && p1.events[0].files?.length === 1 && !!p1.events[0].files[0].stamped_at);
   const img = await fetch(`${APP}/api/files/${p1.events[0].files[0].storage_key}`);
   check('photo is served', img.status === 200 && img.headers.get('content-type')?.includes('image/png'));
-  check('student answers saved on the requestor', q("SELECT r.identifier, r.department, r.requestor_type FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.ticket_no='0002' AND t.tenant_id=?", alpha.id)[0]?.identifier === '23BPT014');
+  check('student answers saved on the requestor', (await q("SELECT r.identifier, r.department, r.requestor_type FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.ticket_no='0002' AND t.tenant_id=?", alpha.id))[0]?.identifier === '23BPT014');
   await fails('unknown number is 404', '/public/alpha/tickets/0099', {}, 404);
   const pn = await ok('requestor adds a note', '/public/alpha/tickets/0001/notes', { method: 'POST', body: { body: 'It sparks when switched on.' } });
   check('note appears on the public timeline', pn.events.some(e => e.event_type === 'note'));
   await fails('an open ticket cannot be reopened', '/public/alpha/tickets/0001/reopen', { method: 'POST', body: { reason: 'x' } }, 409);
-  const m1 = mailsFor('0001');
+  const m1 = await mailsFor('0001');
   check('emails: received → requestor, new ticket → provider, note → provider', ['created', 'new_ticket', 'requestor_note'].every(k => m1.some(m => m.k === k)) && m1.find(m => m.k === 'new_ticket').recipient === 'pavan@example.com');
-  check('with no flow connected, emails are logged, not sent', !!(await waitFor(() => mailsFor('0001').every(m => m.status === 'logged'))), JSON.stringify(mailsFor('0001').map(m => m.status)));
+  check('with no flow connected, emails are logged, not sent', !!(await waitFor(async () => (await mailsFor('0001')).every(m => m.status === 'logged'))), JSON.stringify((await mailsFor('0001')).map(m => m.status)));
 
   // ======================= D. provider =======================
   sec('Provider signs in');
@@ -186,13 +194,13 @@ try {
   sec('Provider works tickets');
   const mine = await ok('Pavan’s queue', '/tickets?status=all', { token: T.pavan });
   check('provider sees only his service’s tickets', mine.length === 1 && mine[0].ticket_no === '0001');
-  ids.t1 = mine[0].id; ids.t2 = q("SELECT id FROM tickets WHERE ticket_no='0002' AND tenant_id=?", alpha.id)[0].id;
+  ids.t1 = mine[0].id; ids.t2 = (await q("SELECT id FROM tickets WHERE ticket_no='0002' AND tenant_id=?", alpha.id))[0].id;
   await fails('cannot open another service’s ticket', `/tickets/${ids.t2}`, { token: T.pavan }, 404);
   const d1 = await ok('open ticket 0001', `/tickets/${ids.t1}`, { token: T.pavan });
   check('workspace has details, requestor, providers, SLA minutes', d1.form_data.issue === 'Fan' && d1.requestor.email === 'r1@example.com' && d1.providers[0].id === pavan.id && typeof d1.sla_left_min === 'number' && d1.attachments.length === 1);
   const act = (id, body, token = T.pavan) => api(`/tickets/${id}/status`, { method: 'POST', token, body });
   r = await act(ids.t1, { to: 'in_progress', note: 'On it' });
-  check('start work → in progress, requestor told', r.status === 200 && (await api('/public/alpha/tickets/0001')).data.status === 'in_progress' && mailsFor('0001').some(m => m.k === 'status_in_progress'), r.error?.message);
+  check('start work → in progress, requestor told', r.status === 200 && (await api('/public/alpha/tickets/0001')).data.status === 'in_progress' && (await mailsFor('0001')).some(m => m.k === 'status_in_progress'), r.error?.message);
   check('status change needs a note', (await act(ids.t1, { to: 'hold' })).status === 400);
   check('hold needs a reason', (await act(ids.t1, { to: 'hold', note: 'wait' })).status === 400);
   check('invalid transition is 409', (await act(ids.t1, { to: 'open', note: 'x' })).status === 409);
@@ -200,7 +208,7 @@ try {
   const ph = (await api('/public/alpha/tickets/0001')).data;
   check('requestor sees the hold reason and resume time', ph.status === 'hold' && ph.hold_label === 'Waiting for parts' && !!ph.hold_due_at);
   r = await act(ids.t1, { to: 'in_progress', note: 'Motor arrived' });
-  check('resumed → in progress, “work resumed” email', r.status === 200 && (await api('/public/alpha/tickets/0001')).data.status === 'in_progress' && mailsFor('0001').some(m => m.k === 'status_open'), r.error?.message);
+  check('resumed → in progress, “work resumed” email', r.status === 200 && (await api('/public/alpha/tickets/0001')).data.status === 'in_progress' && (await mailsFor('0001')).some(m => m.k === 'status_open'), r.error?.message);
   const dueBefore = (await api(`/tickets/${ids.t1}`, { token: T.pavan })).data.due_at;
   await ok('priority → critical', `/tickets/${ids.t1}/priority`, { token: T.pavan, method: 'POST', body: { priority: 'critical' } });
   check('due time moved earlier', (await api(`/tickets/${ids.t1}`, { token: T.pavan })).data.due_at < dueBefore);
@@ -215,26 +223,26 @@ try {
   await ok('transfer 0001 to Hostel', `/tickets/${ids.t1}/transfer`, { token: T.pavan, method: 'POST', body: { service_id: hostel.id, note: 'Hostel wiring' } });
   await fails('after transfer the old provider no longer sees it', `/tickets/${ids.t1}`, { token: T.pavan }, 404);
   check('hostel provider (Asha) sees it', (await api(`/tickets/${ids.t1}`, { token: T.asha })).status === 200);
-  check('transfer emails: old + new providers and the requestor', mailsFor('0001').some(m => m.k === 'transferred' && m.recipient === 'pavan@example.com') && mailsFor('0001').some(m => m.k === 'transferred' && m.recipient === 'asha@example.com') && mailsFor('0001').some(m => m.k === 'transferred_requestor'));
+  check('transfer emails: old + new providers and the requestor', (await mailsFor('0001')).some(m => m.k === 'transferred' && m.recipient === 'pavan@example.com') && (await mailsFor('0001')).some(m => m.k === 'transferred' && m.recipient === 'asha@example.com') && (await mailsFor('0001')).some(m => m.k === 'transferred_requestor'));
   await ok('admin transfers it back to Electrical', `/tickets/${ids.t1}/transfer`, { token: T.asha, method: 'POST', body: { service_id: elec.id, note: 'Back to Electrical' } });
   r = await act(ids.t1, { to: 'closed', note: 'Fan motor replaced', files: [{ name: 'proof.png', type: 'image/png', source: 'camera', data: PNG }] });
   check('closed fast: +10 points', r.status === 200 && r.data.points === 10, JSON.stringify(r.data || r.error));
   check('points total 10', (await api('/points', { token: T.pavan })).data.me === 10);
-  check('close email has the reopen offer', /reopen/i.test(mailsFor('0001').find(m => m.k === 'status_closed')?.subject + q("SELECT body FROM notifications WHERE template_key='status_closed' AND subject LIKE '%[0001]%'")[0]?.body));
+  check('close email has the reopen offer', /reopen/i.test((await mailsFor('0001')).find(m => m.k === 'status_closed')?.subject + (await q("SELECT body FROM notifications WHERE template_key='status_closed' AND subject LIKE '%[0001]%'"))[0]?.body));
   check('closed → hold is refused', (await act(ids.t1, { to: 'hold', note: 'x', hold_reason: 'parts' })).status === 409);
   const rp = await ok('requestor reopens within the window', '/public/alpha/tickets/0001/reopen', { method: 'POST', body: { reason: 'Noisy again' } });
   check('ticket is open again', rp.status === 'open' && rp.reopen_count === 1);
   check('reopen costs the closer 5 points', (await api('/points', { token: T.pavan })).data.me === 5);
-  check('providers emailed about the reopen', mailsFor('0001').some(m => m.k === 'reopened' && m.recipient === 'pavan@example.com'));
-  r = await raise('alpha', elecBody('Raj', 'r4@example.com')); ids.t4 = q("SELECT id FROM tickets WHERE ticket_no='0004' AND tenant_id=?", alpha.id)[0].id;
+  check('providers emailed about the reopen', (await mailsFor('0001')).some(m => m.k === 'reopened' && m.recipient === 'pavan@example.com'));
+  r = await raise('alpha', elecBody('Raj', 'r4@example.com')); ids.t4 = (await q("SELECT id FROM tickets WHERE ticket_no='0004' AND tenant_id=?", alpha.id))[0].id;
   r = await act(ids.t4, { to: 'rejected', note: 'Duplicate of 0001' }); check('reject with reason', r.status === 200);
   check('requestor sees rejected and cannot reopen', (await api('/public/alpha/tickets/0004')).data.status === 'rejected' && (await api('/public/alpha/tickets/0004/reopen', { method: 'POST', body: { reason: 'x' } })).status === 409);
-  r = await raise('alpha', elecBody('Rao', 'r5@example.com')); ids.t5 = q("SELECT id FROM tickets WHERE ticket_no='0005' AND tenant_id=?", alpha.id)[0].id;
+  r = await raise('alpha', elecBody('Rao', 'r5@example.com')); ids.t5 = (await q("SELECT id FROM tickets WHERE ticket_no='0005' AND tenant_id=?", alpha.id))[0].id;
   await act(ids.t5, { to: 'hold', note: 'Waiting', hold_reason: 'parts' });
-  run('UPDATE tickets SET hold_due_at=? WHERE id=?', new Date(Date.now() - 3600e3).toISOString(), ids.t5);
+  await run('UPDATE tickets SET hold_due_at=? WHERE id=?', new Date(Date.now() - 3600e3).toISOString(), ids.t5);
   await act(ids.t5, { to: 'in_progress', note: 'Resumed late' });
   check('hold past its limit costs 3 points', (await api('/points', { token: T.pavan })).data.me === 2);
-  run('UPDATE tickets SET due_at=? WHERE id=?', new Date(Date.now() - 7 * 864e5).toISOString(), ids.t5);
+  await run('UPDATE tickets SET due_at=? WHERE id=?', new Date(Date.now() - 7 * 864e5).toISOString(), ids.t5);
   r = await act(ids.t5, { to: 'closed', note: 'Done, very late' });
   check('closing very late: −5 points', r.data?.points === -5 && (await api('/points', { token: T.pavan })).data.me === -3, JSON.stringify(r.data));
   const hist = (await api('/points', { token: T.pavan })).data.history.map(h => h.points);
@@ -243,37 +251,37 @@ try {
   check('walk-in recorded with its channel', wi.channel === 'walk_in' && wi.ticket_no === '0006');
   await fails('walk-in also needs the requestor’s email', '/tickets', { token: T.pavan, method: 'POST', body: { channel: 'walk_in', service_id: elec.id, name: 'No Mail', subject: 'x', form_data: { loc_block: 'a', loc_floor: 'Ground floor', loc_room: 'b', issue: 'Fan' } } }, 400);
   const it = await ok('internal ticket to another service', '/tickets', { token: T.pavan, method: 'POST', body: { channel: 'internal', service_id: trans.id, subject: 'Need a van for the generator', description: 'Tomorrow 10 am' } });
-  check('internal ticket uses the staff member as requestor', it.is_internal === 1 && q('SELECT r.email FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.id=?', it.id)[0].email === 'pavan@example.com');
+  check('internal ticket uses the staff member as requestor', it.is_internal === 1 && (await q('SELECT r.email FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.id=?', it.id))[0].email === 'pavan@example.com');
   const csv = await api('/tickets.csv?status=all', { token: T.asha, raw: true });
   check('CSV export', csv.headers.get('content-type')?.includes('text/csv') && (await csv.text()).startsWith('ticket_no,'));
 
   // ======================= E. escalation =======================
   sec('Escalation');
-  r = await raise('alpha', elecBody('Esc', 'r6@example.com')); const noA = r.data.ticket_no; ids.tA = q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', noA, alpha.id)[0].id;
-  r = await raise('alpha', elecBody('Esh', 'r7@example.com')); const noB = r.data.ticket_no; ids.tB = q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', noB, alpha.id)[0].id;
+  r = await raise('alpha', elecBody('Esc', 'r6@example.com')); const noA = r.data.ticket_no; ids.tA = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', noA, alpha.id))[0].id;
+  r = await raise('alpha', elecBody('Esh', 'r7@example.com')); const noB = r.data.ticket_no; ids.tB = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', noB, alpha.id))[0].id;
   await act(ids.tB, { to: 'hold', note: 'Waiting', hold_reason: 'parts' });
   check('Lata does not see them before escalation', !(await api('/tickets?status=all', { token: T.lata })).data.some(t => [noA, noB].includes(t.ticket_no)));
   const past = new Date(Date.now() - 2 * 3600e3).toISOString();
-  run('UPDATE tickets SET due_at=? WHERE id=?', past, ids.tA); run('UPDATE tickets SET hold_due_at=? WHERE id=?', past, ids.tB);
+  await run('UPDATE tickets SET due_at=? WHERE id=?', past, ids.tA); await run('UPDATE tickets SET hold_due_at=? WHERE id=?', past, ids.tB);
   await ok('rule: escalate 1 day after the target', '/sla', { ...A, method: 'PUT', body: { ...sla, work_days: sla.work_days, escalate_after_days: 1 } });
   await stop(); await start(); await sleep(4500); // the escalation check runs a few seconds after start
-  check('2 hours overdue with a 1-day rule: not escalated', q('SELECT escalated_at FROM tickets WHERE id IN (?,?)', ids.tA, ids.tB).every(t => !t.escalated_at));
+  check('2 hours overdue with a 1-day rule: not escalated', (await q('SELECT escalated_at FROM tickets WHERE id IN (?,?)', ids.tA, ids.tB)).every(t => !t.escalated_at));
   await ok('rule: escalate as soon as the target is missed', '/sla', { ...A, method: 'PUT', body: { ...sla, escalate_after_days: 0 } });
   await stop(); await start(); await sleep(4500);
-  const esc = q('SELECT escalated_at, escalated_to FROM tickets WHERE id IN (?,?)', ids.tA, ids.tB);
+  const esc = await q('SELECT escalated_at, escalated_to FROM tickets WHERE id IN (?,?)', ids.tA, ids.tB);
   check('overdue ticket and overdue hold both escalated to Lata', esc.every(t => t.escalated_at && t.escalated_to === lata.id));
   const lq = await ok('Lata’s Escalated tab', '/tickets?status=escalated', { token: T.lata });
   check('escalated tickets appear in her queue, marked', lq.length === 2 && lq.every(t => t.escalated_name === 'Lata Lead'));
   const ld = await ok('Lata opens the escalated ticket', `/tickets/${ids.tA}`, { token: T.lata });
   check('workspace shows the escalation and the timeline entry', ld.escalated_name === 'Lata Lead' && ld.events.some(e => e.event_type === 'escalated'));
   check('Lata’s home tiles count it', (await api('/reports?days=7', { token: T.lata })).data.counts.open >= 1);
-  const mA = mailsFor(noA);
+  const mA = await mailsFor(noA);
   check('escalation emails: escalation person + provider, and the requestor acknowledgement', mA.some(m => m.k === 'escalated' && m.recipient === 'lata@example.com') && mA.some(m => m.k === 'escalated' && m.recipient === 'pavan@example.com') && mA.some(m => m.k === 'escalated_requestor' && m.recipient === 'r6@example.com'));
   check('requestor timeline says who it went to', (await api(`/public/alpha/tickets/${noA}`)).data.events.some(e => e.event_type === 'escalated' && e.to_value === 'Lata Lead'));
   r = await act(ids.tA, { to: 'closed', note: 'Fixed by the lead' }, T.lata); check('escalation person can close it', r.status === 200);
   await ok('requestor reopens it', `/public/alpha/tickets/${noA}/reopen`, { method: 'POST', body: { reason: 'Still broken' } });
-  check('reopen clears the escalation', !q('SELECT escalated_at FROM tickets WHERE id=?', ids.tA)[0].escalated_at);
-  run('UPDATE tickets SET due_at=? WHERE id=?', past, wi.id); // make the walk-in ticket overdue
+  check('reopen clears the escalation', !(await q('SELECT escalated_at FROM tickets WHERE id=?', ids.tA))[0].escalated_at);
+  await run('UPDATE tickets SET due_at=? WHERE id=?', past, wi.id); // make the walk-in ticket overdue
   const att = await ok('attention list', '/attention', { token: T.asha });
   check('attention: no-provider service, escalated and overdue lists', att.no_provider.some(s => s.code === 'TRANS') && att.escalated.some(t => t.ticket_no === noB) && att.overdue.length >= 1);
 
@@ -295,19 +303,19 @@ try {
   check('flow accepted it', tst2.ok === true && tst2.status === 200 && flow.received.at(-1)?.to === 'me@example.com' && /Test email/.test(flow.received.at(-1)?.subject));
   flow.received.length = 0;
   r = await raise('alpha', elecBody('Mail', 'r8@example.com')); const noM = r.data.ticket_no;
-  const sent = await waitFor(() => { const m = mailsFor(noM); return m.length >= 2 && m.every(x => x.status === 'sent') ? m : null; });
-  check('new ticket emails delivered through the flow', !!sent, JSON.stringify(mailsFor(noM)));
+  const sent = await waitFor(async () => { const m = await mailsFor(noM); return m.length >= 2 && m.every(x => x.status === 'sent') ? m : null; });
+  check('new ticket emails delivered through the flow', !!sent, JSON.stringify(await mailsFor(noM)));
   const got = flow.received.find(x => x.to === 'r8@example.com');
   check('flow received to / subject / html / text with the designed sections', !!got && /\[.*\] Ticket received/.test(got.subject) && /Progress/.test(got.html) && /View your ticket/.test(got.html) && /Ticket details/.test(got.text));
   await ok('switch off “update from the provider”', '/mail/config', { token: T.sa, method: 'PUT', body: { events: { note: false } } });
-  const idM = q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', noM, alpha.id)[0].id;
+  const idM = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', noM, alpha.id))[0].id;
   await ok('provider adds a public note', `/tickets/${idM}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Coming today' } });
-  check('switched-off step is logged as skipped', mailsFor(noM).find(m => m.k === 'note')?.status === 'skipped');
+  check('switched-off step is logged as skipped', (await mailsFor(noM)).find(m => m.k === 'note')?.status === 'skipped');
   await ok('switch it back on', '/mail/config', { token: T.sa, method: 'PUT', body: { events: { note: true } } });
   await fails('template with a field this email lacks is rejected', '/mail/template/created', { token: T.sa, method: 'PUT', body: { subject: 'x {{temp_password}}', body: 'y' } }, 400);
   await ok('customise the “received” template', '/mail/template/created', { token: T.sa, method: 'PUT', body: { subject: '[{{ticket_no}}] Got it, {{requestor_name}}', body: 'Hi {{requestor_name}}\n[[Open|{{ticket_link}}]]' } });
   r = await raise('alpha', elecBody('Tpl', 'r10@example.com')); const noT = r.data.ticket_no;
-  check('custom template used', mailsFor(noT).find(m => m.k === 'created')?.subject === `[${noT}] Got it, Tpl`);
+  check('custom template used', (await mailsFor(noT)).find(m => m.k === 'created')?.subject === `[${noT}] Got it, Tpl`);
   check('marked customised', (await api('/mail/config', { token: T.sa })).data.events.find(e => e.key === 'created').custom === true);
   await ok('reset to default', '/mail/template/created', { token: T.sa, method: 'PUT', body: { subject: '', body: '' } });
   check('back to default', (await api('/mail/config', { token: T.sa })).data.events.find(e => e.key === 'created').custom === false);
@@ -317,12 +325,12 @@ try {
   check('log lists sent emails with campus', logS.length >= 2 && logS[0].campus);
   const logA = await ok('campus admin sees her campus’s log', '/mail/log?status=all', { token: T.asha });
   check('campus admin log has no Beta emails', logA.every(m => m.campus !== 'BETA'));
-  const logged = q("SELECT id FROM notifications WHERE status='logged' LIMIT 1")[0];
+  const logged = (await q("SELECT id FROM notifications WHERE status='logged' LIMIT 1"))[0];
   await ok('resend a logged email', '/mail/resend', { token: T.sa, method: 'POST', body: { ids: [logged.id] } });
-  check('resent through the flow', !!(await waitFor(() => q("SELECT status FROM notifications WHERE id=?", logged.id)[0].status === 'sent')));
+  check('resent through the flow', !!(await waitFor(async () => (await q("SELECT status FROM notifications WHERE id=?", logged.id))[0].status === 'sent')));
   await ok('pause sending', '/mail/config', { token: T.sa, method: 'PUT', body: { sending: false } });
   r = await raise('alpha', elecBody('Paused', 'r11@example.com')); await sleep(1500);
-  check('paused: email logged with the reason', mailsFor(r.data.ticket_no).find(m => m.k === 'created')?.last_error === 'Sending is paused');
+  check('paused: email logged with the reason', (await mailsFor(r.data.ticket_no)).find(m => m.k === 'created')?.last_error === 'Sending is paused');
   await ok('resume sending', '/mail/config', { token: T.sa, method: 'PUT', body: { sending: true } });
 
   // ======================= G. people, roles, isolation =======================
@@ -335,7 +343,7 @@ try {
   await ok('edit Omar’s phone', `/users/${omarR.id}`, { token: T.asha, method: 'PATCH', body: { phone: '9000012345' } });
   const rs = await ok('reset Omar’s password', `/users/${omarR.id}/reset-password`, { token: T.asha, method: 'POST' });
   check('old temporary password stops working, new one works and must be changed', !(await login('omar@example.com', omarR.temp_password)) && (await api('/me', { token: await login('omar@example.com', rs.temp_password) })).data.user.must_change_pw === 1);
-  check('reset was emailed', q("SELECT count(*) n FROM notifications WHERE template_key='password_reset' AND recipient='omar@example.com'")[0].n === 1);
+  check('reset was emailed', (await q("SELECT count(*) n FROM notifications WHERE template_key='password_reset' AND recipient='omar@example.com'"))[0].n === 1);
   await fails('cannot deactivate yourself', `/users/${asha.id}`, { token: T.asha, method: 'PATCH', body: { is_active: 0 } }, 400);
   await fails('cannot reset your own password here', `/users/${asha.id}/reset-password`, { token: T.asha, method: 'POST' }, 400);
   await ok('add Omar to Electrical', `/services/${elec.id}/members`, { token: T.asha, method: 'PUT', body: { user_ids: [pavan.id, omarR.id] } });
@@ -360,12 +368,23 @@ try {
   check('6th ticket in an hour from one email is rate-limited', last.status === 429);
   check('deactivated campus hides its portal', (await api('/tenants/' + beta.id, { token: T.sa, method: 'PATCH', body: { is_active: 0 } })).status === 200 && (await api('/public/beta')).status === 404);
 
+  // ======================= G2. concurrent requests =======================
+  sec('Concurrent requests');
+  r = await raise('alpha', elecBody('Race', 'race@example.com'));
+  const idR = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', r.data.ticket_no, alpha.id))[0].id;
+  const before = (await api('/points', { token: T.pavan })).data.me;
+  const both = await Promise.all([1, 2].map(() => api(`/tickets/${idR}/status`, { method: 'POST', token: T.pavan, body: { to: 'closed', note: 'Double click' } })));
+  check('two closes at once: one wins, the other gets 409', both.map(x => x.status).sort().join() === '200,409', both.map(x => x.status).join());
+  check('…and points are awarded once', (await api('/points', { token: T.pavan })).data.me - before === both.find(x => x.status === 200)?.data.points);
+  check('…and one close event is recorded', (await q("SELECT count(*) n FROM ticket_events WHERE ticket_id=? AND event_type='status_changed'", idR))[0].n === 1);
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
   await stop(); flowServer.close(); fs.rmSync(TMP, { recursive: true, force: true });
+  await testDb.end(); await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME}`); await admin.end();
 }
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failures.length) console.log('Failures:\n  ' + failures.join('\n  '));

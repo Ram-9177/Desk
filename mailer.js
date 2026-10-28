@@ -1,9 +1,14 @@
 // Outbound email through a Power Automate HTTP-triggered flow, configured from the Email page.
-import { db, all, run } from './db.js';
+import { all, run } from './db.js';
 
-db.exec('CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)');
-export const getSettings = () => Object.fromEntries(all('SELECT key, value FROM app_settings').map(r => [r.key, r.value]));
-export const setSetting = (k, v) => run('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value', k, v);
+// Settings are read on every email, so they live in memory: loaded once at start, updated on every save (one app process).
+let settings = {};
+export const loadSettings = async () => { settings = Object.fromEntries((await all('SELECT key, value FROM app_settings')).map(r => [r.key, r.value])); };
+export const getSettings = () => settings;
+export async function setSetting(k, v) {
+  await run('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value', k, v);
+  settings = { ...settings, [k]: v };
+}
 
 // ---------- templates ----------
 // Fill-in fields an admin can use in subjects and messages. {{name}} is replaced with the value.
