@@ -30,7 +30,7 @@ const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small"
   <b class="mono" style="color:${u.points < 0 ? 'var(--warn)' : 'var(--brand)'}">${u.points} pts</b></div>`).join('') : '<p class="muted">No providers yet.</p>'}`;
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
 const ring = (pct, size = 96, color = 'var(--brand)') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
-  return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="rgba(91,91,240,.13)" stroke-width="10" fill="none"/>
+  return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="rgba(30,75,143,.13)" stroke-width="10" fill="none"/>
   <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${color}" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><b>${pct}%</b></div>`; };
 const S = { token: localStorage.getItem('tok'), tenant: localStorage.getItem('tid'), me: null };
 

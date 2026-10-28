@@ -154,7 +154,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
     const blk = /^\s*\{\{(\w+)\}\}\s*$/.exec(line)?.[1];
     if (blk && BLOCKS.includes(blk)) return blocks[blk] ? BLOCK_HTML[blk](blocks[blk]) : '';
     const btn = /^\s*\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]\s*$/.exec(line);
-    if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#5b5bf0;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
+    if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
     const kv = /^([A-Z][A-Za-z ]{1,24}):\s+(.+)$/.exec(line);
     if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|Ticket/.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
     return `<p style="margin:0 0 10px;line-height:1.55">${bold(esc(line))}</p>`;
@@ -162,7 +162,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
   return `<!doctype html><html><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
-<tr><td style="background:#5b5bf0;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700">ONE Desk${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
+<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE Desk${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
 <tr><td style="padding:24px 24px 10px">${ref && !/^(ONE Desk|Digest)$/.test(ref) ? `<div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">TICKET ${esc(ref)}</div>` : ''}
 <h1 style="font-size:20px;line-height:1.3;margin:6px 0 16px">${esc(title)}</h1>${html}</td></tr>
 <tr><td style="padding:14px 24px;background:#fafbfe;color:#8b8fa8;font-size:12px;line-height:1.5">Automated message from the St. Mary's Group service desk. Please don't reply to this email; use the ticket link to add a note.</td></tr>
@@ -173,7 +173,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
 const sectionTitle = t => `<p style="margin:22px 0 8px;font-size:12px;font-weight:700;letter-spacing:.6px;color:#8b8fa8;text-transform:uppercase">${t}</p>`;
 const BLOCK_HTML = {
   progress(p) {
-    const st = p.status, C = { done: '#5b5bf0', open: '#5b5bf0', hold: '#f59e0b', ok: '#22a06b', bad: '#ef4444', todo: '#d6d8e6' };
+    const st = p.status, C = { done: '#1e4b8f', open: '#1e4b8f', hold: '#f59e0b', ok: '#1a9a56', bad: '#ef4444', todo: '#d6d8e6' };
     const steps = st === 'rejected' ? [['Received', 'done'], ['Not accepted', 'bad']]
       : [['Received', st === 'open' ? 'open' : 'done'], ['In progress', st === 'in_progress' ? 'open' : st === 'open' ? 'todo' : 'done'], ...(st === 'hold' ? [['On hold', 'hold']] : []), ['Closed', st === 'closed' ? 'ok' : 'todo']];
     const cur = steps.findIndex(s => s[1] !== 'done');
@@ -181,9 +181,9 @@ const BLOCK_HTML = {
       const on = k !== 'todo', isCur = i === cur, mark = k === 'done' || k === 'ok' ? '&#10003;' : k === 'bad' ? '&#10005;' : String(i + 1);
       return `<td align="center" valign="top" style="padding:0 4px;width:${Math.floor(100 / steps.length)}%">
         <div style="width:30px;height:30px;line-height:30px;border-radius:50%;margin:0 auto;font-size:14px;font-weight:700;background:${on ? C[k] : '#ffffff'};color:${on ? '#ffffff' : '#9aa0b4'};border:2px solid ${C[k]}">${mark}</div>
-        <div style="margin-top:6px;font-size:12px;font-weight:${isCur ? 700 : 500};color:${isCur ? '#1c1d2e' : on ? '#5b5bf0' : '#9aa0b4'}">${esc(label)}</div></td>`;
+        <div style="margin-top:6px;font-size:12px;font-weight:${isCur ? 700 : 500};color:${isCur ? '#1c1d2e' : on ? '#1e4b8f' : '#9aa0b4'}">${esc(label)}</div></td>`;
     }).join('');
-    const tone = { open: ['#eef0ff', '#3f3fc7'], in_progress: ['#eef0ff', '#3f3fc7'], hold: ['#fff3dc', '#a16207'], closed: ['#e3f6ec', '#15803d'], rejected: ['#fde8e8', '#b91c1c'] }[st] || ['#eef0ff', '#3f3fc7'];
+    const tone = { open: ['#e8eff9', '#1e4b8f'], in_progress: ['#e8eff9', '#1e4b8f'], hold: ['#fff3dc', '#a16207'], closed: ['#e3f6ec', '#15803d'], rejected: ['#fde8e8', '#b91c1c'] }[st] || ['#e8eff9', '#1e4b8f'];
     return `${sectionTitle('Progress')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px;padding:16px 8px 12px"><tr>${cells}</tr></table>
       <p style="margin:10px 0 0;padding:12px 14px;border-radius:10px;background:${tone[0]};color:${tone[1]};font-size:14px;line-height:1.5"><b>What happens next:</b> ${esc(nextStep(p))}</p>`;
   },
@@ -194,7 +194,7 @@ const BLOCK_HTML = {
   },
   timeline(items) {
     return `${sectionTitle('Latest updates')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${items.map(e =>
-      `<tr><td valign="top" style="width:14px;padding-top:6px"><div style="width:10px;height:10px;border-radius:50%;background:#5b5bf0"></div></td>
+      `<tr><td valign="top" style="width:14px;padding-top:6px"><div style="width:10px;height:10px;border-radius:50%;background:#1e4b8f"></div></td>
        <td style="padding:0 0 14px 10px;border-left:0"><div style="font-size:12px;color:#8b8fa8">${esc(e.at)}</div><div style="font-size:14px;font-weight:700;color:#1c1d2e">${esc(e.label)}</div>
        ${e.body ? `<div style="font-size:14px;color:#3a3b4f;line-height:1.5;margin-top:2px">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}</td></tr>`).join('')}</table>`;
   },
