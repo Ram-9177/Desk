@@ -30,6 +30,9 @@ export const MAIL_EVENTS = [
   { key: 'new_ticket', label: 'New ticket in the queue', who: 'Service providers', when: 'A ticket arrives in their service', vars: T,
     subject: '[{{ticket_no}}] New ticket: {{subject}}',
     body: 'A new ticket has arrived in **{{service}}**. Target: {{due}}.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },
+  { key: 'status_in_progress', label: 'Work started', who: 'Requestor', when: 'A provider starts working on it', vars: [...T, 'note', 'actor_name'],
+    subject: '[{{ticket_no}}] Work has started on your ticket',
+    body: 'Hi {{requestor_name}},\n{{actor_name}} has started working on "{{subject}}".\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
   { key: 'status_hold', label: 'Ticket on hold', who: 'Requestor', when: 'A provider puts it on hold', vars: [...T, 'note', 'actor_name', 'hold_reason', 'resume_by'],
     subject: '[{{ticket_no}}] Your ticket is on hold',
     body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is paused for a short while. Here is what {{actor_name}} wrote:\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
@@ -87,8 +90,8 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
-const SAMPLE_STATE = { status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
-export const sampleVars = (base, key) => ({ ...SAMPLE, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'open' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
+const SAMPLE_STATE = { created: 'open', new_ticket: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
+export const sampleVars = (base, key) => ({ ...SAMPLE, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
 
 // Values typed by people are cleaned so they can't add buttons or bold to an email.
 const clean = v => String(v ?? '').replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]').replace(/\*\*/g, '* *').replace(/\{\{/g, '{ {');
@@ -109,7 +112,7 @@ export function renderTemplate(cfg, key, vars) {
   return { subject: fill(t.subject, vars).replace(/\s*\n\s*/g, ' ').trim().slice(0, 250), body: fill(t.body, vars) };
 }
 // Plain-text version: buttons become "label: link", bold markers dropped.
-const STEP_TEXT = { open: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Not accepted' };
+const STEP_TEXT = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Not accepted' };
 export const toText = (body, blocks = {}) => String(body).split('\n').map(line => {
   const b = /^\s*\{\{(\w+)\}\}\s*$/.exec(line)?.[1];
   if (b === 'progress' && blocks.progress) return `Status: ${STEP_TEXT[blocks.progress.status] || blocks.progress.status}. ${nextStep(blocks.progress)}`;
@@ -120,7 +123,8 @@ export const toText = (body, blocks = {}) => String(body).split('\n').map(line =
 }).join('\n');
 // One reassuring sentence about what happens next, per status.
 export function nextStep(p) {
-  return { open: p.escalated_to ? `Escalated to ${p.escalated_to}, who is now following it up with the ${p.service} team.` : `The ${p.service} team is working on it. Target: ${p.due}.`,
+  const working = p.escalated_to ? `Escalated to ${p.escalated_to}, who is now following it up with the ${p.service} team.` : `The ${p.service} team is working on it. Target: ${p.due}.`;
+  return { open: p.escalated_to ? working : `The ${p.service} team has received it and will pick it up shortly. Target: ${p.due}.`, in_progress: working,
     hold: `Paused: ${p.hold_reason || 'waiting on something'}.${p.resume_by ? ` Expected to resume by ${p.resume_by}.` : ''} We'll email you when work resumes.`,
     closed: `Completed${p.closed_at ? ` on ${p.closed_at}` : ''}. Not fixed? You can reopen it within ${p.reopen_days} days.`,
     rejected: 'This ticket was not accepted. You can raise a new one any time.' }[p.status] || '';
@@ -166,7 +170,7 @@ const BLOCK_HTML = {
   progress(p) {
     const st = p.status, C = { done: '#5b5bf0', open: '#5b5bf0', hold: '#f59e0b', ok: '#22a06b', bad: '#ef4444', todo: '#d6d8e6' };
     const steps = st === 'rejected' ? [['Received', 'done'], ['Not accepted', 'bad']]
-      : [['Received', 'done'], ['In progress', st === 'open' ? 'open' : 'done'], ...(st === 'hold' ? [['On hold', 'hold']] : []), ['Closed', st === 'closed' ? 'ok' : 'todo']];
+      : [['Received', st === 'open' ? 'open' : 'done'], ['In progress', st === 'in_progress' ? 'open' : st === 'open' ? 'todo' : 'done'], ...(st === 'hold' ? [['On hold', 'hold']] : []), ['Closed', st === 'closed' ? 'ok' : 'todo']];
     const cur = steps.findIndex(s => s[1] !== 'done');
     const cells = steps.map(([label, k], i) => {
       const on = k !== 'todo', isCur = i === cur, mark = k === 'done' || k === 'ok' ? '&#10003;' : k === 'bad' ? '&#10005;' : String(i + 1);
@@ -174,7 +178,7 @@ const BLOCK_HTML = {
         <div style="width:30px;height:30px;line-height:30px;border-radius:50%;margin:0 auto;font-size:14px;font-weight:700;background:${on ? C[k] : '#ffffff'};color:${on ? '#ffffff' : '#9aa0b4'};border:2px solid ${C[k]}">${mark}</div>
         <div style="margin-top:6px;font-size:12px;font-weight:${isCur ? 700 : 500};color:${isCur ? '#1c1d2e' : on ? '#5b5bf0' : '#9aa0b4'}">${esc(label)}</div></td>`;
     }).join('');
-    const tone = { open: ['#eef0ff', '#3f3fc7'], hold: ['#fff3dc', '#a16207'], closed: ['#e3f6ec', '#15803d'], rejected: ['#fde8e8', '#b91c1c'] }[st] || ['#eef0ff', '#3f3fc7'];
+    const tone = { open: ['#eef0ff', '#3f3fc7'], in_progress: ['#eef0ff', '#3f3fc7'], hold: ['#fff3dc', '#a16207'], closed: ['#e3f6ec', '#15803d'], rejected: ['#fde8e8', '#b91c1c'] }[st] || ['#eef0ff', '#3f3fc7'];
     return `${sectionTitle('Progress')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px;padding:16px 8px 12px"><tr>${cells}</tr></table>
       <p style="margin:10px 0 0;padding:12px 14px;border-radius:10px;background:${tone[0]};color:${tone[1]};font-size:14px;line-height:1.5"><b>What happens next:</b> ${esc(nextStep(p))}</p>`;
   },

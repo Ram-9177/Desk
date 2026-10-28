@@ -1,6 +1,7 @@
 // Shared by API and web: enums and the section 6 transition table.
 export const ROLES = ['super_admin', 'tenant_admin', 'provider'];
-export const STATUSES = ['open', 'hold', 'closed', 'rejected'];
+export const STATUSES = ['open', 'in_progress', 'hold', 'closed', 'rejected'];
+export const ACTIVE = ['open', 'in_progress']; // the target clock runs in these
 export const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 export const CHANNELS = ['portal', 'walk_in', 'phone', 'internal'];
 export const REQUESTOR_TYPES = ['student', 'faculty', 'staff', 'parent', 'visitor'];
@@ -9,8 +10,9 @@ export const FIELD_TYPES = ['short_text', 'long_text', 'number', 'date', 'select
 export const DEFAULT_HOURS = { critical: 3, high: 5, medium: 8, low: 24 };
 
 const TABLE = {
-  open: ['hold', 'closed', 'rejected'],
-  hold: ['open', 'closed', 'rejected'],
+  open: ['in_progress', 'hold', 'closed', 'rejected'],
+  in_progress: ['hold', 'closed', 'rejected'],
+  hold: ['in_progress', 'closed', 'rejected'],
   closed: ['open'],
   rejected: [],
 };
@@ -26,7 +28,10 @@ export function assertTransition(from, to, actor = 'staff') {
     throw e;
   }
 }
-export const STATUS_WORDS = { open: 'Open — being worked on', hold: 'On hold', closed: 'Closed', rejected: 'Rejected' };
+export const STATUS_WORDS = { open: 'Open — waiting to be picked up', in_progress: 'In progress — being worked on', hold: 'On hold', closed: 'Closed', rejected: 'Rejected' };
+// name and one-line meaning of each status, for the provider's status dropdown
+export const STATUS_INFO = { open: ['Open', 'Received, not started yet'], in_progress: ['In progress', 'Someone is working on it'],
+  hold: ['On hold', 'Waiting for parts, approval or the requestor'], closed: ['Closed', 'Work completed'], rejected: ['Rejected', 'Cannot be accepted'] };
 
 // Service form types, picked by the admin per service. Each adds a fixed set of questions to the raise form.
 export const FORM_TYPES = { general: 'General', location: 'Location', student: 'Student', both: 'Location & Student' };

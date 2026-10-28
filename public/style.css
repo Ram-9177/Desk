@@ -183,3 +183,9 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .tcard.st-over .tc-foot,.tcard.st-over .tc-foot b{color:var(--warn)}.tcard.st-hold .tc-foot b{color:#b45309}
 .stub::after{display:none}
 .p-esc{background:var(--warn-2);color:#b91c1c}.tc-row.esc{color:var(--warn);font-weight:600}
+
+/* status colours: open = new (blue), in progress = active (green) */
+.s-open{background:var(--blue-2);color:var(--blue)}.s-in_progress{background:var(--ok-2);color:var(--ok)}
+.tcard::before{background:var(--blue)}.tcard.st-in_progress::before{background:var(--ok)}
+.stats{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+#to{font-weight:600}#to option:disabled{color:#b0b4c8}

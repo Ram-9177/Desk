@@ -191,13 +191,16 @@ try {
   const d1 = await ok('open ticket 0001', `/tickets/${ids.t1}`, { token: T.pavan });
   check('workspace has details, requestor, providers, SLA minutes', d1.form_data.issue === 'Fan' && d1.requestor.email === 'r1@example.com' && d1.providers[0].id === pavan.id && typeof d1.sla_left_min === 'number' && d1.attachments.length === 1);
   const act = (id, body, token = T.pavan) => api(`/tickets/${id}/status`, { method: 'POST', token, body });
+  r = await act(ids.t1, { to: 'in_progress', note: 'On it' });
+  check('start work → in progress, requestor told', r.status === 200 && (await api('/public/alpha/tickets/0001')).data.status === 'in_progress' && mailsFor('0001').some(m => m.k === 'status_in_progress'), r.error?.message);
   check('status change needs a note', (await act(ids.t1, { to: 'hold' })).status === 400);
   check('hold needs a reason', (await act(ids.t1, { to: 'hold', note: 'wait' })).status === 400);
   check('invalid transition is 409', (await act(ids.t1, { to: 'open', note: 'x' })).status === 409);
   r = await act(ids.t1, { to: 'hold', note: 'Motor ordered', hold_reason: 'parts' }); check('put on hold', r.status === 200, r.error?.message);
   const ph = (await api('/public/alpha/tickets/0001')).data;
   check('requestor sees the hold reason and resume time', ph.status === 'hold' && ph.hold_label === 'Waiting for parts' && !!ph.hold_due_at);
-  r = await act(ids.t1, { to: 'open', note: 'Motor arrived' }); check('resumed', r.status === 200);
+  r = await act(ids.t1, { to: 'in_progress', note: 'Motor arrived' });
+  check('resumed → in progress, “work resumed” email', r.status === 200 && (await api('/public/alpha/tickets/0001')).data.status === 'in_progress' && mailsFor('0001').some(m => m.k === 'status_open'), r.error?.message);
   const dueBefore = (await api(`/tickets/${ids.t1}`, { token: T.pavan })).data.due_at;
   await ok('priority → critical', `/tickets/${ids.t1}/priority`, { token: T.pavan, method: 'POST', body: { priority: 'critical' } });
   check('due time moved earlier', (await api(`/tickets/${ids.t1}`, { token: T.pavan })).data.due_at < dueBefore);
@@ -229,7 +232,7 @@ try {
   r = await raise('alpha', elecBody('Rao', 'r5@example.com')); ids.t5 = q("SELECT id FROM tickets WHERE ticket_no='0005' AND tenant_id=?", alpha.id)[0].id;
   await act(ids.t5, { to: 'hold', note: 'Waiting', hold_reason: 'parts' });
   run('UPDATE tickets SET hold_due_at=? WHERE id=?', new Date(Date.now() - 3600e3).toISOString(), ids.t5);
-  await act(ids.t5, { to: 'open', note: 'Resumed late' });
+  await act(ids.t5, { to: 'in_progress', note: 'Resumed late' });
   check('hold past its limit costs 3 points', (await api('/points', { token: T.pavan })).data.me === 2);
   run('UPDATE tickets SET due_at=? WHERE id=?', new Date(Date.now() - 7 * 864e5).toISOString(), ids.t5);
   r = await act(ids.t5, { to: 'closed', note: 'Done, very late' });
@@ -278,7 +281,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('16 email steps listed, none connected yet', cfg0.events.length === 16 && !cfg0.url);
+  check('17 email steps listed, none connected yet', cfg0.events.length === 17 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -407,7 +410,7 @@ async function uiSmoke(tok, id) {
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
-    await visit('provider ticket workspace', '/c/t/' + id.t1, tok.pavan, '#act .actbar');
+    await visit('provider ticket workspace', '/c/t/' + id.t1, tok.pavan, '#act #to');
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');

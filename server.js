@@ -7,7 +7,7 @@ import { db, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.j
 import { createSuperAdmin } from './bootstrap.js';
 import { MAIL_EVENTS, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, CHANNELS, FIELD_TYPES, STATUS_WORDS, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
+import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -193,16 +193,16 @@ function ticketVars(t, extra = {}) {
   const answers = fieldsOf(JSON.parse(svcRow?.form_schema || '{}')).filter(f => !f.key.startsWith('loc_')).map(f => [f.label, Array.isArray(fd[f.key]) ? fd[f.key].join(', ') : fd[f.key]]).filter(([, a]) => a !== undefined && a !== '');
   const provNames = providersFor(t.tenant_id, t.service_id).map(p => p.name).join(', ');
   const escName = t.escalated_to ? one('SELECT name FROM users WHERE id=?', t.escalated_to)?.name || '' : '';
-  const progress = { escalated_to: ['open', 'hold'].includes(t.status) ? escName : '', status: t.status, service: svc?.name, due: fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
+  const progress = { escalated_to: [...ACTIVE, 'hold'].includes(t.status) ? escName : '', status: t.status, service: svc?.name, due: fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
     hold_reason: held && t.hold_reason ? holdReasons(tn).find(x => x.key === t.hold_reason)?.label || '' : '', resume_by: held && t.hold_due_at ? fmtIST(t.hold_due_at) : '' };
   const ticket_details = [['Ticket', t.ticket_no], ['Service', svc?.name], ['Subject', t.subject], ['Description', t.description], ['Location', t.location], ...answers,
-    ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)], ...(['open', 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
+    ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)], ...([...ACTIVE, 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
     ['Handled by', provNames || 'Being assigned']].filter(([, x]) => x !== undefined && x !== null && String(x).trim() !== '').map(([k, x]) => [k, String(x)]);
-  const SW = { hold: 'Put on hold', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
+  const SW = { hold: 'Put on hold', in_progress: 'Work started', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
   const timeline = all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id).map(e => {
     const m = JSON.parse(e.meta || '{}'), who = e.actor_name || '';
     const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
-      status_changed: `${SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
+      status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
     return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), label, body: e.body || '' };
   });
   return { progress, ticket_details, timeline, escalated_to_name: escName,
@@ -240,7 +240,7 @@ setInterval(() => {
   for (const u of all("SELECT * FROM users WHERE is_active=1 AND role!='super_admin'")) {
     const sids = myServiceIds(u, u.tenant_id); if (!sids.length) continue;
     const q = all(`SELECT ticket_no,subject,status,due_at FROM tickets WHERE tenant_id=? AND service_id IN (${sids.map(() => '?').join()})
-      AND ((status='open' AND due_at<?) OR status='hold')`, u.tenant_id, ...sids, now());
+      AND ((status IN ('open','in_progress') AND due_at<?) OR status='hold')`, u.tenant_id, ...sids, now());
     if (q.length) notify({ tenant_id: u.tenant_id }, [u.email], 'digest', { staff_name: u.name, campus: tenantRow(u.tenant_id)?.name, count: q.length,
       ticket_list: q.map(x => `${x.ticket_no} · ${x.status === 'hold' ? 'on hold' : 'overdue'} · ${x.subject}`).join('\n') });
   }
@@ -251,7 +251,7 @@ setInterval(() => {
 // campus's "escalate after" working days, it escalates to the service's escalation person (a campus admin if none is set).
 function escalationDue(t, tn) {
   const cal = calendar(tn), mins = Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
-  const from = t.status === 'open' ? t.due_at : tn.escalate_holds ? t.hold_due_at : null;
+  const from = ACTIVE.includes(t.status) ? t.due_at : tn.escalate_holds ? t.hold_due_at : null;
   if (!from) return null;
   return mins > 0 ? addWorking(cal, from, mins) : from; // 0 days = the moment the target is missed
 }
@@ -260,7 +260,7 @@ function escalate(t) {
   const target = (svc?.escalation_user_id && one('SELECT id, name, email FROM users WHERE id=? AND is_active=1', svc.escalation_user_id))
     || one("SELECT id, name, email FROM users WHERE tenant_id=? AND role='tenant_admin' AND is_active=1 ORDER BY name LIMIT 1", t.tenant_id);
   if (!target) return; // nobody to escalate to: the ticket stays on the attention list as overdue
-  const ts = now(), missed = t.status === 'open' ? `its target of ${fmtIST(t.due_at)}` : `its hold limit of ${fmtIST(t.hold_due_at)}`;
+  const ts = now(), missed = t.status === 'hold' ? `its hold limit of ${fmtIST(t.hold_due_at)}` : `its target of ${fmtIST(t.due_at)}`;
   const done = tx(() => {
     if (!run('UPDATE tickets SET escalated_at=?, escalated_to=?, updated_at=? WHERE id=? AND escalated_at IS NULL', ts, target.id, ts, t.id).changes) return false;
     addEvent(t, { type: 'system', name: 'ONE Desk' }, 'escalated', { to: target.name, body: `Escalated automatically: the ticket passed ${missed}.` });
@@ -274,7 +274,7 @@ function escalate(t) {
 function runEscalations() {
   const n = now();
   for (const tn of all('SELECT * FROM tenants WHERE is_active=1')) {
-    const due = all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND ((status='open' AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
+    const due = all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND ((status IN ('open','in_progress') AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
     for (const t of due) { try { const at = escalationDue(t, tn); if (at && at <= n) escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
   }
 }
@@ -577,8 +577,8 @@ const ticketQuery = (req) => {
   const sids = myServiceIds(req.user, req.tenantId);
   // my services' tickets, plus any ticket escalated to me
   const w = [`t.tenant_id=?`, sids.length ? `(t.service_id IN (${sids.map(() => '?').join()}) OR t.escalated_to=?)` : 't.escalated_to=?'], a = [req.tenantId, ...sids, req.user.id], q = req.query;
-  if (q.status === 'overdue') { w.push("t.status='open' AND t.due_at<?"); a.push(now()); }
-  else if (q.status === 'escalated') w.push("t.escalated_at IS NOT NULL AND t.status IN ('open','hold')");
+  if (q.status === 'overdue') { w.push("t.status IN ('open','in_progress') AND t.due_at<?"); a.push(now()); }
+  else if (q.status === 'escalated') w.push("t.escalated_at IS NOT NULL AND t.status IN ('open','in_progress','hold')");
   else if (q.status && q.status !== 'all') { w.push('t.status=?'); a.push(q.status); }
   if (q.service) { w.push('t.service_id=?'); a.push(q.service); }
   if (q.internal === '0') w.push('t.is_internal=0');
@@ -590,8 +590,8 @@ const LIST_SQL = `SELECT t.id,t.ticket_no,t.subject,t.status,t.priority,t.channe
   FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id LEFT JOIN users eu ON eu.id=t.escalated_to`;
 S.get('/tickets', wrap(req => {
   const { sql, args } = ticketQuery(req);
-  return all(`${LIST_SQL} WHERE ${sql} ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'hold' THEN 1 ELSE 2 END, t.due_at LIMIT 500`, ...args)
-    .map(x => ({ ...x, overdue: x.status === 'open' && x.due_at < now() }));
+  return all(`${LIST_SQL} WHERE ${sql} ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 0 WHEN 'hold' THEN 1 ELSE 2 END, t.due_at LIMIT 500`, ...args)
+    .map(x => ({ ...x, overdue: ACTIVE.includes(x.status) && x.due_at < now() }));
 }));
 S.get('/tickets.csv', (req, res, next) => { try {
   const { sql, args } = ticketQuery(req);
@@ -602,8 +602,8 @@ S.get('/tickets.csv', (req, res, next) => { try {
 S.get('/tickets/:id', wrap(req => {
   const t = loadTicket(req);
   const tn = tenantRow(t.tenant_id), cal = calendar(tn), n = now();
-  return { ...t, form_data: JSON.parse(t.form_data), overdue: t.status === 'open' && t.due_at < n,
-    sla_left_min: t.status === 'open' ? (n <= t.due_at ? workingBetween(cal, n, t.due_at) : -workingBetween(cal, t.due_at, n)) : null,
+  return { ...t, form_data: JSON.parse(t.form_data), overdue: ACTIVE.includes(t.status) && t.due_at < n,
+    sla_left_min: ACTIVE.includes(t.status) ? (n <= t.due_at ? workingBetween(cal, n, t.due_at) : -workingBetween(cal, t.due_at, n)) : null,
     hold_label: t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label || t.hold_reason : null,
     hold_over: t.status === 'hold' && t.hold_due_at && t.hold_due_at < n, hold_reasons: holdReasons(tn),
     escalated_name: t.escalated_to ? one('SELECT name FROM users WHERE id=?', t.escalated_to)?.name || null : null,
@@ -634,7 +634,8 @@ S.post('/tickets/:id/status', wrap(req => {
       const hdue = dueFrom(t.tenant_id, ts, hr.hours * 60);
       run('UPDATE tickets SET status=?, hold_started_at=?, hold_reason=?, hold_due_at=?, hold_by=?, updated_at=? WHERE id=?', to, ts, hr.key, hdue, req.user.id, ts, t.id);
       meta = { hold_reason: hr.label, hold_due_at: hdue };
-    } else if (to === 'open') { const { held, due } = leaveHold(t, ts);
+    } else if (to === 'in_progress' || to === 'open') { // start work, or resume after a hold
+      let held = 0, due = t.due_at; if (t.status === 'hold') ({ held, due } = leaveHold(t, ts));
       run('UPDATE tickets SET status=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=?', to, held, due, ts, t.id); }
     else { let held = 0, due = t.due_at; if (t.status === 'hold') ({ held, due } = leaveHold(t, ts));
       run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=?', to, ts, req.user.id, held, due, ts, t.id);
@@ -650,7 +651,9 @@ S.post('/tickets/:id/status', wrap(req => {
   });
   if (!req.body.is_internal) {
     const r = one('SELECT * FROM requestors WHERE id=?', t.requestor_id), url = trackUrl(t);
-    notify(t, [r.email], 'status_' + to, ticketVars(t, { note, actor_name: req.user.name,
+    // after a hold, moving to "in progress" is a resume ("work resumed"); from open it is a fresh start ("work started")
+    const key = to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
+    notify(t, [r.email], key, ticketVars(t, { note, actor_name: req.user.name,
       hold_reason: meta.hold_reason || '', resume_by: meta.hold_due_at ? fmtIST(meta.hold_due_at) : '' }));
   }
   return { ok: true, points: meta.points };
@@ -664,7 +667,7 @@ S.post('/tickets/:id/notes', wrap(req => {
 }));
 S.post('/tickets/:id/transfer', wrap(req => {
   const t = loadTicket(req), note = req_(req.body.note, 'A note is required');
-  if (!['open', 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only open or on-hold tickets can be transferred', { current: t.status });
+  if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
   const ns = one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
   const old = one('SELECT name FROM services WHERE id=?', t.service_id), oldProv = providersFor(t.tenant_id, t.service_id);
@@ -678,7 +681,7 @@ S.post('/tickets/:id/transfer', wrap(req => {
 S.post('/tickets/:id/priority', wrap(req => {
   const t = loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
-  if (!['open', 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
+  if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
   const due = dueFrom(t.tenant_id, t.created_at, targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
   tx(() => { run('UPDATE tickets SET priority=?, due_at=?, updated_at=? WHERE id=?', p, due, now(), t.id);
     addEvent(t, actorOf(req), 'priority_changed', { from: t.priority, to: p, internal: true }); });
@@ -695,10 +698,10 @@ S.post('/tickets/:id/extend', role('super_admin', 'tenant_admin'), wrap(req => {
 
 // attention, reports, audit, notifications
 S.get('/attention', role('super_admin', 'tenant_admin'), wrap(req => ({
-  no_provider: all(`SELECT s.id,s.name,s.code,(SELECT count(*) FROM tickets t WHERE t.service_id=s.id AND t.status IN ('open','hold')) open_count FROM services s
+  no_provider: all(`SELECT s.id,s.name,s.code,(SELECT count(*) FROM tickets t WHERE t.service_id=s.id AND t.status IN ('open','in_progress','hold')) open_count FROM services s
     WHERE s.tenant_id=? AND s.is_active=1 AND NOT EXISTS (SELECT 1 FROM service_members m JOIN users u ON u.id=m.user_id WHERE m.service_id=s.id AND u.is_active=1)`, req.tenantId),
-  overdue: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='open' AND t.due_at<? ORDER BY t.due_at`, req.tenantId, now()),
-  escalated: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.escalated_at IS NOT NULL AND t.status IN ('open','hold') ORDER BY t.escalated_at`, req.tenantId),
+  overdue: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status IN ('open','in_progress') AND t.due_at<? ORDER BY t.due_at`, req.tenantId, now()),
+  escalated: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.escalated_at IS NOT NULL AND t.status IN ('open','in_progress','hold') ORDER BY t.escalated_at`, req.tenantId),
   stuck_hold: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='hold' AND t.hold_due_at<? ORDER BY t.hold_due_at`, req.tenantId, now()),
   failed_mail: all("SELECT * FROM notifications WHERE tenant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 50", req.tenantId),
 })));
@@ -711,17 +714,17 @@ S.get('/reports', wrap(req => {
   const inS = sids.length ? `(service_id IN (${sids.map(() => '?').join()}) OR escalated_to=?)` : 'escalated_to=?', base = [req.tenantId, ...sids, req.user.id], from = addH(now(), -24 * (Number(req.query.days) || 30));
   const n = now();
   return {
-    counts: one(`SELECT sum(status='open') open, sum(status='hold') hold, sum(status='open' AND due_at<?) overdue,
+    counts: one(`SELECT sum(status='open') open, sum(status='in_progress') in_progress, sum(status='hold') hold, sum(status IN ('open','in_progress') AND due_at<?) overdue,
       sum(status='closed' AND closed_at>=?) closed_period, sum(created_at>=?) created_period,
       round(avg(CASE WHEN status='closed' AND closed_at>=? THEN (julianday(closed_at)-julianday(created_at))*24 - held_minutes/60.0 END),1) avg_hours,
       round(100.0*sum(status='closed' AND closed_at>=? AND closed_at<=due_at)/max(1,sum(status='closed' AND closed_at>=?)),0) on_time_pct
       FROM tickets WHERE tenant_id=? AND ${inS}`, n, from, from, from, from, from, ...base),
-    by_service: all(`SELECT s.name, sum(t.status='open') open, sum(t.status='hold') hold, sum(t.status='closed') closed, sum(t.status='rejected') rejected,
-      sum(t.status='open' AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? GROUP BY s.name`, n, ...base, from),
+    by_service: all(`SELECT s.name, sum(t.status='open') open, sum(t.status='in_progress') in_progress, sum(t.status='hold') hold, sum(t.status='closed') closed, sum(t.status='rejected') rejected,
+      sum(t.status IN ('open','in_progress') AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? GROUP BY s.name`, n, ...base, from),
     daily: all(`SELECT substr(created_at,1,10) d, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? GROUP BY d ORDER BY d`, ...base, from),
     by_priority: all(`SELECT priority k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? GROUP BY priority`, ...base, from),
     aging: all(`SELECT CASE WHEN julianday(?)-julianday(created_at)<1 THEN '<1d' WHEN julianday(?)-julianday(created_at)<3 THEN '1-3d'
-      WHEN julianday(?)-julianday(created_at)<7 THEN '3-7d' ELSE '7d+' END k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND status IN ('open','hold') GROUP BY k`, n, n, n, ...base),
+      WHEN julianday(?)-julianday(created_at)<7 THEN '3-7d' ELSE '7d+' END k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND status IN ('open','in_progress','hold') GROUP BY k`, n, n, n, ...base),
   };
 }));
 S.get('/audit', role('super_admin', 'tenant_admin'), wrap(req =>
@@ -807,7 +810,7 @@ M.post('/resend', wrap(req => {
 app.use('/api/mail', M);
 
 app.get('/api/group/report', auth, role('super_admin'), wrap(() =>
-  all(`SELECT tn.name, tn.code, sum(t.status='open') open, sum(t.status='hold') hold, sum(t.status='closed') closed, sum(t.status='open' AND t.due_at<?) overdue
+  all(`SELECT tn.name, tn.code, sum(t.status IN ('open','in_progress')) open, sum(t.status='hold') hold, sum(t.status='closed') closed, sum(t.status IN ('open','in_progress') AND t.due_at<?) overdue
     FROM tenants tn LEFT JOIN tickets t ON t.tenant_id=tn.id GROUP BY tn.id ORDER BY tn.name`, now())));
 
 app.use('/api', S);

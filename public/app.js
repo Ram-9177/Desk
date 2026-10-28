@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral } from './shared.js';
+import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -22,7 +22,7 @@ const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fi
 }[n]}</svg>`;
 const ICONS = ['wifi', 'bolt', 'bed', 'bus', 'tool', 'drop', 'book', 'cash', 'grid'];
 const BLOCK_FIELDS = ['progress', 'ticket_details', 'timeline'];
-const ACT_ICON = { hold: 'pause', open: 'play', closed: 'check', rejected: 'xmark' };
+const ACT_ICON = { hold: 'pause', open: 'play', in_progress: 'play', closed: 'check', rejected: 'xmark' };
 const fmtLeft = m => { m = Math.abs(Math.round(m)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60 ? (m % 60) + 'm' : ''}`.trim() : `${m}m`; };
 const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small">Points for closing within SLA, this campus</div>${rows.length ? rows.map((u, i) => `<div class="brow">
   <span class="rank">${['🥇', '🥈', '🥉'][i] || i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
@@ -171,16 +171,16 @@ async function ticketPage(slug, no, q) {
   let t;
   try { t = await api(`/public/${slug}/tickets/${no}?${qs}`); } catch { return track(slug); }
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
-    status_changed: { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
+    status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
     note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
-  const next = { open: 'Closed', hold: 'Work resumes' }[t.status];
+  const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && new Date(t.reopen_until) > new Date();
-  const step = { open: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
+  const step = { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>My Ticket</h1>${pill(t.status)}</div>
     <div class="stub left"><div class="mono muted small">${t.ticket_no}</div><h2 style="margin:4px 0 2px;font-size:20px">${esc(t.subject)}</h2>
     <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
-      <div><b>${STATUS_WORDS[t.status]}</b><div class="muted small">${t.status === 'open' ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
+      <div><b>${STATUS_WORDS[t.status]}</b><div class="muted small">${ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
     <h2>What happened</h2><div class="card"><ul class="stamps">${t.events.map(e => `<li><b>${label(e)}</b><div class="when">${fmt(e.created_at)}${e.actor_type === 'user' ? ' · ' + esc(e.actor_name) : ''}</div>
       ${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
@@ -241,9 +241,9 @@ const tenantObj = () => S.me.tenants.find(t => t.id === S.tenant);
 // One ticket as a card: state strip, number + labels, subject, service, requestor, location, due / resume time.
 function ticketCard(r, services) {
   const now = new Date().toISOString(), holdOver = r.status === 'hold' && r.hold_due_at && r.hold_due_at < now;
-  const esc_on = r.escalated_at && ['open', 'hold'].includes(r.status);
+  const esc_on = r.escalated_at && [...ACTIVE, 'hold'].includes(r.status);
   const state = r.overdue || holdOver ? 'over' : r.status, svc = services.find(s => s.code === r.service_code) || { code: r.service_code };
-  const foot = r.status === 'open' ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
+  const foot = ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
     : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause'] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark'];
   return `<div class="tcard st-${state} ${r.status === 'rejected' ? 'dim' : ''}" data-id="${r.id}" tabindex="0">
     <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${pill(r.status)}${ppill(r.priority)}</div>
@@ -263,7 +263,7 @@ async function queue(main) {
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
     const [rows, rep, pts] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/points')]);
     const c = rep.counts || {};
-    const done = c.closed_period || 0, total = done + (c.open || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
+    const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
     const h = new Date().getHours(), greet = h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : 'Good Evening';
     const tile = (k, label, n, ic, cls) => `<div class="stat" data-s="${k}"><span class="chip ${cls}">${I(ic, 18)}</span><div><span>${label}</span><b>${n || 0}</b></div></div>`;
     main.innerHTML = `<div class="hello"><div><div class="muted">${greet},</div><h1>${esc(S.me.user.name.split(' ')[0])} 👋</h1><div class="muted small">Here's what's happening at ${esc(tenantObj()?.code || '')} today.</div></div>
@@ -271,11 +271,11 @@ async function queue(main) {
       ${S.me.user.role !== 'provider' ? `<a class="iconbtn" href="#/c/attention">${I('bell')}</a>` : ''}</div></div>
       <div class="dash"><div class="card progress">${ring(pct)}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
         <div class="muted small">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
-      <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
+      <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c2')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
       <div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="fq" placeholder="Search tickets…" value="${esc(st.q || '')}"></label>
       <select id="fsv"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
-      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
+      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
       <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1">${I('tasks', 40)}<p>Nothing here — all clear.</p></div>`}</div>`;
     main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
@@ -300,10 +300,17 @@ function dlg(html, onSubmit) {
 async function workspace(main, id, { admin }) {
   const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]);
   const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
-    status_changed: (m => `${e.from_value} → ${e.to_value}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(JSON.parse(e.meta || '{}')), priority_changed: `Priority ${e.from_value} → ${e.to_value}`, note: 'Note',
+    status_changed: (m => `${(STATUS_INFO[e.from_value] || [e.from_value])[0]} → ${(STATUS_INFO[e.to_value] || [e.to_value])[0]}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(JSON.parse(e.meta || '{}')), priority_changed: `Priority ${e.from_value} → ${e.to_value}`, note: 'Note',
     reopened: 'Reopened', due_extended: `Due extended to ${fmt(e.to_value)}` })[e.event_type] || e.event_type;
   const targets = allowedTargets(t.status);
-  const btnName = { hold: 'Hold (h)', open: t.status === 'closed' ? 'Reopen' : 'Resume', closed: 'Close (c)', rejected: 'Reject (r)' };
+  // the one button changes with the status picked in the dropdown
+  const BTN = { open: ['Reopen ticket', 'act-reopen'], in_progress: [t.status === 'hold' ? 'Resume work' : 'Start work', 'act-open'], hold: ['Put on hold', 'act-hold'], closed: ['Close ticket', 'act-closed'], rejected: ['Reject ticket', 'act-rejected'] };
+  const HINT = { same: 'Keeps the status and adds a note. Untick “Internal” to email it to the requestor.',
+    open: 'Reopens the ticket with a fresh target; the service providers are emailed.',
+    in_progress: t.status === 'hold' ? 'Resumes work. The target moves forward by the time spent on hold; the requestor is emailed.' : 'Tells the requestor that work has started.',
+    hold: 'Pauses the target clock. Pick a reason below; each has its own time limit, and going past it costs points.',
+    closed: `Emails the requestor, who can reopen within ${tenantObj()?.reopen_window_days ?? 7} days. Add a proof photo if you can.`,
+    rejected: 'Write the reason. The requestor is told and can raise a new ticket.' };
   const fd = Object.entries(t.form_data || {}).filter(([, v]) => v !== '' && v != null);
   main.innerHTML = `<div class="ws">
    <div><div class="card"><div class="mono muted small">${t.ticket_no}</div>${pill(t.status)} ${ppill(t.priority)} ${t.is_internal ? '<span class="pill s-hold">internal</span>' : ''}
@@ -311,34 +318,41 @@ async function workspace(main, id, { admin }) {
      <p>${esc(t.description || '')}</p><p><b>Location:</b> ${esc(t.location || '—')}</p>
      ${fd.map(([k, v]) => `<div><b>${esc((t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)).find(f => f.key === k)?.label : k) || k)}:</b> ${esc(Array.isArray(v) ? v.join(', ') : v)}</div>`).join('')}
      <p class="muted small">Created ${fmt(t.created_at)}</p>
-     ${t.status === 'open' ? `<div class="slabox ${t.sla_left_min < 0 ? 'late' : ''}">${I('clock', 20)}<div><b>${t.sla_left_min >= 0 ? fmtLeft(t.sla_left_min) + ' working time left' : fmtLeft(t.sla_left_min) + ' past SLA'}</b><div class="small">Due ${fmt(t.due_at)}</div></div></div>` : ''}
+     ${ACTIVE.includes(t.status) ? `<div class="slabox ${t.sla_left_min < 0 ? 'late' : ''}">${I('clock', 20)}<div><b>${t.sla_left_min >= 0 ? fmtLeft(t.sla_left_min) + ' working time left' : fmtLeft(t.sla_left_min) + ' past SLA'}</b><div class="small">Due ${fmt(t.due_at)}</div></div></div>` : ''}
      ${t.status === 'hold' ? `<div class="slabox hold ${t.hold_over ? 'late' : ''}">${I('pause', 20)}<div><b>On hold · ${esc(t.hold_label || '')}</b><div class="small">${t.hold_over ? 'Hold SLA passed at' : 'Resume by'} ${fmt(t.hold_due_at)} · main SLA paused</div></div></div>` : ''}
-     ${t.escalated_name && ['open', 'hold'].includes(t.status) ? `<div class="slabox late" style="margin-top:8px">${I('alert', 20)}<div><b>Escalated to ${esc(t.escalated_name)}</b><div class="small">${fmt(t.escalated_at)} · it missed its target</div></div></div>` : ''}
+     ${t.escalated_name && [...ACTIVE, 'hold'].includes(t.status) ? `<div class="slabox late" style="margin-top:8px">${I('alert', 20)}<div><b>Escalated to ${esc(t.escalated_name)}</b><div class="small">${fmt(t.escalated_at)} · it missed its target</div></div></div>` : ''}
      ${t.held_minutes ? `<div class="muted small" style="margin-top:6px">Total time on hold: ${fmtLeft(t.held_minutes)} (working)</div>` : ''}
      <p><a href="${t.tracking_url}" target="_blank" style="font-size:13px">Requestor's view ↗</a></p></div></div>
    <div><div class="card"><b>Timeline</b><div style="margin-top:10px">${t.events.map(e => `<div class="ev ${e.is_internal ? 'int' : ''}"><b>${evLabel(e)}</b>${e.is_internal ? ' <span class="muted">(internal)</span>' : ''}
       <div class="meta">${fmt(e.created_at)} · ${esc(e.actor_name || e.actor_type)}</div>${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div>`).join('')}</div></div>
-     <form id="act" class="card"><b>Act on this ticket</b><textarea name="note" placeholder="Note (required for any status change)"></textarea>
+     <form id="act" class="card"><b>Act on this ticket</b>
+       <label>Ticket status</label><select name="to" id="to">${STATUSES.map(s => `<option value="${s}" ${s === t.status ? 'selected' : ''} ${s !== t.status && !targets.includes(s) ? 'disabled' : ''}>${STATUS_INFO[s][0]}${s === t.status ? ' (current)' : ''} — ${s === t.status ? 'keep it, just add a note' : STATUS_INFO[s][1]}</option>`).join('')}</select>
+       <div class="muted small" id="tohint" style="margin-top:6px"></div>
+       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h limit</option>`).join('')}</select></div>
+       <label>Note <small>(required)</small></label><textarea name="note" placeholder="What did you do, or why this change?"></textarea>
        ${fileButtons('act')}<label style="font-weight:400"><input type="checkbox" name="is_internal" style="width:auto;min-height:0"> Internal — hide from requestor</label>
-       <div class="actbar">${targets.map(s => `<button class="btn act act-${s === 'open' && t.status === 'closed' ? 'reopen' : s}" data-to="${s}">${I(ACT_ICON[s], 18)}${btnName[s]}</button>`).join('')}
-       ${t.status !== 'rejected' ? `<button class="btn act act-note" data-to="note">${I('plus', 18)}Add note</button>` : ''}</div></form></div>
+       <div class="actbar"><button class="btn act act-note" id="go">${I('plus', 18)}Add note</button></div></form></div>
    <div><div class="card"><b>Requestor</b><div>${esc(t.requestor.name)} <span class="muted">${esc(t.requestor.requestor_type || '')}</span></div>
      <div class="muted" style="font-size:13px">${esc(t.requestor.email || '')}<br>${esc(t.requestor.phone || '')}<br>${esc(t.requestor.identifier || '')} ${esc(t.requestor.department || '')}</div>
      ${t.requestor_history.length ? `<p style="font-size:13px"><b>Last tickets</b><br>${t.requestor_history.map(h => `<a href="#/c/t/${h.id}">${h.ticket_no}</a> ${pill(h.status)}`).join('<br>')}</p>` : ''}</div>
     <div class="card"><b>Providers</b>${t.providers.map(p => `<div>${esc(p.name)} <span class="muted">${esc(p.phone || '')}</span></div>`).join('') || '<div class="err">No provider mapped</div>'}</div>
-    ${['open', 'hold'].includes(t.status) ? `<div class="card"><b>Priority</b><select id="pri">${PRIORITIES.map(p => `<option ${p === t.priority ? 'selected' : ''}>${p}</option>`).join('')}</select>
+    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card"><b>Priority</b><select id="pri">${PRIORITIES.map(p => `<option ${p === t.priority ? 'selected' : ''}>${p}</option>`).join('')}</select>
       <p><button class="btn" id="tr" style="width:100%">Transfer (t)</button></p>${admin ? '<p><button class="btn" id="ext" style="width:100%">Extend due time</button></p>' : ''}</div>` : ''}</div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
+  const sel = $('#to'), go = $('#go'), sync = () => { const to = sel.value, same = to === t.status;
+    $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to];
+    const [label, cls] = same ? ['Add note', 'act-note'] : BTN[to]; go.className = 'btn act ' + cls; go.innerHTML = I(same ? 'plus' : ACT_ICON[to] || 'check', 18) + label; };
+  sel.onchange = sync; sync();
   $('#act').onsubmit = async e => {
-    e.preventDefault(); const to = e.submitter?.dataset.to, f = e.target, note = f.note.value.trim();
+    e.preventDefault(); const f = e.target, to = f.to.value, note = f.note.value.trim();
     if (!note) return toast('Write a note first');
+    if (to === 'hold' && !f.hold_reason.value) return toast('Pick a hold reason');
     try { const body = { note, body: note, is_internal: f.is_internal.checked, files: await readFiles(document.querySelectorAll('.f-act')) };
-      if (to === 'hold') return dlg(`<h2>Put on hold</h2><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h</option>`).join('')}</select>
-        <p class="muted small">The main SLA clock pauses while on hold. The hold has its own limit (working hours); going past it costs points.</p>`,
-        async d => { await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: d.elements.hold_reason.value } }); toast('Put on hold'); reload(); });
-      const res = await api(`/tickets/${id}/${to === 'note' ? 'notes' : 'status'}`, { method: 'POST', body: to === 'note' ? body : { ...body, to } });
-      toast(res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : 'Saved'); reload();
+      if (to === t.status) { await api(`/tickets/${id}/notes`, { method: 'POST', body }); toast('Note added'); }
+      else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value } });
+        toast(res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : `Status: ${STATUS_INFO[to][0]}`); }
+      reload();
     } catch (er) { toast(er.message); if (er.status === 409) reload(); }
   };
   if ($('#pri')) $('#pri').onchange = async e => { try { await api(`/tickets/${id}/priority`, { method: 'POST', body: { priority: e.target.value } }); reload(); } catch (er) { toast(er.message); } };
@@ -349,7 +363,7 @@ async function workspace(main, id, { admin }) {
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
   document.onkeydown = e => { if (!location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
     const m = { h: 'hold', c: 'closed', r: 'rejected' }[e.key];
-    if (m && targets.includes(m)) { $('#act').note.focus(); toast(`Write a note, then press ${btnName[m]}`); }
+    if (m && targets.includes(m)) { sel.value = m; sync(); $('#act').note.focus(); }
     if (e.key === 't' && $('#tr')) transfer(); };
 }
 
@@ -574,8 +588,8 @@ async function reports(main, { sa }) {
       <polyline fill="none" stroke="var(--brand)" stroke-width="2.5" vector-effect="non-scaling-stroke" points="${r.daily.map((d, i) => `${i * 20 + 10},${95 - 90 * d.c / max}`).join(' ')}"/>${r.daily.map((d, i) => `<circle cx="${i * 20 + 10}" cy="${95 - 90 * d.c / max}" r="3" fill="var(--brand)"/>`).join("")}</svg></div></div>
     <div class="two" style="margin-top:14px"><div class="card"><b>By priority</b>${bars(r.by_priority)}</div><div class="card"><b>Aging of active tickets</b>${bars(r.aging)}</div></div>
     <div class="card" id="lb"></div>
-    <div class="card"><b>By service</b><table><tr><th>Service</th><th>Open</th><th>Hold</th><th>Closed</th><th>Rejected</th><th>Overdue</th></tr>
-      ${r.by_service.map(s => `<tr><td>${esc(s.name)}</td><td>${s.open}</td><td>${s.hold}</td><td>${s.closed}</td><td>${s.rejected}</td><td>${s.overdue}</td></tr>`).join('')}</table></div>
+    <div class="card"><b>By service</b><table><tr><th>Service</th><th>Open</th><th>In progress</th><th>Hold</th><th>Closed</th><th>Rejected</th><th>Overdue</th></tr>
+      ${r.by_service.map(s => `<tr><td>${esc(s.name)}</td><td>${s.open}</td><td>${s.in_progress || 0}</td><td>${s.hold}</td><td>${s.closed}</td><td>${s.rejected}</td><td>${s.overdue}</td></tr>`).join('')}</table></div>
     ${g ? `<div class="card"><b>Group-wide</b><table><tr><th>Tenant</th><th>Open</th><th>Hold</th><th>Closed</th><th>Overdue</th></tr>${g.map(t => `<tr><td>${esc(t.name)}</td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td>${t.overdue || 0}</td></tr>`).join('')}</table></div>` : ''}`;
   api('/points').then(p => $('#lb').innerHTML = leaderboard(p.leaderboard));
   $('#rd').onchange = e => { sessionStorage.setItem('rd', e.target.value); reports(main, { sa }); };
