@@ -189,3 +189,12 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .tcard::before{background:var(--blue)}.tcard.st-in_progress::before{background:var(--ok)}
 .stats{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
 #to{font-weight:600}#to option:disabled{color:#b0b4c8}
+
+/* form layout: paired fields line up their boxes; on phones they stack */
+.row{align-items:flex-end}
+@media(max-width:560px){form .row:not(.hr){flex-direction:column;align-items:stretch;gap:0}form .row:not(.hr)>*{min-width:0}}
+.prow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:start}
+@media(max-width:560px){.prow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+#to{text-overflow:ellipsis}
+/* busy top bar (super admin): the menu takes its own row instead of being clipped */
+@media(max-width:1280px) and (min-width:761px){.top{flex-wrap:wrap}.top nav{order:3;flex-basis:100%;flex-wrap:wrap;overflow:visible}}

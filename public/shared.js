@@ -30,8 +30,8 @@ export function assertTransition(from, to, actor = 'staff') {
 }
 export const STATUS_WORDS = { open: 'Open — waiting to be picked up', in_progress: 'In progress — being worked on', hold: 'On hold', closed: 'Closed', rejected: 'Rejected' };
 // name and one-line meaning of each status, for the provider's status dropdown
-export const STATUS_INFO = { open: ['Open', 'Received, not started yet'], in_progress: ['In progress', 'Someone is working on it'],
-  hold: ['On hold', 'Waiting for parts, approval or the requestor'], closed: ['Closed', 'Work completed'], rejected: ['Rejected', 'Cannot be accepted'] };
+export const STATUS_INFO = { open: ['Open', 'not started yet'], in_progress: ['In progress', 'being worked on'],
+  hold: ['On hold', 'waiting on something'], closed: ['Closed', 'work done'], rejected: ['Rejected', 'can’t be accepted'] };
 
 // Service form types, picked by the admin per service. Each adds a fixed set of questions to the raise form.
 export const FORM_TYPES = { general: 'General', location: 'Location', student: 'Student', both: 'Location & Student' };

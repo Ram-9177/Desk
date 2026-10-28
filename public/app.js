@@ -4,7 +4,8 @@ const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '—';
 const toast = m => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3500); };
-const pill = s => `<span class="pill s-${s}">${s}</span>`;
+const pill = s => `<span class="pill s-${s}">${STATUS_INFO[s]?.[0] || s}</span>`;
+const cap = s => String(s).charAt(0).toUpperCase() + String(s).slice(1);
 const ppill = p => `<span class="pill p-${p}">${p}</span>`;
 const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${{
   home: '<path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/>', tasks: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12l3 3 5-6"/>',
@@ -326,7 +327,7 @@ async function workspace(main, id, { admin }) {
    <div><div class="card"><b>Timeline</b><div style="margin-top:10px">${t.events.map(e => `<div class="ev ${e.is_internal ? 'int' : ''}"><b>${evLabel(e)}</b>${e.is_internal ? ' <span class="muted">(internal)</span>' : ''}
       <div class="meta">${fmt(e.created_at)} · ${esc(e.actor_name || e.actor_type)}</div>${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div>`).join('')}</div></div>
      <form id="act" class="card"><b>Act on this ticket</b>
-       <label>Ticket status</label><select name="to" id="to">${STATUSES.map(s => `<option value="${s}" ${s === t.status ? 'selected' : ''} ${s !== t.status && !targets.includes(s) ? 'disabled' : ''}>${STATUS_INFO[s][0]}${s === t.status ? ' (current)' : ''} — ${s === t.status ? 'keep it, just add a note' : STATUS_INFO[s][1]}</option>`).join('')}</select>
+       <label>Ticket status</label><select name="to" id="to">${STATUSES.map(s => `<option value="${s}" ${s === t.status ? 'selected' : ''} ${s !== t.status && !targets.includes(s) ? 'disabled' : ''}>${STATUS_INFO[s][0]}${s === t.status ? ' (current)' : ' — ' + STATUS_INFO[s][1]}</option>`).join('')}</select>
        <div class="muted small" id="tohint" style="margin-top:6px"></div>
        <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h limit</option>`).join('')}</select></div>
        <label>Note <small>(required)</small></label><textarea name="note" placeholder="What did you do, or why this change?"></textarea>
@@ -336,7 +337,7 @@ async function workspace(main, id, { admin }) {
      <div class="muted" style="font-size:13px">${esc(t.requestor.email || '')}<br>${esc(t.requestor.phone || '')}<br>${esc(t.requestor.identifier || '')} ${esc(t.requestor.department || '')}</div>
      ${t.requestor_history.length ? `<p style="font-size:13px"><b>Last tickets</b><br>${t.requestor_history.map(h => `<a href="#/c/t/${h.id}">${h.ticket_no}</a> ${pill(h.status)}`).join('<br>')}</p>` : ''}</div>
     <div class="card"><b>Providers</b>${t.providers.map(p => `<div>${esc(p.name)} <span class="muted">${esc(p.phone || '')}</span></div>`).join('') || '<div class="err">No provider mapped</div>'}</div>
-    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card"><b>Priority</b><select id="pri">${PRIORITIES.map(p => `<option ${p === t.priority ? 'selected' : ''}>${p}</option>`).join('')}</select>
+    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card"><b>Priority</b><select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <p><button class="btn" id="tr" style="width:100%">Transfer (t)</button></p>${admin ? '<p><button class="btn" id="ext" style="width:100%">Extend due time</button></p>' : ''}</div>` : ''}</div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
@@ -369,15 +370,15 @@ async function workspace(main, id, { admin }) {
 
 async function newTicket(main) {
   const services = (await api('/services')).filter(s => s.is_active);
-  main.innerHTML = `<form id="f" class="card" style="max-width:720px"><h2 style="margin-top:0">New ticket</h2>
-    <label>Kind</label><select name="channel"><option value="walk_in">Walk-in (on behalf of a requestor)</option><option value="phone">Phone call</option><option value="internal">Internal request (from me to another service)</option></select>
+  main.innerHTML = `<form id="f" class="card" style="max-width:720px">
+    <label style="margin-top:0">Kind</label><select name="channel"><option value="walk_in">Walk-in (on behalf of a requestor)</option><option value="phone">Phone call</option><option value="internal">Internal request (from me to another service)</option></select>
     <label>Service</label><select name="service_id" id="svc">${services.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
     <div id="who"><div class="row"><div><label>Requestor name</label><input name="name"></div><div><label>Type</label><select name="requestor_type">${REQUESTOR_TYPES.map(t => `<option>${t}</option>`).join('')}</select></div></div>
     <div class="row"><div><label>Email <small>(updates go here)</small></label><input name="email" type="email" required></div><div><label>Phone <small>(optional)</small></label><input name="phone"></div></div>
     <div class="row" id="idrow"><div><label>Roll / emp ID</label><input name="identifier"></div><div><label>Department</label><input name="department"></div></div></div><div id="tfs"></div>
-    <label>Priority</label><select name="priority">${PRIORITIES.map(p => `<option ${p === 'medium' ? 'selected' : ''}>${p}</option>`).join('')}</select>
+    <label>Priority</label><select name="priority">${PRIORITIES.map(p => `<option value="${p}" ${p === 'medium' ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
     <div id="locrow"><label>Location</label><input name="location" required></div><label>Subject</label><input name="subject" required><label>Description</label><textarea name="description"></textarea>
-    <div id="cf"></div><label>Photos</label>${fileButtons('nt')}<p><button class="btn primary">Create ticket</button></p></form>`;
+    <div id="cf"></div><label>Photos</label>${fileButtons('nt')}<p><button class="btn primary big">${I('send')} Create ticket</button></p></form>`;
   wireFiles('nt');
   const svcOf = () => services.find(s => s.id === $('#svc').value);
   const drawCf = () => { const s = svcOf(), sch = s.form_schema || {};
@@ -623,7 +624,7 @@ async function slaPage(main) {
     <div class="row"><div><label>Starts</label><input type="time" name="work_start" value="${c.work_start}"></div><div><label>Ends</label><input type="time" name="work_end" value="${c.work_end}"></div></div>
     <label>Working days</label><div class="tabs">${DAYS.map((d, i) => `<label class="tab ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
     <b style="display:block;margin-top:18px">Time to close, by priority</b><div class="muted small">In working hours. Requestor tickets start as Medium; providers can change the priority.</div>
-    <div class="row">${['critical', 'high', 'medium', 'low'].map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" name="t_${p}" value="${c.targets[p] || ''}"><div class="muted small" data-d="${p}"></div></div>`).join('')}</div>
+    <div class="prow">${['critical', 'high', 'medium', 'low'].map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" name="t_${p}" value="${c.targets[p] || ''}"><div class="muted small" data-d="${p}"></div></div>`).join('')}</div>
     <b style="display:block;margin-top:18px">Escalation</b><div class="muted small">A ticket goes to the service's providers first. If it misses its target by this many working days, it moves to the service's escalation person and the requestor is told.</div>
     <div class="row" style="align-items:end"><div><label>Escalate after <small>(working days past the target; 0 = as soon as it's missed)</small></label><input type="number" name="esc_days" min="0" max="60" step="0.5" value="${c.escalate_after_days}"></div></div>
     <label class="switch" style="margin-top:10px"><input type="checkbox" name="esc_holds" ${c.escalate_holds ? 'checked' : ''}> Also escalate holds that run past their limit</label>
