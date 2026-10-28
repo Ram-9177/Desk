@@ -53,6 +53,12 @@ addCol('tenants', 'hold_reasons', 'TEXT');
 addCol('tickets', 'hold_reason', 'TEXT');
 addCol('users', 'must_change_pw', 'INT DEFAULT 0');
 addCol('notifications', 'html', 'TEXT');
+// escalation: campus rule, per-service escalation person, ticket state
+addCol('tenants', 'escalate_after_days', 'REAL DEFAULT 0');
+addCol('tenants', 'escalate_holds', 'INT DEFAULT 1');
+addCol('services', 'escalation_user_id', 'TEXT');
+addCol('tickets', 'escalated_at', 'TEXT');
+addCol('tickets', 'escalated_to', 'TEXT');
 addCol('notifications', 'text_body', 'TEXT');
 addCol('tickets', 'hold_due_at', 'TEXT');
 addCol('tickets', 'hold_by', 'TEXT');

@@ -14,7 +14,7 @@ export const VARS = {
   portal_link: 'Campus portal link', note: 'Note / reason typed at this step', actor_name: 'Person who made the change',
   hold_reason: 'Hold reason', resume_by: 'Expected resume time', reopen_days: 'Days allowed to reopen',
   from_service: 'Previous service', to_service: 'New service', staff_name: 'Staff member’s name', staff_email: 'Staff sign-in email',
-  temp_password: 'Temporary password', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
+  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
 };
 // Block fields: put one alone on its own line and it becomes a designed section of the email.
@@ -57,6 +57,12 @@ export const MAIL_EVENTS = [
   { key: 'reopened', label: 'Ticket reopened', who: 'Service providers', when: 'The requestor (or staff) reopens a closed ticket', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Ticket reopened: {{subject}}',
     body: '"{{subject}}" was reopened by {{actor_name}}.\nReason: {{note}}\nNew target: {{due}}\n[[Open the ticket|{{staff_link}}]]\n{{timeline}}\n{{ticket_details}}' },
+  { key: 'escalated', label: 'Ticket escalated', who: 'Escalation person and service providers', when: 'A ticket misses its target by the campus’s escalate-after days', vars: [...T, 'note', 'escalated_to_name'],
+    subject: '[{{ticket_no}}] Escalated to {{escalated_to_name}}: {{subject}}',
+    body: 'This ticket has been escalated to **{{escalated_to_name}}**.\n{{note}}\nPlease take it forward and update the requestor.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}\n{{timeline}}' },
+  { key: 'escalated_requestor', label: 'Escalation acknowledgement', who: 'Requestor', when: 'Their ticket is escalated', vars: [...T, 'escalated_to_name'],
+    subject: '[{{ticket_no}}] We have escalated your ticket',
+    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is taking longer than we planned, so it has been escalated to **{{escalated_to_name}}** for faster help. We are sorry for the wait.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
   { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: STAFF,
     subject: '[ONE Desk] Your ONE Desk account',
     body: 'Hi {{staff_name}},\nAn account has been created for you on ONE Desk ({{campus}}).\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose your own password when you first sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
@@ -72,7 +78,7 @@ export const eventByKey = k => MAIL_EVENTS.find(e => e.key === k);
 // Sample values for previews on the Email page.
 export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fan not working', description: 'Ceiling fan stopped working this morning.',
   service: 'Electrical', location: 'Hostel H2, room 214', campus: "St. Mary's Rehabilitation University", status: 'Open', priority: 'Medium',
-  due: '29 Oct 2026, 3:15 pm', providers: 'Suresh Babu', note: 'The electrician will replace the fan motor.', actor_name: 'Suresh Babu',
+  due: '29 Oct 2026, 3:15 pm', providers: 'Suresh Babu', escalated_to_name: 'Priya Reddy', note: 'The electrician will replace the fan motor.', actor_name: 'Suresh Babu',
   hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, from_service: 'Electrical', to_service: 'IT Support',
   staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', count: 2,
   ticket_list: '0042 · on hold · Fan not working\n0039 · overdue · Projector not working',
@@ -114,7 +120,7 @@ export const toText = (body, blocks = {}) => String(body).split('\n').map(line =
 }).join('\n');
 // One reassuring sentence about what happens next, per status.
 export function nextStep(p) {
-  return { open: `The ${p.service} team is working on it. Target: ${p.due}.`,
+  return { open: p.escalated_to ? `Escalated to ${p.escalated_to}, who is now following it up with the ${p.service} team.` : `The ${p.service} team is working on it. Target: ${p.due}.`,
     hold: `Paused: ${p.hold_reason || 'waiting on something'}.${p.resume_by ? ` Expected to resume by ${p.resume_by}.` : ''} We'll email you when work resumes.`,
     closed: `Completed${p.closed_at ? ` on ${p.closed_at}` : ''}. Not fixed? You can reopen it within ${p.reopen_days} days.`,
     rejected: 'This ticket was not accepted. You can raise a new one any time.' }[p.status] || '';

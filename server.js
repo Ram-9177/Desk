@@ -13,7 +13,7 @@ const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
   console.error('Set JWT_SECRET (32+ random characters) before running in production.'); process.exit(1);
 }
-const BASE = `http://localhost:${PORT}/desk`;
+const BASE = `http://localhost:${PORT}`;
 const base = () => mailConfig(BASE).base; // public address used in email links (Email page → Connection)
 const UPLOAD_DIR = 'data/uploads';
 
@@ -184,7 +184,8 @@ function ticketVars(t, extra = {}) {
   const svcRow = one('SELECT name, form_schema FROM services WHERE id=?', t.service_id), fd = JSON.parse(t.form_data || '{}'), held = t.status === 'hold';
   const answers = fieldsOf(JSON.parse(svcRow?.form_schema || '{}')).filter(f => !f.key.startsWith('loc_')).map(f => [f.label, Array.isArray(fd[f.key]) ? fd[f.key].join(', ') : fd[f.key]]).filter(([, a]) => a !== undefined && a !== '');
   const provNames = providersFor(t.tenant_id, t.service_id).map(p => p.name).join(', ');
-  const progress = { status: t.status, service: svc?.name, due: fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
+  const escName = t.escalated_to ? one('SELECT name FROM users WHERE id=?', t.escalated_to)?.name || '' : '';
+  const progress = { escalated_to: ['open', 'hold'].includes(t.status) ? escName : '', status: t.status, service: svc?.name, due: fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
     hold_reason: held && t.hold_reason ? holdReasons(tn).find(x => x.key === t.hold_reason)?.label || '' : '', resume_by: held && t.hold_due_at ? fmtIST(t.hold_due_at) : '' };
   const ticket_details = [['Ticket', t.ticket_no], ['Service', svc?.name], ['Subject', t.subject], ['Description', t.description], ['Location', t.location], ...answers,
     ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)], ...(['open', 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
@@ -192,11 +193,11 @@ function ticketVars(t, extra = {}) {
   const SW = { hold: 'Put on hold', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
   const timeline = all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id).map(e => {
     const m = JSON.parse(e.meta || '{}'), who = e.actor_name || '';
-    const label = { created: 'Ticket received', note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
+    const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
       status_changed: `${SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
     return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), label, body: e.body || '' };
   });
-  return { progress, ticket_details, timeline,
+  return { progress, ticket_details, timeline, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
     requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), due: fmtIST(t.due_at),
     providers: providersFor(t.tenant_id, t.service_id).map(p => p.name).join(', '), ticket_link: trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
@@ -236,6 +237,40 @@ setInterval(() => {
       ticket_list: q.map(x => `${x.ticket_no} · ${x.status === 'hold' ? 'on hold' : 'overdue'} · ${x.subject}`).join('\n') });
   }
 }, 60e3);
+
+// ---------- escalation ----------
+// A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
+// campus's "escalate after" working days, it escalates to the service's escalation person (a campus admin if none is set).
+function escalationDue(t, tn) {
+  const cal = calendar(tn), mins = Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
+  const from = t.status === 'open' ? t.due_at : tn.escalate_holds ? t.hold_due_at : null;
+  if (!from) return null;
+  return mins > 0 ? addWorking(cal, from, mins) : from; // 0 days = the moment the target is missed
+}
+function escalate(t) {
+  const svc = one('SELECT escalation_user_id FROM services WHERE id=?', t.service_id);
+  const target = (svc?.escalation_user_id && one('SELECT id, name, email FROM users WHERE id=? AND is_active=1', svc.escalation_user_id))
+    || one("SELECT id, name, email FROM users WHERE tenant_id=? AND role='tenant_admin' AND is_active=1 ORDER BY name LIMIT 1", t.tenant_id);
+  if (!target) return; // nobody to escalate to: the ticket stays on the attention list as overdue
+  const ts = now(), missed = t.status === 'open' ? `its target of ${fmtIST(t.due_at)}` : `its hold limit of ${fmtIST(t.hold_due_at)}`;
+  const done = tx(() => {
+    if (!run('UPDATE tickets SET escalated_at=?, escalated_to=?, updated_at=? WHERE id=? AND escalated_at IS NULL', ts, target.id, ts, t.id).changes) return false;
+    addEvent(t, { type: 'system', name: 'ONE Desk' }, 'escalated', { to: target.name, body: `Escalated automatically: the ticket passed ${missed}.` });
+    return true;
+  });
+  if (!done) return;
+  const v = ticketVars(t, { escalated_to_name: target.name, note: `The ticket passed ${missed}.` });
+  notify(t, [target.email, ...providersFor(t.tenant_id, t.service_id).map(p => p.email)], 'escalated', v);
+  notify(t, [one('SELECT email FROM requestors WHERE id=?', t.requestor_id)?.email], 'escalated_requestor', v);
+}
+function runEscalations() {
+  const n = now();
+  for (const tn of all('SELECT * FROM tenants WHERE is_active=1')) {
+    const due = all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND ((status='open' AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
+    for (const t of due) { try { const at = escalationDue(t, tn); if (at && at <= n) escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
+  }
+}
+setInterval(runEscalations, 60e3); setTimeout(runEscalations, 3000);
 
 // ---------- ticket creation (shared by portal and staff) ----------
 function createTicket(tenant, b, opts) {
@@ -336,7 +371,7 @@ P.post('/:slug/tickets/:no/reopen', wrap(req => {
 function doReopen(t, actor, reason) {
   tx(() => {
     if (actor.type === 'requestor') award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
-    run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, due_at=?, updated_at=? WHERE id=?',
+    run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, due_at=?, updated_at=? WHERE id=?',
       'open', dueFrom(t.tenant_id, now(), targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), t.id);
     addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: reason });
   });
@@ -437,14 +472,21 @@ S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(re
   return { temp_password: pw };
 }));
 
+// The escalation person must be an active provider or campus admin of this campus.
+function escalationUser(req, id) {
+  if (!id) return null;
+  if (!one("SELECT 1 FROM users WHERE id=? AND tenant_id=? AND is_active=1 AND role IN ('provider','tenant_admin')", id, req.tenantId)) throw bad('Pick an escalation person from this campus’s providers');
+  return id;
+}
 S.get('/services', wrap(req => all('SELECT * FROM services WHERE tenant_id=? ORDER BY sort_order,name', req.tenantId)
   .map(s => ({ ...s, form_schema: JSON.parse(s.form_schema), members: providersFor(req.tenantId, s.id),
+    escalation_user: s.escalation_user_id ? one('SELECT id, name FROM users WHERE id=? AND is_active=1', s.escalation_user_id) || null : null,
     sla: Object.fromEntries(all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id=?', req.tenantId, s.id).map(x => [x.priority, x.target_hours])) }))));
 S.post('/services', role('super_admin', 'tenant_admin'), wrap(req => {
   const b = req.body; req_(b.code, 'Code required'); req_(b.name, 'Name required');
   if (one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', req.tenantId, b.code.toUpperCase())) throw new HttpErr(409, 'CONFLICT', 'Code exists');
   const s = insert('services', { id: uid(), tenant_id: req.tenantId, code: b.code.toUpperCase(), name: b.name, description: b.description,
-    form_schema: JSON.stringify(cleanSchema(b.form_schema)), is_active: 1, sort_order: Number(b.sort_order) || 0 });
+    form_schema: JSON.stringify(cleanSchema(b.form_schema)), is_active: 1, sort_order: Number(b.sort_order) || 0, escalation_user_id: escalationUser(req, b.escalation_user_id) });
   audit(req, 'service.create', 'service', s.id, b); return s;
 }));
 S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(req => {
@@ -452,6 +494,7 @@ S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(req => {
   const b = req.body;
   run('UPDATE services SET name=?, description=?, form_schema=?, is_active=?, sort_order=? WHERE id=?', b.name ?? s.name, b.description ?? s.description,
     b.form_schema ? JSON.stringify(cleanSchema(b.form_schema)) : s.form_schema, b.is_active ?? s.is_active, b.sort_order ?? s.sort_order, s.id);
+  if (b.escalation_user_id !== undefined) run('UPDATE services SET escalation_user_id=? WHERE id=?', escalationUser(req, b.escalation_user_id), s.id);
   if (b.sla) for (const p of PRIORITIES) {
     run('DELETE FROM sla_policies WHERE tenant_id=? AND service_id=? AND priority=?', req.tenantId, s.id, p);
     if (Number(b.sla[p]) > 0) insert('sla_policies', { id: uid(), tenant_id: req.tenantId, service_id: s.id, priority: p, target_hours: Number(b.sla[p]) });
@@ -472,6 +515,7 @@ S.get('/sla', wrap(req => {
   const tn = tenantRow(req.tenantId);
   return { work_start: tn.work_start, work_end: tn.work_end, work_days: String(tn.work_days).split(',').filter(Boolean).map(Number),
     targets: Object.fromEntries(all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id IS NULL', req.tenantId).map(x => [x.priority, x.target_hours])),
+    escalate_after_days: tn.escalate_after_days ?? 0, escalate_holds: !!tn.escalate_holds,
     hold_reasons: holdReasons(tn), point_rules: POINT_RULES.map(r => ({ ...r, upTo: r.upTo === Infinity ? null : r.upTo })), points: POINTS };
 }));
 S.put('/sla', role('super_admin', 'tenant_admin'), wrap(req => {
@@ -485,6 +529,10 @@ S.put('/sla', role('super_admin', 'tenant_admin'), wrap(req => {
   if (new Set(reasons.map(r => r.key)).size !== reasons.length) throw bad('Hold reasons must have different names');
   tx(() => {
     run('UPDATE tenants SET work_start=?, work_end=?, work_days=?, hold_reasons=? WHERE id=?', b.work_start, b.work_end, days.join(','), JSON.stringify(reasons), req.tenantId);
+    if (b.escalate_after_days !== undefined) {
+      const d = Number(b.escalate_after_days); if (!(d >= 0 && d <= 60)) throw bad('Escalate after must be between 0 and 60 working days');
+      run('UPDATE tenants SET escalate_after_days=?, escalate_holds=? WHERE id=?', d, b.escalate_holds ? 1 : 0, req.tenantId);
+    }
     for (const p of PRIORITIES) if (Number(b.targets?.[p]) > 0) {
       run('DELETE FROM sla_policies WHERE tenant_id=? AND service_id IS NULL AND priority=?', req.tenantId, p);
       insert('sla_policies', { id: uid(), tenant_id: req.tenantId, service_id: null, priority: p, target_hours: Number(b.targets[p]) });
@@ -508,14 +556,16 @@ S.get('/points', wrap(req => ({
 // tickets
 function loadTicket(req) {
   const t = one('SELECT * FROM tickets WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
-  if (!t || !myServiceIds(req.user, req.tenantId).includes(t.service_id)) throw notFound();
+  if (!t || !(myServiceIds(req.user, req.tenantId).includes(t.service_id) || t.escalated_to === req.user.id)) throw notFound();
   return t;
 }
 const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
 const ticketQuery = (req) => {
-  const sids = myServiceIds(req.user, req.tenantId); if (!sids.length) return { sql: '1=0', args: [] };
-  const w = [`t.tenant_id=?`, `t.service_id IN (${sids.map(() => '?').join()})`], a = [req.tenantId, ...sids], q = req.query;
+  const sids = myServiceIds(req.user, req.tenantId);
+  // my services' tickets, plus any ticket escalated to me
+  const w = [`t.tenant_id=?`, sids.length ? `(t.service_id IN (${sids.map(() => '?').join()}) OR t.escalated_to=?)` : 't.escalated_to=?'], a = [req.tenantId, ...sids, req.user.id], q = req.query;
   if (q.status === 'overdue') { w.push("t.status='open' AND t.due_at<?"); a.push(now()); }
+  else if (q.status === 'escalated') w.push("t.escalated_at IS NOT NULL AND t.status IN ('open','hold')");
   else if (q.status && q.status !== 'all') { w.push('t.status=?'); a.push(q.status); }
   if (q.service) { w.push('t.service_id=?'); a.push(q.service); }
   if (q.internal === '0') w.push('t.is_internal=0');
@@ -523,7 +573,8 @@ const ticketQuery = (req) => {
   return { sql: w.join(' AND '), args: a };
 };
 const LIST_SQL = `SELECT t.id,t.ticket_no,t.subject,t.status,t.priority,t.channel,t.is_internal,t.location,t.due_at,t.created_at,t.updated_at,t.closed_at,t.hold_due_at,t.hold_reason,
-  s.name service, s.code service_code, r.name requestor FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id`;
+  t.escalated_at, eu.name escalated_name, s.name service, s.code service_code, r.name requestor
+  FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id LEFT JOIN users eu ON eu.id=t.escalated_to`;
 S.get('/tickets', wrap(req => {
   const { sql, args } = ticketQuery(req);
   return all(`${LIST_SQL} WHERE ${sql} ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'hold' THEN 1 ELSE 2 END, t.due_at LIMIT 500`, ...args)
@@ -542,6 +593,7 @@ S.get('/tickets/:id', wrap(req => {
     sla_left_min: t.status === 'open' ? (n <= t.due_at ? workingBetween(cal, n, t.due_at) : -workingBetween(cal, t.due_at, n)) : null,
     hold_label: t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label || t.hold_reason : null,
     hold_over: t.status === 'hold' && t.hold_due_at && t.hold_due_at < n, hold_reasons: holdReasons(tn),
+    escalated_name: t.escalated_to ? one('SELECT name FROM users WHERE id=?', t.escalated_to)?.name || null : null,
     service: one('SELECT id,name,code,form_schema FROM services WHERE id=?', t.service_id),
     providers: providersFor(req.tenantId, t.service_id),
     requestor: one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
@@ -603,7 +655,7 @@ S.post('/tickets/:id/transfer', wrap(req => {
   const ns = one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
   const old = one('SELECT name FROM services WHERE id=?', t.service_id), oldProv = providersFor(t.tenant_id, t.service_id);
-  tx(() => { run('UPDATE tickets SET service_id=?, updated_at=? WHERE id=?', ns.id, now(), t.id);
+  tx(() => { run('UPDATE tickets SET service_id=?, escalated_at=NULL, escalated_to=NULL, updated_at=? WHERE id=?', ns.id, now(), t.id);
     addEvent(t, actorOf(req), 'transferred', { from: old.name, to: ns.name, body: note }); });
   const tv = ticketVars(t, { note, actor_name: req.user.name, from_service: old.name, to_service: ns.name });
   notify(t, [...oldProv, ...providersFor(t.tenant_id, ns.id)].map(p => p.email), 'transferred', tv);
@@ -633,6 +685,7 @@ S.get('/attention', role('super_admin', 'tenant_admin'), wrap(req => ({
   no_provider: all(`SELECT s.id,s.name,s.code,(SELECT count(*) FROM tickets t WHERE t.service_id=s.id AND t.status IN ('open','hold')) open_count FROM services s
     WHERE s.tenant_id=? AND s.is_active=1 AND NOT EXISTS (SELECT 1 FROM service_members m JOIN users u ON u.id=m.user_id WHERE m.service_id=s.id AND u.is_active=1)`, req.tenantId),
   overdue: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='open' AND t.due_at<? ORDER BY t.due_at`, req.tenantId, now()),
+  escalated: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.escalated_at IS NOT NULL AND t.status IN ('open','hold') ORDER BY t.escalated_at`, req.tenantId),
   stuck_hold: all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='hold' AND t.hold_due_at<? ORDER BY t.hold_due_at`, req.tenantId, now()),
   failed_mail: all("SELECT * FROM notifications WHERE tenant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 50", req.tenantId),
 })));
@@ -640,8 +693,9 @@ S.post('/notifications/:id/resend', role('super_admin', 'tenant_admin'), wrap(re
   run("UPDATE notifications SET status='queued', attempts=0 WHERE id=? AND tenant_id=?", req.params.id, req.tenantId); queue.push(req.params.id); return { ok: true };
 }));
 S.get('/reports', wrap(req => {
-  const sids = myServiceIds(req.user, req.tenantId); if (!sids.length) return { counts: {}, by_service: [], daily: [], aging: [], by_priority: [] };
-  const inS = `service_id IN (${sids.map(() => '?').join()})`, base = [req.tenantId, ...sids], from = addH(now(), -24 * (Number(req.query.days) || 30));
+  // my services' tickets plus any escalated to me
+  const sids = myServiceIds(req.user, req.tenantId);
+  const inS = sids.length ? `(service_id IN (${sids.map(() => '?').join()}) OR escalated_to=?)` : 'escalated_to=?', base = [req.tenantId, ...sids, req.user.id], from = addH(now(), -24 * (Number(req.query.days) || 30));
   const n = now();
   return {
     counts: one(`SELECT sum(status='open') open, sum(status='hold') hold, sum(status='open' AND due_at<?) overdue,
@@ -650,7 +704,7 @@ S.get('/reports', wrap(req => {
       round(100.0*sum(status='closed' AND closed_at>=? AND closed_at<=due_at)/max(1,sum(status='closed' AND closed_at>=?)),0) on_time_pct
       FROM tickets WHERE tenant_id=? AND ${inS}`, n, from, from, from, from, from, ...base),
     by_service: all(`SELECT s.name, sum(t.status='open') open, sum(t.status='hold') hold, sum(t.status='closed') closed, sum(t.status='rejected') rejected,
-      sum(t.status='open' AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND t.${inS} AND t.created_at>=? GROUP BY s.name`, n, ...base, from),
+      sum(t.status='open' AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? GROUP BY s.name`, n, ...base, from),
     daily: all(`SELECT substr(created_at,1,10) d, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? GROUP BY d ORDER BY d`, ...base, from),
     by_priority: all(`SELECT priority k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? GROUP BY priority`, ...base, from),
     aging: all(`SELECT CASE WHEN julianday(?)-julianday(created_at)<1 THEN '<1d' WHEN julianday(?)-julianday(created_at)<3 THEN '1-3d'

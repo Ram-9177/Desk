@@ -182,3 +182,4 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .tc-foot b{color:var(--ink);font-weight:600}
 .tcard.st-over .tc-foot,.tcard.st-over .tc-foot b{color:var(--warn)}.tcard.st-hold .tc-foot b{color:#b45309}
 .stub::after{display:none}
+.p-esc{background:var(--warn-2);color:#b91c1c}.tc-row.esc{color:var(--warn);font-weight:600}

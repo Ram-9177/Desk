@@ -170,7 +170,7 @@ async function ticketPage(slug, no, q) {
   const qs = new URLSearchParams(key).toString();
   let t;
   try { t = await api(`/public/${slug}/tickets/${no}?${qs}`); } catch { return track(slug); }
-  const label = e => ({ created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
+  const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     status_changed: { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
     note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
   const next = { open: 'Closed', hold: 'Work resumes' }[t.status];
@@ -241,15 +241,17 @@ const tenantObj = () => S.me.tenants.find(t => t.id === S.tenant);
 // One ticket as a card: state strip, number + labels, subject, service, requestor, location, due / resume time.
 function ticketCard(r, services) {
   const now = new Date().toISOString(), holdOver = r.status === 'hold' && r.hold_due_at && r.hold_due_at < now;
+  const esc_on = r.escalated_at && ['open', 'hold'].includes(r.status);
   const state = r.overdue || holdOver ? 'over' : r.status, svc = services.find(s => s.code === r.service_code) || { code: r.service_code };
   const foot = r.status === 'open' ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
     : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause'] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark'];
   return `<div class="tcard st-${state} ${r.status === 'rejected' ? 'dim' : ''}" data-id="${r.id}" tabindex="0">
-    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${pill(r.status)}${ppill(r.priority)}</div>
+    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${pill(r.status)}${ppill(r.priority)}</div>
     <b class="tc-title">${esc(r.subject)}</b>
     <div class="tc-svc"><span class="chip c0">${I(svcIcon(svc), 16)}</span>${esc(r.service)}</div>
     <div class="tc-row">${I('user', 15)}<span>${esc(r.requestor)}</span></div>
     ${r.location ? `<div class="tc-row">${I('building', 15)}<span>${esc(r.location)}</span></div>` : ''}
+    ${esc_on ? `<div class="tc-row esc">${I('alert', 15)}<span>Escalated to ${esc(r.escalated_name || '')}</span></div>` : ''}
     <div class="tc-foot">${I(foot[2], 15)}<span>${foot[0]} <b>${fmt(foot[1])}</b></span></div></div>`;
 }
 
@@ -273,7 +275,7 @@ async function queue(main) {
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
       <div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="fq" placeholder="Search tickets…" value="${esc(st.q || '')}"></label>
       <select id="fsv"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
-      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
+      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
       <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1">${I('tasks', 40)}<p>Nothing here — all clear.</p></div>`}</div>`;
     main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
@@ -297,7 +299,7 @@ function dlg(html, onSubmit) {
 
 async function workspace(main, id, { admin }) {
   const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]);
-  const evLabel = e => ({ created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
+  const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${e.from_value} → ${e.to_value}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(JSON.parse(e.meta || '{}')), priority_changed: `Priority ${e.from_value} → ${e.to_value}`, note: 'Note',
     reopened: 'Reopened', due_extended: `Due extended to ${fmt(e.to_value)}` })[e.event_type] || e.event_type;
   const targets = allowedTargets(t.status);
@@ -311,6 +313,7 @@ async function workspace(main, id, { admin }) {
      <p class="muted small">Created ${fmt(t.created_at)}</p>
      ${t.status === 'open' ? `<div class="slabox ${t.sla_left_min < 0 ? 'late' : ''}">${I('clock', 20)}<div><b>${t.sla_left_min >= 0 ? fmtLeft(t.sla_left_min) + ' working time left' : fmtLeft(t.sla_left_min) + ' past SLA'}</b><div class="small">Due ${fmt(t.due_at)}</div></div></div>` : ''}
      ${t.status === 'hold' ? `<div class="slabox hold ${t.hold_over ? 'late' : ''}">${I('pause', 20)}<div><b>On hold · ${esc(t.hold_label || '')}</b><div class="small">${t.hold_over ? 'Hold SLA passed at' : 'Resume by'} ${fmt(t.hold_due_at)} · main SLA paused</div></div></div>` : ''}
+     ${t.escalated_name && ['open', 'hold'].includes(t.status) ? `<div class="slabox late" style="margin-top:8px">${I('alert', 20)}<div><b>Escalated to ${esc(t.escalated_name)}</b><div class="small">${fmt(t.escalated_at)} · it missed its target</div></div></div>` : ''}
      ${t.held_minutes ? `<div class="muted small" style="margin-top:6px">Total time on hold: ${fmtLeft(t.held_minutes)} (working)</div>` : ''}
      <p><a href="${t.tracking_url}" target="_blank" style="font-size:13px">Requestor's view ↗</a></p></div></div>
    <div><div class="card"><b>Timeline</b><div style="margin-top:10px">${t.events.map(e => `<div class="ev ${e.is_internal ? 'int' : ''}"><b>${evLabel(e)}</b>${e.is_internal ? ' <span class="muted">(internal)</span>' : ''}
@@ -378,7 +381,7 @@ async function attention(main) {
   const a = await api('/attention');
   const list = (rows) => rows.length ? `<table>${rows.map(r => `<tr class="click" data-id="${r.id}"><td class="mono">${r.ticket_no}</td><td>${esc(r.service)}</td><td>${esc(r.subject)}</td><td>${fmt(r.due_at)}</td></tr>`).join('')}</table>` : '<p class="muted">Clear.</p>';
   main.innerHTML = `<h2>Services with no provider</h2>${a.no_provider.length ? a.no_provider.map(s => `<div class="card">${esc(s.name)} — ${s.open_count} active ticket(s). <a href="#/c/services">Map a provider</a></div>`).join('') : '<p class="muted">Clear.</p>'}
-    <h2>Overdue</h2>${list(a.overdue)}<h2>Hold past its hold SLA</h2>${list(a.stuck_hold)}
+    <h2>Escalated</h2>${list(a.escalated)}<h2>Overdue</h2>${list(a.overdue)}<h2>Hold past its hold SLA</h2>${list(a.stuck_hold)}
     <h2>Failed mail</h2>${a.failed_mail.length ? `<table>${a.failed_mail.map(n => `<tr><td>${esc(n.recipient)}</td><td>${esc(n.subject)}</td><td class="err">${esc(n.last_error)}</td><td><button class="btn" data-n="${n.id}">Resend</button></td></tr>`).join('')}</table>` : '<p class="muted">Clear.</p>'}`;
   main.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id);
   main.querySelectorAll('[data-n]').forEach(b => b.onclick = async () => { await api(`/notifications/${b.dataset.n}/resend`, { method: 'POST' }); toast('Queued'); attention(main); });
@@ -394,19 +397,21 @@ async function services(main) {
     <label>Description</label><input name="description" value="${esc(s.description || '')}" placeholder="What this service covers">
     <label>Icon</label>${iconPick(s.id ? svcIcon(s) : 'grid')}
     ${typePick(s.form_schema || { form_type: 'general' })}
-    <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2 <small>(optional)</small></label>${provSel('p2', s.members?.[1]?.id)}</div></div>`;
+    <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2 <small>(optional)</small></label>${provSel('p2', s.members?.[1]?.id)}</div></div>
+    <label>Escalation person <small>(gets the ticket if it misses its target; empty = campus admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Campus admin —')}`;
   const members = f => [...new Set([f.elements.p1.value, f.elements.p2.value].filter(Boolean))];
   main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each service needs one or two providers.</span>
       <button class="btn primary" id="add">${I('plus', 18)} New service</button></div>
     ${svcs.map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
-      ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}</span>
+      ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
+      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc(s.escalation_user?.name || 'campus admin')}</span></span>
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
   const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always answer name, contact, location, subject and description first.</div><div id="fb"></div>`;
   $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${qHead}`, async f => {
-    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
+    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
     toast('Service created'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), []); };
@@ -416,7 +421,7 @@ async function services(main) {
       <div class="row">${PRIORITIES.map(p => `<div><label style="text-transform:capitalize">${p} target <small>working h, override</small></label><input type="number" name="sla_${p}" value="${s.sla[p] || ''}"></div>`).join('')}</div>
       <label style="font-weight:400"><input type="checkbox" name="is_active" ${s.is_active ? 'checked' : ''}> Active (shown on the portal)</label>`,
       async f => {
-        await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },
+        await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },
           is_active: f.elements.is_active.checked ? 1 : 0, sla: Object.fromEntries(PRIORITIES.map(p => [p, f.elements['sla_' + p].value])) } });
         await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } }); toast('Saved'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), schema.fields);
@@ -605,6 +610,9 @@ async function slaPage(main) {
     <label>Working days</label><div class="tabs">${DAYS.map((d, i) => `<label class="tab ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
     <b style="display:block;margin-top:18px">Time to close, by priority</b><div class="muted small">In working hours. Requestor tickets start as Medium; providers can change the priority.</div>
     <div class="row">${['critical', 'high', 'medium', 'low'].map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" name="t_${p}" value="${c.targets[p] || ''}"><div class="muted small" data-d="${p}"></div></div>`).join('')}</div>
+    <b style="display:block;margin-top:18px">Escalation</b><div class="muted small">A ticket goes to the service's providers first. If it misses its target by this many working days, it moves to the service's escalation person and the requestor is told.</div>
+    <div class="row" style="align-items:end"><div><label>Escalate after <small>(working days past the target; 0 = as soon as it's missed)</small></label><input type="number" name="esc_days" min="0" max="60" step="0.5" value="${c.escalate_after_days}"></div></div>
+    <label class="switch" style="margin-top:10px"><input type="checkbox" name="esc_holds" ${c.escalate_holds ? 'checked' : ''}> Also escalate holds that run past their limit</label>
     <b style="display:block;margin-top:18px">Hold reasons — each with its own hold SLA</b><div class="muted small">On hold, the provider picks a reason. The main clock pauses and the hold must end within that many working hours.</div>
     <div class="row muted small" style="margin-top:8px"><span style="flex:3">Reason</span><span style="flex:1;min-width:80px">Hold limit (h)</span><span style="flex:0 0 44px"></span></div>
     <div id="hrs">${c.hold_reasons.map(rRow).join('')}</div><button type="button" class="btn soft" id="addr" style="margin-top:10px">${I('plus', 16)} Add reason</button>
@@ -625,6 +633,7 @@ async function slaPage(main) {
     try { await api('/sla', { method: 'PUT', body: { work_start: f.work_start.value, work_end: f.work_end.value,
         work_days: [...f.querySelectorAll('[name=wd]:checked')].map(i => +i.value),
         targets: Object.fromEntries(['critical', 'high', 'medium', 'low'].map(p => [p, f['t_' + p].value])),
+        escalate_after_days: f.esc_days.value, escalate_holds: f.esc_holds.checked,
         hold_reasons: [...f.querySelectorAll('.hr')].map(r => ({ key: r.querySelector('[name=hk]').value || undefined, label: r.querySelector('[name=hl]').value, hours: r.querySelector('[name=hh]').value })) } });
       toast('SLA settings saved'); slaPage(main);
     } catch (er) { $('#err').textContent = er.message; } };
