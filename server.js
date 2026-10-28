@@ -175,7 +175,7 @@ async function saveFiles(t, eventId, files = [], byType) {
 // ---------- notifications (outbox + worker) ----------
 const queue = [];
 // Queue one email per recipient, written from that step's template (Email page → Emails sent) and these values.
-async function notify(t, recipients, key, vars = {}) {
+async function notify(t, recipients, key, vars = {}, { hold } = {}) { // hold: write it but don't send (Resend later)
   const cfg = mailConfig(BASE), on = eventOn(cfg, key); // events switched off on the Email page are logged as skipped
   const v = { login_link: `${base()}/#/login`, ...vars }, { subject, body } = renderTemplate(cfg, key, v);
   const blocks = Object.fromEntries(BLOCKS.filter(b => v[b]).map(b => [b, v[b]]));
@@ -183,8 +183,9 @@ async function notify(t, recipients, key, vars = {}) {
   for (const to of [...new Set(recipients.filter(Boolean))]) {
     const id = uid();
     await insert('notifications', { id, tenant_id: t.tenant_id, ticket_id: t.id || null, recipient: to, template_key: key,
-      subject, body, html, text_body, status: on ? 'queued' : 'skipped', created_at: now() });
-    if (on) queue.push(id);
+      subject, body, html, text_body, status: hold ? 'logged' : on ? 'queued' : 'skipped',
+      last_error: hold ? 'Held: account added from provision/ at start-up. Use Resend to send it.' : null, created_at: now() });
+    if (on && !hold) queue.push(id);
   }
 }
 // Everything a ticket email can show; `extra` adds the values for one step (note, hold reason…).
@@ -843,6 +844,65 @@ if (!await one('SELECT 1 FROM users LIMIT 1')) {
   const r = await createSuperAdmin(process.env.SUPER_ADMIN_EMAIL, process.env.SUPER_ADMIN_PASSWORD);
   console.log(r.created ? r.message : `No users yet. ${r.message} Then restart.`);
 }
+// ---------- start-up provisioning ----------
+// provision/*.json (committed: campuses and services) and provision/*.private.json (git-ignored: staff and who serves what)
+// are applied on every start. Each item is added once and remembered, so anything an admin later edits or removes in the
+// app is left alone. Staff invites are held (Email → Delivery log → Resend) rather than sent automatically.
+async function provision() {
+  const dir = process.env.PROVISION_DIR || path.join(ROOT, 'provision');
+  if (!fs.existsSync(dir)) return;
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort((a, b) => a.includes('.private.') - b.includes('.private.') || a.localeCompare(b));
+  const row = await one("SELECT value FROM app_settings WHERE key='provision_applied'");
+  const applied = new Set(row ? JSON.parse(row.value) : []), before = applied.size;
+  for (const f of files) {
+    let spec; try { spec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (e) { console.error(`provision ${f}: unreadable (${e.message})`); continue; }
+    const added = [], step = async (key, label, fn) => { if (applied.has(key)) return;
+      try { if (await fn() !== false) added.push(label); applied.add(key); } catch (e) { console.error(`provision ${f}: ${label}: ${e.message}`); } };
+    const code = String(spec.campus?.code || '').toUpperCase(); if (!code) continue;
+    let tn = await one('SELECT * FROM tenants WHERE code=?', code);
+    if (!tn) {
+      const c = spec.campus;
+      if (!c.name || !/^[a-z0-9-]{2,30}$/.test(c.slug || '') || await one('SELECT 1 FROM tenants WHERE slug=?', c.slug)) { console.error(`provision ${f}: campus ${code} is missing and its name/slug are unusable`); continue; }
+      tn = await insert('tenants', { id: uid(), code, name: c.name, slug: c.slug, timezone: 'Asia/Kolkata', show_provider_contact: 1, reopen_window_days: 7, is_active: 1 });
+      for (const [p, h] of Object.entries(DEFAULT_HOURS)) await insert('sla_policies', { id: uid(), tenant_id: tn.id, service_id: null, priority: p, target_hours: h });
+      added.push(`campus ${code}`);
+    }
+    for (const s of spec.services || []) await step(`${code}:service:${s.code}`, `service ${s.code}`, async () => {
+      if (!/^[A-Z0-9-]{2,12}$/.test(String(s.code)) || !s.name) throw new Error('code must be 2–12 capital letters or digits, and a name is required');
+      if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', tn.id, s.code)) return false;
+      await insert('services', { id: uid(), tenant_id: tn.id, code: s.code, name: s.name, description: s.description || null,
+        form_schema: JSON.stringify(cleanSchema(s.form_schema || {})), is_active: 1, sort_order: Number(s.sort_order) || 0, escalation_user_id: null });
+    });
+    for (const p of spec.people || []) await step(`person:${String(p.email).toLowerCase()}`, `staff ${p.email}`, async () => {
+      const email = String(p.email).trim();
+      if (!/^\S+@\S+\.\S+$/.test(email) || !p.name || await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', email)) return false;
+      const pw = tempPw(), u = await insert('users', { id: uid(), tenant_id: tn.id, name: String(p.name).trim(), email, phone: p.phone || null,
+        role: 'provider', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+      await notify({ tenant_id: tn.id }, [email], 'invite', await staffVars(u, pw), { hold: true });
+    });
+    const userId = async e => e && (await one("SELECT id FROM users WHERE lower(email)=lower(?) AND tenant_id=? AND is_active=1 AND role IN ('provider','tenant_admin')", e, tn.id))?.id;
+    for (const [sc, a] of Object.entries(spec.assign || {})) {
+      const svc = await one('SELECT * FROM services WHERE tenant_id=? AND code=?', tn.id, sc); if (!svc) continue;
+      await step(`${code}:providers:${sc}`, `providers for ${sc}`, async () => {
+        if (await one('SELECT 1 FROM service_members WHERE service_id=?', svc.id)) return false;
+        const ids = [...new Set((await Promise.all((a.providers || []).slice(0, 2).map(userId))).filter(Boolean))];
+        for (const id of ids) await insert('service_members', { id: uid(), tenant_id: tn.id, service_id: svc.id, user_id: id, created_at: now() });
+        return ids.length > 0;
+      });
+      if (a.escalation) await step(`${code}:escalation:${sc}`, `escalation for ${sc}`, async () => {
+        const id = await userId(a.escalation); if (svc.escalation_user_id || !id) return false;
+        await run('UPDATE services SET escalation_user_id=? WHERE id=?', id, svc.id);
+      });
+    }
+    if (added.length) {
+      console.log(`provision ${f}: added ${added.join(', ')}`);
+      await insert('audit_logs', { id: uid(), tenant_id: tn.id, actor_id: null, action: 'provision', entity: 'file', entity_id: f, meta: JSON.stringify({ added }), created_at: now() });
+    }
+  }
+  if (applied.size !== before) await run("INSERT INTO app_settings (key, value) VALUES ('provision_applied', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value", JSON.stringify([...applied]));
+}
+await provision();
+
 const server = app.listen(PORT, process.env.HOST, () => console.log(`ONE Desk on http://${process.env.HOST || 'localhost'}:${PORT}`));
 // pm2 stop / restart send SIGTERM: finish in-flight requests, then close the Postgres pool
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => {

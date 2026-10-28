@@ -1,0 +1,315 @@
+{
+  "_about": "Services for this campus, added on server start if missing (never changed afterwards). Staff and assignments live in hyderabad.private.json (git-ignored).",
+  "campus": {
+    "code": "HYDERABAD",
+    "name": "St.Mary's University - Hyderabad",
+    "slug": "smru"
+  },
+  "services": [
+    {
+      "code": "ADM",
+      "name": "Admissions & Student Support",
+      "description": "Admissions, documents, ID cards, certificates",
+      "sort_order": 0,
+      "form_schema": {
+        "icon": "book",
+        "form_type": "student",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What do you need help with?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Admission enquiry",
+              "Documents / certificates",
+              "ID card",
+              "Bonafide certificate",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "EXAM",
+      "name": "Examination Services",
+      "description": "Hall tickets, exam fees, results, revaluation",
+      "sort_order": 1,
+      "form_schema": {
+        "icon": "book",
+        "form_type": "student",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What do you need help with?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Hall ticket not received",
+              "Wrong details on hall ticket",
+              "Exam fee",
+              "Results",
+              "Revaluation / recounting",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "WELL",
+      "name": "Student Wellness & Well-being",
+      "description": "Counselling, health and personal support",
+      "sort_order": 2,
+      "form_schema": {
+        "icon": "grid",
+        "form_type": "student",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What would you like support with?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Counselling",
+              "Health / medical",
+              "Personal concern",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "ACC",
+      "name": "Accounts Assistance",
+      "description": "Fees, receipts, refunds, scholarships",
+      "sort_order": 3,
+      "form_schema": {
+        "icon": "cash",
+        "form_type": "student",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Fee payment",
+              "Fee receipt",
+              "Refund",
+              "Scholarship",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "SPORTS",
+      "name": "Sports",
+      "description": "Equipment, grounds, events and tournaments",
+      "sort_order": 4,
+      "form_schema": {
+        "icon": "grid",
+        "form_type": "student",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Equipment",
+              "Ground / court booking",
+              "Events & tournaments",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "TRANS",
+      "name": "Transportation Services",
+      "description": "Bus passes, routes, timings",
+      "sort_order": 5,
+      "form_schema": {
+        "icon": "bus",
+        "form_type": "general",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Bus pass",
+              "Route / timing",
+              "Bus late or missed",
+              "Driver / conduct",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "FOOD",
+      "name": "Food & Cafeteria Services",
+      "description": "Food quality, hygiene, menu, billing",
+      "sort_order": 6,
+      "form_schema": {
+        "icon": "cash",
+        "form_type": "location",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Food quality",
+              "Hygiene",
+              "Billing / payment",
+              "Menu request",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "HOSTEL",
+      "name": "Hostel & Campus Facilities",
+      "description": "Rooms, mess, housekeeping, hostel facilities",
+      "sort_order": 7,
+      "form_schema": {
+        "icon": "bed",
+        "form_type": "both",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Room issue",
+              "Mess",
+              "Housekeeping",
+              "Water / electricity",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "SEC",
+      "name": "Security & Student Safety Services",
+      "description": "Safety concerns, lost and found, gate access",
+      "sort_order": 8,
+      "form_schema": {
+        "icon": "grid",
+        "form_type": "location",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Safety concern",
+              "Lost & found",
+              "ID / gate access",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "MAINT",
+      "name": "Maintenance & Campus Infrastructure Services",
+      "description": "Electrical, water, plumbing, civil",
+      "sort_order": 9,
+      "form_schema": {
+        "icon": "tool",
+        "form_type": "location",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What needs fixing?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Electrical",
+              "Water",
+              "Plumbing",
+              "Civil",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "ENGAGE",
+      "name": "Student Engagement & Other University Services",
+      "description": "Clubs, events, activities and other services",
+      "sort_order": 10,
+      "form_schema": {
+        "icon": "grid",
+        "form_type": "student",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Clubs & activities",
+              "Events",
+              "Certificates",
+              "Other"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "code": "IT",
+      "name": "IT & ERP",
+      "description": "Wi-Fi, ERP login, computers, printers, email",
+      "sort_order": 11,
+      "form_schema": {
+        "icon": "wifi",
+        "form_type": "location",
+        "fields": [
+          {
+            "key": "topic",
+            "label": "What is it about?",
+            "type": "select",
+            "required": true,
+            "options": [
+              "Wi-Fi",
+              "ERP login",
+              "Laptop / desktop",
+              "Printer",
+              "Email",
+              "Other"
+            ]
+          },
+          {
+            "key": "erp_id",
+            "label": "Student / employee ID (for ERP issues)",
+            "type": "short_text",
+            "required": false,
+            "placeholder": "e.g. 23BPT014"
+          }
+        ]
+      }
+    }
+  ]
+}

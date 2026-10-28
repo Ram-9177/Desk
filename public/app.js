@@ -772,9 +772,9 @@ function templateEditor(c, e, done) {
 async function mailLog(box, reload, sa) {
   const st = JSON.parse(sessionStorage.getItem('ml') || '{"status":"all","q":""}');
   const rows = await api(`/mail/log?status=${st.status}&q=${encodeURIComponent(st.q)}`);
-  const failed = rows.filter(r => r.status === 'failed').map(r => r.id);
+  const failed = rows.filter(r => r.status === 'failed' || (r.status === 'logged' && r.template_key !== 'test')).map(r => r.id);
   box.innerHTML = `<div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="mq" placeholder="Search email address or subject…" value="${esc(st.q)}"></label>
-      ${failed.length ? `<button class="btn primary" id="rall">Resend ${failed.length} failed</button>` : ''}</div>
+      ${failed.length ? `<button class="btn primary" id="rall">Send ${failed.length} held or failed</button>` : ''}</div>
     <div class="tabs">${['all', 'sent', 'failed', 'queued', 'skipped', 'logged'].map(k => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}" style="text-transform:capitalize">${k}</button>`).join('')}</div>
     <div class="tblwrap"><table><tr><th>When</th><th>To</th><th>Subject</th>${sa ? '<th>Campus</th>' : ''}<th>Status</th><th></th></tr>
     ${rows.map(r => `<tr><td class="small">${fmt(r.created_at)}</td><td>${esc(r.recipient)}</td><td>${esc(r.subject)}${r.last_error ? `<div class="small" style="color:var(--warn)">${esc(r.last_error)}</div>` : ''}</td>

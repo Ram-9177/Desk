@@ -90,7 +90,7 @@ Certbot renews automatically (systemd timer).
 
 Sign in at `https://stmarys-desk.supercxo.ai/#/login`, then remove the two `SUPER_ADMIN_*` lines from `.env` and `pm2 restart one-desk`. Never change `JWT_SECRET` (it signs everyone out).
 
-**Update**: `git pull && npm ci --omit=dev && pm2 restart one-desk`.
+**Update**: `git pull && npm ci --omit=dev && pm2 restart one-desk`. New entries in `provision/` are added on that restart (see below).
 
 The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is set (32+ characters). It listens on `HOST` (127.0.0.1) and trusts `X-Forwarded-For` only from loopback, i.e. nginx, so per-IP rate limits see the real client. Run exactly **one** process (the pm2 file does): the email queue, rate limits and settings cache are in memory.
 
@@ -111,6 +111,19 @@ npm test
 ```
 
 Needs a local Postgres where you can create databases (default `postgres://localhost/postgres`; override with `TEST_DATABASE_URL`). Starts ONE Desk on a throwaway database, dropped afterwards (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors.
+
+## Campus data from files (provision/)
+
+On every start the server reads `provision/*.json` and adds anything missing, then remembers it, so later changes made in the app (renames, removed providers, deleted items) are never undone.
+
+- `provision/hyderabad.json` (in the repo): the St.Mary's University - Hyderabad campus and its 12 services.
+- `provision/hyderabad.private.json` (**git-ignored**, the repo is public): staff from the nodal officer sheet, with who serves which service and each service's escalation person. Copy it to the server once:
+
+```bash
+scp provision/hyderabad.private.json ubuntu@SERVER:~/one-desk/provision/
+```
+
+Staff are added as providers who must set their own password; their invite emails are **held**, not sent. Send them from **Email → Delivery log → Send held or failed** (or per person with People → Reset password). Every addition is listed in the Audit log as `provision`.
 
 ## Backups
 

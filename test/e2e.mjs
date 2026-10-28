@@ -53,7 +53,7 @@ const pgEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.s
 let server = null;
 async function start(extra = {}, { expectExit } = {}) {
   const proc = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'server.js')],
-    { cwd: TMP, env: { PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER, ...pgEnv, DATABASE_URL: DB_URL, UPLOAD_DIR: UPLOADS, PORT: String(PORT), ...ENV, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd: TMP, env: { PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER, ...pgEnv, DATABASE_URL: DB_URL, UPLOAD_DIR: UPLOADS, PROVISION_DIR: path.join(TMP, 'provision'), PORT: String(PORT), ...ENV, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; proc.stdout.on('data', d => out += d); proc.stderr.on('data', d => out += d);
   if (expectExit) return { code: await new Promise(r => proc.on('exit', r)), out };
   for (let i = 0; i < 60; i++) { await sleep(100); try { if ((await fetch(API + '/health')).ok) break; } catch { /* not up yet */ } }
@@ -390,6 +390,33 @@ try {
   check('two closes at once: one wins, the other gets 409', both.map(x => x.status).sort().join() === '200,409', both.map(x => x.status).join());
   check('…and points are awarded once', (await api('/points', { token: T.pavan })).data.me - before === both.find(x => x.status === 200)?.data.points);
   check('…and one close event is recorded', (await q("SELECT count(*) n FROM ticket_events WHERE ticket_id=? AND event_type='status_changed'", idR))[0].n === 1);
+
+  // ======================= G3. start-up provisioning =======================
+  sec('Start-up provisioning (provision/ files)');
+  const PDIR = path.join(TMP, 'provision'); fs.mkdirSync(PDIR, { recursive: true });
+  fs.writeFileSync(path.join(PDIR, 'delta.json'), JSON.stringify({ campus: { code: 'DELTA', name: 'Delta Campus', slug: 'delta' },
+    services: [{ code: 'DHELP', name: 'Delta help', form_schema: { form_type: 'general', fields: [] } }, { code: 'DEXAM', name: 'Delta exams', form_schema: { form_type: 'student', fields: [] } },
+               { code: 'bad code', name: 'Broken' }] }));
+  fs.writeFileSync(path.join(PDIR, 'delta.private.json'), JSON.stringify({ campus: { code: 'DELTA' },
+    people: [{ name: 'Dev Provider', email: 'dev@example.com', phone: '9000000099' }, { name: 'Esha Lead', email: 'esha@example.com' }, { name: 'Pavan again', email: 'PAVAN@example.com' }],
+    assign: { DHELP: { providers: ['dev@example.com'], escalation: 'esha@example.com' }, DEXAM: { providers: ['dev@example.com', 'esha@example.com'] } } }));
+  await stop(); await start();
+  const delta = (await q("SELECT id FROM tenants WHERE code='DELTA'"))[0];
+  check('campus created from the file', !!delta && (await api('/public/delta')).data?.services.length === 2);
+  const dsv = delta ? (await api('/services', { token: T.sa, tenant: delta.id })).data : [];
+  check('services added; a bad one is skipped', dsv.length === 2 && !dsv.some(x => x.name === 'Broken'));
+  check('staff added as providers who must set a password', (await q("SELECT count(*) n FROM users WHERE email IN ('dev@example.com','esha@example.com') AND role='provider' AND must_change_pw=1"))[0].n === 2);
+  check('an existing email is not duplicated or moved', (await q("SELECT count(*) n FROM users WHERE lower(email)='pavan@example.com'"))[0].n === 1 && (await q("SELECT tenant_id FROM users WHERE lower(email)='pavan@example.com'"))[0].tenant_id === alpha.id);
+  check('providers and escalation person assigned', dsv.find(x => x.code === 'DHELP')?.members[0]?.email === 'dev@example.com' && dsv.find(x => x.code === 'DHELP')?.escalation_user?.name === 'Esha Lead' && dsv.find(x => x.code === 'DEXAM')?.members.length === 2);
+  check('invites are held, not sent', (await q("SELECT status FROM notifications WHERE template_key='invite' AND recipient IN ('dev@example.com','esha@example.com')")).every(n => n.status === 'logged'));
+  await ok('admin removes DEXAM’s providers', `/services/${dsv.find(x => x.code === 'DEXAM').id}/members`, { token: T.sa, tenant: delta.id, method: 'PUT', body: { user_ids: [] } });
+  await ok('admin renames DHELP', `/services/${dsv.find(x => x.code === 'DHELP').id}`, { token: T.sa, tenant: delta.id, method: 'PATCH', body: { name: 'Delta helpdesk' } });
+  await stop(); await start();
+  const dsv2 = (await api('/services', { token: T.sa, tenant: delta.id })).data;
+  check('restart: nothing duplicated, admin changes kept', dsv2.length === 2 && dsv2.find(x => x.code === 'DHELP')?.name === 'Delta helpdesk' && dsv2.find(x => x.code === 'DEXAM')?.members.length === 0
+    && (await q("SELECT count(*) n FROM users WHERE email IN ('dev@example.com','esha@example.com')"))[0].n === 2);
+  check('provisioning is in the audit log', (await q("SELECT count(*) n FROM audit_logs WHERE action='provision'"))[0].n >= 1);
+  fs.rmSync(PDIR, { recursive: true, force: true });
 
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
