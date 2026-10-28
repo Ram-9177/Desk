@@ -1,0 +1,9 @@
+{
+  "_about": "Campus added on server start if missing. Add its services here or in the app.",
+  "campus": {
+    "code": "BUDAMPADU",
+    "name": "St.Mary's - Budampadu",
+    "slug": "budampadu"
+  },
+  "services": []
+}

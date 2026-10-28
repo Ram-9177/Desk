@@ -1,0 +1,9 @@
+{
+  "_about": "Campus added on server start if missing. Add its services here or in the app.",
+  "campus": {
+    "code": "CHEBROLU",
+    "name": "St.Mary's - Chebrolu",
+    "slug": "chebrolu"
+  },
+  "services": []
+}

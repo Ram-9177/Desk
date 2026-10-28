@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.js';
 import { createSuperAdmin } from './bootstrap.js';
-import { MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
+import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
 
@@ -858,6 +858,18 @@ async function provision() {
     let spec; try { spec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (e) { console.error(`provision ${f}: unreadable (${e.message})`); continue; }
     const added = [], step = async (key, label, fn) => { if (applied.has(key)) return;
       try { if (await fn() !== false) added.push(label); applied.add(key); } catch (e) { console.error(`provision ${f}: ${label}: ${e.message}`); } };
+    // email connection (private files only): used only if this server has none yet, so the Email page stays in charge
+    const m = spec.mail;
+    if (m?.url && m?.key) await step('mail:connection', 'email connection', async () => {
+      if (mailConfig(BASE).url) return false;
+      if (!/^https:\/\/\S+$/.test(m.url) || String(m.key).length < 16) throw new Error('mail.url must be https and mail.key 16+ characters');
+      await setSetting('pa_url', m.url); await setSetting('pa_key', String(m.key)); await setSetting('mail_enabled', m.sending === false ? '0' : '1');
+    });
+    if (m?.base) await step('mail:base', 'public address for email links', async () => {
+      if (getSettings().public_base_url) return false;
+      if (!/^https?:\/\/\S+$/.test(m.base)) throw new Error('mail.base must start with http(s)://');
+      await setSetting('public_base_url', m.base.replace(/\/+$/, ''));
+    });
     const code = String(spec.campus?.code || '').toUpperCase(); if (!code) continue;
     let tn = await one('SELECT * FROM tenants WHERE code=?', code);
     if (!tn) {

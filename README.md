@@ -117,7 +117,8 @@ Needs a local Postgres where you can create databases (default `postgres://local
 On every start the server reads `provision/*.json` and adds anything missing, then remembers it, so later changes made in the app (renames, removed providers, deleted items) are never undone.
 
 - `provision/hyderabad.json` (in the repo): the St.Mary's University - Hyderabad campus and its 12 services.
-- `provision/hyderabad.private.json` (**git-ignored**, the repo is public): staff from the nodal officer sheet, with who serves which service and each service's escalation person. Copy it to the server once:
+- `provision/budampadu.json`, `provision/chebrolu.json` (in the repo): the other two campuses (no services yet).
+- `provision/hyderabad.private.json` (**git-ignored**, the repo is public): staff from the nodal officer sheet, who serves which service, each service's escalation person, and the Power Automate email connection (used only if the server has none yet; the Email page stays in charge). Copy it to the server once:
 
 ```bash
 scp provision/hyderabad.private.json ubuntu@SERVER:~/one-desk/provision/

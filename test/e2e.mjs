@@ -399,7 +399,9 @@ try {
                { code: 'bad code', name: 'Broken' }] }));
   fs.writeFileSync(path.join(PDIR, 'delta.private.json'), JSON.stringify({ campus: { code: 'DELTA' },
     people: [{ name: 'Dev Provider', email: 'dev@example.com', phone: '9000000099' }, { name: 'Esha Lead', email: 'esha@example.com' }, { name: 'Pavan again', email: 'PAVAN@example.com' }],
-    assign: { DHELP: { providers: ['dev@example.com'], escalation: 'esha@example.com' }, DEXAM: { providers: ['dev@example.com', 'esha@example.com'] } } }));
+    assign: { DHELP: { providers: ['dev@example.com'], escalation: 'esha@example.com' }, DEXAM: { providers: ['dev@example.com', 'esha@example.com'] } },
+    mail: { url: 'https://example.com/other-flow', key: 'another-key-0123456789', base: 'https://elsewhere.example.com' } }));
+  const mailBefore = (await api('/mail/config', { token: T.sa })).data;
   await stop(); await start();
   const delta = (await q("SELECT id FROM tenants WHERE code='DELTA'"))[0];
   check('campus created from the file', !!delta && (await api('/public/delta')).data?.services.length === 2);
@@ -408,6 +410,8 @@ try {
   check('staff added as providers who must set a password', (await q("SELECT count(*) n FROM users WHERE email IN ('dev@example.com','esha@example.com') AND role='provider' AND must_change_pw=1"))[0].n === 2);
   check('an existing email is not duplicated or moved', (await q("SELECT count(*) n FROM users WHERE lower(email)='pavan@example.com'"))[0].n === 1 && (await q("SELECT tenant_id FROM users WHERE lower(email)='pavan@example.com'"))[0].tenant_id === alpha.id);
   check('providers and escalation person assigned', dsv.find(x => x.code === 'DHELP')?.members[0]?.email === 'dev@example.com' && dsv.find(x => x.code === 'DHELP')?.escalation_user?.name === 'Esha Lead' && dsv.find(x => x.code === 'DEXAM')?.members.length === 2);
+  const mailAfter = (await api('/mail/config', { token: T.sa })).data;
+  check('an existing email connection is not overwritten by the file', mailAfter.url === mailBefore.url && mailAfter.base === mailBefore.base && mailAfter.key_masked === mailBefore.key_masked);
   check('invites are held, not sent', (await q("SELECT status FROM notifications WHERE template_key='invite' AND recipient IN ('dev@example.com','esha@example.com')")).every(n => n.status === 'logged'));
   await ok('admin removes DEXAM’s providers', `/services/${dsv.find(x => x.code === 'DEXAM').id}/members`, { token: T.sa, tenant: delta.id, method: 'PUT', body: { user_ids: [] } });
   await ok('admin renames DHELP', `/services/${dsv.find(x => x.code === 'DHELP').id}`, { token: T.sa, tenant: delta.id, method: 'PATCH', body: { name: 'Delta helpdesk' } });
