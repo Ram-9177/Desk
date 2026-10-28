@@ -266,10 +266,23 @@ try {
   await ok('rule: escalate 1 day after the target', '/sla', { ...A, method: 'PUT', body: { ...sla, work_days: sla.work_days, escalate_after_days: 1 } });
   await stop(); await start(); await sleep(4500); // the escalation check runs a few seconds after start
   check('2 hours overdue with a 1-day rule: not escalated', (await q('SELECT escalated_at FROM tickets WHERE id IN (?,?)', ids.tA, ids.tB)).every(t => !t.escalated_at));
+  // a campus with no campus admin and no escalation person: escalation goes to the super admin
+  const gamma = await ok('create campus GAMMA with no campus admin', '/tenants', { method: 'POST', token: T.sa, body: { code: 'GAMMA', name: 'Gamma Campus', slug: 'gamma' } });
+  const G = { token: T.sa, tenant: gamma.id };
+  const gu = await ok('add a provider', '/users', { ...G, method: 'POST', body: { name: 'Gita Provider', email: 'gita@example.com', role: 'provider' } });
+  const gs = await ok('add a service without an escalation person', '/services', { ...G, method: 'POST', body: { code: 'GHELP', name: 'Help', form_schema: { form_type: 'general', fields: [] } } });
+  await ok('assign the provider', `/services/${gs.id}/members`, { ...G, method: 'PUT', body: { user_ids: [gu.id] } });
+  r = await raise('gamma', { service_id: gs.id, name: 'Gus', email: 'g1@example.com', subject: 'Need help', location: 'Office' });
+  const idG = (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', gamma.id, r.data.ticket_no))[0].id;
+  await run('UPDATE tickets SET due_at=? WHERE id=?', past, idG);
   await ok('rule: escalate as soon as the target is missed', '/sla', { ...A, method: 'PUT', body: { ...sla, escalate_after_days: 0 } });
   await stop(); await start(); await sleep(4500);
   const esc = await q('SELECT escalated_at, escalated_to FROM tickets WHERE id IN (?,?)', ids.tA, ids.tB);
   check('overdue ticket and overdue hold both escalated to Lata', esc.every(t => t.escalated_at && t.escalated_to === lata.id));
+  const superId = (await q("SELECT id FROM users WHERE role='super_admin'"))[0].id, eg = (await q('SELECT escalated_to FROM tickets WHERE id=?', idG))[0];
+  check('no escalation person and no campus admin: escalated to the super admin', eg.escalated_to === superId);
+  check('super admin is emailed and sees it as escalated', (await q("SELECT count(*) n FROM notifications WHERE template_key='escalated' AND recipient=?", SUPER.email))[0].n >= 1
+    && (await api('/tickets?status=escalated', { token: T.sa, tenant: gamma.id })).data.some(t => t.id === idG));
   const lq = await ok('Lata’s Escalated tab', '/tickets?status=escalated', { token: T.lata });
   check('escalated tickets appear in her queue, marked', lq.length === 2 && lq.every(t => t.escalated_name === 'Lata Lead'));
   const ld = await ok('Lata opens the escalated ticket', `/tickets/${ids.tA}`, { token: T.lata });
@@ -361,7 +374,7 @@ try {
   await fails('a provider cannot switch campus with the header', '/tickets', { token: T.pavan, tenant: beta.id }, 403);
   check('super admin can look into Beta', (await api('/services', { token: T.sa, tenant: beta.id })).data[0].code === 'GEN');
   const grp = await ok('group-wide report', '/group/report', { token: T.sa });
-  check('group report has both campuses', grp.length === 2);
+  check('group report has every campus', grp.length === 3 && ['ALPHA', 'BETA', 'GAMMA'].every(c => grp.some(g => g.code === c)));
   const repA = await ok('Alpha reports', '/reports?days=30', { token: T.asha });
   check('reports have counts and per-service rows', repA.counts.created_period >= 8 && repA.by_service.some(x => x.name === 'Electrical'));
   let last; for (let i = 0; i < 6; i++) last = await raise('beta', { service_id: gen.id, name: 'Lim', email: 'limit@example.com', subject: 'Many', location: 'x' });

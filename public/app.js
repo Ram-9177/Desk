@@ -413,14 +413,14 @@ async function services(main) {
     <label>Icon</label>${iconPick(s.id ? svcIcon(s) : 'grid')}
     ${typePick(s.form_schema || { form_type: 'general' })}
     <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2 <small>(optional)</small></label>${provSel('p2', s.members?.[1]?.id)}</div></div>
-    <label>Escalation person <small>(gets the ticket if it misses its target; empty = campus admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Campus admin —')}`;
+    <label>Escalation person <small>(gets the ticket if it misses its target; empty = the admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Admin (default) —')}`;
   const members = f => [...new Set([f.elements.p1.value, f.elements.p2.value].filter(Boolean))];
   main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each service needs one or two providers.</span>
       <button class="btn primary" id="add">${I('plus', 18)} New service</button></div>
     ${svcs.map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
-      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc(s.escalation_user?.name || 'campus admin')}</span></span>
+      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc(s.escalation_user?.name || 'admin')}</span></span>
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;

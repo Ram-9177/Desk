@@ -251,7 +251,7 @@ async function digest() {
 
 // ---------- escalation ----------
 // A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
-// campus's "escalate after" working days, it escalates to the service's escalation person (a campus admin if none is set).
+// campus's "escalate after" working days, it escalates to the service's escalation person (else a campus admin, else the super admin).
 function escalationDue(t, tn) {
   const cal = calendar(tn), mins = Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
   const from = ACTIVE.includes(t.status) ? t.due_at : tn.escalate_holds ? t.hold_due_at : null;
@@ -261,7 +261,8 @@ function escalationDue(t, tn) {
 async function escalate(t) {
   const svc = await one('SELECT escalation_user_id FROM services WHERE id=?', t.service_id);
   const target = (svc?.escalation_user_id && await one('SELECT id, name, email FROM users WHERE id=? AND is_active=1', svc.escalation_user_id))
-    || await one("SELECT id, name, email FROM users WHERE tenant_id=? AND role='tenant_admin' AND is_active=1 ORDER BY name LIMIT 1", t.tenant_id);
+    || await one("SELECT id, name, email FROM users WHERE tenant_id=? AND role='tenant_admin' AND is_active=1 ORDER BY name LIMIT 1", t.tenant_id)
+    || await one("SELECT id, name, email FROM users WHERE role='super_admin' AND is_active=1 ORDER BY name LIMIT 1"); // no campus admin: the super admin
   if (!target) return; // nobody to escalate to: the ticket stays on the attention list as overdue
   const ts = now(), missed = t.status === 'hold' ? `its hold limit of ${fmtIST(t.hold_due_at)}` : `its target of ${fmtIST(t.due_at)}`;
   const done = await tx(async () => {
