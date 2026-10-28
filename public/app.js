@@ -105,7 +105,7 @@ async function portal(slug, q, view, code) {
     return;
   }
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Raise a ticket</h1></div>
-    <p class="muted">Pick the service you need.</p>
+    <p class="muted">${services.length ? 'Pick the service you need.' : 'No services are open on this campus yet. Please check back soon.'}</p>
     ${services.map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.providers.map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}
@@ -370,6 +370,8 @@ async function workspace(main, id, { admin }) {
 
 async function newTicket(main) {
   const services = (await api('/services')).filter(s => s.is_active);
+  if (!services.length) { main.innerHTML = `<div class="empty card">${I('grid', 40)}<p><b>No services on this campus yet.</b></p>
+    <p class="muted">A ticket always belongs to a service. ${S.me.user.role === 'provider' ? 'Ask your admin to add one.' : '<a href="#/c/services">Add a service</a> first, then come back here.'}</p></div>`; return; }
   main.innerHTML = `<form id="f" class="card" style="max-width:720px">
     <label style="margin-top:0">Kind</label><select name="channel"><option value="walk_in">Walk-in (on behalf of a requestor)</option><option value="phone">Phone call</option><option value="internal">Internal request (from me to another service)</option></select>
     <label>Service</label><select name="service_id" id="svc">${services.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
