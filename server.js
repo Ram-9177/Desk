@@ -507,8 +507,10 @@ S.get('/services', wrap(async req => Promise.all((await all('SELECT * FROM servi
     sla: Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id=?', req.tenantId, s.id)).map(x => [x.priority, x.target_hours])) })))));
 S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body; req_(b.code, 'Code required'); req_(b.name, 'Name required');
-  if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', req.tenantId, b.code.toUpperCase())) throw new HttpErr(409, 'CONFLICT', 'Code exists');
-  const s = await insert('services', { id: uid(), tenant_id: req.tenantId, code: b.code.toUpperCase(), name: b.name, description: b.description,
+  b.code = String(b.code).trim().toUpperCase();
+  if (!/^[A-Z0-9-]{2,12}$/.test(b.code)) throw bad('Code: 2–12 letters or digits (no spaces), e.g. ADM');
+  if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', req.tenantId, b.code)) throw new HttpErr(409, 'CONFLICT', 'Code exists');
+  const s = await insert('services', { id: uid(), tenant_id: req.tenantId, code: b.code, name: b.name, description: b.description,
     form_schema: JSON.stringify(cleanSchema(b.form_schema)), is_active: 1, sort_order: Number(b.sort_order) || 0, escalation_user_id: await escalationUser(req, b.escalation_user_id) });
   await audit(req, 'service.create', 'service', s.id, b); return s;
 }));

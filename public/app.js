@@ -408,7 +408,7 @@ async function services(main) {
   const provSel = (name, val) => `<select name="${name}"><option value="">— None —</option>${eligible.map(u => `<option value="${u.id}" ${u.id === val ? 'selected' : ''}>${esc(u.name)}${u.role === 'tenant_admin' ? ' (admin)' : ''}</option>`).join('')}</select>`;
   const iconPick = cur => `<div class="iconpick">${ICONS.map((ic, i) => `<label><input type="radio" name="icon" value="${ic}" ${ic === cur ? 'checked' : ''}><span class="chip c${i % 5}">${I(ic, 20)}</span></label>`).join('')}</div>`;
   const fields = (s = {}) => `<label>Service name</label><input name="name" required value="${esc(s.name || '')}" placeholder="e.g. Plumbing">
-    ${s.id ? '' : '<label>Code <small>(short, used in QR links)</small></label><input name="code" required placeholder="PLUMB" style="text-transform:uppercase">'}
+    ${s.id ? '' : '<label>Code <small>(2–12 letters or digits, no spaces; used in QR links)</small></label><input name="code" required maxlength="12" pattern="[A-Za-z0-9\\-]{2,12}" title="2–12 letters or digits, no spaces" placeholder="e.g. ADM" style="text-transform:uppercase">'}
     <label>Description</label><input name="description" value="${esc(s.description || '')}" placeholder="What this service covers">
     <label>Icon</label>${iconPick(s.id ? svcIcon(s) : 'grid')}
     ${typePick(s.form_schema || { form_type: 'general' })}
@@ -429,7 +429,12 @@ async function services(main) {
     const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
     toast('Service created'); services(main); });
-    d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), []); };
+    d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), []);
+    // suggest a short code from the name (initials of the main words) until the admin types their own
+    const nm = d.querySelector('[name=name]'), cd = d.querySelector('[name=code]'); let typed = false;
+    cd.oninput = () => { typed = true; cd.value = cd.value.replace(/[^A-Za-z0-9-]/g, '').toUpperCase(); };
+    nm.addEventListener('input', () => { if (typed) return; const w = nm.value.split(/[^A-Za-z0-9]+/).filter(x => x && !/^(and|of|the|for|other)$/i.test(x));
+      cd.value = (w.length > 1 ? w.map(x => x[0]).join('') : (w[0] || '').slice(0, 6)).toUpperCase().slice(0, 12); }); };
   main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => {
     const s = svcs.find(x => x.id === b.dataset.e), { icon, ...schema } = s.form_schema;
     let fb; const d = dlg(`<h2>Edit ${esc(s.name)}</h2>${fields(s)}${qHead}
