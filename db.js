@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
-fs.mkdirSync('data/uploads', { recursive: true });
+fs.mkdirSync(process.env.UPLOAD_DIR || 'data/uploads', { recursive: true });
 export const db = new DatabaseSync(process.env.DB_FILE || 'data/desk.db');
 db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
 

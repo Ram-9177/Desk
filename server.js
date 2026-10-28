@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { db, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.js';
 import { createSuperAdmin } from './bootstrap.js';
 import { MAIL_EVENTS, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
@@ -15,7 +16,8 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process
 }
 const BASE = `http://localhost:${PORT}`;
 const base = () => mailConfig(BASE).base; // public address used in email links (Email page → Connection)
-const UPLOAD_DIR = 'data/uploads';
+const UPLOAD_DIR = process.env.UPLOAD_DIR || 'data/uploads';
+const ROOT = path.dirname(fileURLToPath(import.meta.url)); // the app's own folder, whatever the working directory
 
 const app = express();
 app.use(express.json({ limit: '40mb' }));
@@ -412,6 +414,11 @@ S.post('/me/password', wrap(req => {
 // tenants (super admin)
 S.post('/tenants', role('super_admin'), wrap(req => {
   const b = req.body; req_(b.code, 'Code required'); req_(b.name, 'Name required'); req_(b.slug, 'Slug required');
+  const code = String(b.code).trim().toUpperCase(), slug = String(b.slug).trim().toLowerCase();
+  if (!/^[A-Z0-9]{2,10}$/.test(code)) throw bad('Code: 2–10 letters or digits, e.g. SMRU');
+  if (!/^[a-z0-9-]{2,30}$/.test(slug)) throw bad('Slug: lowercase letters, digits and hyphens, e.g. smru');
+  if (one('SELECT 1 FROM tenants WHERE code=? OR slug=?', code, slug)) throw new HttpErr(409, 'CONFLICT', 'A campus with that code or slug already exists');
+  b.code = code; b.slug = slug;
   const t = insert('tenants', { id: uid(), code: b.code.toUpperCase(), name: b.name, slug: b.slug.toLowerCase(), timezone: b.timezone || 'Asia/Kolkata',
     show_provider_contact: b.show_provider_contact === false ? 0 : 1, reopen_window_days: Number(b.reopen_window_days) || 7, is_active: 1 });
   for (const [p, h] of Object.entries(DEFAULT_HOURS)) insert('sla_policies', { id: uid(), tenant_id: t.id, service_id: null, priority: p, target_hours: h });
@@ -805,8 +812,8 @@ app.use((e, _req, res, _next) => {
   res.status(status).json({ error: { code: e.code || 'INTERNAL', message: status === 500 ? 'Something went wrong' : e.message, details: e.details } });
 });
 
-app.use('/desk', express.static('public'));
-app.use('/', express.static('public')); // also served at the root, e.g. https://desk.supercxo.ai
+app.use('/desk', express.static(path.join(ROOT, 'public')));
+app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the root, e.g. https://desk.supercxo.ai
 // First start on an empty database: create the super admin from SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD.
 if (!one('SELECT 1 FROM users LIMIT 1')) {
   const r = createSuperAdmin(process.env.SUPER_ADMIN_EMAIL, process.env.SUPER_ADMIN_PASSWORD);

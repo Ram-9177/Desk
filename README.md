@@ -62,6 +62,14 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 6. **Email → Connection**: paste the Power Automate flow URL and secret key, set the public address to `https://desk.supercxo.ai`, Save, Send test. The **Setup guide** tab has the flow steps and the SPF / DKIM / DMARC records.
 7. Put up QR codes: `https://desk.supercxo.ai/#/d/<campus-slug>` (or `…?service=CODE` for one service).
 
+## Tests
+
+```bash
+npm test
+```
+
+Starts ONE Desk on a throwaway database (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors.
+
 ## Backups
 
 Back up the `data/` folder (or the `onedesk-data` volume) daily. It holds the database, uploaded photos and the email connection settings.
