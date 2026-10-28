@@ -117,9 +117,9 @@ Needs a local Postgres where you can create databases (default `postgres://local
 Two things to back up: the **database** and **`data/uploads/`** (photos). The email connection settings and templates are in the database.
 
 ```bash
-# nightly at 02:00 IST (20:30 UTC): database dump + uploads, kept 14 days
+# nightly at 02:00 server time (check `timedatectl`; Ubuntu on EC2 may be UTC or IST): database dump + uploads, kept 14 days
 mkdir -p ~/backups && crontab -e
-30 20 * * * cd ~/one-desk && pg_dump -Fc "$(grep ^DATABASE_URL .env | cut -d= -f2-)" > ~/backups/onedesk-$(date +\%F).dump && tar czf ~/backups/uploads-$(date +\%F).tgz data/uploads && find ~/backups -mtime +14 -delete
+0 2 * * * cd ~/one-desk && pg_dump -Fc "$(grep ^DATABASE_URL .env | cut -d= -f2-)" > ~/backups/onedesk-$(date +\%F).dump && tar czf ~/backups/uploads-$(date +\%F).tgz data/uploads && find ~/backups -mtime +14 -delete
 ```
 
 Restore: `pg_restore --clean -d "$DATABASE_URL" onedesk-YYYY-MM-DD.dump`. Copy the backups off the server too (S3), or add a daily **EBS snapshot** via Data Lifecycle Manager.
