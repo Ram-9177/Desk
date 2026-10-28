@@ -834,7 +834,7 @@ app.use((e, _req, res, _next) => {
 });
 
 app.use('/desk', express.static(path.join(ROOT, 'public')));
-app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the root, e.g. https://desk.supercxo.ai
+app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the root, e.g. https://stmarys-desk.supercxo.ai
 // First start on an empty database: create the super admin from SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD.
 if (!await one('SELECT 1 FROM users LIMIT 1')) {
   const r = await createSuperAdmin(process.env.SUPER_ADMIN_EMAIL, process.env.SUPER_ADMIN_PASSWORD);

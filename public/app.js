@@ -684,7 +684,7 @@ async function mailConnect(box, reload) {
       <div class="row" style="gap:8px"><input name="key" class="mono" style="flex:3" autocomplete="off" placeholder="${c.has_key ? `Saved (${esc(c.key_masked)}). Leave empty to keep it` : 'Generate or paste a key'}">
         <button type="button" class="btn soft" id="gen" style="flex:0 0 auto">Generate</button>${c.has_key ? '<button type="button" class="btn soft" id="cpk" style="flex:0 0 auto">' + I('copy', 15) + ' Copy saved key</button>' : ''}</div>
       <div id="keynote" class="muted small"></div>
-      <label>Public address of ONE Desk <small>(links inside emails)</small></label><input name="base" value="${esc(c.base)}" placeholder="https://desk.supercxo.ai">
+      <label>Public address of ONE Desk <small>(links inside emails)</small></label><input name="base" value="${esc(c.base)}" placeholder="https://stmarys-desk.supercxo.ai">
       <label class="switch" style="margin-top:14px"><input type="checkbox" name="sending" ${c.sending ? 'checked' : ''}> Send emails <span class="muted small">(untick to pause; emails are then only logged)</span></label>
       <div class="err" id="cerr"></div><p style="margin-bottom:0"><button class="btn primary big">Save connection</button></p></form>
     <div class="card" style="margin:0"><b>Send a test email</b><div class="muted small">Uses the values in the form, even before you save. Try a Gmail, a Yahoo and an Outlook address.</div>
@@ -795,7 +795,7 @@ function mailGuide(box) {
       <tr><td>Subject</td><td>Dynamic content → <b>subject</b></td></tr><tr><td>Body</td><td>Dynamic content → <b>html</b></td></tr></table></div>
       <p>Then, still inside <b>True</b>, add <b>Response</b> with Status Code <b>200</b> and Body:</p>${copyBox('{ "ok": true }')}`)}
     ${step(5, 'If no: reject the call', `<p>Inside <b>False</b> add <b>Response</b> with Status Code <b>401</b> and Body:</p>${copyBox('{ "error": "bad key" }')}`)}
-    ${step(6, 'Save, copy the URL, connect', `<p>Click <b>Save</b>, open the trigger again and copy its <b>HTTP URL</b>. Paste it on the <b>Connection</b> tab with the same secret key, set the public address (e.g. <code>https://desk.supercxo.ai</code>), <b>Save</b>, then <b>Send test</b>.</p>`)}
+    ${step(6, 'Save, copy the URL, connect', `<p>Click <b>Save</b>, open the trigger again and copy its <b>HTTP URL</b>. Paste it on the <b>Connection</b> tab with the same secret key, set the public address (e.g. <code>https://stmarys-desk.supercxo.ai</code>), <b>Save</b>, then <b>Send test</b>.</p>`)}
     ${step(7, 'Reach Gmail, Yahoo and every inbox (not spam)', `<p>Your domain admin adds these once for <b>stmarysgroup.com</b>:</p>
       <p><b>SPF</b>: if a <code>v=spf1</code> TXT record exists, add <code>include:spf.protection.outlook.com</code> to it (never create a second one). Otherwise add TXT:</p>${copyBox('v=spf1 include:spf.protection.outlook.com -all')}
       <p><b>DKIM</b>: security.microsoft.com → Email &amp; collaboration → Policies &amp; rules → Threat policies → Email authentication settings → DKIM → stmarysgroup.com. Add the two CNAME records it shows, then <b>Enable</b>.</p>

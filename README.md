@@ -22,7 +22,7 @@ npm start                 # http://localhost:4300
 
 On the first start with an empty database the server creates the super admin from `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD`. Remove those two lines from `.env` afterwards. (`npm run create-admin` does the same without starting the server.)
 
-## Deploy (https://desk.supercxo.ai)
+## Deploy (https://stmarys-desk.supercxo.ai)
 
 AWS EC2 t3.micro, Ubuntu 26.04: **nginx** (HTTPS via Let's Encrypt) → **pm2** (one Node process) → **PostgreSQL** on the same box.
 
@@ -31,7 +31,7 @@ AWS EC2 t3.micro, Ubuntu 26.04: **nginx** (HTTPS via Let's Encrypt) → **pm2** 
 - **Disk**: 20 GB gp3 (the default 8 GB fills up quickly).
 - **Elastic IP** attached, so the address survives stop/start.
 - **Security group**: inbound 22 (your IP only), 80 and 443 (anywhere). Do **not** open 4300 or 5432.
-- **DNS**: an `A` record for `desk.supercxo.ai` → the Elastic IP (certbot needs it).
+- **DNS**: an `A` record for `stmarys-desk.supercxo.ai` → the Elastic IP (certbot needs it).
 
 ### 2. Server packages
 
@@ -81,14 +81,14 @@ pm2 install pm2-logrotate
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/one-desk
 sudo ln -s /etc/nginx/sites-available/one-desk /etc/nginx/sites-enabled/ && sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d desk.supercxo.ai --redirect -m you@example.com --agree-tos -n
+sudo certbot --nginx -d stmarys-desk.supercxo.ai --redirect -m you@example.com --agree-tos -n
 ```
 
 Certbot renews automatically (systemd timer).
 
 ### 6. First sign-in
 
-Sign in at `https://desk.supercxo.ai/#/login`, then remove the two `SUPER_ADMIN_*` lines from `.env` and `pm2 restart one-desk`. Never change `JWT_SECRET` (it signs everyone out).
+Sign in at `https://stmarys-desk.supercxo.ai/#/login`, then remove the two `SUPER_ADMIN_*` lines from `.env` and `pm2 restart one-desk`. Never change `JWT_SECRET` (it signs everyone out).
 
 **Update**: `git pull && npm ci --omit=dev && pm2 restart one-desk`.
 
@@ -101,8 +101,8 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 3. Switch to the campus (top right) → **People**: add the campus admin and service providers.
 4. **Services**: create each service, pick its form type, set blocks/floors, assign one or two providers, add extra questions.
 5. **SLA & points**: confirm working hours, targets per priority and hold reasons.
-6. **Email → Connection**: paste the Power Automate flow URL and secret key, set the public address to `https://desk.supercxo.ai`, Save, Send test. The **Setup guide** tab has the flow steps and the SPF / DKIM / DMARC records.
-7. Put up QR codes: `https://desk.supercxo.ai/#/d/<campus-slug>` (or `…?service=CODE` for one service).
+6. **Email → Connection**: paste the Power Automate flow URL and secret key, set the public address to `https://stmarys-desk.supercxo.ai`, Save, Send test. The **Setup guide** tab has the flow steps and the SPF / DKIM / DMARC records.
+7. Put up QR codes: `https://stmarys-desk.supercxo.ai/#/d/<campus-slug>` (or `…?service=CODE` for one service).
 
 ## Tests
 
