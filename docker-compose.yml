@@ -1,0 +1,28 @@
+# ONE Desk + Caddy (automatic HTTPS). On the server: cp .env.example .env, fill it in, then `docker compose up -d --build`.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - onedesk-data:/app/data
+    mem_limit: 512m # t3.micro has 1 GB; leaves room for Caddy, Docker and the OS
+    logging: { driver: json-file, options: { max-size: 10m, max-file: '3' } }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    ports: ['80:80', '443:443', '443:443/udp']
+    environment:
+      DOMAIN: ${DOMAIN:-desk.supercxo.ai}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging: { driver: json-file, options: { max-size: 10m, max-file: '3' } }
+
+volumes:
+  onedesk-data:
+  caddy-data:
+  caddy-config:

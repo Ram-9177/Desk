@@ -1,4 +1,14 @@
 node_modules
 data
+data-*
+.git
+.gitignore
 .env
+.env.*
+!.env.example
+*.db
+*.db-*
 *.md
+.DS_Store
+docker-compose.yml
+Caddyfile

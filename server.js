@@ -20,6 +20,10 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR || 'data/uploads';
 const ROOT = path.dirname(fileURLToPath(import.meta.url)); // the app's own folder, whatever the working directory
 
 const app = express();
+// Behind Caddy (same host or the compose network): take the client IP from X-Forwarded-For so per-IP rate limits work.
+app.set('trust proxy', 'loopback, uniquelocal');
+app.disable('x-powered-by');
+app.use((_q, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' }); next(); });
 app.use(express.json({ limit: '40mb' }));
 
 // ---------- helpers ----------
@@ -51,6 +55,8 @@ function limit(key, max, ms = 3600e3) {
   if (arr.length >= max) throw new HttpErr(429, 'RATE_LIMIT', 'Too many requests, try again later');
   arr.push(t); hits.set(key, arr);
 }
+// drop keys idle for over an hour (the longest window) so the map doesn't grow forever
+setInterval(() => { const t = Date.now(); for (const [k, arr] of hits) if (t - arr[arr.length - 1] > 3600e3) hits.delete(k); }, 600e3).unref();
 
 // ---------- auth + tenant scope ----------
 function auth(req, _res, next) {
@@ -225,11 +231,11 @@ async function sendOne(id) {
 setInterval(() => { while (queue.length) sendOne(queue.shift()); }, 1000);
 for (const r of all("SELECT id FROM notifications WHERE status='queued'")) queue.push(r.id); // resume after a restart
 
-// daily 08:30 digest
+// daily 08:30 IST digest (IST = UTC+5:30, no DST; the server itself usually runs on UTC)
 let lastDigest = '';
 setInterval(() => {
-  const d = new Date(), key = d.toDateString();
-  if (d.getHours() !== 8 || d.getMinutes() < 30 || lastDigest === key) return;
+  const d = new Date(Date.now() + 330 * 60e3), key = d.toISOString().slice(0, 10);
+  if (d.getUTCHours() !== 8 || d.getUTCMinutes() < 30 || lastDigest === key) return;
   lastDigest = key;
   for (const u of all("SELECT * FROM users WHERE is_active=1 AND role!='super_admin'")) {
     const sids = myServiceIds(u, u.tenant_id); if (!sids.length) continue;
@@ -819,4 +825,10 @@ if (!one('SELECT 1 FROM users LIMIT 1')) {
   const r = createSuperAdmin(process.env.SUPER_ADMIN_EMAIL, process.env.SUPER_ADMIN_PASSWORD);
   console.log(r.created ? r.message : `No users yet. ${r.message} Then restart.`);
 }
-app.listen(PORT, () => console.log(`ONE Desk on http://localhost:${PORT}`));
+const server = app.listen(PORT, () => console.log(`ONE Desk on http://localhost:${PORT}`));
+// docker stop / pm2 restart send SIGTERM: finish in-flight requests, then close SQLite cleanly
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => {
+  console.log(`${sig}: shutting down`);
+  server.close(() => { db.close(); process.exit(0); });
+  setTimeout(() => process.exit(1), 8000).unref();
+});
