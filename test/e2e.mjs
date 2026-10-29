@@ -2,7 +2,7 @@
 // to a server you can CREATE DATABASE on, default postgres://localhost/postgres) and a temp uploads folder (no email flow connected, so
 // nothing is sent), runs every role's flow through the API, then loads each screen in headless Chrome
 // when one is installed. Run with: npm test
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -81,6 +81,8 @@ try {
   await stop(); s = await start({ SUPER_ADMIN_EMAIL: SUPER.email, SUPER_ADMIN_PASSWORD: SUPER.password });
   check('super admin created from SUPER_ADMIN_* on first start', /created/.test(s.out()));
   T.sa = await login(SUPER.email, SUPER.password); check('super admin can sign in', !!T.sa);
+  const ver = await (await fetch(API + '/version')).json(), head = execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
+  check('/api/version: running commit = checked-out commit, no restart needed', ver.commit === head && ver.on_disk === head && ver.restart_needed === false && !!ver.started_at, JSON.stringify(ver));
   check('root serves the app', /<title>ONE Desk/.test(await (await fetch(APP + '/')).text()));
   check('/desk/ also serves the app', (await fetch(APP + '/desk/')).status === 200);
   check('API without a sign-in is refused', (await api('/nope')).status === 401);

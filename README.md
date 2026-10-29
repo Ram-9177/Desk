@@ -92,6 +92,8 @@ Sign in at `https://stmarys-desk.supercxo.ai/#/login`, then remove the two `SUPE
 
 **Update**: `git pull && npm ci --omit=dev && pm2 restart one-desk`. New entries in `provision/` are added on that restart (see below).
 
+**Is it deployed?** Open `https://stmarys-desk.supercxo.ai/api/version`. `commit` is what the running app started from, `on_disk` is what is checked out; `restart_needed: true` means you pulled but have not restarted yet. Compare `commit` with the latest commit on GitHub.
+
 The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is set (32+ characters). It listens on `HOST` (127.0.0.1) and trusts `X-Forwarded-For` only from loopback, i.e. nginx, so per-IP rate limits see the real client. Run exactly **one** process (the pm2 file does): the email queue, rate limits and settings cache are in memory.
 
 ## First-time setup in the app

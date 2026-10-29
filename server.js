@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.js';
 import { createSuperAdmin } from './bootstrap.js';
 import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
@@ -404,6 +405,25 @@ app.get('/api/files/:key', mw(async (req, res) => {
   res.type(a.mime_type).sendFile(path.resolve(UPLOAD_DIR, a.storage_key));
 }));
 app.get('/api/health', mw(async (_q, r) => { await one('SELECT 1'); r.json({ ok: true }); })); // also checks the database
+
+// ---------- version: the commit this process started from, and the one checked out now ----------
+// Reads .git directly (no process spawned per request). restart_needed = pulled but not restarted yet.
+const gitHead = () => { try {
+  const head = fs.readFileSync(path.join(ROOT, '.git/HEAD'), 'utf8').trim();
+  if (!head.startsWith('ref: ')) return head; // detached, e.g. after a rollback checkout
+  const ref = head.slice(5);
+  try { return fs.readFileSync(path.join(ROOT, '.git', ref), 'utf8').trim(); }
+  catch { return fs.readFileSync(path.join(ROOT, '.git/packed-refs'), 'utf8').split('\n').find(l => l.endsWith(' ' + ref))?.split(' ')[0] || null; }
+} catch { return null; } };
+const RUNNING = (() => {
+  let subject = null, committed_at = null;
+  try { [subject, committed_at] = execFileSync('git', ['log', '-1', '--format=%s%n%cI'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n'); } catch { /* not a git checkout */ }
+  return { commit: gitHead()?.slice(0, 7) ?? null, subject, committed_at, started_at: now() };
+})();
+app.get('/api/version', (_q, r) => {
+  const on_disk = gitHead()?.slice(0, 7) ?? null;
+  r.set('Cache-Control', 'no-store').json({ ...RUNNING, on_disk, restart_needed: !!on_disk && on_disk !== RUNNING.commit });
+});
 
 // ---------- auth ----------
 app.post('/api/auth/login', wrap(async req => {
