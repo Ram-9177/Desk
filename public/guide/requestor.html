@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1e4b8f">
+<link rel="icon" href="../favicon.png">
+<title>ONE Desk Requestor Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&family=Noto+Sans+Telugu:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,"Segoe UI",sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<style>
+/* Layout: a phone-sized walkthrough. A sticky navy bar (crest, title, language, Steps), an orange progress line,
+   one step at a time: title, the screenshot with an orange outline on the part being described, a subtitle, then every sentence.
+   A bottom bar holds Back, Listen and Next. On wide screens it stays one centred phone column. */
+:root{
+  --bg:#f3f5f9; --surface:#ffffff; --ink:#18233a; --muted:#5f6a82; --line:#e3e8f0;
+  --brand:#1e4b8f; --brand-soft:#e8eff9; --on-brand:#ffffff; --band:#1e4b8f; --on-band:#ffffff; --on-band-soft:rgba(255,255,255,.78);
+  --accent:#f29a1f; --accent-ink:#a95a06; --on-accent:#1f1406; --crest-tile:#ffffff; --on-crest:#14284d; --band-bold:#ffd08a; --track:rgba(255,255,255,.18); --dim:rgba(8,14,28,.45);
+  --green:#1a9a56; --green-soft:#e2f4ea; --blue:#2f73d9; --blue-soft:#e5effc; --hold:#a65a06; --hold-soft:#fff1db;
+  --warn:#c9363c; --warn-soft:#fde8e8; --grey:#5f6676; --grey-soft:#eef0f4; --shade:rgba(30,55,110,.14);
+  --sans:'Plus Jakarta Sans','Noto Sans Telugu',system-ui,-apple-system,'Segoe UI',sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  --col:520px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e1626; --surface:#162038; --ink:#e7ecf6; --muted:#a2adc4; --line:#26324d;
+  --brand:#8fb4f0; --brand-soft:#1c2c4c; --on-brand:#0e1626; --band:#14284d;
+  --accent:#f5ab45; --accent-ink:#f5ab45; --green:#55cf94; --green-soft:#15352a; --blue:#86b4ff; --blue-soft:#1a2c4d;
+  --hold:#f2b45a; --hold-soft:#3a2c12; --warn:#ff8a8a; --warn-soft:#3d1c1c; --grey:#b3bccd; --grey-soft:#253048; --shade:rgba(0,0,0,.45); color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#0e1626; --surface:#162038; --ink:#e7ecf6; --muted:#a2adc4; --line:#26324d;
+  --brand:#8fb4f0; --brand-soft:#1c2c4c; --on-brand:#0e1626; --band:#14284d;
+  --accent:#f5ab45; --accent-ink:#f5ab45; --green:#55cf94; --green-soft:#15352a; --blue:#86b4ff; --blue-soft:#1a2c4d;
+  --hold:#f2b45a; --hold-soft:#3a2c12; --warn:#ff8a8a; --warn-soft:#3d1c1c; --grey:#b3bccd; --grey-soft:#253048; --shade:rgba(0,0,0,.45); color-scheme:dark }
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--ink);font:16px/1.55 var(--sans);margin:0}
+button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+a{color:var(--brand)}
+code{font-family:var(--mono);font-size:.9em;background:var(--brand-soft);color:var(--brand);padding:1px 6px;border-radius:6px;overflow-wrap:anywhere}
+.in{max-width:var(--col);margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+
+/* top bar and progress */
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--band)}
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--band);color:var(--on-band)}
+.bar .in{display:flex;align-items:center;gap:10px;padding-block:10px}
+.crest{width:38px;height:38px;border-radius:10px;background:var(--crest-tile);display:grid;place-items:center;flex:none}
+.crest img{height:28px;width:auto}
+.bar .t{flex:1;min-width:0}.bar .t b{display:block;font-size:15px;line-height:1.25}
+.bar .t small{display:block;color:var(--on-band-soft);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stepsbtn{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;background:var(--track);color:var(--on-band);padding:9px 12px;border-radius:12px;font-weight:700;font-size:13.5px;flex:none}
+.stepsbtn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+/* the copy inside ONE Desk has a close button back to the app */
+.closeg{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--track);color:var(--on-band);text-decoration:none;font-size:17px;font-weight:800;flex:none}
+.closeg:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+@media (max-width:380px){.bar .in:has(.closeg) .crest{display:none}}
+.prog{height:4px;background:var(--track)}
+.prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s ease}
+
+/* one step */
+main.in{padding-block:20px calc(100px + env(safe-area-inset-bottom,0px))}
+.card{animation:slide .25s ease-out}
+@keyframes slide{from{opacity:.35;transform:translateX(var(--dir,14px))}}
+.kicker{font-size:12px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--accent-ink)}
+.card h1,.card h2{font-size:clamp(24px,6.6vw,30px);line-height:1.18;font-weight:800;letter-spacing:-.4px;margin:6px 0 10px;text-wrap:balance}
+.card h1 span{color:var(--green)}
+.card p{margin:0 0 12px}
+.card ul{margin:0 0 12px;padding-left:20px}.card li{margin:4px 0}
+.lead{color:var(--muted);font-size:16.5px}
+figure{margin:16px 0 0}
+figcaption{font-size:13px;color:var(--muted);text-align:center;margin-top:8px}
+.tip{display:flex;gap:10px;background:var(--brand-soft);border-radius:14px;padding:11px 13px;font-size:14.5px;margin:4px 0 12px}
+.tip b{color:var(--brand);flex:none}
+.tip.warm{background:var(--hold-soft)}.tip.warm b{color:var(--hold)}
+.pill{display:inline-block;font-size:12.5px;font-weight:700;padding:2px 9px;border-radius:8px;white-space:nowrap}
+.p-blue{background:var(--blue-soft);color:var(--blue)}.p-ok{background:var(--green-soft);color:var(--green)}.p-hold{background:var(--hold-soft);color:var(--hold)}
+.p-grey{background:var(--grey-soft);color:var(--grey)}.p-warn{background:var(--warn-soft);color:var(--warn)}
+.who{list-style:none;padding:0!important;display:grid;gap:8px}
+.who li{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin:0!important}
+.who b{display:block}
+.req{color:var(--warn);font-weight:800}
+
+/* welcome: the five-step summary */
+.qsteps{list-style:none;margin:14px 0;padding:0!important;display:grid;gap:10px;counter-reset:q}
+.qsteps li{counter-increment:q;display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;align-items:start;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:12px 14px;margin:0!important}
+.qsteps li::before{content:counter(q);display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-weight:800;font-variant-numeric:tabular-nums}
+.qsteps b{display:block;font-size:16px}
+.chips{list-style:none;margin:6px 0 18px;padding:0!important;display:flex;flex-wrap:wrap;gap:8px}
+.chips li{background:var(--brand-soft);color:var(--brand);font-weight:600;font-size:13.5px;padding:6px 12px;border-radius:99px;margin:0!important}
+.big{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;min-height:52px;border-radius:14px;background:var(--brand);color:var(--on-brand);font-weight:800;font-size:16.5px;width:100%;box-sizing:border-box;text-align:center;text-decoration:none}
+.big.soft{background:var(--brand-soft);color:var(--brand)}
+.big:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.stack{display:grid;gap:10px;margin-top:18px}
+.fine{font-size:13px;color:var(--muted);text-align:center;margin-top:18px}
+
+/* bottom bar */
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px);box-shadow:0 -10px 24px -18px var(--shade)}
+.nav .in{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px;padding-block:10px}
+.nb{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;min-height:48px;border-radius:14px;font-weight:700;font-size:15.5px;border:1px solid var(--line);background:var(--surface);color:var(--ink);box-sizing:border-box;padding:0 12px;text-align:center}
+.nb.next{background:var(--brand);color:var(--on-brand);border-color:var(--brand)}
+.nb.listen{background:var(--brand-soft);color:var(--brand);border-color:transparent;padding:0 16px}
+.nb.listen[aria-pressed="true"]{background:var(--accent);color:var(--on-accent)}
+.nb[aria-disabled="true"]{opacity:.35;cursor:default}
+.nb:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.nb .lbl{white-space:nowrap}
+
+/* steps menu and zoom */
+dialog.toc{border:0;border-radius:22px;padding:0;width:min(440px,calc(100vw - 32px));max-height:min(80vh,640px);background:var(--surface);color:var(--ink);box-shadow:0 24px 60px -20px var(--shade)}
+dialog.toc::backdrop{background:rgba(10,15,30,.55)}
+.toc header{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 8px}.toc header b{font-size:17px}
+.toc ol{list-style:none;margin:0;padding:4px 10px 14px;display:grid;gap:4px;overflow:auto}
+.toc button.item{all:unset;cursor:pointer;display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px;align-items:center;padding:10px;border-radius:12px;width:100%;box-sizing:border-box}
+.toc button.item span{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--grey-soft);color:var(--muted);font-weight:800;font-size:13px}
+.toc button.item[aria-current="step"]{background:var(--brand-soft);color:var(--brand)}
+.toc button.item[aria-current="step"] span{background:var(--brand);color:var(--on-brand)}
+.toc button.item:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
+.close{all:unset;cursor:pointer;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--grey-soft);font-weight:800}
+dialog.zoom{border:0;padding:0;background:transparent;max-width:94vw;max-height:92vh}
+dialog.zoom::backdrop{background:rgba(10,15,30,.82)}
+dialog.zoom img{display:block;max-width:94vw;max-height:88vh;border-radius:14px}
+dialog.zoom form{position:absolute;top:8px;right:8px}
+dialog.zoom button{all:unset;cursor:pointer;background:var(--surface);color:var(--ink);border-radius:50%;width:36px;height:36px;display:grid;place-items:center;font-weight:800}
+@media (max-width:360px){.nb{font-size:14.5px;padding:0 8px}.nb.listen{padding:0 10px}.nb.listen .lbl{display:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* language switch */
+.lang{display:inline-flex;background:var(--track);border-radius:12px;padding:3px;flex:none}
+.lang button{all:unset;cursor:pointer;padding:6px 9px;border-radius:9px;font-weight:700;font-size:13px;color:var(--on-band)}
+.lang button[aria-pressed="true"]{background:var(--crest-tile);color:var(--on-crest)}
+.lang button:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.langrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:2px 0 14px}
+.langrow span{font-weight:700;color:var(--muted);font-size:14px}
+.langrow button{all:unset;cursor:pointer;padding:8px 16px;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);font-weight:700}
+.langrow button{display:inline-flex;align-items:center;gap:6px}
+.vhint{display:flex;gap:8px;align-items:flex-start;margin:-4px 0 14px;color:var(--muted);font-size:14px;line-height:1.6}.vhint svg{flex:none;margin-top:3px}
+.langrow button[aria-pressed="true"]{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
+.langrow button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+
+/* the screenshot, with the orange outline on the part being described */
+.frame{position:relative;display:block;width:fit-content;max-width:100%;margin:8px auto 0;overflow:hidden;line-height:0;cursor:zoom-in;background:var(--surface)}
+.frame img{display:block;max-width:100%;width:auto;height:auto;max-height:56vh}
+.frame.phone{border:6px solid var(--ink);border-radius:28px;box-shadow:0 16px 36px -18px var(--shade)}
+.frame.wide{border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 28px -18px var(--shade)}
+.hl{position:absolute;left:0;top:0;right:100%;bottom:100%;border:3px solid var(--accent);border-radius:10px;box-shadow:0 0 0 2000px var(--dim);opacity:0;pointer-events:none;
+  transition:left .35s ease,top .35s ease,right .35s ease,bottom .35s ease,opacity .25s ease}
+.hl.on{opacity:1;animation:glow 1.8s ease-in-out infinite}
+@keyframes glow{50%{box-shadow:0 0 0 2000px var(--dim),0 0 0 5px rgba(242,154,31,.55)}}
+.subtitle{display:flex;gap:10px;align-items:flex-start;margin:12px 0 0;padding:12px 14px;border-radius:14px;background:var(--band);color:var(--on-band);font-size:16px;line-height:1.55;min-height:3.3em}
+.subtitle .n{flex:none;background:var(--accent);color:var(--on-accent);font-weight:800;font-size:12.5px;border-radius:99px;padding:2px 8px;margin-top:2px;font-variant-numeric:tabular-nums}
+.subtitle .t{min-width:0}.subtitle b{color:var(--band-bold)}
+
+/* every sentence of the step; the current one is marked */
+.lines{list-style:none;margin:12px 0 0;padding:0!important;display:grid;gap:8px;counter-reset:l}
+.lines li{margin:0!important}
+.lines button{all:unset;cursor:pointer;display:grid;grid-template-columns:26px minmax(0,1fr);gap:10px;align-items:start;width:100%;box-sizing:border-box;padding:10px 12px;border-radius:14px;background:var(--surface);border:1px solid var(--line);font-size:15px;line-height:1.55}
+.lines button::before{counter-increment:l;content:counter(l);display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--grey-soft);color:var(--muted);font-weight:800;font-size:12.5px}
+.lines button[aria-current="true"]{border-color:var(--accent);background:var(--hold-soft)}
+.lines button[aria-current="true"]::before{background:var(--accent);color:var(--on-accent)}
+.lines button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.hint{font-size:13px;color:var(--muted);text-align:center;margin:10px 0 0}
+.vnote{background:var(--hold-soft);color:var(--hold);border-radius:14px;padding:12px 14px;font-size:14.5px;font-weight:600;margin:0 0 14px}
+:lang(te) body{line-height:1.7}:lang(te) .lines button,:lang(te) .subtitle{line-height:1.75}
+@media (max-width:400px){.stepsbtn span{display:none}.stepsbtn{padding:9px 10px}.bar .t small{max-width:30vw}}
+@media (prefers-reduced-motion:reduce){.hl.on{animation:none}}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="in">
+    <span class="crest"><img src="img/logo-mark.png" width="132" height="192" alt=""></span>
+    <div class="t"><b>ONE Desk</b><small id="subt"></small></div>
+    <div class="lang" role="group" aria-label="Language"><button type="button" data-lang="en" aria-pressed="false">EN</button><button type="button" data-lang="te" aria-pressed="false">తెలుగు</button></div>
+    <button type="button" class="stepsbtn" id="stepsbtn" aria-haspopup="dialog"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><span id="stepslbl">Steps</span></button>
+    <a class="closeg" href="../" aria-label="Close the guide" onclick="if(document.referrer.indexOf(location.origin)===0&&history.length>1){history.back();return false}">✕</a>
+  </div>
+  <div class="prog" aria-hidden="true"><i id="fill"></i></div>
+</header>
+
+<main class="in" id="deck"></main>
+
+<nav class="nav" aria-label="Guide steps">
+  <div class="in">
+    <button type="button" class="nb" id="prev"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg><span class="lbl">Back</span></button>
+    <button type="button" class="nb listen" id="listen" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg><span class="lbl">Listen</span></button>
+    <button type="button" class="nb next" id="next"><span class="lbl">Next</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+  </div>
+</nav>
+
+<dialog class="toc" id="toc">
+  <header><b id="toctitle">All steps</b><button type="button" class="close" id="tocclose" aria-label="Close">✕</button></header>
+  <ol id="toclist"></ol>
+</dialog>
+<p id="live" aria-live="polite" style="position:absolute;left:-9999px"></p>
+
+<dialog class="zoom" id="zoom"><form method="dialog"><button aria-label="Close">✕</button></form><img id="zoomimg" alt=""></dialog>
+<script>
+window.APP = {"home":"../"};
+window.SIZES = {"r1-portal":[624,1350],"r2-services":[624,1350],"r3-form-top":[624,1350],"r3b-visitor":[624,1350],"r4-form-location":[624,1350],"r5-student":[624,1350],"r5b-describe":[624,1350],"r5c-limit":[624,1350],"r6-raised":[624,1350],"r7-track":[624,1350],"r8-ticket":[624,1350],"r9-ticket-history":[624,1350],"r10-email":[800,1225]};
+window.REGIONS = {"r1-portal":{"top":[2.3,2.3,95.4,22],"raise":[2.3,32,95.4,12.7],"track":[2.3,44.7,95.4,10.1],"staff":[2.3,54.8,95.4,10.1],"install":[21.7,71.3,56.6,6.5]},"r2-services":{"first":[2.3,13.4,95.4,16.1],"names":[21,23.9,17.4,3.8]},"r3-form-top":{"name":[6.7,13.6,86.7,9.8],"who":[6.7,23.9,86.7,9.7],"email":[6.7,34.1,86.7,9.8],"phone":[6.7,44.4,86.7,9.8],"ids":[6.7,53,86.7,21.7]},"r3b-visitor":{"who":[6.7,0,86.7,7.9],"org":[6.7,28.9,86.7,9.8],"purpose":[6.7,39.2,86.7,9.8],"both":[6.7,27.3,86.7,21.7]},"r4-form-location":{"section":[6.7,1.3,86.7,37.5],"block":[11,6.5,77.9,9.8],"floor":[11,16.8,77.9,9.7],"room":[11,27,77.9,9.8]},"r5-student":{"section":[6.7,1.2,86.7,37.6],"branch":[11,6.5,77.9,9.8],"sid":[11,16.7,77.9,9.8],"dept":[11,27,77.9,9.8]},"r5b-describe":{"subject":[6.7,30.5,86.7,9.8],"desc":[6.7,40.8,86.7,16.1],"topic":[6.7,58.1,86.7,9.7],"photos":[6.7,71.4,86.7,11.3],"submit":[6.7,83.2,86.7,7.3]},"r5c-limit":{"limit":[6.7,61.3,86.7,21.5]},"r6-raised":{"no":[7.4,21.7,85.1,4.9],"handler":[7.4,27.2,85.1,11.6],"copy":[7.4,45.1,42.3,6.5]},"r7-track":{"head":[2.3,2.3,95.4,6.2],"no":[6.7,12.3,86.7,9.8],"find":[6.7,22.7,86.7,7.3]},"r8-ticket":{"pill":[78.3,3.4,19.4,3.9],"ring":[7.4,23.8,85.1,14.5],"plate":[7.4,37.8,44.7,3.8]},"r9-ticket-history":{"history":[2.3,10.5,95.4,44.1],"note":[2.3,54.9,95.4,39.5]},"r10-email":{"title":[9.4,12.4,81.3,3.7],"progress":[9.4,35.9,81.3,17.3],"button":[9.4,54.1,27.4,5.3]}};
+window.AUDIO = {"en":{}};
+// What the voice says: the same English sentences as on screen, with the web address and short forms spelled out to be read aloud.
+// Shared by the page (window.SAY) and make-voice.mjs, so a recording is used only while its words still match the page.
+(function (g) {
+  const strip = h => String(h).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  const text = html => { let t = strip(html);
+    t = t.replace('stmarys-desk.supercxo.ai', 'st marys desk dot super C X O dot A I').replace(/ONE Desk/g, 'One Desk').replace(/IT & ERP|IT and ERP/g, 'I T and E R P');
+    return t; };
+  // everything Listen reads, in order: the welcome, each sentence of each step, the closing card
+  const items = (G, lang) => [
+    { id: 'w0', at: 0, t: strip(G.welcome.title[lang]) + '. ' + G.welcome.lead[lang] },
+    ...G.welcome.summary.map((s, i) => ({ id: 'w' + (i + 1), at: 0, t: s[lang][0] + '. ' + s[lang][1] })),
+    ...G.steps.flatMap((s, i) => s.lines.map((l, k) => ({ id: `${s.id}-${k}`, at: i + 1, k, t: (k === 0 ? strip(s.title[lang]) + '. ' : '') + l[lang] }))),
+    { id: 'done', at: G.steps.length + 1, t: G.done.title[lang] + '. ' + G.done.lead[lang] },
+  ].map(x => ({ ...x, say: text(x.t) }));
+  g.SAY = { text, items, strip };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+// Requestor walkthrough: every sentence in English and Telugu, each tied to the part of its screenshot it talks about.
+window.GUIDE = {
+  key: 'requestor',
+  sub: { en: 'Raise and track a ticket', te: 'టికెట్ రెయిజ్ & ట్రాక్' },
+  welcome: {
+    kicker: { en: 'Requestor guide', te: 'రిక్వెస్టర్ గైడ్' },
+    title: { en: 'Raise and track <span>a ticket</span>', te: 'టికెట్ రెయిజ్ చేయండి, <span>ట్రాక్ చేయండి</span>' },
+    lead: {
+      en: 'For students, faculty, staff, parents and visitors. Something broken, or need help? Here is how, in five steps. No login needed.',
+      te: 'స్టూడెంట్స్, ఫ్యాకల్టీ, స్టాఫ్, పేరెంట్స్, విజిటర్స్ అందరి కోసం. ఏదైనా పని చేయట్లేదా, లేదా హెల్ప్ కావాలా? ఈ 5 స్టెప్స్ ఫాలో అవ్వండి. లాగిన్ అవసరం లేదు.' },
+    summary: [
+      { en: ['Open ONE Desk', 'Scan the QR code, or open stmarys-desk.supercxo.ai.'], te: ['ONE Desk ఓపెన్ చేయండి', 'నోటీస్ బోర్డ్ మీద ఉన్న QR కోడ్ స్కాన్ చేయండి, లేదా stmarys-desk.supercxo.ai ఓపెన్ చేయండి.'] },
+      { en: ['Tap Raise a ticket', 'Choose the team that can help.'], te: ['Raise a ticket నొక్కండి', 'మీకు హెల్ప్ చేసే టీమ్‌ని సెలెక్ట్ చేయండి.'] },
+      { en: ['Fill the form', 'Type your details and what went wrong. Add up to 4 photos.'], te: ['ఫారం ఫిల్ చేయండి', 'మీ డీటెయిల్స్, ఏం ప్రాబ్లమ్ అనేది రాయండి. 4 ఫోటోల వరకు యాడ్ చేయొచ్చు.'] },
+      { en: ['Keep your number', 'Like 0013. You also get an email at every step.'], te: ['టికెట్ నంబర్ సేవ్ చేసుకోండి', 'ఉదాహరణకు 0013. ప్రతి స్టెప్‌లో మీకు ఈమెయిల్ కూడా వస్తుంది.'] },
+      { en: ['Check it later', 'Tap Track ticket and type your number.'], te: ['తర్వాత స్టేటస్ చెక్ చేయండి', 'Track ticket నొక్కి మీ నంబర్ టైప్ చేయండి.'] },
+    ],
+    chips: { en: ['5 tickets a day (faculty 9)', 'Reopen within 7 days', 'Add notes, don’t reply to emails'],
+      te: ['రోజుకి 5 టికెట్స్ (ఫ్యాకల్టీకి 9)', '7 రోజుల్లో రీఓపెన్ చేయొచ్చు', 'ఈమెయిల్‌కి రిప్లై వద్దు, నోట్ యాడ్ చేయండి'] },
+    start: { en: 'Show me step by step', te: 'స్టెప్ బై స్టెప్ చూపించండి' },
+  },
+  steps: [
+    { id: 'open', img: 'r1-portal', phone: true, title: { en: 'Open ONE Desk', te: 'ONE Desk ఓపెన్ చేయండి' }, lines: [
+      { box: 'top', en: 'Scan the QR code on the notice board, or open stmarys-desk.supercxo.ai and choose your campus.', te: 'నోటీస్ బోర్డ్ మీద ఉన్న QR కోడ్ స్కాన్ చేయండి, లేదా stmarys-desk.supercxo.ai ఓపెన్ చేసి మీ క్యాంపస్ సెలెక్ట్ చేయండి.' },
+      { box: 'raise', en: 'To report a new problem, tap <b>Raise a ticket</b>.', te: 'కొత్త ప్రాబ్లమ్ చెప్పాలంటే <b>Raise a ticket</b> నొక్కండి.' },
+      { box: 'track', en: 'To check a ticket you already raised, tap <b>Track ticket</b>.', te: 'ఇంతకుముందు రెయిజ్ చేసిన టికెట్ స్టేటస్ చూడాలంటే <b>Track ticket</b> నొక్కండి.' },
+      { box: 'staff', en: '<b>Staff login</b> is only for staff.', te: '<b>Staff login</b> స్టాఫ్ కోసం మాత్రమే.' },
+      { box: 'install', en: 'Tap <b>Install ONE Desk app</b> to keep it on your home screen.', te: 'ఫోన్ హోమ్ స్క్రీన్ మీద పెట్టుకోవాలంటే <b>Install ONE Desk app</b> నొక్కండి.' },
+    ] },
+    { id: 'team', img: 'r2-services', phone: true, title: { en: 'Pick the right team', te: 'కరెక్ట్ టీమ్‌ని సెలెక్ట్ చేయండి' }, lines: [
+      { box: 'first', en: 'Tap the team that can help, such as Maintenance, IT and ERP, Hostel or Examinations.', te: 'మీకు హెల్ప్ చేసే టీమ్‌ని నొక్కండి. ఉదాహరణకు Maintenance, IT & ERP, Hostel, Examinations.' },
+      { box: 'names', en: 'The names on each card are the people who will handle your ticket.', te: 'ప్రతి కార్డ్ మీద ఉన్న పేర్లు, మీ టికెట్ చూసుకునే స్టాఫ్‌వి.' },
+    ] },
+    { id: 'details', img: 'r3-form-top', phone: true, title: { en: 'Fill in your details', te: 'మీ డీటెయిల్స్ ఫిల్ చేయండి' }, lines: [
+      { box: 'name', en: 'Type your name.', te: 'మీ పేరు టైప్ చేయండి.' },
+      { box: 'who', en: 'In <b>I’m</b>, choose student, faculty, staff, parent or visitor.', te: '<b>I’m</b> లో మీరు స్టూడెంట్, ఫ్యాకల్టీ, స్టాఫ్, పేరెంట్ లేదా విజిటర్ అని సెలెక్ట్ చేయండి.' },
+      { box: 'email', en: 'Type your email carefully. Every update about your ticket comes to this email.', te: 'మీ ఈమెయిల్ కరెక్ట్‌గా టైప్ చేయండి. టికెట్ అప్‌డేట్స్ అన్నీ ఈ ఈమెయిల్‌కే వస్తాయి.' },
+      { box: 'phone', en: 'Add your phone number.', te: 'మీ ఫోన్ నంబర్ ఇవ్వండి.' },
+      { box: 'ids', en: 'Then your ID and department.', te: 'తర్వాత మీ ID, డిపార్ట్‌మెంట్ ఇవ్వండి.' },
+    ] },
+    { id: 'who', img: 'r3b-visitor', phone: true, title: { en: 'Not a student?', te: 'మీరు స్టూడెంట్ కాకపోతే' }, lines: [
+      { box: 'who', en: 'What you choose in <b>I’m</b> changes the next two questions.', te: '<b>I’m</b> లో మీరు ఏది సెలెక్ట్ చేస్తారో దాన్ని బట్టి, తర్వాతి రెండు ప్రశ్నలు మారతాయి.' },
+      { box: 'org', en: 'A visitor is asked where they are from,', te: 'విజిటర్ అయితే, మీరు ఎక్కడి నుంచి వచ్చారో అడుగుతుంది,' },
+      { box: 'purpose', en: 'and the purpose of the visit.', te: 'మీరు ఎందుకు వచ్చారో కూడా అడుగుతుంది.' },
+      { box: 'both', en: 'Students give their student ID, faculty their faculty ID, staff their staff ID, and parents their ward’s student ID.', te: 'స్టూడెంట్స్ స్టూడెంట్ ID, ఫ్యాకల్టీ ఫ్యాకల్టీ ID, స్టాఫ్ స్టాఫ్ ID, పేరెంట్స్ వాళ్ల పిల్లల స్టూడెంట్ ID ఇవ్వాలి.' },
+    ] },
+    { id: 'where', img: 'r4-form-location', phone: true, title: { en: 'Where is the problem?', te: 'ప్రాబ్లమ్ ఎక్కడ ఉంది?' }, lines: [
+      { box: 'section', en: 'For repairs, Wi-Fi or security, the form asks where the problem is.', te: 'రిపేర్స్, Wi-Fi, సెక్యూరిటీ లాంటి సర్వీసెస్‌కి, ప్రాబ్లమ్ ఎక్కడ ఉందో ఫారం అడుగుతుంది.' },
+      { box: 'block', en: 'Type the block,', te: 'బ్లాక్ పేరు టైప్ చేయండి,' },
+      { box: 'floor', en: 'choose the floor,', te: 'ఫ్లోర్ సెలెక్ట్ చేయండి,' },
+      { box: 'room', en: 'then type the room or the exact spot.', te: 'తర్వాత రూమ్ నంబర్ లేదా ఎగ్జాక్ట్ ప్లేస్ టైప్ చేయండి.' },
+    ] },
+    { id: 'student', img: 'r5-student', phone: true, title: { en: 'Your student details', te: 'మీ స్టూడెంట్ డీటెయిల్స్' }, lines: [
+      { box: 'section', en: 'For exams and student services, students give their student details here.', te: 'ఎగ్జామ్స్, స్టూడెంట్ సర్వీసెస్‌కి, స్టూడెంట్స్ వాళ్ల స్టూడెంట్ డీటెయిల్స్ ఇక్కడ ఇవ్వాలి.' },
+      { box: 'branch', en: 'Your branch,', te: 'మీ బ్రాంచ్,' },
+      { box: 'sid', en: 'your student ID,', te: 'మీ స్టూడెంట్ ID,' },
+      { box: 'dept', en: 'and your department.', te: 'మీ డిపార్ట్‌మెంట్.' },
+    ] },
+    { id: 'describe', img: 'r5b-describe', phone: true, title: { en: 'Describe it, add photos', te: 'ప్రాబ్లమ్ రాయండి, ఫోటోలు యాడ్ చేయండి' }, lines: [
+      { box: 'subject', en: 'Write a short subject, such as: Ceiling fan not working.', te: 'చిన్న సబ్జెక్ట్ రాయండి. ఉదాహరణకు: Ceiling fan not working.' },
+      { box: 'desc', en: 'Describe what happened, in a few words.', te: 'ఏం జరిగిందో కొన్ని మాటల్లో రాయండి.' },
+      { box: 'topic', en: 'Answer the question for this service. If you pick Other, type your answer in the box.', te: 'ఈ సర్వీస్ అడిగే ప్రశ్నకి ఆన్సర్ సెలెక్ట్ చేయండి. Other సెలెక్ట్ చేస్తే, బాక్స్‌లో మీ ఆన్సర్ టైప్ చేయండి.' },
+      { box: 'photos', en: 'You can add up to 4 photos from the camera or gallery.', te: 'కెమెరా లేదా గ్యాలరీ నుంచి 4 ఫోటోల వరకు యాడ్ చేయొచ్చు.' },
+      { box: 'submit', en: 'Then tap <b>Raise ticket</b>. If a box was missed, the form shows you which one to fill.', te: 'చివరగా <b>Raise ticket</b> నొక్కండి. ఏదైనా బాక్స్ మిస్ అయితే, ఏది ఫిల్ చేయాలో ఫారమే చూపిస్తుంది.' },
+    ] },
+    { id: 'limit', img: 'r5c-limit', phone: true, title: { en: 'The daily limit', te: 'డైలీ లిమిట్' }, lines: [
+      { box: 'limit', en: 'Each email can raise 5 tickets a day. Faculty can raise 9.', te: 'ఒక ఈమెయిల్ నుంచి రోజుకి 5 టికెట్స్ రెయిజ్ చేయొచ్చు. ఫ్యాకల్టీ 9 వరకు చేయొచ్చు.' },
+      { box: 'limit', en: 'After that, this message tells you when you can raise the next one.', te: 'లిమిట్ దాటితే, నెక్స్ట్ టికెట్ ఎప్పుడు రెయిజ్ చేయొచ్చో ఈ మెసేజ్ చెప్తుంది.' },
+      { box: 'limit', en: 'If it is urgent, add a note to one of today’s tickets, or contact the help desk.', te: 'అర్జెంట్ అయితే, ఈరోజు రెయిజ్ చేసిన టికెట్‌లో నోట్ యాడ్ చేయండి, లేదా హెల్ప్ డెస్క్‌ని కాంటాక్ట్ చేయండి.' },
+    ] },
+    { id: 'number', img: 'r6-raised', phone: true, title: { en: 'Keep your ticket number', te: 'మీ టికెట్ నంబర్ సేవ్ చేసుకోండి' }, lines: [
+      { box: 'no', en: 'Your ticket number appears straight away. Please keep it safe.', te: 'మీ టికెట్ నంబర్ వెంటనే కనిపిస్తుంది. దాన్ని సేవ్ చేసుకోండి.' },
+      { box: 'handler', en: 'It also shows who will handle it, and the target time.', te: 'మీ టికెట్ ఎవరు చూసుకుంటారో, ఎప్పటికి పూర్తవుతుందో కూడా ఇక్కడ కనిపిస్తుంది.' },
+      { box: 'copy', en: 'Tap <b>Copy link</b> to save a direct link to your ticket.', te: 'టికెట్ లింక్ సేవ్ చేసుకోవాలంటే <b>Copy link</b> నొక్కండి.' },
+      { box: null, en: 'The same details also come to your email.', te: 'ఇవే డీటెయిల్స్ మీ ఈమెయిల్‌కి కూడా వస్తాయి.' },
+    ] },
+    { id: 'track', img: 'r7-track', phone: true, title: { en: 'Track it any time', te: 'ఎప్పుడైనా ట్రాక్ చేయండి' }, lines: [
+      { box: 'head', en: 'To check later, open ONE Desk and tap <b>Track ticket</b>.', te: 'తర్వాత స్టేటస్ చూడాలంటే, ONE Desk ఓపెన్ చేసి <b>Track ticket</b> నొక్కండి.' },
+      { box: 'no', en: 'Type your ticket number. For 0002, typing 2 is enough.', te: 'మీ టికెట్ నంబర్ టైప్ చేయండి. 0002 కోసం 2 అని టైప్ చేసినా చాలు.' },
+      { box: 'find', en: 'Then tap <b>Find my ticket</b>.', te: 'తర్వాత <b>Find my ticket</b> నొక్కండి.' },
+    ] },
+    { id: 'status', img: 'r8-ticket', phone: true, title: { en: 'See where it stands', te: 'మీ టికెట్ స్టేటస్' }, lines: [
+      { box: 'pill', en: 'This label shows the status of your ticket.', te: 'మీ టికెట్ స్టేటస్ ఈ లేబుల్‌లో కనిపిస్తుంది.' },
+      { box: 'pill', en: '<b>Open</b> means received. <b>In progress</b> means someone is working on it. <b>On hold</b> means paused for a reason. <b>Closed</b> means done. <b>Rejected</b> means not accepted.', te: '<b>Open</b> అంటే టికెట్ వచ్చింది. <b>In progress</b> అంటే పని జరుగుతోంది. <b>On hold</b> అంటే ఏదో రీజన్‌తో కొంచెం ఆగింది. <b>Closed</b> అంటే పని అయిపోయింది. <b>Rejected</b> అంటే యాక్సెప్ట్ కాలేదు.' },
+      { box: 'ring', en: 'The ring and this box show the progress, and when work will resume.', te: 'ఈ రింగ్, ఈ బాక్స్ ప్రోగ్రెస్‌ని, పని మళ్లీ ఎప్పుడు స్టార్ట్ అవుతుందో చూపిస్తాయి.' },
+      { box: 'plate', en: 'This is the person handling your ticket.', te: 'మీ టికెట్ చూసుకుంటున్న వ్యక్తి డీటెయిల్స్ ఇవి.' },
+    ] },
+    { id: 'updates', img: 'r9-ticket-history', phone: true, title: { en: 'Updates, notes and reopening', te: 'అప్‌డేట్స్, నోట్స్, రీఓపెన్' }, lines: [
+      { box: 'history', en: '<b>What happened</b> lists every update from the team.', te: '<b>What happened</b> లో టీమ్ ఇచ్చిన ప్రతి అప్‌డేట్ కనిపిస్తుంది.' },
+      { box: 'note', en: 'To tell the team something, write a note here and tap <b>Send note</b>.', te: 'టీమ్‌కి ఏమైనా చెప్పాలంటే, ఇక్కడ నోట్ రాసి <b>Send note</b> నొక్కండి.' },
+      { box: null, en: 'If it was closed but is not fixed, you can reopen it within 7 days.', te: 'టికెట్ క్లోజ్ అయినా ప్రాబ్లమ్ సాల్వ్ కాకపోతే, 7 రోజుల్లో రీఓపెన్ చేయొచ్చు.' },
+    ] },
+    { id: 'email', img: 'r10-email', phone: false, title: { en: 'Check your email', te: 'మీ ఈమెయిల్ చెక్ చేయండి' }, lines: [
+      { box: 'title', en: 'You get an email at every step.', te: 'ప్రతి స్టెప్‌లో మీకు ఈమెయిల్ వస్తుంది.' },
+      { box: 'progress', en: 'It shows your ticket’s progress, and what happens next.', te: 'అందులో మీ టికెట్ ప్రోగ్రెస్, నెక్స్ట్ ఏం జరుగుతుందో ఉంటాయి.' },
+      { box: 'button', en: 'Tap <b>View your ticket</b> to open it.', te: 'టికెట్ ఓపెన్ చేయాలంటే <b>View your ticket</b> నొక్కండి.' },
+      { box: null, en: 'Emails come from Digital Services. Please don’t reply to them; add a note on your ticket instead.', te: 'ఈమెయిల్స్ Digital Services నుంచి వస్తాయి. వాటికి రిప్లై చేయకండి; మీ టికెట్‌లో నోట్ యాడ్ చేయండి.' },
+    ] },
+  ],
+  done: {
+    title: { en: 'You’re all set', te: 'అంతా రెడీ' },
+    lead: { en: 'Report it, track it, get it fixed. Keep your ticket number, and watch your email for updates.', te: 'ప్రాబ్లమ్ చెప్పండి, ట్రాక్ చేయండి, సాల్వ్ చేయించుకోండి. మీ టికెట్ నంబర్ సేవ్ చేసుకోండి, అప్‌డేట్స్ కోసం ఈమెయిల్ చెక్ చేస్తూ ఉండండి.' },
+    open: { en: 'Open ONE Desk', te: 'ONE Desk ఓపెన్ చేయండి', href: 'https://stmarys-desk.supercxo.ai' },
+  },
+};
+
+// Step-by-step guide in English or Telugu. Every sentence is tied to a part of its screenshot: while a sentence is
+// shown or read aloud, that part is outlined in orange and the rest of the picture dims.
+// Back / Next, swipe, arrow keys and the Steps menu move between steps; Listen reads each step and moves on by itself.
+// With the voice on (the default), tapping Start starts the reading too, so the guide talks from its first step.
+// The voice is English only; Telugu is read on screen. Listen plays the recorded natural voice where a recording exists
+// (window.AUDIO.en), and otherwise the most natural English voice the device has, sentence after sentence without gaps.
+(() => {
+  const G = window.GUIDE, REG = window.REGIONS || {}, SIZE = window.SIZES || {}, APP = window.APP || null; // APP: the copy served inside ONE Desk
+  const $ = id => document.getElementById(id), deck = $('deck'), prev = $('prev'), next = $('next'), fill = $('fill'), toc = $('toc'), list = $('toclist'), live = $('live');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const UI = {
+    en: { back: 'Back', next: 'Next', start: 'Start', again: 'Again', listen: 'Listen', stop: 'Stop', steps: 'Steps', all: 'All steps', done: 'Done',
+      step: (n, m) => `Step ${n} of ${m}`, choose: 'Language:', tap: 'Tap any sentence to see where it is on the screen.', restart: 'Start the guide again',
+      demo: 'Screens show demo data.', welcome: 'Welcome', voice: 'Voice:', on: 'On', off: 'Off', novoice: 'This device has no English voice for reading aloud. Open the guide in Chrome, Edge or Safari.' },
+    te: { back: 'వెనక్కి', next: 'నెక్స్ట్', start: 'స్టార్ట్', again: 'మళ్లీ', listen: 'వినండి', stop: 'ఆపండి', steps: 'స్టెప్స్', all: 'అన్ని స్టెప్స్', done: 'పూర్తయింది',
+      step: (n, m) => `స్టెప్ ${n} / ${m}`, choose: 'భాష:', tap: 'ఏ లైన్ నొక్కినా, అది స్క్రీన్‌లో ఎక్కడ ఉందో చూపిస్తుంది.', restart: 'గైడ్ మళ్లీ మొదటి నుంచి',
+      demo: 'స్క్రీన్‌షాట్స్‌లో ఉన్నది డెమో డేటా.', welcome: 'వెల్కమ్', voice: 'వాయిస్:', on: 'ఆన్', off: 'ఆఫ్',
+      enonly: 'వాయిస్ ఇంగ్లీష్‌లో మాత్రమే ఉంది. వినాలంటే పైన English సెలెక్ట్ చేయండి.' },
+  };
+  const strip = window.SAY.strip, AUD = window.AUDIO || {};
+  let lang = (() => { try { const s = localStorage.getItem('guide-lang'); if (s === 'en' || s === 'te') return s; } catch { /* storage off */ }
+    return /^te/i.test(navigator.language || '') ? 'te' : 'en'; })();
+  let voiceOn = (() => { try { return localStorage.getItem('guide-voice') !== 'off'; } catch { return true; } })();
+  const canSpeak = Object.keys((window.AUDIO || {}).en || {}).length > 0 || ('speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined');
+  const voiceHere = () => lang === 'en' && canSpeak; // English only: in Telugu the text is the guide
+  const SPK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+  const N = G.steps.length, last = N + 1; // 0 = welcome, 1..N = steps, last = done
+  let at = 0, line = 0, speaking = false, note = '', q = [], qi = 0;
+  const T = () => UI[lang];
+
+  // ---------- the cards ----------
+  const welcome = () => { const W = G.welcome;
+    return `<section class="card" data-id="start"><div class="kicker">${W.kicker[lang]}</div><h1>${W.title[lang]}</h1>
+      <div class="langrow"><span>${T().choose}</span><button type="button" data-lang="en" aria-pressed="${lang === 'en'}">English</button><button type="button" data-lang="te" aria-pressed="${lang === 'te'}">తెలుగు</button></div>
+      ${lang === 'te' && canSpeak ? `<p class="vhint">${SPK}${T().enonly}</p>` : ''}${voiceHere() ? `<div class="langrow"><span>${T().voice}</span><button type="button" data-voice="on" aria-pressed="${voiceOn}">${SPK}${T().on}</button><button type="button" data-voice="off" aria-pressed="${!voiceOn}">${T().off}</button></div>` : ''}
+      <p class="lead">${W.lead[lang]}</p>
+      <ol class="qsteps">${W.summary.map(s => `<li><div><b>${s[lang][0]}</b>${s[lang][1]}</div></li>`).join('')}</ol>
+      <ul class="chips">${W.chips[lang].map(c => `<li>${c}</li>`).join('')}</ul>
+      <button type="button" class="big" data-go="next">${W.start[lang]}<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></section>`; };
+  const step = i => { const s = G.steps[i - 1], [w, h] = SIZE[s.img] || [];
+    return `<section class="card" data-id="${s.id}" hidden><div class="kicker">${T().step(i, N)}</div><h2>${s.title[lang]}</h2>
+      <figure class="frame ${s.phone ? 'phone' : 'wide'}"><img src="img/${s.img}.jpg" ${w ? `width="${w}" height="${h}"` : ''} alt="${strip(s.title.en)}" ${i > 2 ? 'loading="lazy"' : ''}><span class="hl" aria-hidden="true"></span></figure>
+      <p class="subtitle" aria-hidden="true"><span class="n"></span><span class="t"></span></p>
+      <ol class="lines">${s.lines.map((l, k) => `<li><button type="button" data-line="${k}">${l[lang]}</button></li>`).join('')}</ol>
+      <p class="hint">${T().tap}</p></section>`; };
+  const done = () => { const D = G.done;
+    return `<section class="card" data-id="done" hidden><div class="kicker">${T().done}</div><h2>${D.title[lang]}</h2><p class="lead">${D.lead[lang]}</p>
+      <div class="stack"><a class="big" href="${APP ? APP.home : D.open.href}" ${APP ? '' : 'target="_blank" rel="noopener"'}>${D.open[lang]}</a><button type="button" class="big soft" data-go="first">${T().restart}</button></div>
+      <p class="fine">${T().demo}</p></section>`; };
+  const titleOf = i => i === 0 ? T().welcome : i === last ? G.done.title[lang] : strip(G.steps[i - 1].title[lang]);
+  const cards = () => [...deck.querySelectorAll('.card')];
+
+  const render = () => {
+    document.documentElement.lang = lang;
+    deck.innerHTML = (note ? `<div class="vnote" role="status">${note}</div>` : '') + welcome() + G.steps.map((_, k) => step(k + 1)).join('') + done();
+    $('subt').textContent = G.sub[lang]; $('stepslbl').textContent = T().steps; $('toctitle').textContent = T().all;
+    prev.querySelector('.lbl').textContent = T().back;
+    document.querySelectorAll('.lang [data-lang]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lang === lang)));
+    list.innerHTML = '';
+    for (let k = 0; k <= last; k++) { const li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.className = 'item'; b.innerHTML = `<span>${k === 0 ? '★' : k === last ? '✓' : k}</span>`; b.append(titleOf(k));
+      b.onclick = () => { toc.close(); go(k); }; li.append(b); list.append(li); }
+    ui();
+  };
+
+  // ---------- the highlight: outline the part of the screenshot the sentence talks about ----------
+  const setLine = k => {
+    const c = cards()[at], s = G.steps[at - 1]; if (!s || !c) return;
+    line = Math.max(0, Math.min(s.lines.length - 1, k));
+    const l = s.lines[line], box = l.box && REG[s.img] ? REG[s.img][l.box] : null, hl = c.querySelector('.hl');
+    // a little room around the part, so the outline frames the words instead of running over them
+    const room = (v, px) => `max(2px, calc(${v}% - ${px}px))`, P = 9;
+    if (box) Object.assign(hl.style, { left: room(box[0], P), top: room(box[1], P), right: room(100 - box[0] - box[2], P), bottom: room(100 - box[1] - box[3], P) });
+    hl.classList.toggle('on', !!box);
+    c.querySelector('.subtitle .n').textContent = `${line + 1}/${s.lines.length}`;
+    c.querySelector('.subtitle .t').innerHTML = l[lang];
+    c.querySelectorAll('[data-line]').forEach(b => b.setAttribute('aria-current', String(+b.dataset.line === line)));
+  };
+
+  const go = (n, from) => {
+    n = Math.max(0, Math.min(last, n));
+    const dir = n >= at ? '14px' : '-14px'; at = n;
+    cards().forEach((c, k) => { c.hidden = k !== n; if (k === n) { c.style.setProperty('--dir', dir); c.style.animation = from === 'load' ? 'none' : ''; } });
+    fill.style.width = (100 * n / last) + '%';
+    if (n >= 1 && n <= N) setLine(0);
+    ui();
+    list.querySelectorAll('.item').forEach((b, k) => { if (k === n) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current'); });
+    if (from !== 'load') { scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' }); live.textContent = titleOf(n); }
+    try { history.replaceState(null, '', '#' + cards()[n].dataset.id); } catch { /* the viewer may not allow it */ }
+    const img = cards()[n + 1]?.querySelector('.frame img'); if (img) { const pre = new Image(); pre.src = img.src; } // ready before Next is tapped
+    if (speaking && from !== 'voice') speakFrom(0);
+  };
+  const forward = () => at === 0 ? startGuide() : go(at === last ? 0 : at + 1), back = () => go(at - 1);
+  prev.onclick = back; next.onclick = forward;
+
+  // taps inside the guide: language, start / again, a sentence, the picture
+  document.addEventListener('click', e => {
+    const el = e.target.closest('[data-lang], [data-voice], [data-go], [data-line], .frame'); if (!el) return;
+    if (el.dataset.lang) return setLang(el.dataset.lang);
+    if (el.dataset.voice) return setVoice(el.dataset.voice === 'on');
+    if (el.dataset.go) return el.dataset.go === 'first' ? go(0) : forward();
+    if (el.dataset.line) { setLine(+el.dataset.line); if (speaking) speakFrom(+el.dataset.line); return; }
+    const z = $('zoom'), zi = $('zoomimg'), img = el.querySelector('img'); zi.src = img.src; zi.alt = img.alt; if (z.showModal) z.showModal();
+  });
+  $('zoom').addEventListener('click', e => { if (e.target === $('zoom')) $('zoom').close(); });
+  addEventListener('keydown', e => { if (document.querySelector('dialog[open]') || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+    if (e.key === 'ArrowRight') forward(); else if (e.key === 'ArrowLeft') back(); });
+  let sx = 0, sy = 0; // swipe left for Next, right for Back
+  deck.addEventListener('touchstart', e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+  deck.addEventListener('touchend', e => { const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) dx < 0 ? (at < last && forward()) : back(); }, { passive: true });
+  $('stepsbtn').onclick = () => toc.showModal && toc.showModal();
+  $('tocclose').onclick = () => toc.close();
+  toc.addEventListener('click', e => { if (e.target === toc) toc.close(); });
+
+  // ---------- Listen: the device's own voice, sentence by sentence ----------
+  const synth = window.speechSynthesis, lb = $('listen');
+  if (synth) synth.getVoices(); // starts loading the voice list, so it is ready by the time Start is tapped
+  // the most natural English voice on this device: Microsoft's natural voices (Edge), Apple's Premium and Enhanced voices,
+  // Google's, then the better standard ones. Indian English first among equals; never the novelty or robotic voices.
+  const ODD = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox|fred|junior|kathy|ralph|princess|deranged|hysterical|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley)\b/i;
+  const score = v => (/natural|neural/i.test(v.name) ? 60 : /online/i.test(v.name) ? 50 : 0) + (/premium/i.test(v.name) ? 45 : /enhanced/i.test(v.name) ? 40 : 0)
+    + (/google/i.test(v.name) ? 30 : 0) + (/^(samantha|daniel|karen|moira|tessa|serena|ava|allison|zoe|evan|nathan|alex)\b/i.test(v.name) ? 10 : 0)
+    + (/^en-IN/i.test(v.lang) ? 8 : /^en-GB/i.test(v.lang) ? 4 : /^en-US/i.test(v.lang) ? 3 : 0) + (v.localService === false ? 2 : 0)
+    - (ODD.test(v.name) || /espeak|compact/i.test(v.name) ? 100 : 0);
+  const pick = () => (synth ? synth.getVoices() : []).filter(x => /^en/i.test(x.lang.replace('_', '-'))).sort((a, b) => score(b) - score(a))[0] || null;
+  const voicesReady = () => new Promise(r => { if (!synth || synth.getVoices().length) return r();
+    if (synth.addEventListener) synth.addEventListener('voiceschanged', () => r(), { once: true }); setTimeout(r, 1500); });
+  const queueFor = i => window.SAY.items(G, lang).filter(x => x.at === i);
+  const player = new Audio(), recorded = () => lang === 'en' && Object.keys(AUD.en || {}).length > 0;
+  player.preload = 'auto';
+  const advance = () => { if (speaking) { qi++; speakNext(); } };
+  const speakNext = () => {
+    if (!speaking) return;
+    if (qi >= q.length) { if (at < last) { go(at + 1, 'voice'); q = queueFor(at); qi = 0; return speakNext(); } return stopVoice(); }
+    const item = q[qi], src = (AUD[lang] || {})[item.id];
+    if (src) { // the recorded natural voice
+      player.src = src; player.onplay = () => { if (item.k != null) setLine(item.k); };
+      player.onended = advance; player.onerror = () => deviceSay(item);
+      player.play().catch(() => deviceSay(item));
+      const nx = q[qi + 1] && (AUD[lang] || {})[q[qi + 1].id]; if (nx) { const pre = new Audio(); pre.preload = 'auto'; pre.src = nx; } // the next sentence is ready in time
+      return;
+    }
+    deviceSay(item);
+  };
+  let fresh = true; // just after cancel() Chrome needs a moment before it speaks again; between sentences it doesn't, so they flow on
+  const deviceSay = item => { // the device's own voice
+    if (!synth) return advance();
+    const u = new SpeechSynthesisUtterance(item.say), v = pick();
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-IN';
+    u.rate = 1;
+    u.onstart = () => { if (item.k != null) setLine(item.k); };
+    u.onend = advance;
+    u.onerror = e => { if (speaking && !/interrupted|canceled/.test(e.error)) advance(); };
+    if (fresh) { fresh = false; setTimeout(() => synth.speak(u), 60); } else synth.speak(u);
+  };
+  const speakFrom = k => { if (synth) synth.cancel(); fresh = true; player.pause(); q = queueFor(at); qi = Math.max(0, q.findIndex(x => x.k === k)); speakNext(); };
+  const stopVoice = () => { speaking = false; if (synth) synth.cancel(); player.pause(); ui(); };
+  function ui() {
+    lb.querySelector('.lbl').textContent = speaking ? T().stop : T().listen; lb.setAttribute('aria-pressed', String(speaking));
+    next.querySelector('.lbl').textContent = at === 0 ? T().start : at === last ? T().again : T().next;
+    lb.hidden = !voiceHere(); next.parentElement.style.gridTemplateColumns = lb.hidden ? '1fr 1fr' : '';
+    prev.setAttribute('aria-disabled', String(at === 0));
+  }
+  const begin = () => { speaking = true; ui(); speakFrom(at >= 1 && at <= N ? line : 0); };
+  // Listen, or Start with the voice on: the sound starts straight from the tap, so phones allow it
+  const listen = () => {
+    if (!voiceHere()) return;
+    if (recorded()) return begin();
+    if (synth) synth.speak(new SpeechSynthesisUtterance('')); // wakes the device voice inside the tap (iPhone)
+    const ready = () => { if (!pick()) { note = T().novoice; const keep = at; render(); go(keep, 'load'); return; } begin(); };
+    if (synth && synth.getVoices().length) ready(); else voicesReady().then(ready);
+  };
+  const startGuide = () => { go(1); if (voiceOn) listen(); };
+  lb.onclick = () => { if (speaking) { stopVoice(); setVoice(false); } else { setVoice(true); listen(); } };
+  // the Voice On / Off choice is remembered; Off also stops a reading in progress
+  function setVoice(on) { voiceOn = on; try { localStorage.setItem('guide-voice', on ? 'on' : 'off'); } catch { /* storage off */ }
+    document.querySelectorAll('[data-voice]').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.voice === 'on') === on)));
+    if (!on && speaking) stopVoice(); }
+  function setLang(l) { if (l === lang) return; stopVoice(); lang = l; note = '';
+    try { localStorage.setItem('guide-lang', l); } catch { /* storage off */ }
+    const keep = at; render(); go(keep, 'load'); }
+  addEventListener('pagehide', () => synth && synth.cancel());
+
+  render();
+  try { history.scrollRestoration = 'manual'; } catch { /* not supported */ }
+  const first = cards().findIndex(c => '#' + c.dataset.id === location.hash);
+  go(first > 0 ? first : 0, 'load'); scrollTo(0, 0);
+})();
+</script>
+</body>
+</html>

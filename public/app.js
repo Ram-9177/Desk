@@ -22,7 +22,7 @@ const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fi
   mail: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 8l9 6 9-6"/>', shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>', copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>', send: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
 }[n]}</svg>`;
 const ICONS = ['wifi', 'bolt', 'bed', 'bus', 'tool', 'drop', 'book', 'cash', 'grid'];
-const BLOCK_FIELDS = ['progress', 'ticket_details', 'timeline'];
+const BLOCK_FIELDS = ['progress', 'ticket_details', 'timeline', 'guide'];
 const ACT_ICON = { hold: 'pause', open: 'play', in_progress: 'play', closed: 'check', rejected: 'xmark' };
 const fmtLeft = m => { m = Math.abs(Math.round(m)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60 ? (m % 60) + 'm' : ''}`.trim() : `${m}m`; };
 const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small">Points for closing within SLA, this campus</div>${rows.length ? rows.map((u, i) => `<div class="brow">
@@ -68,6 +68,14 @@ const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.
 const formVals = form => Object.fromEntries(new FormData(form));
 let installEvt = null;
 const installBtn = () => `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install" ${installEvt ? '' : 'hidden'}>${I('plus', 16)} Install ONE Desk app</button></p>`;
+// The step-by-step guides live beside the app, at guide/*.html. A first visit gets a card offering one;
+// Start guide or Not now hides that card for good on this device.
+const guideSeen = k => { try { return localStorage.getItem(k) === '1'; } catch { return true; } };
+const guideCard = (href, kicker, title, sub) => `<div class="guidecard"><span class="chip c1">${I('play', 22)}</span><div class="t"><span class="new">${kicker}</span><b>${title}</b><span class="muted small">${sub}</span></div>
+  <div class="gact"><a class="btn primary" href="${href}" data-gstart>${I('play', 18)} Start guide</a><button type="button" class="btn" data-gskip>Not now</button></div></div>`;
+const wireGuide = (k, redraw) => { const seen = () => { try { localStorage.setItem(k, '1'); } catch { /* storage off */ } };
+  document.querySelectorAll('[data-gstart]').forEach(a => a.addEventListener('click', seen));
+  document.querySelectorAll('[data-gskip]').forEach(b => { b.onclick = () => { seen(); redraw(); }; }); };
 // Picking "Other" in a dropdown shows a box to type the answer (required when the question is).
 document.addEventListener('change', e => { const sel = e.target.closest?.('select[data-other]'); if (!sel) return;
   const box = sel.nextElementSibling, on = sel.value === sel.dataset.other; if (!box?.classList.contains('other-input')) return;
@@ -116,11 +124,15 @@ async function portal(slug, q, view, code) {
   if (pick) return raiseForm(slug, tenant, pick);
   if (view !== 'raise') {
     const opt = (href, ic, cls, title, sub) => `<a class="svc" href="${href}"><span class="chip ${cls}">${I(ic, 22)}</span><span class="t"><b>${title}</b><span class="muted small">${sub}</span></span><span class="chev">${I('chev')}</span></a>`;
+    const seen = guideSeen('guide-seen');
     app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
+      ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with a voice that reads it out. Also in తెలుగు.')}
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
-      ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}</div>${installBtn()}`;
+      ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}
+      ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}</div>${installBtn()}`;
+    wireGuide('guide-seen', route);
     return;
   }
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Raise a ticket</h1></div>
@@ -235,7 +247,8 @@ function login() {
   app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Your Desk,<br><span>Organized</span> in One Place</h1><p class="muted">Sign in to see your service queue, act on tickets and track your progress.</p>
     <form id="f" class="card"><label style="margin-top:0">Email</label><input name="email" type="email" required autofocus><label>Password</label><input name="password" type="password" required>
-    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form></div>`;
+    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form>
+    <p class="muted small" style="text-align:center;margin-top:18px">New to ONE Desk? Step-by-step guides for <a href="guide/provider.html">service providers</a> and <a href="guide/admin.html">admins</a>.</p></div>`;
   $('#bk').onclick = e => { if (history.length > 1) { e.preventDefault(); history.back(); } };
   $('#f').onsubmit = async e => { e.preventDefault();
     try { const r = await api('/auth/login', { method: 'POST', body: formVals(e.target) }); S.token = r.token; localStorage.setItem('tok', r.token); location.hash = '#/c'; }
@@ -290,6 +303,10 @@ function ticketCard(r, services) {
 let pollT;
 async function queue(main) {
   const services = await api('/services');
+  // first sign-in: a card offering the guide for this person's role
+  const gk = 'guide-seen-' + S.me.user.id, adm = S.me.user.role !== 'provider';
+  const staffGuide = () => guideSeen(gk) ? '' : guideCard(`guide/${adm ? 'admin' : 'provider'}.html`, 'Welcome to ONE Desk', adm ? 'Take the admin guide' : 'Take the 2-minute guide',
+    adm ? 'Set up services, people and time rules, step by step.' : 'See, update and close your tickets, step by step, with voice.');
   const st = JSON.parse(sessionStorage.getItem('qf') || '{"status":"open"}');
   const draw = async () => {
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
@@ -301,7 +318,7 @@ async function queue(main) {
     main.innerHTML = `<div class="hello"><div><div class="muted">${greet},</div><h1>${esc(S.me.user.name.split(' ')[0])} 👋</h1><div class="muted small">Here's what's happening at ${esc(tenantObj()?.code || '')} today.</div></div>
       <div style="display:flex;gap:8px;align-items:center"><a href="#/c/me" class="ptsbadge">⭐ ${pts.me} pts</a>
       ${S.me.user.role !== 'provider' ? `<a class="iconbtn" href="#/c/attention">${I('bell')}</a>` : ''}</div></div>
-      <div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--accent)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
+      ${staffGuide()}<div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--accent)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
         <div class="small soft">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
       <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c0')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
@@ -310,6 +327,7 @@ async function queue(main) {
       <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
       <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1"><span class="chip c2 big">${I('check', 30)}</span><p><b>Nothing here — all clear.</b><br><span class="small">New tickets for your services will show up here.</span></p></div>`}</div>`;
     main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
+    wireGuide(gk, draw);
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
     main.querySelectorAll('[data-s]').forEach(b => b.onclick = () => set('status', b.dataset.s)); $('#fsv').onchange = e => set('service', e.target.value);
     $('#fq').onchange = e => set('q', e.target.value);
@@ -869,6 +887,7 @@ async function profile(main) {
     ${pts.history.length ? `<div class="card"><b>Recent points</b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
+      <a href="guide/${u.role === 'provider' ? 'provider' : 'admin'}.html">${I('book')}Guide: how ONE Desk works<span class="chev">${I('chev', 18)}</span></a>
       <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a></div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
   $('#lo').onclick = logout;

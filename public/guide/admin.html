@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1e4b8f">
+<link rel="icon" href="../favicon.png">
+<title>ONE Desk Admin Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,"Segoe UI",sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<style>
+/* Layout: a navy band with the crest and title (orange edge, like ONE Desk's ticket header), a Listen panel,
+   then one column of numbered steps; each step is text beside its screenshot, stacking on phones. */
+:root{
+  --bg:#f3f5f9; --surface:#ffffff; --ink:#18233a; --muted:#5f6a82; --line:#e3e8f0;
+  --brand:#1e4b8f; --brand-soft:#e8eff9; --on-brand:#ffffff; --band:#1e4b8f; --on-band:#ffffff; --on-band-soft:rgba(255,255,255,.78); --on-band-accent:#7fd8a6; --crest-tile:#ffffff; --on-accent:#1f1406;
+  --accent:#f29a1f; --green:#1a9a56; --green-soft:#e2f4ea; --blue:#2f73d9; --blue-soft:#e5effc;
+  --hold:#a65a06; --hold-soft:#fff1db; --warn:#c9363c; --warn-soft:#fde8e8; --grey:#5f6676; --grey-soft:#eef0f4;
+  --shade:rgba(30,55,110,.12);
+  --sans:'Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e1626; --surface:#162038; --ink:#e7ecf6; --muted:#a2adc4; --line:#26324d;
+  --brand:#8fb4f0; --brand-soft:#1c2c4c; --on-brand:#0e1626; --band:#14284d; --on-band:#ffffff; --on-band-soft:rgba(255,255,255,.75);
+  --accent:#f5ab45; --green:#55cf94; --green-soft:#15352a; --blue:#86b4ff; --blue-soft:#1a2c4d;
+  --hold:#f2b45a; --hold-soft:#3a2c12; --warn:#ff8a8a; --warn-soft:#3d1c1c; --grey:#b3bccd; --grey-soft:#253048;
+  --shade:rgba(0,0,0,.4); color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#0e1626; --surface:#162038; --ink:#e7ecf6; --muted:#a2adc4; --line:#26324d;
+  --brand:#8fb4f0; --brand-soft:#1c2c4c; --on-brand:#0e1626; --band:#14284d; --on-band:#ffffff; --on-band-soft:rgba(255,255,255,.75);
+  --accent:#f5ab45; --green:#55cf94; --green-soft:#15352a; --blue:#86b4ff; --blue-soft:#1a2c4d;
+  --hold:#f2b45a; --hold-soft:#3a2c12; --warn:#ff8a8a; --warn-soft:#3d1c1c; --grey:#b3bccd; --grey-soft:#253048;
+  --shade:rgba(0,0,0,.4); color-scheme:dark }
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--ink);font:15.5px/1.6 var(--sans);margin:0}
+.wrap{max-width:1120px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{text-wrap:balance;margin:0;line-height:1.2}
+a{color:var(--brand)}
+code,.mono{font-family:var(--mono);font-size:.92em}
+code{background:var(--brand-soft);color:var(--brand);padding:1px 6px;border-radius:6px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+
+/* navy band */
+header.band{background:var(--band);color:var(--on-band);border-bottom:5px solid var(--accent)}
+header.band .wrap{padding-block:30px 34px}
+.brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:14.5px;letter-spacing:.2px;color:var(--on-band-soft)}
+.brand .crest{width:44px;height:44px;border-radius:12px;background:var(--crest-tile);display:grid;place-items:center;flex:none}
+.brand .crest img{height:34px;width:auto}
+.closeg{float:right;display:grid;place-items:center;width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,.16);color:var(--on-band);text-decoration:none;font-size:18px;font-weight:800}
+.closeg:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.brand b{display:block;color:var(--on-band);font-size:16px}
+.lede{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:28px;align-items:end;margin-top:22px}
+.lede h1{font-size:clamp(28px,4.4vw,44px);font-weight:800;letter-spacing:-.6px}
+.lede h1 span{color:var(--on-band-accent)}
+.lede p{margin:0;color:var(--on-band-soft);max-width:52ch}
+
+/* listen panel */
+.listen{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:14px 16px;margin-top:-22px;position:relative;box-shadow:0 12px 30px -16px var(--shade)}
+.lplay{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:10px;background:var(--brand);color:var(--on-brand);font-weight:700;padding:11px 18px;border-radius:14px;min-height:22px}
+.lplay:hover{filter:brightness(1.08)}.lplay:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.lctl{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);font-weight:600;font-size:14px}
+.lctl:hover{border-color:var(--brand)}.lctl:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.lrate{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;color:var(--muted);font-weight:600}
+.lrate select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:6px 8px}
+.lstatus{flex:1 1 220px;min-width:0;font-size:13.5px;color:var(--muted)}
+.lnone{display:none;margin:0;font-size:14px;color:var(--muted)}
+.listen.nospeech>*{display:none}.listen.nospeech .lnone{display:block}
+.lbtn{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;color:var(--brand);background:var(--brand-soft);padding:3px 10px;border-radius:99px;vertical-align:middle;margin-left:8px;white-space:nowrap}
+.lbtn:hover{filter:brightness(.97)}.lbtn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.reading{background:var(--brand-soft);border-radius:16px;box-shadow:inset 4px 0 0 var(--accent)}
+.lmini{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--band);color:var(--on-band);border-top:3px solid var(--accent);
+  padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));display:flex;gap:10px;align-items:center}
+.lmini .t{flex:1;min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lmini button{all:unset;cursor:pointer;background:rgba(255,255,255,.14);color:#fff;font-weight:700;font-size:13.5px;padding:8px 14px;border-radius:12px}
+.lmini button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+
+section.guide{padding-block:26px 40px}
+/* the one-minute summary at the top: five plain steps and three short reminders */
+.quick{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:20px;margin:0 -2px 8px}
+.quick h3{font-size:21px;font-weight:800}
+.quick .sub{color:var(--muted);margin:6px 0 16px;max-width:62ch}
+.qsteps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px;counter-reset:q}
+.qsteps li{counter-increment:q;background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:14px 14px 16px;font-size:15px;line-height:1.5;min-width:0}
+.qsteps li::before{content:counter(q);display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-weight:800;margin-bottom:10px;font-variant-numeric:tabular-nums}
+.qsteps b{display:block;font-size:16.5px;margin-bottom:3px}
+.qnote{list-style:none;margin:16px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.qnote li{background:var(--brand-soft);color:var(--brand);font-weight:600;font-size:13.5px;padding:6px 12px;border-radius:99px}
+.qmore{margin:14px 0 0;font-weight:700}.qmore a{text-decoration:none}
+.intro{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:30px;padding:10px;margin-inline:-10px}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px 16px}
+.fact .k{font-size:11.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--muted)}
+.fact .v{font-weight:600;margin-top:4px}
+
+.part{font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--brand);margin:36px 0 4px}
+.part + h2{font-size:24px;font-weight:800;margin-bottom:14px}
+
+.step{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:28px;align-items:start;padding:22px 12px;margin-inline:-12px;border-top:1px solid var(--line);transition:background .2s}
+.step.phone{grid-template-columns:minmax(0,1fr) minmax(0,300px)}
+.step .txt{display:grid;grid-template-columns:40px minmax(0,1fr);gap:14px}
+.num{width:36px;height:36px;border-radius:50%;background:var(--brand);color:var(--on-brand);display:grid;place-items:center;font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
+.step h3{font-size:18px;font-weight:700;margin:5px 0 6px}
+.step p{margin:0 0 10px;max-width:62ch}
+.step ul{margin:0 0 10px;padding-left:18px}.step li{margin:3px 0}
+figure{margin:0;min-width:0}
+.shot{display:block;width:100%;max-width:100%;height:auto;border-radius:14px;border:1px solid var(--line);box-shadow:0 10px 30px -14px var(--shade);cursor:zoom-in;background:var(--surface)}
+.phone .shot{border-radius:26px;border:6px solid var(--ink);max-width:300px;margin-left:auto}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.phone .pair{grid-template-columns:minmax(0,1fr)}
+figcaption{font-size:12.5px;color:var(--muted);margin-top:8px;text-align:center}
+
+.pill{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:8px;white-space:nowrap}
+.p-blue{background:var(--blue-soft);color:var(--blue)}.p-ok{background:var(--green-soft);color:var(--green)}.p-hold{background:var(--hold-soft);color:var(--hold)}
+.p-warn{background:var(--warn-soft);color:var(--warn)}.p-brand{background:var(--brand-soft);color:var(--brand)}.p-grey{background:var(--grey-soft);color:var(--grey)}
+.tip{display:flex;gap:10px;background:var(--brand-soft);border-radius:12px;padding:10px 12px;font-size:14px;margin-top:8px}
+.tip b{color:var(--brand);flex:none}
+.tip.new{background:var(--hold-soft)}.tip.new b{color:var(--hold)}
+.tbl{overflow-x:auto;margin:6px 0 10px}
+table{border-collapse:collapse;width:100%;font-size:14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:700}
+tr:last-child td{border-bottom:0}
+td.n{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+kbd{font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:1px 6px;background:var(--surface)}
+
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px;margin-top:34px}
+.summary div{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px 16px;min-width:0}
+.summary b{display:block;margin-bottom:4px}
+.others{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:30px;padding-top:18px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
+.others a{font-weight:700;text-decoration:none;background:var(--surface);border:1px solid var(--line);padding:7px 12px;border-radius:12px}
+footer{color:var(--muted);font-size:13px;padding-block:0 90px}
+
+dialog.zoom{border:0;padding:0;background:transparent;max-width:min(1200px,94vw);max-height:92vh}
+dialog.zoom::backdrop{background:rgba(10,15,30,.78)}
+dialog.zoom img{display:block;max-width:100%;max-height:92vh;border-radius:12px}
+dialog.zoom form{position:absolute;top:8px;right:8px}
+dialog.zoom button{all:unset;cursor:pointer;background:#fff;color:#111;border-radius:50%;width:34px;height:34px;display:grid;place-items:center;font-weight:700}
+
+@media (max-width:860px){
+  .lede{grid-template-columns:minmax(0,1fr)}
+  .step,.step.phone{grid-template-columns:minmax(0,1fr)}
+  .phone .shot{margin:0 auto}
+  .intro{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:620px){
+  .pair{grid-template-columns:minmax(0,1fr)}
+  .step .txt{grid-template-columns:32px minmax(0,1fr);gap:10px}.num{width:30px;height:30px;font-size:13.5px}
+  .lstatus{flex-basis:100%}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<header class="band">
+  <div class="wrap">
+    <a class="closeg" href="../#/c" aria-label="Close the guide" onclick="if(document.referrer.indexOf(location.origin)===0&&history.length>1){history.back();return false}">✕</a><div class="brand"><span class="crest"><img src="img/logo-mark.png" width="132" height="192" alt=""></span><div><b>ONE Desk</b>St. Mary's service desk · Admin guide</div></div>
+    <div class="lede">
+      <h1>Running <span>ONE Desk</span></h1>
+      <p>For campus admins and Digital Services. Set up services and their forms, manage people and time rules, watch progress and control emails. Tap any screenshot to see it larger.</p>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+<div class="listen" id="listen" role="region" aria-label="Listen to this guide">
+  <button type="button" class="lplay" id="lplay"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg><span>Listen to this guide</span></button>
+  <button type="button" class="lctl" id="lpause" hidden>Pause</button>
+  <button type="button" class="lctl" id="lstop" hidden>Stop</button>
+  <label class="lrate" for="lrate">Speed <select id="lrate"><option value="0.85">Slow</option><option value="1" selected>Normal</option><option value="1.2">Fast</option></select></label>
+  <span class="lstatus" id="lstatus" aria-live="polite">Reads every step aloud with your device's voice. Each step also has its own Listen button.</span>
+  <p class="lnone">Reading aloud isn't available in this app. Open the guide in Chrome, Edge or Safari to listen.</p>
+</div>
+<section class="guide" id="admin">
+  <div class="intro" data-read data-title="About this guide" data-say="Running ONE Desk. This guide is for campus admins and Digital Services. A campus admin runs one campus: its services, people, time rules and reports. The super admin, Digital Services, sees all campuses and also sets up email. Both sign in with Staff login, like providers.">
+    <div class="fact"><div class="k">Campus admin</div><div class="v">Runs one campus: services, people, SLA, reports</div></div>
+    <div class="fact"><div class="k">Super admin</div><div class="v">Digital Services: all campuses, plus email setup</div></div>
+    <div class="fact"><div class="k">Sign in</div><div class="v">Staff login, same as providers</div></div>
+  </div>
+
+  <div class="part">Part 1</div><h2>Set up services</h2>
+
+  <div class="step" data-read><div class="txt"><span class="num">1</span><div>
+    <h3>Services: the teams people can ask</h3>
+    <p>Each card shows the service, its <b>form type</b>, its <b>providers</b> and who it escalates to. A red <span class="pill p-warn">No provider assigned</span> means its tickets have nobody to work on them. Fix that first.</p>
+    <p>Click <b>+ New service</b> to add one, or <b>Edit</b> to change one.</p>
+  </div></div><figure><img class="shot" src="img/a1-services.jpg" width="1375" height="950" alt="Services page with form types, providers and escalation" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">2</span><div>
+    <h3>Create or edit a service</h3>
+    <ul><li><b>Name</b>, <b>code</b> (short, used in QR links, e.g. <code>MAINT</code>) and an <b>icon</b></li>
+      <li><b>Form type</b>: what requestors are asked (see the table below)</li>
+      <li><b>Blocks</b> and <b>Floors</b>: one per line. Leave Blocks empty to let people type it.</li>
+      <li><b>Service provider 1 and 2</b>: who handles the tickets (both see the same queue)</li>
+      <li><b>Escalation person</b>: who gets the ticket if it misses its target. Empty means the admin.</li></ul>
+    <div class="tbl"><table><thead><tr><th>Form type</th><th>Requestors are asked</th></tr></thead><tbody>
+      <tr><td><b>General</b></td><td>A simple location box</td></tr>
+      <tr><td><b>Location</b></td><td>Block · Floor · Location / room</td></tr>
+      <tr><td><b>Student</b></td><td>Branch · Student ID · Department (other people give their own ID instead)</td></tr>
+      <tr><td><b>Location &amp; Student</b></td><td>Both</td></tr></tbody></table></div>
+  </div></div><figure><img class="shot" src="img/a2-service-edit.jpg" width="850" height="964" alt="Edit service: name, icon, form type, floors, providers and escalation person" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">3</span><div>
+    <h3>Add your own questions</h3>
+    <p>Under <b>Questions on the form</b>, click <b>Add a question</b>. Type the question, choose the answer type (short answer, dropdown, date, yes/no…) and use ↑ ↓ to reorder. The <b>preview</b> shows exactly what requestors will see.</p>
+    <div class="tip new"><b>Note</b><span>Tick <b>Required</b> on the questions people must answer: they get a red star, and the form won't send until they're filled. Tick only the ones that matter, so raising a ticket stays quick. Add an option called <b>Other</b> to a dropdown and people who pick it get a box to type their own answer.</span></div>
+  </div></div><figure><img class="shot" src="img/a3-questions.jpg" width="850" height="635" alt="Question builder with the live preview" loading="lazy"></figure></div>
+
+  <div class="part">Part 2</div><h2>People and rules</h2>
+
+  <div class="step" data-read><div class="txt"><span class="num">4</span><div>
+    <h3>People: staff accounts</h3>
+    <ul><li><b>Edit</b>: change name, email or phone</li>
+      <li><b>Reset password</b>: sends a new temporary password; they choose a new one at their next sign-in</li>
+      <li><b>Deactivate</b>: they can't sign in and are removed from their services; their history stays</li></ul>
+    <p>Each row shows the person's role, services and last sign-in. <span class="pill p-hold">Must set password</span> means they haven't signed in yet.</p>
+  </div></div><figure><img class="shot" src="img/a4-people.jpg" width="1375" height="950" alt="People page with Edit, Reset password and Deactivate" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">5</span><div>
+    <h3>Add a person</h3>
+    <p>Click <b>Add person</b>, enter their name, email and phone, choose the role, and tick the <b>services</b> they handle. A service that already has two providers shows as full.</p>
+    <p>They get a <b>Welcome to ONE Desk</b> email with their role, services, the sign-in link and a temporary password. The password also appears on screen with a Copy button. When they choose their own password, they get a <b>Your password was changed</b> email.</p>
+  </div></div><figure><img class="shot" src="img/a4b-add-person.jpg" width="705" height="1011" alt="Add person with role and service check boxes" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">6</span><div>
+    <h3>SLA &amp; points: the time rules</h3>
+    <ul><li><b>Working hours</b> and <b>working days</b>: the clock only runs inside these</li>
+      <li><b>Time to close</b> per priority: Critical 3h, High 5h, Medium 8h, Low 24h (3 days)</li>
+      <li><b>Escalation</b>: how many working days past the target a ticket waits before it goes to the escalation person (0 = as soon as it's missed). The requestor is told when it happens.</li>
+      <li><b>Daily ticket limit, per email</b>: how many tickets one email can raise a day on the public form. Student 5, Faculty 9, Staff 5, Parent 5, Visitor 5. Past it, the person is told when they can raise the next one.</li>
+      <li><b>Hold reasons</b>: each with its own hold limit. Add your own (e.g. <i>Waiting for exam cell, 4h</i>).</li></ul>
+    <p>Lower on the page: the points rules and the <b>leaderboard</b>.</p>
+  </div></div><figure><img class="shot" src="img/a5-sla.jpg" width="654" height="1155" alt="SLA settings: working hours, time to close, escalation and daily ticket limits" loading="lazy"></figure></div>
+
+  <div class="part">Part 3</div><h2>Keep an eye on things</h2>
+
+  <div class="step" data-read><div class="txt"><span class="num">7</span><div>
+    <h3>Attention: what needs you now</h3>
+    <p>Services with no provider, <b>escalated</b> and <b>overdue</b> tickets, holds past their limit, and emails that failed to send (with <b>Resend</b>). On a good day this page is empty.</p>
+  </div></div><figure><img class="shot" src="img/a7-attention.jpg" width="1375" height="775" alt="Attention page with escalated and overdue tickets" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">8</span><div>
+    <h3>Reports</h3>
+    <p>Pick the last 7, 30, 90 or 365 days, or <b>Custom dates</b>: choose <b>From</b> and <b>To</b>, then <b>Show</b>. You get tickets raised and closed, average time to close, the <b>on-time score</b>, tickets per day, by priority and by age, a per-service table and the provider leaderboard.</p>
+    <p><b>Export CSV</b> on Home downloads the ticket list.</p>
+  </div></div><figure><img class="shot" src="img/a6-reports.jpg" width="1375" height="950" alt="Reports with custom From and To dates" loading="lazy"></figure></div>
+
+  <div class="part">Part 4 · Super admin</div><h2>Emails</h2>
+
+  <div class="step" data-read><div class="txt"><span class="num">9</span><div>
+    <h3>Connection</h3>
+    <p>Emails are sent from Digital Services through Power Automate. This tab shows if it's <span class="pill p-blue">Connected</span>, with counts of sent and failed emails.</p>
+    <p>Paste the <b>Flow URL</b> and <b>Secret key</b> from your flow, set the <b>Public address</b> to <code>https://stmarys-desk.supercxo.ai</code> (used in email buttons), tick <b>Send emails</b>, and save. Use <b>Send a test email</b> after any change.</p>
+  </div></div><figure><img class="shot" src="img/a8-email.jpg" width="1375" height="950" alt="Email connection page with status and test email" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">10</span><div>
+    <h3>Which steps send email</h3>
+    <p>Every step that sends an email is listed with who receives it, including <b>New staff account</b> (the welcome email) and <b>Password changed</b>. Switch one off to stop it; it's then logged as skipped. <b>Preview</b> shows the real email.</p>
+  </div></div><figure><img class="shot" src="img/a9-email-steps.jpg" width="1375" height="950" alt="List of email steps with switches" loading="lazy"></figure></div>
+
+  <div class="step" data-read><div class="txt"><span class="num">11</span><div>
+    <h3>Change the wording</h3>
+    <p>Click <b>Edit template</b>. Click the chips to insert details like <code>{{staff_name}}</code> or <code>{{ticket_no}}</code>. The green chips add designed sections: progress tracker, ticket details, latest updates and the guide link. The preview updates as you type. <b>Reset to default</b> brings back the original.</p>
+  </div></div><figure><img class="shot" src="img/a10-template.jpg" width="1295" height="993" alt="Template editor for the welcome email, with preview" loading="lazy"></figure></div>
+
+  <div class="summary">
+    <div><b>QR code for a campus</b><code>https://stmarys-desk.supercxo.ai/#/d/smru</code></div>
+    <div><b>QR code for one service</b><code>…/#/d/smru?service=MAINT</code></div>
+    <div><b>Campuses</b>Super admin → <b>Tenants</b> to add a campus, then switch to it (top right) to set it up.</div>
+  </div>
+
+  <nav class="others" aria-label="Other guides">Other guides: <a href="requestor.html">Requestor guide</a> <a href="provider.html">Provider guide</a></nav>
+</section>
+</main>
+
+<footer class="wrap">ONE Desk · St. Mary's Group service desk · Screens show demo data.</footer>
+
+<dialog class="zoom" id="zoom"><form method="dialog"><button aria-label="Close">✕</button></form><img id="zoomimg" alt=""></dialog>
+<div class="lmini" id="lmini" hidden><span class="t" id="lminit"></span><button type="button" id="lminipause">Pause</button><button type="button" id="lministop">Stop</button></div>
+<script>
+// Screenshots open larger on click.
+(() => {
+  const z = document.getElementById('zoom'), zi = document.getElementById('zoomimg');
+  document.querySelectorAll('img.shot').forEach(img => img.addEventListener('click', () => { zi.src = img.src; zi.alt = img.alt; if (z.showModal) z.showModal(); }));
+  z.addEventListener('click', e => { if (e.target === z) z.close(); });
+})();
+
+// Listen: reads the guide aloud with the reader's own device voice (Web Speech API), one part at a time.
+// The part being read is highlighted and scrolled into view. Where the browser has no voice, the panel says so.
+(() => {
+  const synth = window.speechSynthesis, panel = document.getElementById('listen');
+  if (!synth || typeof SpeechSynthesisUtterance === 'undefined') { panel.classList.add('nospeech'); return; }
+  const parts = [...document.querySelectorAll('[data-read]')], $ = id => document.getElementById(id);
+  const play = $('lplay'), pause = $('lpause'), stop = $('lstop'), rateSel = $('lrate'), status = $('lstatus'), mini = $('lmini'), miniT = $('lminit');
+  const idle = status.textContent, reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let voice = null, idx = -1, single = false, chunks = [], ci = 0, on = false, paused = false;
+
+  // Indian English first, then any English voice on this device
+  const pick = () => { const v = synth.getVoices(); voice = v.find(x => /^en[-_]IN/i.test(x.lang)) || v.find(x => /^en[-_]GB/i.test(x.lang)) || v.find(x => /^en/i.test(x.lang)) || null; };
+  pick(); if (synth.addEventListener) synth.addEventListener('voiceschanged', pick); else synth.onvoiceschanged = pick;
+
+  // the words of one part: its headings, paragraphs, list items, table rows and tips, in order
+  const say = el => {
+    if (el.dataset.say) return el.dataset.say;
+    const out = [];
+    el.querySelectorAll('h1, h2, h3, p, li, tr, .tip, .fact').forEach(n => {
+      if (n.closest('figure, .lbtn, .listen') || n.parentElement.closest('li, tr, .tip, .fact, p')) return;
+      // innerText keeps line breaks between a bold title and its text, so they are read as two sentences
+      let t = n.matches('tr') ? [...n.cells].map(c => c.textContent.trim()).filter(Boolean).join(', ') : (n.innerText || n.textContent);
+      t = t.replace(/\s*Listen\s*$/, '').replace(/\s*\n+\s*/g, '. ').replace(/([.!?:])\./g, '$1').replace(/\s+/g, ' ').trim(); if (t) out.push(/[.!?:]$/.test(t) ? t : t + '.');
+    });
+    return out.join(' ').replace(/→/g, ', then ').replace(/·/g, ',');
+  };
+  // short pieces: long utterances stop early in some browsers
+  const split = text => { const res = []; let cur = '';
+    for (const s of text.split(/(?<=[.!?:])\s+/)) { if ((cur + ' ' + s).length > 220 && cur) { res.push(cur); cur = s; } else cur = cur ? cur + ' ' + s : s; }
+    if (cur) res.push(cur); return res; };
+  const label = i => { const h = parts[i].querySelector('h1, h3'); return parts[i].dataset.title || (h ? h.textContent : '').replace(/Listen$/, '').trim(); };
+  const show = i => {
+    parts.forEach(p => p.classList.toggle('reading', p === parts[i]));
+    const t = i < 0 ? idle : `${paused ? 'Paused' : 'Reading'} ${i + 1} of ${parts.length}: ${label(i)}`;
+    status.textContent = t; miniT.textContent = t;
+    if (i >= 0 && !paused) parts[i].scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
+  };
+  const ui = () => {
+    play.querySelector('span').textContent = on ? 'Restart from the top' : 'Listen to this guide';
+    pause.hidden = stop.hidden = !on; pause.textContent = paused ? 'Resume' : 'Pause'; mini.hidden = !on;
+    $('lminipause').textContent = paused ? 'Resume' : 'Pause';
+  };
+  const speak = () => {
+    if (!on) return;
+    if (ci >= chunks.length) return next();
+    const u = new SpeechSynthesisUtterance(chunks[ci]);
+    u.rate = Number(rateSel.value) || 1; if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-IN';
+    u.onend = () => { if (on && !paused) { ci++; speak(); } };
+    u.onerror = e => { if (on && !/interrupted|canceled/.test(e.error)) { ci++; speak(); } };
+    synth.speak(u);
+  };
+  const begin = (i, only) => { synth.cancel(); on = true; paused = false; single = only; idx = i; chunks = split(say(parts[i])); ci = 0; ui(); show(i); setTimeout(speak, 60); };
+  const next = () => { if (single || idx + 1 >= parts.length) return end(); begin(idx + 1, false); };
+  const end = () => { on = false; paused = false; synth.cancel(); idx = -1; show(-1); ui(); };
+  const toggle = () => { if (!on) return; paused = !paused; if (paused) synth.pause(); else { synth.resume(); if (!synth.speaking) speak(); } ui(); show(idx); };
+
+  play.onclick = () => begin(0, false);
+  pause.onclick = toggle; $('lminipause').onclick = toggle;
+  stop.onclick = end; $('lministop').onclick = end;
+  rateSel.onchange = () => { try { localStorage.setItem('guide-rate', rateSel.value); } catch { /* storage off */ } if (on && !paused) begin(idx, single); };
+  try { const r = localStorage.getItem('guide-rate'); if (r && [...rateSel.options].some(o => o.value === r)) rateSel.value = r; } catch { /* storage off */ }
+
+  // a small Listen button on every part (reads just that part)
+  parts.forEach((p, i) => {
+    const h = p.querySelector('h3') || p.querySelector('h1'); if (!h) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'lbtn'; b.setAttribute('aria-label', 'Listen to: ' + h.textContent.trim());
+    b.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>Listen';
+    b.onclick = () => begin(i, true); h.append(b);
+  });
+  addEventListener('pagehide', () => synth.cancel());
+  ui();
+})();
+</script>
+</body>
+</html>

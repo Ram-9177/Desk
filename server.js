@@ -229,9 +229,12 @@ async function ticketVars(t, extra = {}) {
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, ...extra };
 }
 const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' };
+// The step-by-step guides the app serves (public/guide), linked from the welcome email and a requestor's first ticket.
+const guideLink = kind => ({ kind, url: `${base()}/guide/${kind}.html` });
 const staffVars = async (u, pw) => {
   const svcs = (await all('SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.is_active=1 ORDER BY s.name', u.id)).map(r => r.name);
   return { staff_name: u.name, staff_email: u.email, temp_password: pw, campus: u.tenant_id ? (await tenantRow(u.tenant_id))?.name : 'ONE Desk', role_name: ROLE_NAMES[u.role] || 'Staff',
+    guide: guideLink(u.role === 'provider' ? 'provider' : 'admin'),
     services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
 };
 const trackUrl = async (t) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${t.tracking_token}`; };
@@ -343,11 +346,12 @@ async function createTicket(tenant, b, opts) {
     if (ex) return ex;
   }
   if (portal) await checkDailyLimit(tenant, b);
-  let t;
+  let t, first = false; // first: this person's first ticket here, so the email also links the guide
   try { t = await tx(async () => {
     const email = b.email ? String(b.email).toLowerCase().trim() : null, phone = b.phone ? String(b.phone).trim() : null;
     let r = (email && await one('SELECT * FROM requestors WHERE tenant_id=? AND lower(email)=?', tenant.id, email))
       || (phone && await one('SELECT * FROM requestors WHERE tenant_id=? AND phone=?', tenant.id, phone));
+    first = !r || !(await one('SELECT 1 AS x FROM tickets WHERE requestor_id=? LIMIT 1', r.id));
     if (r) await run('UPDATE requestors SET name=?, email=coalesce(?,email), phone=coalesce(?,phone), requestor_type=coalesce(?,requestor_type), identifier=coalesce(?,identifier), department=coalesce(?,department) WHERE id=?',
       b.name, email, phone, b.requestor_type || null, b.identifier || null, b.department || null, r.id);
     else r = await insert('requestors', { id: uid(), tenant_id: tenant.id, name: b.name, email, phone, requestor_type: b.requestor_type, identifier: b.identifier, department: b.department });
@@ -366,7 +370,7 @@ async function createTicket(tenant, b, opts) {
   }
   const prov = await providersFor(tenant.id, svc.id);
   const v = await ticketVars(t);
-  await notify(t, [b.email || null], 'created', v);
+  await notify(t, [b.email || null], 'created', first ? { ...v, guide: guideLink('requestor') } : v);
   await notify(t, prov.map(p => p.email), 'new_ticket', v);
   return t;
 }

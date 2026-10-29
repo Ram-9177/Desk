@@ -111,6 +111,12 @@ try {
   const welcome = (await q("SELECT subject, body FROM notifications WHERE template_key='invite' AND recipient='pavan@example.com'"))[0];
   check('welcome email has role, services, sign-in link and password', /Welcome/.test(welcome.subject) && welcome.body.includes('Service provider') && welcome.body.includes('Not assigned yet')
     && welcome.body.includes('pavan@example.com') && welcome.body.includes(pavan.temp) && welcome.body.includes('/#/login'));
+  const inviteTo = async to => (await q("SELECT html, text_body FROM notifications WHERE template_key='invite' AND recipient=?", to))[0];
+  check('welcome emails link the guide for the role (provider guide, admin guide)', (await inviteTo('pavan@example.com')).html.includes('/guide/provider.html')
+    && (await inviteTo('pavan@example.com')).text_body.includes('/guide/provider.html') && (await inviteTo('asha@example.com')).html.includes('/guide/admin.html'));
+  const gp = await fetch(APP + '/guide/requestor.html');
+  check('the app serves the guides at /guide/ (requestor, provider, admin, pictures)', gp.ok && (await gp.text()).includes('window.GUIDE') && (await fetch(APP + '/guide/provider.html')).ok
+    && (await fetch(APP + '/guide/admin.html')).ok && (await fetch(APP + '/guide/img/r1-portal.jpg')).ok);
 
   sec('Services and form types');
   const mkSvc = async (t, body) => ok(`create service ${body.code}`, '/services', { ...t, method: 'POST', body });
@@ -450,6 +456,9 @@ try {
   const day = async (email, type, n) => { let r; for (let i = 0; i < n; i++) r = await raise('alpha', { service_id: trans.id, name: 'Day', email, subject: 'Daily ' + i, location: 'Gate', requestor_type: type }); return r; };
   check('limits are on the SLA page: 5 a day, 9 for faculty', (await api('/sla', { token: T.asha })).data.daily_limits?.student === 5 && (await api('/sla', { token: T.asha })).data.daily_limits?.faculty === 9);
   check('a student email raises 5 tickets today', (await day('stud@example.com', 'student', 5)).status === 200);
+  const studMails = await q("SELECT n.html FROM notifications n JOIN tickets t ON t.id=n.ticket_id WHERE n.template_key='created' AND n.recipient='stud@example.com' ORDER BY t.ticket_no");
+  check('only the first ticket’s email links the requestor guide', studMails.length === 5 && studMails[0].html.includes('/guide/requestor.html')
+    && studMails.slice(1).every(m => !m.html.includes('/guide/')), studMails.map(m => m.html.includes('/guide/')).join(','));
   r = await day('stud@example.com', 'student', 1);
   check('6th is refused with when they can raise again', r.status === 429 && r.error.code === 'DAILY_LIMIT' && /5 tickets a day/.test(r.error.message) && /after/.test(r.error.message), r.error?.message);
   check('a faculty email raises 9 tickets today', (await day('fac@example.com', 'faculty', 9)).status === 200);
@@ -534,7 +543,7 @@ async function uiSmoke(tok, id) {
       check(`${name}`, found && !errors.length && !tags, !found ? `missing ${probe}` : tags ? `shows ${tags}` : errors.join(' | ').slice(0, 200));
     };
     await visit('campus picker', '/', null, 'a.svc');
-    await visit('campus intro', '/d/alpha', null, 'a.svc[href*="raise"]');
+    await visit('campus intro, with the first-visit guide card', '/d/alpha', null, '.guidecard a[href="guide/requestor.html"]');
     await visit('service list', '/d/alpha/raise', null, 'a.svc[href*="ELEC"]');
     await visit('raise form (location type)', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
     await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
@@ -542,6 +551,7 @@ async function uiSmoke(tok, id) {
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
+    await visit('provider home offers the provider guide at first sign-in', '/c', tok.pavan, '.guidecard a[href="guide/provider.html"]');
     await visit('provider ticket workspace', '/c/t/' + id.t1, tok.pavan, '#act #to');
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
@@ -553,6 +563,17 @@ async function uiSmoke(tok, id) {
     await visit('admin audit', '/c/audit', tok.asha, '#main table');
     await visit('super admin email page', '/c/email', tok.sa, '#cf [name=url]');
     await visit('super admin tenants', '/c/tenants', tok.sa, '#main table');
+    // the guide inside the app: Voice on/off, a close button back to the app, and Start opens step 1 with room around the outline
+    errors.length = 0; await send('Page.navigate', { url: `${APP}/guide/requestor.html` });
+    let gok = false; for (let i = 0; i < 24 && !gok; i++) { await sleep(250); gok = await js(`return !!document.querySelector('.card[data-id="start"] [data-voice="on"]') && !!document.querySelector('a.closeg[href="../"]');`).catch(() => false); }
+    const g1 = gok && await js(`document.querySelector('[data-voice="off"]').click(); document.querySelector('.card[data-id="start"] .big').click(); await new Promise(r => setTimeout(r, 700));
+      const c = document.querySelector('.card[data-id="open"]'), h = c.querySelector('.hl'), img = c.querySelector('.frame img').getBoundingClientRect(), b = h.getBoundingClientRect();
+      const shot = { shown: !c.hidden, on: h.classList.contains('on'), roomy: b.height > img.height * 0.22 + 8 };
+      document.querySelector('.lang [data-lang="te"]').click(); // Telugu is read on screen: no voice, a note pointing to English
+      shot.teQuiet = document.querySelector('#listen').hidden && !document.querySelector('[data-voice]') && !!document.querySelector('.card[data-id="start"] .vhint');
+      localStorage.removeItem('guide-lang'); return shot;`);
+    check('guide in the app opens; Start shows step 1 with the outline clear of the words', gok && g1?.shown && g1.on && g1.roomy && !errors.length, JSON.stringify(g1) + errors.join(' | ').slice(0, 200));
+    check('the voice is English only: Telugu shows the text, no Listen button', g1?.teQuiet, JSON.stringify(g1));
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }
 }
