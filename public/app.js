@@ -41,7 +41,7 @@ async function api(path, { method = 'GET', body, raw } = {}) {
   const r = await fetch('/api' + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
   if (raw) return r;
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401 && S.token && !path.startsWith('/auth')) { logout(); throw new Error('Session expired'); }
+  if (r.status === 401 && S.token && !path.startsWith('/auth')) { logout(true); throw new Error('Session expired'); }
   if (!r.ok) { const e = new Error(j.error?.message || 'Error'); e.details = j.error?.details; e.status = r.status; e.code = j.error?.code; throw e; }
   return j.data;
 }
@@ -241,8 +241,11 @@ async function ticketPage(slug, no, q) {
 }
 
 // ================= STAFF =================
-function logout() { localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; location.hash = '#/login'; }
+// After signing in again, staff return to the screen they were opening (a ticket from an email button), not always Home.
+function logout(expired) { if (expired && location.hash.startsWith('#/c')) sessionStorage.setItem('after-login', location.hash);
+  localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; location.hash = '#/login'; }
 function login() {
+  if (S.token && location.hash.startsWith('#/login')) return location.replace('#/c'); // already signed in (e.g. the Sign in button in an email)
   document.body.className = 'console';
   app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Your Desk,<br><span>Organized</span> in One Place</h1><p class="muted">Sign in to see your service queue, act on tickets and track your progress.</p>
@@ -251,7 +254,9 @@ function login() {
     <p class="muted small" style="text-align:center;margin-top:18px">New to ONE Desk? Step-by-step guides for <a href="guide/provider.html">service providers</a> and <a href="guide/admin.html">admins</a>.</p></div>`;
   $('#bk').onclick = e => { if (history.length > 1) { e.preventDefault(); history.back(); } };
   $('#f').onsubmit = async e => { e.preventDefault();
-    try { const r = await api('/auth/login', { method: 'POST', body: formVals(e.target) }); S.token = r.token; localStorage.setItem('tok', r.token); location.hash = '#/c'; }
+    try { const r = await api('/auth/login', { method: 'POST', body: formVals(e.target) }); S.token = r.token; localStorage.setItem('tok', r.token);
+      const want = location.hash.startsWith('#/c') ? location.hash : sessionStorage.getItem('after-login') || '#/c'; sessionStorage.removeItem('after-login');
+      if (location.hash === want) route(); else location.hash = want; }
     catch (er) { $('#err').textContent = er.message; } };
 }
 async function shell(active, render, title) {
@@ -732,6 +737,15 @@ const MAIL_STATUS = { sent: 's-open', failed: 's-rejected', queued: 's-hold', sk
 const copyBox = (text, label = 'Copy') => `<div class="codebox"><pre>${esc(text)}</pre><button type="button" class="btn soft" data-copy="${esc(text)}">${I('copy', 15)} ${label}</button></div>`;
 const wireCopy = root => root.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
 
+// Every email button opens the public address. Warn when that can't work from people's inboxes, with a one-click fix.
+const baseWarn = base => {
+  const local = u => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(u || ''), here = location.origin + location.pathname.replace(/\/(index\.html)?$/, '');
+  let origin = ''; try { origin = new URL(base).origin; } catch { /* not a full address */ }
+  const msg = local(base) ? `"View your ticket", "Open the ticket" and "Sign in" buttons open ${esc(base)}, which only works on this computer. Set the public address to your live site, e.g. https://stmarys-desk.supercxo.ai.`
+    : !local(here) && origin !== location.origin ? `Email buttons open ${esc(base || '(not set)')}, but ONE Desk is open here at ${esc(here)}. If this is the live site, use this address so the buttons work from Gmail and Outlook.` : '';
+  return msg ? `<div class="limitbox">${I('alert', 22)}<div><b>${local(base) ? 'Email buttons point to this computer' : 'Email buttons may open the wrong address'}</b><div>${msg}</div>`
+    + `${local(here) ? '' : `<button type="button" class="btn soft" id="usehere" data-here="${esc(here)}" style="margin-top:8px">Use ${esc(here)}</button>`}</div></div>` : '';
+};
 async function emailPage(main, { sa }) {
   const tabs = sa ? [['connect', 'Connection'], ['events', 'Emails sent'], ['log', 'Delivery log'], ['guide', 'Setup guide']] : [['log', 'Delivery log']];
   let tab = sessionStorage.getItem('et'); if (!tabs.some(t => t[0] === tab)) tab = tabs[0][0];
@@ -757,15 +771,16 @@ async function mailConnect(box, reload) {
       <div class="row" style="gap:8px"><input name="key" class="mono" style="flex:3" autocomplete="off" placeholder="${c.has_key ? `Saved (${esc(c.key_masked)}). Leave empty to keep it` : 'Generate or paste a key'}">
         <button type="button" class="btn soft" id="gen" style="flex:0 0 auto">Generate</button>${c.has_key ? '<button type="button" class="btn soft" id="cpk" style="flex:0 0 auto">' + I('copy', 15) + ' Copy saved key</button>' : ''}</div>
       <div id="keynote" class="muted small"></div>
-      ${/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(c.base || '') ? `<div class="limitbox">${I('alert', 22)}<div><b>Email buttons point to this computer</b><div>"View your ticket" and "Sign in" buttons open ${esc(c.base)}, which only works on this computer. Set the public address to your live site, e.g. https://stmarys-desk.supercxo.ai.</div></div></div>` : ''}
+      ${baseWarn(c.base)}
       <label>Public address of ONE Desk <small>(links inside emails)</small></label><input name="base" value="${esc(c.base)}" placeholder="https://stmarys-desk.supercxo.ai">
       <label class="switch" style="margin-top:14px"><input type="checkbox" name="sending" ${c.sending ? 'checked' : ''}> Send emails <span class="muted small">(untick to pause; emails are then only logged)</span></label>
       <div class="err" id="cerr"></div><p style="margin-bottom:0"><button class="btn primary big">Save connection</button></p></form>
-    <div class="card" style="margin:0"><b>Send a test email</b><div class="muted small">Uses the values in the form, even before you save. Try a Gmail, a Yahoo and an Outlook address.</div>
+    <div class="card" style="margin:0"><b>Send a test email</b><div class="muted small">Uses the values in the form, even before you save. Try a Gmail, a Yahoo and an Outlook address, and tap both buttons in it: each should open ONE Desk.</div>
       <label>Send to</label><div class="row" style="gap:8px"><input id="tto" type="email" placeholder="yourname@gmail.com" value="${esc(S.me.user.email)}" style="flex:3">
       <button type="button" class="btn primary" id="tsend" style="flex:0 0 auto">${I('send', 16)} Send test</button></div><div id="tres"></div>
       <div class="muted small" style="margin-top:16px">Sender: whichever mailbox the flow's "Send an email from a shared mailbox" step uses (Digital Services).</div></div></div>`;
   const f = $('#cf');
+  if ($('#usehere')) $('#usehere').onclick = e => { f.base.value = e.currentTarget.dataset.here; toast('Address filled in. Save the connection to keep it.'); };
   $('#gen').onclick = () => { const k = [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, '0')).join('');
     f.key.value = k; $('#keynote').innerHTML = `New key. Copy it into the flow's Condition step, then save here.${copyBox(k)}`; wireCopy($('#keynote')); };
   if ($('#cpk')) $('#cpk').onclick = async () => { const { key } = await api('/mail/key'); await navigator.clipboard.writeText(key); toast('Saved key copied. Paste it in the flow\'s Condition'); };

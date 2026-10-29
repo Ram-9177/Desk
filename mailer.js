@@ -163,6 +163,8 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 export function renderEmail({ subject, body, campus, blocks = {} }) {
   const m = /^\[([^\]]+)\]\s*(.*)$/.exec(subject || ''), ref = m?.[1], title = m ? m[2] : subject;
   const bold = h => h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  // [[Text|link]] inside a sentence becomes a plain link (alone on its line it is a button)
+  const links = h => h.replace(/\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]/g, '<a href="$2" style="color:#1e4b8f;font-weight:700;text-decoration:underline">$1</a>');
   const html = String(body || '').split('\n').filter(l => l.trim()).map(line => {
     const blk = /^\s*\{\{(\w+)\}\}\s*$/.exec(line)?.[1];
     if (blk && BLOCKS.includes(blk)) return blocks[blk] ? BLOCK_HTML[blk](blocks[blk]) : '';
@@ -170,7 +172,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
     if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
     const kv = /^([A-Z][A-Za-z ]{1,24}):\s+(.+)$/.exec(line);
     if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|ticket/i.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
-    return `<p style="margin:0 0 10px;line-height:1.55">${bold(esc(line))}</p>`;
+    return `<p style="margin:0 0 10px;line-height:1.55">${links(bold(esc(line)))}</p>`;
   }).join('');
   return `<!doctype html><html><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">

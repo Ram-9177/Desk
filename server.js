@@ -31,7 +31,8 @@ app.use(express.json({ limit: '40mb' }));
 // (non-local) visit, e.g. https://stmarys-desk.supercxo.ai behind nginx, so links never point at the server's own localhost.
 app.use((req, _res, next) => {
   const host = req.get('host') || '';
-  if (!getSettings().public_base_url && !process.env.PUBLIC_BASE_URL && host && !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host))
+  // not from this computer, and not from a bare IP address: email buttons should carry the site's name
+  if (!getSettings().public_base_url && !process.env.PUBLIC_BASE_URL && host && !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host) && !/^((\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\])(:\d+)?$/i.test(host))
     setSetting('public_base_url', `${req.protocol}://${host}`).catch(e => console.error('public address', e.message));
   next();
 });
@@ -859,9 +860,11 @@ M.put('/config', superOnly, wrap(async req => {
 M.post('/test', superOnly, wrap(async req => {
   const to = String(req.body.to || '').trim(); if (!/^\S+@\S+\.\S+$/.test(to)) throw bad('Enter the email address to send the test to');
   const c = mailConfig(BASE), cfg = { ...c, url: req.body.url?.trim() || c.url, key: req.body.key?.trim() || c.key };
-  const subject = '[ONE Desk] Test email', body = `This is a test from ONE Desk.\nIf you can read this, the Power Automate connection works.\nSign in at ${c.base}/#/login`;
-  const r = await postToFlow(cfg, { to, subject, html: renderEmail({ subject, body, campus: 'Email setup' }), text: body });
-  await insert('notifications', { id: uid(), tenant_id: null, ticket_id: null, recipient: to, template_key: 'test', subject, body, status: r.ok ? 'sent' : 'failed',
+  // the same kind of buttons real emails carry, so they can be tried in Gmail, Outlook and Yahoo
+  const subject = '[ONE Desk] Test email', body = `This is a test from ONE Desk.\nIf you can read this, the Power Automate connection works.\n**Now tap both buttons.** Each should open ONE Desk in your browser.\n`
+    + `[[Sign in to ONE Desk|${c.base}/#/login]]\n[[Open the requestor guide|${c.base}/guide/requestor.html]]\nEvery button in ONE Desk emails opens ${c.base}`;
+  const html = renderEmail({ subject, body, campus: 'Email setup' }), r = await postToFlow(cfg, { to, subject, html, text: toText(body) });
+  await insert('notifications', { id: uid(), tenant_id: null, ticket_id: null, recipient: to, template_key: 'test', subject, body, html, status: r.ok ? 'sent' : 'failed',
     attempts: 1, last_error: r.ok ? null : `${r.status || 'network'}: ${r.hint}`, sent_at: r.ok ? now() : null, created_at: now() });
   if (r.ok) await setSetting('mail_last_ok_at', now());
   return r;

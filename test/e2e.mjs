@@ -64,10 +64,13 @@ const stop = () => new Promise(r => { if (!server) return r(); const p = server;
 // ---------- a stand-in for the Power Automate flow ----------
 const flow = { key: 'test-secret-key-0123456789abcdef', received: [] };
 const flowServer = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => {
+  if (req.method === 'GET' && req.url.startsWith('/url?')) { // like Gmail's google.com/url?q=… : the link travels encoded, then a redirect opens it
+    res.writeHead(302, { location: new URL(req.url, 'http://x').searchParams.get('q') }); return res.end(); }
   if (req.headers['x-desk-key'] !== flow.key) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end('{"error":"bad key"}'); }
   flow.received.push(JSON.parse(b)); res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); }); });
 await new Promise(r => flowServer.listen(0, '127.0.0.1', r));
 const FLOW_URL = `http://localhost:${flowServer.address().port}/flow`;
+const GMAIL = href => `http://localhost:${flowServer.address().port}/url?q=${encodeURIComponent(href)}&source=gmail`;
 
 const T = {}, ids = {}; // tokens and ids shared across sections
 try {
@@ -335,6 +338,8 @@ try {
   check('saved key can be copied by the super admin', (await api('/mail/key', { token: T.sa })).data.key === flow.key);
   const tst2 = await ok('test send with the right key', '/mail/test', { token: T.sa, method: 'POST', body: { to: 'me@example.com' } });
   check('flow accepted it', tst2.ok === true && tst2.status === 200 && flow.received.at(-1)?.to === 'me@example.com' && /Test email/.test(flow.received.at(-1)?.subject));
+  check('the test email carries real buttons to try: Sign in and the guide', flow.received.at(-1)?.html.includes(`href="${APP}/#/login"`) && flow.received.at(-1)?.html.includes(`href="${APP}/guide/requestor.html"`)
+    && flow.received.at(-1)?.text.includes(`Sign in to ONE Desk: ${APP}/#/login`));
   flow.received.length = 0;
   r = await raise('alpha', elecBody('Mail', 'r8@example.com')); const noM = r.data.ticket_no;
   const sent = await waitFor(async () => { const m = await mailsFor(noM); return m.length >= 2 && m.every(x => x.status === 'sent') ? m : null; });
@@ -354,6 +359,11 @@ try {
   await ok('reset to default', '/mail/template/created', { token: T.sa, method: 'PUT', body: { subject: '', body: '' } });
   check('back to default', (await api('/mail/config', { token: T.sa })).data.events.find(e => e.key === 'created').custom === false);
   const pv = await ok('preview with sample values', '/mail/preview', { token: T.sa, method: 'POST', body: { key: 'status_hold' } });
+  const pvs = await Promise.all((await api('/mail/config', { token: T.sa })).data.events.map(e => api('/mail/preview', { token: T.sa, method: 'POST', body: { key: e.key, subject: e.default_subject, body: e.default_body } }).then(r => [e.key, r.data.html])));
+  const broken = pvs.filter(([, h]) => h.includes('[[') || !/href="/.test(h) || [...h.matchAll(/href="([^"]+)"/g)].some(m => !/^https?:\/\//.test(m[1]))).map(([k]) => k);
+  check(`every email's button is a working link (all ${pvs.length} emails)`, pvs.length >= 18 && !broken.length, broken.join(', '));
+  const inl = (await api('/mail/preview', { token: T.sa, method: 'POST', body: { key: 'created', body: 'Hi {{requestor_name}}, see [[your ticket|{{ticket_link}}]] any time.' } })).data.html;
+  check('[[Text|link]] inside a sentence becomes a plain link', /Hi Meena, see <a href="http[^"]+"[^>]*>your ticket<\/a> any time\./.test(inl), inl.slice(-400));
   check('preview renders subject and sections', /0042/.test(pv.subject) && /Progress/.test(pv.html) && /On hold/.test(pv.html));
   const logS = await ok('delivery log (sent)', '/mail/log?status=sent', { token: T.sa });
   check('log lists sent emails with campus', logS.length >= 2 && logS[0].campus);
@@ -574,6 +584,26 @@ async function uiSmoke(tok, id) {
       localStorage.removeItem('guide-lang'); return shot;`);
     check('guide in the app opens; Start shows step 1 with the outline clear of the words', gok && g1?.shown && g1.on && g1.roomy && !errors.length, JSON.stringify(g1) + errors.join(' | ').slice(0, 200));
     check('the voice is English only: Telugu shows the text, no Listen button', g1?.teQuiet, JSON.stringify(g1));
+    // every kind of email button, opened the way Gmail opens it: the address travels encoded in a redirect link
+    const mails = await q('SELECT recipient, html FROM notifications'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
+    const hrefs = [...new Set(mails.flatMap(n => hrefsOf(n.html)))], big = Math.max(...mails.map(n => String(n.html || '').length));
+    check('every link in every email is a full address of this site', hrefs.length > 0 && hrefs.every(h => h.startsWith(APP + '/')), hrefs.filter(h => !h.startsWith(APP + '/')).slice(0, 3).join(' '));
+    check("every email stays under Gmail's 102 KB clipping limit", big < 100000, big);
+    const find = re => hrefs.find(h => re.test(h)), mine = mails.filter(n => n.recipient === 'pavan@example.com').flatMap(n => hrefsOf(n.html)).find(h => /#\/c\/t\//.test(h));
+    const open = async (href, probe, token) => { await js(`localStorage.clear(); sessionStorage.clear(); ${token ? `localStorage.setItem('tok', ${JSON.stringify(token)});` : ''}`);
+      errors.length = 0; await send('Page.navigate', { url: GMAIL(href) });
+      for (let i = 0; i < 24; i++) { await sleep(250); if (await js(`return !!document.querySelector(${JSON.stringify(probe)});`).catch(() => false)) return !errors.length; }
+      return false; };
+    const tk = find(/#\/d\/[^/]+\/t\/[^?]+\?k=/), pt = find(/#\/d\/[^/?]+$/), gd = find(/\/guide\/\w+\.html$/), lg = find(/#\/login$/);
+    check('Gmail click: "View your ticket" opens the requestor\'s ticket', !!tk && await open(tk, '.stamps li'), tk);
+    check('Gmail click: "Raise a new ticket" opens the campus page', !!pt && await open(pt, 'a.svc[href*="raise"]'), pt);
+    check('Gmail click: the guide button opens the guide', !!gd && await open(gd, '.card[data-id="start"]'), gd);
+    check('Gmail click: "Sign in" opens sign-in, or the desk when already signed in', !!lg && await open(lg, '#f [name=password]') && await open(lg, '.hello', tok.pavan), lg);
+    check('Gmail click: "Open the ticket" opens it for a signed-in provider', !!mine && await open(mine, '#act #to', tok.pavan), mine);
+    const via = !!mine && await open(mine, '#f [name=password]') && await js(`const f = document.querySelector('#f'); f.email.value = 'pavan@example.com'; f.password.value = 'Pavan2026ok'; f.requestSubmit();
+      for (let i = 0; i < 40 && !document.querySelector('#act #to'); i++) await new Promise(r => setTimeout(r, 150));
+      return !!document.querySelector('#act #to') && location.hash === ${JSON.stringify(mine.slice(mine.indexOf('#')))};`);
+    check('Gmail click: "Open the ticket" when signed out → sign in → that ticket, not Home', via, mine);
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }
 }
