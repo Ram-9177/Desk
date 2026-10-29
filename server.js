@@ -138,19 +138,23 @@ function cleanSchema(fs) {
 }
 
 function buildFormCheck(schema, data = {}, skip = () => false) {
-  const errs = {};
+  const errs = {}, missing = [];
   for (const f of fieldsOf(schema)) {
     if (skip(f)) continue;
     const v = data[f.key];
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
-    if (f.required && empty) { errs[f.key] = `${f.label} is required`; continue; }
+    if (f.required && empty) { missing.push(f.label); errs[f.key] = `Please fill in: ${f.label}`; continue; }
     if (empty) continue;
-    if (f.type === 'number' && isNaN(Number(v))) errs[f.key] = 'Must be a number';
-    if (f.type === 'email' && !/^\S+@\S+\.\S+$/.test(v)) errs[f.key] = 'Invalid email';
-    if (f.type === 'select' && !(f.options || []).includes(v) && !isOtherAnswer(f.options, v)) errs[f.key] = 'Pick an option';
-    if (f.type === 'multi_select' && (!Array.isArray(v) || v.some(x => !(f.options || []).includes(x)))) errs[f.key] = 'Pick options';
+    const why = f.type === 'number' && isNaN(Number(v)) ? 'must be a number'
+      : f.type === 'email' && !/^\S+@\S+\.\S+$/.test(v) ? 'not a valid email'
+      : f.type === 'select' && !(f.options || []).includes(v) && !isOtherAnswer(f.options, v) ? 'pick one of the options'
+      : f.type === 'multi_select' && (!Array.isArray(v) || v.some(x => !(f.options || []).includes(x))) ? 'pick from the options' : '';
+    if (why) errs[f.key] = `${f.label}: ${why}`;
   }
-  if (Object.keys(errs).length) throw bad('Please fix the form', errs);
+  if (!Object.keys(errs).length) return;
+  // one line the person can act on: the boxes still empty, then anything filled in wrongly
+  const wrong = Object.values(errs).filter(m => !m.startsWith('Please fill in: '));
+  throw bad([missing.length ? `Please fill in: ${missing.join(', ')}` : '', ...wrong].filter(Boolean).join('. '), errs);
 }
 
 // Plain running number per campus: 0001, 0002, ... (year 0 = one counter that never resets)
@@ -316,8 +320,8 @@ async function checkDailyLimit(tn, b) {
 async function createTicket(tenant, b, opts) {
   const svc = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', b.service_id, tenant.id);
   if (!svc) throw notFound();
-  req_(b.name, 'Name is required'); req_(b.subject, 'Subject is required');
-  if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('A valid email address is required, so we can send you updates');
+  req_(b.name, 'Please fill in your name'); req_(b.subject, 'Please fill in the subject');
+  if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('Please enter a valid email address, so we can send you updates');
   if (b.requestor_type && !REQUESTOR_TYPES.includes(b.requestor_type)) throw bad('Bad requestor type');
   const schema = JSON.parse(svc.form_schema || '{}'), fd = b.form_data || {}, portal = opts.channel === 'portal';
   // student details (branch, student ID, department) are asked only when the person says they are a student;
@@ -326,13 +330,13 @@ async function createTicket(tenant, b, opts) {
   if (!asStudent) for (const k of Object.keys(fd)) if (k.startsWith('stu_')) delete fd[k];
   // public form: the requestor's own details are required; the service's questions follow their Required setting
   if (portal) {
-    if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('A valid phone number is required (7–15 digits)');
+    if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('Please enter a valid phone number (7–15 digits)');
     if (!asStudent) { req_(b.identifier, 'Please fill in your ID (student ID, faculty ID, staff ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
   }
   buildFormCheck(schema, fd, f => f.key.startsWith('stu_') && !asStudent);
   // the form type's answers fill the ticket's location and the requestor's ID / department
   if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');
-  else if (isGeneral(schema) && opts.channel !== 'internal') req_(b.location, 'Location is required');
+  else if (isGeneral(schema) && opts.channel !== 'internal') req_(b.location, 'Please fill in the location');
   if (asStudent) Object.assign(b, { identifier: fd.stu_id, department: fd.stu_dept, requestor_type: 'student' });
   if (b.idempotency_key) {
     const ex = await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
@@ -707,7 +711,7 @@ S.post('/tickets', wrap(async req => {
 }));
 S.post('/tickets/:id/status', wrap(async req => {
   const t = await loadTicket(req), to = req.body.to;
-  let note = req_(req.body.note, 'A note is required'), meta = {};
+  let note = req_(req.body.note, 'Please write a note'), meta = {};
   if (t.status === 'closed' && to === 'open') { await doReopen(t, actorOf(req), note); return { ok: true }; }
   assertTransition(t.status, to);
   const ts = now();
@@ -751,7 +755,7 @@ S.post('/tickets/:id/notes', wrap(async req => {
   return { ok: true };
 }));
 S.post('/tickets/:id/transfer', wrap(async req => {
-  const t = await loadTicket(req), note = req_(req.body.note, 'A note is required');
+  const t = await loadTicket(req), note = req_(req.body.note, 'Please write a note');
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
   const ns = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
@@ -956,7 +960,7 @@ async function provision() {
       added.push(`campus ${code}`);
     }
     for (const s of spec.services || []) await step(`${code}:service:${s.code}`, `service ${s.code}`, async () => {
-      if (!/^[A-Z0-9-]{2,12}$/.test(String(s.code)) || !s.name) throw new Error('code must be 2–12 capital letters or digits, and a name is required');
+      if (!/^[A-Z0-9-]{2,12}$/.test(String(s.code)) || !s.name) throw new Error('code must be 2–12 capital letters or digits, and the name must be filled in');
       if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', tn.id, s.code)) return false;
       await insert('services', { id: uid(), tenant_id: tn.id, code: s.code, name: s.name, description: s.description || null,
         form_schema: JSON.stringify(cleanSchema(s.form_schema || {})), is_active: 1, sort_order: Number(s.sort_order) || 0, escalation_user_id: null });

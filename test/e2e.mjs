@@ -462,14 +462,14 @@ try {
   check('a range with no tickets shows zero', Number(repOld.counts.created_period) === 0 && repOld.daily.length === 0 && repOld.by_service.length === 0);
   await fails('From after To is refused', '/reports?from=2026-02-10&to=2026-02-01', { token: T.asha }, 400);
 
-  sec('Raise form: who you are, optional questions, Other');
+  sec('Raise form: who you are, questions to tick, Other');
   await stop(); await start(); // fresh hourly counters
   const oth = await mkSvc(A, { code: 'HELP', name: 'Help desk', form_schema: { form_type: 'general', fields: [
     { label: 'What do you need help with?', type: 'select', required: true, options: ['Bus pass', 'Other'] }, { label: 'Faculty name (if related)', type: 'short_text', required: false }] } });
   const [qHelp, qFac] = (await api('/services', { token: T.asha })).data.find(x => x.code === 'HELP').form_schema.fields.map(f => f.key);
   const base = n => ({ service_id: oth.id, name: n, email: n.toLowerCase() + '@example.com', subject: 'Need help', location: 'Library' });
   r = await raise('alpha', { ...base('Opt'), description: '', form_data: { [qHelp]: 'Bus pass' } });
-  check('description and unticked questions are optional', r.status === 200, r.error?.message);
+  check('description and unticked questions can be left empty', r.status === 200, r.error?.message);
   r = await raise('alpha', { ...base('Oth'), form_data: { [qHelp]: 'Other: Lost my ID card', [qFac]: '' } });
   check('"Other" with typed words is accepted and saved', r.status === 200 && (await q("SELECT count(*) n FROM tickets WHERE service_id=? AND form_data LIKE '%Other: Lost my ID card%'", oth.id))[0].n === 1, r.error?.message);
   r = await raise('alpha', { ...base('Bad'), form_data: { [qHelp]: 'Something else' } });
@@ -479,6 +479,9 @@ try {
     && (await q("SELECT r.identifier, r.requestor_type FROM requestors r WHERE lower(r.email)='prof.rao@example.com'"))[0]?.identifier === 'FAC9', r.error?.message);
   r = await raise('alpha', { service_id: exam.id, name: 'Stu Dent', email: 'stu.dent@example.com', subject: 'Results', requestor_type: 'student', form_data: { what_do_you_need: 'Results' } });
   check('a student on a student service still gives student details', r.status === 400 && /Student ID/.test(Object.values(r.error.details || {}).join(' ')), JSON.stringify(r.error));
+  check('one plain line names every empty box, without the word required', /^Please fill in: .*Student ID.*Department/.test(r.error.message) && !/required|optional|mandatory/i.test(r.error.message), r.error.message);
+  r = await raise('alpha', { ...base('Nob'), subject: '' });
+  check('a skipped subject is asked for in plain words', r.status === 400 && r.error.message === 'Please fill in the subject', r.error?.message);
 
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
@@ -527,7 +530,8 @@ async function uiSmoke(tok, id) {
       let found = false; // wait for the screen to render (up to 6 s), then give late script errors a moment to arrive
       for (let i = 0; i < 24 && !found; i++) { await sleep(250); found = await js(`return !!document.querySelector(${JSON.stringify(probe)});`).catch(() => false); }
       await sleep(400);
-      check(`${name}`, found && !errors.length, !found ? `missing ${probe}` : errors.join(' | ').slice(0, 200));
+      const tags = found ? await js(`return (document.body.innerText.match(/\\((optional|required)\\)/gi) || []).join(' ')`) : '';
+      check(`${name}`, found && !errors.length && !tags, !found ? `missing ${probe}` : tags ? `shows ${tags}` : errors.join(' | ').slice(0, 200));
     };
     await visit('campus picker', '/', null, 'a.svc');
     await visit('campus intro', '/d/alpha', null, 'a.svc[href*="raise"]');

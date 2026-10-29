@@ -75,7 +75,7 @@ document.addEventListener('change', e => { const sel = e.target.closest?.('selec
 // A red * after the label of every required field, on every form the app draws (pages and dialogs).
 const markRequired = root => root.querySelectorAll('input[required],select[required],textarea[required]').forEach(el => {
   const l = el.previousElementSibling; if (l?.tagName !== 'LABEL' || l.querySelector('.req')) return;
-  const s = document.createElement('span'), small = l.querySelector('small'); s.className = 'req'; s.title = 'Required';
+  const s = document.createElement('span'), small = l.querySelector('small'); s.className = 'req'; s.setAttribute('aria-hidden', 'true');
   s.textContent = small ? '* ' : ' *'; small ? l.insertBefore(s, small) : l.append(s);
 });
 new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && markRequired(n.parentNode || n)))).observe(document.body, { childList: true, subtree: true });
@@ -96,7 +96,7 @@ const typeFields = svc => { const b = builtinFields(svc.form_schema || {});
   const sec = (title, pre) => { const f = b.filter(x => x.key.startsWith(pre)); return f.length ? `<div class="fsec" data-sec="${pre.slice(0, -1)}"><b>${title}</b>${f.map(x => `<label>${esc(x.label)}</label>${fieldInput(x)}`).join('')}</div>` : ''; };
   return sec('Your student details', 'stu_') + sec('Where is the problem?', 'loc_'); };
 // the service's own questions; each one is required only if its Required box is ticked
-const customFields = svc => (svc.form_schema?.fields || []).map(f => `<label>${esc(f.label)}${f.required ? '' : ' <small>(optional)</small>'}</label>${fieldInput(f)}`).join('');
+const customFields = svc => (svc.form_schema?.fields || []).map(f => `<label>${esc(f.label)}</label>${fieldInput(f)}`).join('');
 const collectForm = (form, svc) => {
   const fd = {};
   for (const f of fieldsOf(svc.form_schema || {})) {
@@ -146,7 +146,7 @@ function raiseForm(slug, tenant, svc, related) {
     ${typeFields(svc)}
     ${isGeneral(svc.form_schema) ? '<label>Location <small>(room, building)</small></label><input name="location" required>' : ''}
     <label>Subject</label><input name="subject" required maxlength="200">
-    <label>Describe the problem <small>(optional)</small></label><textarea name="description"></textarea>
+    <label>Describe the problem</label><textarea name="description"></textarea>
     ${customFields(svc)}
     <label>Photos <small>(up to ${MAX_FILES})</small></label>${fileButtons('raise')}
     <div class="err" id="err"></div>
@@ -180,7 +180,7 @@ function raiseForm(slug, tenant, svc, related) {
       $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
     } catch (er) {
       if (er.code === 'DAILY_LIMIT') $('#err').innerHTML = `<div class="limitbox">${I('clock', 22)}<div><b>Daily ticket limit reached</b><div>${esc(cap(er.message.replace(/^Daily limit reached: /, '')))}</div></div></div>`;
-      else $('#err').textContent = er.message + (er.details ? ': ' + Object.values(er.details).join(', ') : '');
+      else $('#err').textContent = er.message;
       btn.disabled = false; }
   };
 }
@@ -364,7 +364,7 @@ async function workspace(main, id, { admin }) {
        <label>Ticket status</label><select name="to" id="to">${STATUSES.map(s => `<option value="${s}" ${s === t.status ? 'selected' : ''} ${s !== t.status && !targets.includes(s) ? 'disabled' : ''}>${STATUS_INFO[s][0]}${s === t.status ? ' (current)' : ' — ' + STATUS_INFO[s][1]}</option>`).join('')}</select>
        <div class="muted small" id="tohint" style="margin-top:6px"></div>
        <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h limit</option>`).join('')}</select></div>
-       <label>Note <small>(required)</small></label><textarea name="note" placeholder="What did you do, or why this change?"></textarea>
+       <label>Note</label><textarea name="note" required placeholder="What did you do, or why this change?"></textarea>
        ${fileButtons('act')}<label style="font-weight:400"><input type="checkbox" name="is_internal" style="width:auto;min-height:0"> Internal — hide from requestor</label>
        <div class="actbar"><button class="btn act act-note" id="go">${I('plus', 18)}Add note</button></div></form></div>
    <div><div class="card k-green">${head('user', 'c2', 'Requestor')}<div class="tk-person"><span class="avatar">${ini(t.requestor.name)}</span><div><b>${esc(t.requestor.name)}</b> <span class="pill s-open">${esc(t.requestor.requestor_type || '')}</span></div></div>
@@ -410,7 +410,7 @@ async function newTicket(main) {
     <label style="margin-top:0">Kind</label><select name="channel"><option value="walk_in">Walk-in (on behalf of a requestor)</option><option value="phone">Phone call</option><option value="internal">Internal request (from me to another service)</option></select>
     <label>Service</label><select name="service_id" id="svc">${services.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
     <div id="who"><div class="row"><div><label>Requestor name</label><input name="name"></div><div><label>Type</label><select name="requestor_type">${REQUESTOR_TYPES.map(t => `<option value="${t}">${cap(t)}</option>`).join('')}</select></div></div>
-    <div class="row"><div><label>Email <small>(updates go here)</small></label><input name="email" type="email" required></div><div><label>Phone <small>(optional)</small></label><input name="phone"></div></div>
+    <div class="row"><div><label>Email <small>(updates go here)</small></label><input name="email" type="email" required></div><div><label>Phone</label><input name="phone"></div></div>
     <div class="row" id="idrow"><div><label>Roll / emp ID</label><input name="identifier"></div><div><label>Department</label><input name="department"></div></div></div><div id="tfs"></div>
     <label>Priority</label><select name="priority">${PRIORITIES.map(p => `<option value="${p}" ${p === 'medium' ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
     <div id="locrow"><label>Location</label><input name="location" required></div><label>Subject</label><input name="subject" required><label>Description</label><textarea name="description"></textarea>
@@ -425,7 +425,7 @@ async function newTicket(main) {
   $('#f').channel.onchange = e => { const internal = e.target.value === 'internal'; $('#who').style.display = internal ? 'none' : ''; $('#f').email.required = !internal; };
   $('#f').onsubmit = async e => { e.preventDefault();
     try { const t = await api('/tickets', { method: 'POST', body: { ...formVals(e.target), form_data: collectForm(e.target, svcOf()), files: await readFiles(document.querySelectorAll('.f-nt')) } });
-      toast('Created ' + t.ticket_no); location.hash = '#/c/t/' + t.id; } catch (er) { toast(er.message + (er.details ? ': ' + Object.values(er.details).join(', ') : '')); } };
+      toast('Created ' + t.ticket_no); location.hash = '#/c/t/' + t.id; } catch (er) { toast(er.message); } };
 }
 
 async function attention(main) {
@@ -448,7 +448,7 @@ async function services(main) {
     <label>Description</label><input name="description" value="${esc(s.description || '')}" placeholder="What this service covers">
     <label>Icon</label>${iconPick(s.id ? svcIcon(s) : 'grid')}
     ${typePick(s.form_schema || { form_type: 'general' })}
-    <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2 <small>(optional)</small></label>${provSel('p2', s.members?.[1]?.id)}</div></div>
+    <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2</label>${provSel('p2', s.members?.[1]?.id)}</div></div>
     <label>Escalation person <small>(gets the ticket if it misses its target; empty = the admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Admin (default) —')}`;
   const members = f => [...new Set([f.elements.p1.value, f.elements.p2.value].filter(Boolean))];
   main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each service needs one or two providers.</span>
@@ -523,7 +523,7 @@ function formBuilder(box, initial = []) {
       <div class="fhead"><span class="fnum">${i + 1}</span><input data-k="label" value="${esc(f.label || '')}" placeholder="Question, e.g. Asset tag">
         <select data-k="type">${FIELD_TYPES.map(t => `<option value="${t}" ${t === f.type ? 'selected' : ''}>${TYPE_NAMES[t]}</option>`).join('')}</select></div>
       ${hasOpts(f.type) ? `<textarea data-k="options" placeholder="One choice per line, e.g.&#10;Wi-Fi&#10;Laptop&#10;Printer">${esc(f.options.join('\n'))}</textarea>`
-        : ['yes_no', 'date'].includes(f.type) ? '' : `<input data-k="placeholder" value="${esc(f.placeholder || '')}" placeholder="Hint inside the box (optional), e.g. LAP-0231">`}
+        : ['yes_no', 'date'].includes(f.type) ? '' : `<input data-k="placeholder" value="${esc(f.placeholder || '')}" placeholder="Hint inside the box, e.g. LAP-0231">`}
       <div class="fact"><label class="switch"><input type="checkbox" data-k="required" ${f.required ? 'checked' : ''}> Required</label><span class="sp"></span>
         <button type="button" class="btn" data-m="-1" ${i ? '' : 'disabled'} title="Move up">↑</button>
         <button type="button" class="btn" data-m="1" ${i < fields.length - 1 ? '' : 'disabled'} title="Move down">↓</button>
@@ -581,7 +581,7 @@ async function users(main, { sa }) {
     main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; save(); draw(); });
     $('#uq').oninput = e => { st.q = e.target.value; save(); const pos = e.target.selectionStart; draw(); $('#uq').focus(); $('#uq').setSelectionRange(pos, pos); };
     $('#add').onclick = async () => { const sv = (await api('/services')).filter(s => s.is_active); dlg(`<h2>Add person</h2><label>Full name</label><input name="name" required><label>Email</label><input name="email" type="email" required>
-      <label>Phone <small>(optional)</small></label><input name="phone" type="tel"><label>Role</label><select name="role"><option value="provider">Service provider</option>${sa ? '<option value="tenant_admin">Campus admin</option>' : ''}</select>
+      <label>Phone</label><input name="phone" type="tel"><label>Role</label><select name="role"><option value="provider">Service provider</option>${sa ? '<option value="tenant_admin">Campus admin</option>' : ''}</select>
       <label>Services <small>(the tickets they handle; up to 2 providers per service)</small></label>
       <div class="svcpick">${sv.map(s => `<label><input type="checkbox" name="svc" value="${s.id}" ${s.members.length >= 2 ? 'disabled' : ''}> ${esc(s.name)}${s.members.length >= 2 ? ' <small>(full)</small>' : ''}</label>`).join('') || '<span class="muted small">No services yet. Add them under Services.</span>'}</div>
       <p class="muted small">They are emailed a welcome with their role, services, sign-in link and a temporary password.</p>`,
