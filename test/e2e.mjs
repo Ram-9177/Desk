@@ -145,13 +145,20 @@ try {
 
   // ======================= C. requestor =======================
   sec('Requestor raises tickets');
-  const raise = (slug, body) => api(`/public/${slug}/tickets`, { method: 'POST', body });
+  let phoneNo = 9000000100; // a different phone per request, so requestors are not matched to each other by phone
+  const raise = (slug, body) => api(`/public/${slug}/tickets`, { method: 'POST', body: { phone: String(phoneNo++), description: 'Details of the problem', identifier: 'ID-1', department: 'General', ...body } });
   const elecBody = (n, email, extra = {}) => ({ service_id: elec.id, name: n, email, subject: `Ticket from ${n}`, description: 'Something is broken.',
     form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Room 214', issue: 'Fan' }, ...extra });
   let r = await raise('alpha', { ...elecBody('Ria', ''), phone: '9000000001' });
   check('email is required', r.status === 400 && /email/i.test(r.error.message), r.error?.message);
   r = await raise('alpha', { ...elecBody('Spam', 'spam@example.com'), website: 'http://spam' });
   check('honeypot rejects bots', r.status === 400);
+  r = await raise('alpha', { ...elecBody('Ph', 'ph@example.com'), phone: '' });
+  check('public form: phone is required', r.status === 400 && /phone/i.test(r.error.message), r.error?.message);
+  r = await raise('alpha', { ...elecBody('De', 'de@example.com'), description: '' });
+  check('public form: description is required', r.status === 400 && /describe/i.test(r.error.message), r.error?.message);
+  r = await raise('alpha', { ...elecBody('Id', 'id@example.com', { requestor_type: 'faculty' }), identifier: '' });
+  check('public form: roll / employee ID is required (not for parents or visitors)', r.status === 400 && /employee ID/.test(r.error.message), r.error?.message);
   r = await raise('alpha', { service_id: exam.id, name: 'Sam', email: 's1@example.com', subject: 'Hall ticket', form_data: { what_do_you_need: 'Hall ticket' } });
   check('student service needs Branch, Student ID, Department', r.status === 400 && /Student ID/.test(Object.values(r.error.details || {}).join(' ')), JSON.stringify(r.error));
   r = await raise('alpha', elecBody('Ria', 'r1@example.com', { form_data: { loc_block: 'Main block', loc_floor: 'Mezzanine', loc_room: '1', issue: 'Fan' } }));
@@ -471,6 +478,13 @@ async function uiSmoke(tok, id) {
     await send('Page.enable'); await send('Runtime.enable');
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: APP + '/' }); await sleep(600);
+    const pwa = await js(`const sw = await Promise.race([navigator.serviceWorker.ready.then(r => !!r.active), new Promise(z => setTimeout(() => z(false), 6000))]);
+      const m = await (await fetch('manifest.webmanifest')).json(); return { sw, name: m.short_name, display: m.display, icons: m.icons.length };`);
+    check('installable app: service worker active, manifest with icons', pwa.sw && pwa.name === 'ONE Desk' && pwa.display === 'standalone' && pwa.icons >= 2, JSON.stringify(pwa));
+    await send('Network.enable'); await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    await send('Page.navigate', { url: APP + '/' }); await sleep(1200);
+    check('app opens without a connection (from the offline cache)', await js(`return document.title === 'ONE Desk' && !!document.querySelector('#app')`));
+    await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     const visit = async (name, route, token, probe) => {
       await js(`localStorage.clear(); sessionStorage.clear(); ${token ? `localStorage.setItem('tok', ${JSON.stringify(token)});` : ''}`);
       errors.length = 0;

@@ -299,8 +299,14 @@ async function createTicket(tenant, b, opts) {
   req_(b.name, 'Name is required'); req_(b.subject, 'Subject is required');
   if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('A valid email address is required, so we can send you updates');
   if (b.requestor_type && !REQUESTOR_TYPES.includes(b.requestor_type)) throw bad('Bad requestor type');
-  const schema = JSON.parse(svc.form_schema || '{}'), fd = b.form_data || {};
-  buildFormCheck(schema, fd);
+  const schema = JSON.parse(svc.form_schema || '{}'), fd = b.form_data || {}, portal = opts.channel === 'portal';
+  // the public form asks every question (photos stay optional); the staff form follows each question's Required setting
+  if (portal) {
+    if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('A valid phone number is required (7–15 digits)');
+    req_(b.description, 'Please describe the problem');
+    if (!hasStudent(schema) && !['parent', 'visitor'].includes(b.requestor_type)) { req_(b.identifier, 'Roll / employee ID is required'); req_(b.department, 'Department is required'); }
+  }
+  buildFormCheck(portal ? { ...schema, fields: (schema.fields || []).map(f => ({ ...f, required: true })) } : schema, fd);
   // the form type's answers fill the ticket's location and the requestor's ID / department
   if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');
   else if (isGeneral(schema) && opts.channel !== 'internal') req_(b.location, 'Location is required');

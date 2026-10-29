@@ -223,3 +223,10 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .svcpick{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:10px 12px}
 .svcpick label{display:flex;gap:8px;align-items:center;font-weight:500;font-size:13.5px;margin:0}.svcpick input{width:auto;min-height:0}@media(max-width:560px){.svcpick{grid-template-columns:1fr}}
 .req{color:var(--warn);font-weight:700}
+/* phones: grid and flex children may shrink below their content, so nothing pushes the page sideways */
+.two>*,.ws>*,.dash>*,.stats>*,.row>*,.tgrid>*{min-width:0}
+.card{min-width:0;overflow-wrap:anywhere}
+@media(max-width:760px){.card table,#main>table{display:block;overflow-x:auto;white-space:nowrap}}
+@media(max-width:560px){.wrap{padding-left:14px;padding-right:14px}.card{padding:16px}h1{font-size:24px}.tblwrap table{font-size:13px}}
+@media(max-width:380px){.top{padding:10px 12px;gap:4px}.top select{max-width:120px;padding:4px 6px;font-size:13px}.top .logo{margin-right:4px;font-size:14px}.top .logo img{height:28px}.bnav{box-sizing:border-box}}
+[hidden]{display:none!important}

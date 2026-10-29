@@ -64,6 +64,8 @@ const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.
   ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}"></a>${f.stamped_at ? `<div class="muted" style="font-size:11px">📷 ${fmt(f.stamped_at)}</div>` : ''}`
   : `<a href="/api/files/${f.storage_key}" target="_blank">📄 ${esc(f.file_name)}</a>`).join('')}</div>` : '';
 const formVals = form => Object.fromEntries(new FormData(form));
+let installEvt = null;
+const installBtn = () => `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install" ${installEvt ? '' : 'hidden'}>${I('plus', 16)} Install ONE Desk app</button></p>`;
 // A red * after the label of every required field, on every form the app draws (pages and dialogs).
 const markRequired = root => root.querySelectorAll('input[required],select[required],textarea[required]').forEach(el => {
   const l = el.previousElementSibling; if (l?.tagName !== 'LABEL' || l.querySelector('.req')) return;
@@ -85,7 +87,9 @@ function fieldInput(f, v = '') {
 const typeFields = svc => { const b = builtinFields(svc.form_schema || {});
   const sec = (title, pre) => { const f = b.filter(x => x.key.startsWith(pre)); return f.length ? `<div class="fsec"><b>${title}</b>${f.map(x => `<label>${esc(x.label)}</label>${fieldInput(x)}`).join('')}</div>` : ''; };
   return sec('Your student details', 'stu_') + sec('Where is the problem?', 'loc_'); };
-const customFields = svc => (svc.form_schema?.fields || []).map(f => `<label>${esc(f.label)}${f.required ? '' : ' <small>(optional)</small>'}</label>${fieldInput(f)}`).join('');
+// all: every question required (the public raise form), otherwise each question's own Required setting (staff form)
+const customFields = (svc, all) => (svc.form_schema?.fields || []).map(f => all ? { ...f, required: true } : f)
+  .map(f => `<label>${esc(f.label)}${f.required ? '' : ' <small>(optional)</small>'}</label>${fieldInput(f)}`).join('');
 const collectForm = (form, svc) => {
   const fd = {};
   for (const f of fieldsOf(svc.form_schema || {})) {
@@ -108,7 +112,7 @@ async function portal(slug, q, view, code) {
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
-      ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}</div>`;
+      ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}</div>${installBtn()}`;
     return;
   }
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Raise a ticket</h1></div>
@@ -125,22 +129,26 @@ function raiseForm(slug, tenant, svc, related) {
     <h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
-    <div class="row"><div><label>Your name</label><input name="name" required></div>
-      <div><label>I am a</label><select name="requestor_type">${REQUESTOR_TYPES.map(t => `<option ${hasStudent(svc.form_schema) && t === 'student' ? 'selected' : ''}>${t}</option>`).join('')}</select></div></div>
-    <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email"></div>
-      <div><label>Phone <small>(optional)</small></label><input name="phone" type="tel" autocomplete="tel"></div></div>
-    ${hasStudent(svc.form_schema) ? '' : `<div class="row"><div><label>Roll / employee ID <small>(optional)</small></label><input name="identifier"></div>
-      <div><label>Department <small>(optional)</small></label><input name="department"></div></div>`}
+    <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div>
+      <div><label>I'm</label><select name="requestor_type" required>${REQUESTOR_TYPES.map(t => `<option value="${t}" ${hasStudent(svc.form_schema) && t === 'student' ? 'selected' : ''}>${cap(t)}</option>`).join('')}</select></div></div>
+    <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
+      <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
+    ${hasStudent(svc.form_schema) ? '' : `<div class="row" id="idrow"><div><label>Roll / employee ID</label><input name="identifier" required></div>
+      <div><label>Department</label><input name="department" required></div></div>`}
     ${typeFields(svc)}
     ${isGeneral(svc.form_schema) ? '<label>Location <small>(room, building)</small></label><input name="location" required>' : ''}
     <label>Subject</label><input name="subject" required maxlength="200">
-    <label>Describe the problem</label><textarea name="description"></textarea>
-    ${customFields(svc)}
+    <label>Describe the problem</label><textarea name="description" required></textarea>
+    ${customFields(svc, true)}
     <label>Photos <small>(up to 5)</small></label>${fileButtons('raise')}
     <div class="err" id="err"></div>
     <p><button class="btn primary big">${I('send')} Raise ticket</button></p>
   </form></div>`;
   wireFiles('raise');
+  // parents and visitors have no roll / employee ID: hide those two for them, require them for everyone else
+  const idrow = $('#idrow'), who = $('#f').requestor_type, syncId = () => { if (!idrow) return; const need = !['parent', 'visitor'].includes(who.value);
+    idrow.hidden = !need; idrow.querySelectorAll('input').forEach(i => { i.required = need; if (!need) i.value = ''; }); };
+  who.onchange = syncId; syncId();
   $('#f').onsubmit = async e => {
     e.preventDefault(); const btn = e.target.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
     try {
@@ -385,7 +393,7 @@ async function newTicket(main) {
   main.innerHTML = `<form id="f" class="card" style="max-width:720px">
     <label style="margin-top:0">Kind</label><select name="channel"><option value="walk_in">Walk-in (on behalf of a requestor)</option><option value="phone">Phone call</option><option value="internal">Internal request (from me to another service)</option></select>
     <label>Service</label><select name="service_id" id="svc">${services.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
-    <div id="who"><div class="row"><div><label>Requestor name</label><input name="name"></div><div><label>Type</label><select name="requestor_type">${REQUESTOR_TYPES.map(t => `<option>${t}</option>`).join('')}</select></div></div>
+    <div id="who"><div class="row"><div><label>Requestor name</label><input name="name"></div><div><label>Type</label><select name="requestor_type">${REQUESTOR_TYPES.map(t => `<option value="${t}">${cap(t)}</option>`).join('')}</select></div></div>
     <div class="row"><div><label>Email <small>(updates go here)</small></label><input name="email" type="email" required></div><div><label>Phone <small>(optional)</small></label><input name="phone"></div></div>
     <div class="row" id="idrow"><div><label>Roll / emp ID</label><input name="identifier"></div><div><label>Department</label><input name="department"></div></div></div><div id="tfs"></div>
     <label>Priority</label><select name="priority">${PRIORITIES.map(p => `<option value="${p}" ${p === 'medium' ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
@@ -436,7 +444,7 @@ async function services(main) {
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
-  const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always answer name, contact, location, subject and description first.</div><div id="fb"></div>`;
+  const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always answer name, contact, location, subject and description first. On the public form every question is required (only photos are optional).</div><div id="fb"></div>`;
   $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${qHead}`, async f => {
     const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
@@ -500,7 +508,7 @@ function formBuilder(box, initial = []) {
         <select data-k="type">${FIELD_TYPES.map(t => `<option value="${t}" ${t === f.type ? 'selected' : ''}>${TYPE_NAMES[t]}</option>`).join('')}</select></div>
       ${hasOpts(f.type) ? `<textarea data-k="options" placeholder="One choice per line, e.g.&#10;Wi-Fi&#10;Laptop&#10;Printer">${esc(f.options.join('\n'))}</textarea>`
         : ['yes_no', 'date'].includes(f.type) ? '' : `<input data-k="placeholder" value="${esc(f.placeholder || '')}" placeholder="Hint inside the box (optional), e.g. LAP-0231">`}
-      <div class="fact"><label class="switch"><input type="checkbox" data-k="required" ${f.required ? 'checked' : ''}> Required</label><span class="sp"></span>
+      <div class="fact"><label class="switch"><input type="checkbox" data-k="required" ${f.required ? 'checked' : ''}> Required on the staff form</label><span class="sp"></span>
         <button type="button" class="btn" data-m="-1" ${i ? '' : 'disabled'} title="Move up">↑</button>
         <button type="button" class="btn" data-m="1" ${i < fields.length - 1 ? '' : 'disabled'} title="Move down">↓</button>
         <button type="button" class="btn danger" data-x title="Remove question">✕</button></div></div>`).join('')}</div>
@@ -643,7 +651,7 @@ async function slaPage(main) {
   main.innerHTML = `<div class="two"><form id="sf" class="card" style="margin:0" novalidate>
     <b>Working hours</b><div class="muted small">The SLA clock only runs inside this window. Evenings, nights and days off don't count.</div>
     <div class="row"><div><label>Starts</label><input type="time" name="work_start" value="${c.work_start}"></div><div><label>Ends</label><input type="time" name="work_end" value="${c.work_end}"></div></div>
-    <label>Working days</label><div class="tabs">${DAYS.map((d, i) => `<label class="tab ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
+    <label>Working days</label><div class="tabs" style="flex-wrap:wrap;overflow:visible">${DAYS.map((d, i) => `<label class="tab ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
     <b style="display:block;margin-top:18px">Time to close, by priority</b><div class="muted small">In working hours. Requestor tickets start as Medium; providers can change the priority.</div>
     <div class="prow">${['critical', 'high', 'medium', 'low'].map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" name="t_${p}" value="${c.targets[p] || ''}"><div class="muted small" data-d="${p}"></div></div>`).join('')}</div>
     <b style="display:block;margin-top:18px">Escalation</b><div class="muted small">A ticket goes to the service's providers first. If it misses its target by this many working days, it moves to the service's escalation person and the requestor is told.</div>
@@ -866,8 +874,14 @@ async function route() {
       <p class="muted">The service desk is being set up. Please check back soon.</p><p class="muted" style="margin-top:20px">Staff? <a href="#/login">Sign in</a></p></div>`; return; }
     app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University"><h1>ONE <span>Desk</span></h1><p class="muted">St. Mary's Group service desk. Choose your campus.</p>
       ${camps.map((c, i) => `<a class="svc" href="#/d/${c.slug}"><span class="chip c${i % 5}">${I('building', 22)}</span><span class="t"><b>${esc(c.name)}</b><span class="muted small">${esc(c.code)}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}
-      <p class="muted" style="text-align:center;margin-top:20px">Staff? <a href="#/login">Sign in</a></p></div>`;
+      <p class="muted" style="text-align:center;margin-top:20px">Staff? <a href="#/login">Sign in</a></p>${installBtn()}</div>`;
   } catch (e) { app.innerHTML = `<div class="wrap"><h1>Not found</h1><p class="muted">${esc(e.message)}</p><a href="#/">Home</a></div>`; }
 }
 addEventListener('hashchange', route);
 route();
+// Installable app (PWA): the service worker caches the screens for offline opening; the Install button appears where the browser allows it.
+if ('serviceWorker' in navigator && isSecureContext) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; document.querySelectorAll('.install').forEach(b => b.hidden = false); });
+addEventListener('appinstalled', () => { installEvt = null; document.querySelectorAll('.install').forEach(b => b.hidden = true); toast('ONE Desk installed'); });
+document.addEventListener('click', async e => { if (!e.target.closest('.install') || !installEvt) return;
+  installEvt.prompt(); await installEvt.userChoice; installEvt = null; document.querySelectorAll('.install').forEach(b => b.hidden = true); });
