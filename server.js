@@ -447,11 +447,14 @@ S.get('/me', wrap(async req => {
 }));
 S.post('/me/password', wrap(async req => {
   const pw = String(req.body.password || '');
-  // after an admin reset the temporary password was just used to sign in; otherwise the current password is required
-  if (!req.user.must_change_pw && !checkPw(String(req.body.current || ''), req.user.password_hash)) throw bad('Current password is wrong');
+  // the current password is always required: the temporary one from the email on first sign-in, the own one afterwards
+  if (!checkPw(String(req.body.current || ''), req.user.password_hash)) throw bad(req.user.must_change_pw ? 'Temporary password is wrong' : 'Current password is wrong');
   if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) throw bad('Use at least 8 characters with letters and numbers');
   if (checkPw(pw, req.user.password_hash)) throw bad('Pick a password different from the current one');
-  await run('UPDATE users SET password_hash=?, must_change_pw=0 WHERE id=?', hashPw(pw), req.user.id); return { ok: true };
+  await run('UPDATE users SET password_hash=?, must_change_pw=0 WHERE id=?', hashPw(pw), req.user.id);
+  await notify({ tenant_id: req.user.tenant_id }, [req.user.email], 'password_changed', { ...await staffVars(req.user, pw), password: pw });
+  await audit(req, 'user.password_changed', 'user', req.user.id, {});
+  return { ok: true };
 }));
 
 // tenants (super admin)

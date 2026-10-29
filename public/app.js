@@ -583,14 +583,15 @@ function setOwnPassword() {
   document.body.className = 'console';
   app.innerHTML = `<div class="wrap hero" style="max-width:440px;padding-top:48px"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Set your <span>new password</span></h1><p class="muted">Hi ${esc(S.me.user.name.split(' ')[0])}, you signed in with a temporary password. Choose your own to continue.</p>
-    <form id="f" class="card"><label style="margin-top:0">New password <small>(8+ characters, letters and numbers)</small></label><input name="password" type="password" required autofocus autocomplete="new-password">
+    <form id="f" class="card"><label style="margin-top:0">Temporary password <small>(from your welcome email)</small></label><input name="current" type="password" required autofocus autocomplete="current-password">
+    <label>New password <small>(8+ characters, letters and numbers)</small></label><input name="password" type="password" required autocomplete="new-password">
     <label>Confirm new password</label><input name="confirm" type="password" required autocomplete="new-password">
     <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Save and continue ${I('chev', 18)}</button></p></form>
     <p style="text-align:center"><a href="#" id="lo">Sign out</a></p></div>`;
   $('#lo').onclick = e => { e.preventDefault(); logout(); };
   $('#f').onsubmit = async e => { e.preventDefault(); const v = formVals(e.target);
-    try { if (v.password !== v.confirm) throw new Error('The two passwords do not match');
-      await api('/me/password', { method: 'POST', body: { password: v.password } }); S.me = null; toast('Password set'); route();
+    try { if (v.password !== v.confirm) throw new Error('The two new passwords do not match');
+      await api('/me/password', { method: 'POST', body: { current: v.current, password: v.password } }); S.me = null; toast('Password set. Your sign-in details were emailed to you.'); route();
     } catch (er) { $('#err').textContent = er.message; } };
 }
 
@@ -840,7 +841,7 @@ async function profile(main) {
     <label>New password <small>(8+ characters, letters and numbers)</small></label><input name="password" type="password" minlength="8" required autocomplete="new-password">
     <label>Confirm new password</label><input name="confirm" type="password" required autocomplete="new-password">`,
     async f => { if (f.elements.password.value !== f.elements.confirm.value) throw new Error('The two new passwords do not match');
-      await api('/me/password', { method: 'POST', body: formVals(f) }); toast('Password changed'); }); };
+      await api('/me/password', { method: 'POST', body: formVals(f) }); toast('Password changed. Your sign-in details were emailed to you.'); }); };
 }
 
 // ================= ROUTER =================

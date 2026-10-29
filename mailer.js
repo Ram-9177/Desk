@@ -19,13 +19,14 @@ export const VARS = {
   portal_link: 'Campus portal link', note: 'Note / reason typed at this step', actor_name: 'Person who made the change',
   hold_reason: 'Hold reason', resume_by: 'Expected resume time', reopen_days: 'Days allowed to reopen',
   from_service: 'Previous service', to_service: 'New service', staff_name: 'Staff member’s name', staff_email: 'Staff sign-in email',
-  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', role_name: 'Staff member’s role', services: 'Services they handle', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
+  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', password: 'The new password they chose', role_name: 'Staff member’s role', services: 'Services they handle', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
 };
 // Block fields: put one alone on its own line and it becomes a designed section of the email.
 export const BLOCKS = ['progress', 'ticket_details', 'timeline'];
 const T = ['requestor_name', 'ticket_no', 'subject', 'description', 'service', 'location', 'campus', 'status', 'priority', 'due', 'providers', 'ticket_link', 'staff_link', 'portal_link', ...BLOCKS];
 const STAFF = ['staff_name', 'staff_email', 'temp_password', 'login_link', 'campus', 'role_name', 'services'];
+const STAFF_PW = ['staff_name', 'staff_email', 'password', 'login_link', 'campus', 'role_name', 'services'];
 
 // Every step that sends mail, with its default template.
 export const MAIL_EVENTS = [
@@ -80,6 +81,10 @@ export const MAIL_EVENTS = [
       + '• Every ticket has a target time, counted in working hours only. Closing on time earns you points; tickets that miss it are escalated.\n'
       + '**Your sign-in details**\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
       + 'You will be asked to choose your own password the first time you sign in. Please keep these details private.' },
+  { key: 'password_changed', label: 'Password changed', who: 'Staff member', when: 'They set their own password (first sign-in or Profile)', vars: STAFF_PW,
+    subject: '[ONE Desk] Your password was changed',
+    body: 'Hi {{staff_name}},\nYour ONE Desk password was changed just now. Here are your sign-in details for your records.\nEmail: {{staff_email}}\nPassword: {{password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
+      + 'If you did not make this change, tell your admin straight away so they can reset it. Keep this email private, or delete it once your password is saved somewhere safe.' },
   { key: 'password_reset', label: 'Password reset', who: 'Staff member', when: 'An admin resets their password', vars: STAFF,
     subject: '[ONE Desk] Your password was reset',
     body: 'Hi {{staff_name}},\nAn admin reset your ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose a new password when you sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
@@ -94,7 +99,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
   service: 'Electrical', location: 'Hostel H2, room 214', campus: "St. Mary's Rehabilitation University", status: 'Open', priority: 'Medium',
   due: '29 Oct 2026, 3:15 pm', providers: 'Suresh Babu', escalated_to_name: 'Priya Reddy', note: 'The electrician will replace the fan motor.', actor_name: 'Suresh Babu',
   hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, from_service: 'Electrical', to_service: 'IT Support',
-  staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', role_name: 'Service provider', services: 'Electrical, IT Support', count: 2,
+  staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', password: 'MyNewPass2026', role_name: 'Service provider', services: 'Electrical, IT Support', count: 2,
   ticket_list: '0042 · on hold · Fan not working\n0039 · overdue · Projector not working',
   progress: { status: 'open', service: 'Electrical', due: '29 Oct 2026, 3:15 pm', hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, closed_at: '28 Oct 2026, 5:40 pm' },
   ticket_details: [['Ticket', '0042'], ['Service', 'Electrical'], ['Subject', 'Fan not working'], ['Description', 'Ceiling fan stopped working this morning.'],
@@ -162,7 +167,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
     const btn = /^\s*\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]\s*$/.exec(line);
     if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
     const kv = /^([A-Z][A-Za-z ]{1,24}):\s+(.+)$/.exec(line);
-    if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|Ticket/.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
+    if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|ticket/i.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
     return `<p style="margin:0 0 10px;line-height:1.55">${bold(esc(line))}</p>`;
   }).join('');
   return `<!doctype html><html><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">

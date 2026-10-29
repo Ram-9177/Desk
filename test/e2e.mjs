@@ -188,12 +188,15 @@ try {
   sec('Provider signs in');
   let tok = await login(pavan.email, pavan.temp); check('temporary password works', !!tok);
   check('must set a new password first', (await api('/me', { token: tok })).data.user.must_change_pw === 1);
-  await fails('weak password rejected', '/me/password', { token: tok, method: 'POST', body: { password: 'abcdefgh' } }, 400);
-  await ok('sets own password', '/me/password', { token: tok, method: 'POST', body: { password: 'Pavan2026ok' } });
+  await fails('first change needs the temporary password', '/me/password', { token: tok, method: 'POST', body: { password: 'Pavan2026ok' } }, 400, 'Temporary');
+  await fails('weak password rejected', '/me/password', { token: tok, method: 'POST', body: { current: pavan.temp, password: 'abcdefgh' } }, 400);
+  await ok('sets own password', '/me/password', { token: tok, method: 'POST', body: { current: pavan.temp, password: 'Pavan2026ok' } });
+  const pwMail = (await q("SELECT subject, body FROM notifications WHERE template_key='password_changed' AND recipient='pavan@example.com'"))[0];
+  check('new sign-in details are emailed after the change', !!pwMail && pwMail.body.includes('Pavan2026ok') && pwMail.body.includes('pavan@example.com') && pwMail.body.includes('/#/login'));
   T.pavan = await login(pavan.email, 'Pavan2026ok'); check('new password works', !!T.pavan);
   check('old temporary password no longer works', !(await login(pavan.email, pavan.temp)));
   await fails('later changes need the current password', '/me/password', { token: T.pavan, method: 'POST', body: { password: 'Another2026' } }, 400, 'current');
-  for (const [u, pw] of [[lata, 'Lata2026ok'], [asha, 'Asha2026ok'], [bina, 'Bina2026ok']]) { const t0 = await login(u.email, u.temp); await api('/me/password', { token: t0, method: 'POST', body: { password: pw } }); T[u.name.split(' ')[0].toLowerCase()] = await login(u.email, pw); }
+  for (const [u, pw] of [[lata, 'Lata2026ok'], [asha, 'Asha2026ok'], [bina, 'Bina2026ok']]) { const t0 = await login(u.email, u.temp); await api('/me/password', { token: t0, method: 'POST', body: { current: u.temp, password: pw } }); T[u.name.split(' ')[0].toLowerCase()] = await login(u.email, pw); }
   check('all staff signed in', !!T.lata && !!T.asha && !!T.bina);
 
   sec('Provider works tickets');
@@ -307,7 +310,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('17 email steps listed, none connected yet', cfg0.events.length === 17 && !cfg0.url);
+  check('18 email steps listed, none connected yet', cfg0.events.length === 18 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
