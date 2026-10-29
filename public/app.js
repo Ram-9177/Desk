@@ -549,10 +549,13 @@ async function users(main, { sa }) {
       </div>`).join('') || `<div class="empty card">${I('users', 40)}<p>No one here.</p></div>`}</div>`;
     main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; save(); draw(); });
     $('#uq').oninput = e => { st.q = e.target.value; save(); const pos = e.target.selectionStart; draw(); $('#uq').focus(); $('#uq').setSelectionRange(pos, pos); };
-    $('#add').onclick = () => dlg(`<h2>Add person</h2><label>Full name</label><input name="name" required><label>Email</label><input name="email" type="email" required>
+    $('#add').onclick = async () => { const sv = (await api('/services')).filter(s => s.is_active); dlg(`<h2>Add person</h2><label>Full name</label><input name="name" required><label>Email</label><input name="email" type="email" required>
       <label>Phone <small>(optional)</small></label><input name="phone" type="tel"><label>Role</label><select name="role"><option value="provider">Service provider</option>${sa ? '<option value="tenant_admin">Campus admin</option>' : ''}</select>
-      <p class="muted small">A temporary password is created and emailed. Assign their services under Services.</p>`,
-      async f => { const r = await api('/users', { method: 'POST', body: formVals(f) }); showTemp('Account created', formVals(f), r.temp_password); reload(); });
+      <label>Services <small>(the tickets they handle; up to 2 providers per service)</small></label>
+      <div class="svcpick">${sv.map(s => `<label><input type="checkbox" name="svc" value="${s.id}" ${s.members.length >= 2 ? 'disabled' : ''}> ${esc(s.name)}${s.members.length >= 2 ? ' <small>(full)</small>' : ''}</label>`).join('') || '<span class="muted small">No services yet. Add them under Services.</span>'}</div>
+      <p class="muted small">They are emailed a welcome with their role, services, sign-in link and a temporary password.</p>`,
+      async f => { const r = await api('/users', { method: 'POST', body: { ...formVals(f), svc: undefined, service_ids: [...f.querySelectorAll('[name=svc]:checked')].map(x => x.value) } });
+        showTemp('Account created', formVals(f), r.temp_password); reload(); }); };
     main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.e);
       dlg(`<h2>Edit ${esc(u.name)}</h2><label>Full name</label><input name="name" required value="${esc(u.name)}"><label>Email <small>(used to sign in)</small></label><input name="email" type="email" required value="${esc(u.email)}">
         <label>Phone</label><input name="phone" type="tel" value="${esc(u.phone || '')}">

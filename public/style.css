@@ -220,3 +220,5 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .ptsbadge{white-space:nowrap;display:inline-flex;align-items:center;gap:4px;background:var(--hold-2);color:#b45309;font-weight:700;font-size:13px;padding:9px 12px;border-radius:12px;border:1px solid #fbd9a5}
 .empty .chip.big{width:64px;height:64px;border-radius:50%;margin:0 auto 4px}.empty p b{color:var(--ink);font-size:15px}
 @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}.stats .stat:last-child:nth-child(odd){grid-column:1/-1}}
+.svcpick{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.svcpick label{display:flex;gap:8px;align-items:center;font-weight:500;font-size:13.5px;margin:0}.svcpick input{width:auto;min-height:0}@media(max-width:560px){.svcpick{grid-template-columns:1fr}}

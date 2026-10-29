@@ -215,7 +215,12 @@ async function ticketVars(t, extra = {}) {
     providers: (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', '), ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, ...extra };
 }
-const staffVars = async (u, pw) => ({ staff_name: u.name, staff_email: u.email, temp_password: pw, campus: u.tenant_id ? (await tenantRow(u.tenant_id))?.name : 'ONE Desk' });
+const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' };
+const staffVars = async (u, pw) => {
+  const svcs = (await all('SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.is_active=1 ORDER BY s.name', u.id)).map(r => r.name);
+  return { staff_name: u.name, staff_email: u.email, temp_password: pw, campus: u.tenant_id ? (await tenantRow(u.tenant_id))?.name : 'ONE Desk', role_name: ROLE_NAMES[u.role] || 'Staff',
+    services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
+};
 const trackUrl = async (t) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${t.tracking_token}`; };
 // Statuses: queued → sent | failed (after 4 tries); 'logged' = no flow connected or sending paused (printed to the server log only).
 async function sendOne(id) {
@@ -487,8 +492,15 @@ S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
   const r = b.role === 'tenant_admin' ? 'tenant_admin' : 'provider';
   if (r === 'tenant_admin' && req.user.role !== 'super_admin') throw forbid();
   if (await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', b.email)) throw new HttpErr(409, 'CONFLICT', 'Email already in use');
+  const svcs = [];
+  for (const id of new Set(Array.isArray(b.service_ids) ? b.service_ids : [])) {
+    const s = await one('SELECT id, name FROM services WHERE id=? AND tenant_id=? AND is_active=1', id, req.tenantId); if (!s) throw bad('Unknown service');
+    if ((await providersFor(req.tenantId, s.id)).length >= 2) throw bad(`${s.name} already has two providers`);
+    svcs.push(s.id);
+  }
   const pw = tempPw();
   const u = await insert('users', { id: uid(), tenant_id: req.tenantId, name: b.name, email: String(b.email).trim(), phone: b.phone, role: r, password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+  for (const sid of svcs) await insert('service_members', { id: uid(), tenant_id: req.tenantId, service_id: sid, user_id: u.id, created_at: now() });
   await notify({ tenant_id: req.tenantId }, [u.email], 'invite', await staffVars(u, pw));
   await audit(req, 'user.create', 'user', u.id, { email: u.email, role: r });
   return { id: u.id, temp_password: pw };
@@ -876,7 +888,7 @@ async function provision() {
   const applied = new Set(row ? JSON.parse(row.value) : []), before = applied.size;
   for (const f of files) {
     let spec; try { spec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (e) { console.error(`provision ${f}: unreadable (${e.message})`); continue; }
-    const added = [], step = async (key, label, fn) => { if (applied.has(key)) return;
+    const added = [], invites = [], step = async (key, label, fn) => { if (applied.has(key)) return;
       try { if (await fn() !== false) added.push(label); applied.add(key); } catch (e) { console.error(`provision ${f}: ${label}: ${e.message}`); } };
     // email connection (private files only): used only if this server has none yet, so the Email page stays in charge
     const m = spec.mail;
@@ -910,7 +922,7 @@ async function provision() {
       if (!/^\S+@\S+\.\S+$/.test(email) || !p.name || await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', email)) return false;
       const pw = tempPw(), u = await insert('users', { id: uid(), tenant_id: tn.id, name: String(p.name).trim(), email, phone: p.phone || null,
         role: 'provider', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
-      await notify({ tenant_id: tn.id }, [email], 'invite', await staffVars(u, pw), { hold: true });
+      invites.push([u, pw]);
     });
     const userId = async e => e && (await one("SELECT id FROM users WHERE lower(email)=lower(?) AND tenant_id=? AND is_active=1 AND role IN ('provider','tenant_admin')", e, tn.id))?.id;
     for (const [sc, a] of Object.entries(spec.assign || {})) {
@@ -926,6 +938,7 @@ async function provision() {
         await run('UPDATE services SET escalation_user_id=? WHERE id=?', id, svc.id);
       });
     }
+    for (const [u, pw] of invites) await notify({ tenant_id: tn.id }, [u.email], 'invite', await staffVars(u, pw), { hold: true });
     if (added.length) {
       console.log(`provision ${f}: added ${added.join(', ')}`);
       await insert('audit_logs', { id: uid(), tenant_id: tn.id, actor_id: null, action: 'provision', entity: 'file', entity_id: f, meta: JSON.stringify({ added }), created_at: now() });

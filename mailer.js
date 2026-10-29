@@ -19,13 +19,13 @@ export const VARS = {
   portal_link: 'Campus portal link', note: 'Note / reason typed at this step', actor_name: 'Person who made the change',
   hold_reason: 'Hold reason', resume_by: 'Expected resume time', reopen_days: 'Days allowed to reopen',
   from_service: 'Previous service', to_service: 'New service', staff_name: 'Staff member’s name', staff_email: 'Staff sign-in email',
-  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
+  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', role_name: 'Staff member’s role', services: 'Services they handle', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
 };
 // Block fields: put one alone on its own line and it becomes a designed section of the email.
 export const BLOCKS = ['progress', 'ticket_details', 'timeline'];
 const T = ['requestor_name', 'ticket_no', 'subject', 'description', 'service', 'location', 'campus', 'status', 'priority', 'due', 'providers', 'ticket_link', 'staff_link', 'portal_link', ...BLOCKS];
-const STAFF = ['staff_name', 'staff_email', 'temp_password', 'login_link', 'campus'];
+const STAFF = ['staff_name', 'staff_email', 'temp_password', 'login_link', 'campus', 'role_name', 'services'];
 
 // Every step that sends mail, with its default template.
 export const MAIL_EVENTS = [
@@ -72,8 +72,14 @@ export const MAIL_EVENTS = [
     subject: '[{{ticket_no}}] We have escalated your ticket',
     body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is taking longer than we planned, so it has been escalated to **{{escalated_to_name}}** for faster help. We are sorry for the wait.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
   { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: STAFF,
-    subject: '[ONE Desk] Your ONE Desk account',
-    body: 'Hi {{staff_name}},\nAn account has been created for you on ONE Desk ({{campus}}).\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose your own password when you first sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
+    subject: '[ONE Desk] Welcome to ONE Desk, your sign-in details',
+    body: 'Hi {{staff_name}},\nWelcome to **ONE Desk**, the service desk of {{campus}}. Students and staff raise their requests here, and you help solve them.\n'
+      + 'Your role: {{role_name}}\nYour services: {{services}}\n**How it works**\n'
+      + '• You get an email when a new ticket arrives in your services. It also shows on your ONE Desk home screen.\n'
+      + '• Open the ticket, choose the status (In progress, On hold, Closed) and add a short note. The requestor is emailed every update.\n'
+      + '• Every ticket has a target time, counted in working hours only. Closing on time earns you points; tickets that miss it are escalated.\n'
+      + '**Your sign-in details**\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
+      + 'You will be asked to choose your own password the first time you sign in. Please keep these details private.' },
   { key: 'password_reset', label: 'Password reset', who: 'Staff member', when: 'An admin resets their password', vars: STAFF,
     subject: '[ONE Desk] Your password was reset',
     body: 'Hi {{staff_name}},\nAn admin reset your ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose a new password when you sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
@@ -88,7 +94,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
   service: 'Electrical', location: 'Hostel H2, room 214', campus: "St. Mary's Rehabilitation University", status: 'Open', priority: 'Medium',
   due: '29 Oct 2026, 3:15 pm', providers: 'Suresh Babu', escalated_to_name: 'Priya Reddy', note: 'The electrician will replace the fan motor.', actor_name: 'Suresh Babu',
   hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, from_service: 'Electrical', to_service: 'IT Support',
-  staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', count: 2,
+  staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', role_name: 'Service provider', services: 'Electrical, IT Support', count: 2,
   ticket_list: '0042 · on hold · Fan not working\n0039 · overdue · Projector not working',
   progress: { status: 'open', service: 'Electrical', due: '29 Oct 2026, 3:15 pm', hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, closed_at: '28 Oct 2026, 5:40 pm' },
   ticket_details: [['Ticket', '0042'], ['Service', 'Electrical'], ['Subject', 'Fan not working'], ['Description', 'Ceiling fan stopped working this morning.'],

@@ -108,6 +108,9 @@ try {
   check('temporary passwords are issued', [asha, pavan, lata, bina].every(u => u.temp?.length >= 8));
   await fails('duplicate staff email is 409', '/users', { ...A, method: 'POST', body: { name: 'Dup', email: 'pavan@example.com', role: 'provider' } }, 409);
   check('invite emails were queued', (await q("SELECT count(*) n FROM notifications WHERE template_key='invite'"))[0].n === 4);
+  const welcome = (await q("SELECT subject, body FROM notifications WHERE template_key='invite' AND recipient='pavan@example.com'"))[0];
+  check('welcome email has role, services, sign-in link and password', /Welcome/.test(welcome.subject) && welcome.body.includes('Service provider') && welcome.body.includes('Not assigned yet')
+    && welcome.body.includes('pavan@example.com') && welcome.body.includes(pavan.temp) && welcome.body.includes('/#/login'));
 
   sec('Services and form types');
   const mkSvc = async (t, body) => ok(`create service ${body.code}`, '/services', { ...t, method: 'POST', body });
@@ -415,6 +418,14 @@ try {
   const mailAfter = (await api('/mail/config', { token: T.sa })).data;
   check('an existing email connection is not overwritten by the file', mailAfter.url === mailBefore.url && mailAfter.base === mailBefore.base && mailAfter.key_masked === mailBefore.key_masked);
   check('invites are held, not sent', (await q("SELECT status FROM notifications WHERE template_key='invite' AND recipient IN ('dev@example.com','esha@example.com')")).every(n => n.status === 'logged'));
+  const devWelcome = (await q("SELECT body FROM notifications WHERE template_key='invite' AND recipient='dev@example.com'"))[0];
+  check('held welcome email lists the services the file assigned', devWelcome.body.includes(dsv.find(x => x.code === 'DHELP').name));
+  const DT = { token: T.sa, tenant: delta.id }, open1 = dsv.find(x => x.members.length < 2), full = dsv.find(x => x.members.length >= 2);
+  const zed = await ok('add a provider with a service', '/users', { ...DT, method: 'POST', body: { name: 'Zed Provider', email: 'zed@example.com', role: 'provider', service_ids: [open1.id] } });
+  check('new provider is on the service and their welcome lists it', (await api('/services', DT)).data.find(x => x.id === open1.id).members.some(m => m.email === 'zed@example.com')
+    && (await q("SELECT body FROM notifications WHERE template_key='invite' AND recipient='zed@example.com'"))[0].body.includes(open1.name));
+  if (full) await fails('a service with two providers is refused', '/users', { ...DT, method: 'POST', body: { name: 'Yan', email: 'yan@example.com', role: 'provider', service_ids: [full.id] } }, 400);
+  await ok('deactivate the extra provider', `/users/${zed.id}`, { ...DT, method: 'PATCH', body: { is_active: 0 } });
   await ok('admin removes DEXAM’s providers', `/services/${dsv.find(x => x.code === 'DEXAM').id}/members`, { token: T.sa, tenant: delta.id, method: 'PUT', body: { user_ids: [] } });
   await ok('admin renames DHELP', `/services/${dsv.find(x => x.code === 'DHELP').id}`, { token: T.sa, tenant: delta.id, method: 'PATCH', body: { name: 'Delta helpdesk' } });
   await stop(); await start();
