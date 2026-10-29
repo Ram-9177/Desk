@@ -96,6 +96,11 @@ figcaption{font-size:13px;color:var(--muted);text-align:center;margin-top:8px}
 
 /* bottom bar */
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px);box-shadow:0 -10px 24px -18px var(--shade)}
+/* shown when the browser wants a tap before the voice may play */
+.tapvoice{all:unset;cursor:pointer;box-sizing:border-box;position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:7;display:flex;align-items:center;gap:8px;max-width:calc(100% - 32px);background:var(--accent);color:var(--on-accent);font-weight:800;font-size:15.5px;padding:13px 20px;border-radius:99px;box-shadow:0 12px 28px -10px var(--shade);animation:tappulse 1.6s ease-in-out infinite}
+.tapvoice:focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+@keyframes tappulse{50%{box-shadow:0 0 0 9px rgba(242,154,31,.28),0 12px 28px -10px var(--shade)}}
+@media (prefers-reduced-motion:reduce){.tapvoice{animation:none}}
 .nav .in{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px;padding-block:10px}
 .nb{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;min-height:48px;border-radius:14px;font-weight:700;font-size:15.5px;border:1px solid var(--line);background:var(--surface);color:var(--ink);box-sizing:border-box;padding:0 12px;text-align:center}
 .nb.next{background:var(--brand);color:var(--on-brand);border-color:var(--brand)}
@@ -179,6 +184,8 @@ dialog.zoom button{all:unset;cursor:pointer;background:var(--surface);color:var(
 
 <main class="in" id="deck"></main>
 
+<button type="button" class="tapvoice" id="tapvoice" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>Tap to hear the guide</button>
+
 <nav class="nav" aria-label="Guide steps">
   <div class="in">
     <button type="button" class="nb" id="prev"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg><span class="lbl">Back</span></button>
@@ -206,10 +213,9 @@ window.AUDIO = {"en":{}};
   const text = html => { let t = strip(html);
     t = t.replace('stmarys-desk.supercxo.ai', 'st marys desk dot super C X O dot A I').replace(/ONE Desk/g, 'One Desk').replace(/IT & ERP|IT and ERP/g, 'I T and E R P');
     return t; };
-  // everything Listen reads, in order: the welcome, each sentence of each step, the closing card
+  // everything the voice reads, in order: the welcome's opening line, each sentence of each step, the closing card
   const items = (G, lang) => [
     { id: 'w0', at: 0, t: strip(G.welcome.title[lang]) + '. ' + G.welcome.lead[lang] },
-    ...G.welcome.summary.map((s, i) => ({ id: 'w' + (i + 1), at: 0, t: s[lang][0] + '. ' + s[lang][1] })),
     ...G.steps.flatMap((s, i) => s.lines.map((l, k) => ({ id: `${s.id}-${k}`, at: i + 1, k, t: (k === 0 ? strip(s.title[lang]) + '. ' : '') + l[lang] }))),
     { id: 'done', at: G.steps.length + 1, t: G.done.title[lang] + '. ' + G.done.lead[lang] },
   ].map(x => ({ ...x, say: text(x.t) }));
@@ -325,7 +331,8 @@ window.GUIDE = {
 // Step-by-step guide in English or Telugu. Every sentence is tied to a part of its screenshot: while a sentence is
 // shown or read aloud, that part is outlined in orange and the rest of the picture dims.
 // Back / Next, swipe, arrow keys and the Steps menu move between steps; Listen reads each step and moves on by itself.
-// With the voice on (the default), tapping Start starts the reading too, so the guide talks from its first step.
+// With the voice on (the default) the guide starts talking in English as soon as it opens, in step with the screens.
+// Where the browser wants a tap before any sound (iPhone, or a page opened from an email), a "Tap to hear the guide" button shows.
 // The voice is English only; Telugu is read on screen. Listen plays the recorded natural voice where a recording exists
 // (window.AUDIO.en), and otherwise the most natural English voice the device has, sentence after sentence without gaps.
 (() => {
@@ -438,7 +445,7 @@ window.GUIDE = {
   toc.addEventListener('click', e => { if (e.target === toc) toc.close(); });
 
   // ---------- Listen: the device's own voice, sentence by sentence ----------
-  const synth = window.speechSynthesis, lb = $('listen');
+  const synth = window.speechSynthesis, lb = $('listen'), tap = $('tapvoice');
   if (synth) synth.getVoices(); // starts loading the voice list, so it is ready by the time Start is tapped
   // the most natural English voice on this device: Microsoft's natural voices (Edge), Apple's Premium and Enhanced voices,
   // Google's, then the better standard ones. Indian English first among equals; never the novelty or robotic voices.
@@ -459,31 +466,39 @@ window.GUIDE = {
     if (qi >= q.length) { if (at < last) { go(at + 1, 'voice'); q = queueFor(at); qi = 0; return speakNext(); } return stopVoice(); }
     const item = q[qi], src = (AUD[lang] || {})[item.id];
     if (src) { // the recorded natural voice
-      player.src = src; player.onplay = () => { if (item.k != null) setLine(item.k); };
+      player.src = src; player.onplay = () => { heard = true; if (item.k != null) setLine(item.k); };
       player.onended = advance; player.onerror = () => deviceSay(item);
-      player.play().catch(() => deviceSay(item));
+      player.play().catch(e => e && e.name === 'NotAllowedError' ? blocked() : deviceSay(item));
       const nx = q[qi + 1] && (AUD[lang] || {})[q[qi + 1].id]; if (nx) { const pre = new Audio(); pre.preload = 'auto'; pre.src = nx; } // the next sentence is ready in time
       return;
     }
     deviceSay(item);
   };
+  let heard = false; // a sentence really started playing (the browser allowed sound)
   let fresh = true; // just after cancel() Chrome needs a moment before it speaks again; between sentences it doesn't, so they flow on
+  // The sentence being spoken. Holding on to it matters: Chrome drops an utterance nothing refers to, and then never says it ended.
+  let current = null;
   const deviceSay = item => { // the device's own voice
     if (!synth) return advance();
-    const u = new SpeechSynthesisUtterance(item.say), v = pick();
+    const u = new SpeechSynthesisUtterance(item.say), v = pick(); current = u;
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-IN';
     u.rate = 1;
-    u.onstart = () => { if (item.k != null) setLine(item.k); };
-    u.onend = advance;
-    u.onerror = e => { if (speaking && !/interrupted|canceled/.test(e.error)) advance(); };
-    if (fresh) { fresh = false; setTimeout(() => synth.speak(u), 60); } else synth.speak(u);
+    let over = false, dog = 0; const due = Date.now() + 1500 + item.say.split(/\s+/).length * 450, cap = due + 15000;
+    const end = () => { if (over || current !== u) return; over = true; clearInterval(dog); advance(); };
+    u.onstart = () => { heard = true; if (item.k != null) setLine(item.k); };
+    u.onend = end;
+    u.onerror = e => { if (!speaking || current !== u) return; if (e.error === 'not-allowed') { clearInterval(dog); return blocked(); } if (!/interrupted|canceled/.test(e.error)) end(); };
+    // if the browser never reports the end, move on once it has gone quiet well past the sentence's length
+    dog = setInterval(() => { if (current !== u || !speaking) return clearInterval(dog); if ((Date.now() > due && !synth.speaking && !synth.pending) || Date.now() > cap) end(); }, 1000);
+    if (fresh) { fresh = false; setTimeout(() => { if (speaking && current === u) synth.speak(u); }, 60); } else synth.speak(u);
   };
-  const speakFrom = k => { if (synth) synth.cancel(); fresh = true; player.pause(); q = queueFor(at); qi = Math.max(0, q.findIndex(x => x.k === k)); speakNext(); };
-  const stopVoice = () => { speaking = false; if (synth) synth.cancel(); player.pause(); ui(); };
+  const speakFrom = k => { if (synth) synth.cancel(); current = null; fresh = true; player.pause(); q = queueFor(at); qi = Math.max(0, q.findIndex(x => x.k === k)); speakNext(); };
+  const stopVoice = () => { speaking = false; current = null; if (synth) synth.cancel(); player.pause(); ui(); };
   function ui() {
     lb.querySelector('.lbl').textContent = speaking ? T().stop : T().listen; lb.setAttribute('aria-pressed', String(speaking));
     next.querySelector('.lbl').textContent = at === 0 ? T().start : at === last ? T().again : T().next;
     lb.hidden = !voiceHere(); next.parentElement.style.gridTemplateColumns = lb.hidden ? '1fr 1fr' : '';
+    if (tap && (speaking || !voiceHere())) tap.hidden = true;
     prev.setAttribute('aria-disabled', String(at === 0));
   }
   const begin = () => { speaking = true; ui(); speakFrom(at >= 1 && at <= N ? line : 0); };
@@ -495,7 +510,7 @@ window.GUIDE = {
     const ready = () => { if (!pick()) { note = T().novoice; const keep = at; render(); go(keep, 'load'); return; } begin(); };
     if (synth && synth.getVoices().length) ready(); else voicesReady().then(ready);
   };
-  const startGuide = () => { go(1); if (voiceOn) listen(); };
+  const startGuide = () => { go(1); if (voiceOn && !speaking) listen(); };
   lb.onclick = () => { if (speaking) { stopVoice(); setVoice(false); } else { setVoice(true); listen(); } };
   // the Voice On / Off choice is remembered; Off also stops a reading in progress
   function setVoice(on) { voiceOn = on; try { localStorage.setItem('guide-voice', on ? 'on' : 'off'); } catch { /* storage off */ }
@@ -503,13 +518,20 @@ window.GUIDE = {
     if (!on && speaking) stopVoice(); }
   function setLang(l) { if (l === lang) return; stopVoice(); lang = l; note = '';
     try { localStorage.setItem('guide-lang', l); } catch { /* storage off */ }
-    const keep = at; render(); go(keep, 'load'); }
+    const keep = at; render(); go(keep, 'load');
+    if (l === 'en' && voiceOn) listen(); } // back to English: the voice carries on from this step
   addEventListener('pagehide', () => synth && synth.cancel());
 
   render();
   try { history.scrollRestoration = 'manual'; } catch { /* not supported */ }
   const first = cards().findIndex(c => '#' + c.dataset.id === location.hash);
   go(first > 0 ? first : 0, 'load'); scrollTo(0, 0);
+
+  // talk from the start: the opening line, then step after step. If no sound may play yet, offer one tap.
+  const blocked = () => { stopVoice(); if (tap) tap.hidden = false; };
+  if (tap) tap.onclick = () => { tap.hidden = true; setVoice(true); listen(); };
+  // listen() first wakes the device voice with an empty sentence; without it Chrome on a Mac never reports the first sentence ending
+  if (voiceOn && voiceHere()) voicesReady().then(() => { if (speaking) return; heard = false; listen(); setTimeout(() => { if (speaking && !heard && !(synth && synth.speaking)) blocked(); }, 2500); });
 })();
 </script>
 </body>

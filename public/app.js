@@ -68,7 +68,7 @@ const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.
 const formVals = form => Object.fromEntries(new FormData(form));
 let installEvt = null;
 const installBtn = () => `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install" ${installEvt ? '' : 'hidden'}>${I('plus', 16)} Install ONE Desk app</button></p>`;
-// The step-by-step guides live beside the app, at guide/*.html. A first visit gets a card offering one;
+// The requestor's step-by-step guide lives beside the app, at guide/requestor.html. A first visit gets a card offering it;
 // Start guide or Not now hides that card for good on this device.
 const guideSeen = k => { try { return localStorage.getItem(k) === '1'; } catch { return true; } };
 const guideCard = (href, kicker, title, sub) => `<div class="guidecard"><span class="chip c1">${I('play', 22)}</span><div class="t"><span class="new">${kicker}</span><b>${title}</b><span class="muted small">${sub}</span></div>
@@ -250,8 +250,7 @@ function login() {
   app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Your Desk,<br><span>Organized</span> in One Place</h1><p class="muted">Sign in to see your service queue, act on tickets and track your progress.</p>
     <form id="f" class="card"><label style="margin-top:0">Email</label><input name="email" type="email" required autofocus><label>Password</label><input name="password" type="password" required>
-    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form>
-    <p class="muted small" style="text-align:center;margin-top:18px">New to ONE Desk? Step-by-step guides for <a href="guide/provider.html">service providers</a> and <a href="guide/admin.html">admins</a>.</p></div>`;
+    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form></div>`;
   $('#bk').onclick = e => { if (history.length > 1) { e.preventDefault(); history.back(); } };
   $('#f').onsubmit = async e => { e.preventDefault();
     try { const r = await api('/auth/login', { method: 'POST', body: formVals(e.target) }); S.token = r.token; localStorage.setItem('tok', r.token);
@@ -308,10 +307,6 @@ function ticketCard(r, services) {
 let pollT;
 async function queue(main) {
   const services = await api('/services');
-  // first sign-in: a card offering the guide for this person's role
-  const gk = 'guide-seen-' + S.me.user.id, adm = S.me.user.role !== 'provider';
-  const staffGuide = () => guideSeen(gk) ? '' : guideCard(`guide/${adm ? 'admin' : 'provider'}.html`, 'Welcome to ONE Desk', adm ? 'Take the admin guide' : 'Take the 2-minute guide',
-    adm ? 'Set up services, people and time rules, step by step.' : 'See, update and close your tickets, step by step, with voice.');
   const st = JSON.parse(sessionStorage.getItem('qf') || '{"status":"open"}');
   const draw = async () => {
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
@@ -323,7 +318,7 @@ async function queue(main) {
     main.innerHTML = `<div class="hello"><div><div class="muted">${greet},</div><h1>${esc(S.me.user.name.split(' ')[0])} 👋</h1><div class="muted small">Here's what's happening at ${esc(tenantObj()?.code || '')} today.</div></div>
       <div style="display:flex;gap:8px;align-items:center"><a href="#/c/me" class="ptsbadge">⭐ ${pts.me} pts</a>
       ${S.me.user.role !== 'provider' ? `<a class="iconbtn" href="#/c/attention">${I('bell')}</a>` : ''}</div></div>
-      ${staffGuide()}<div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--accent)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
+      <div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--accent)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
         <div class="small soft">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
       <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c0')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
@@ -332,7 +327,6 @@ async function queue(main) {
       <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
       <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1"><span class="chip c2 big">${I('check', 30)}</span><p><b>Nothing here — all clear.</b><br><span class="small">New tickets for your services will show up here.</span></p></div>`}</div>`;
     main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
-    wireGuide(gk, draw);
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
     main.querySelectorAll('[data-s]').forEach(b => b.onclick = () => set('status', b.dataset.s)); $('#fsv').onchange = e => set('service', e.target.value);
     $('#fq').onchange = e => set('q', e.target.value);
@@ -902,7 +896,6 @@ async function profile(main) {
     ${pts.history.length ? `<div class="card"><b>Recent points</b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
-      <a href="guide/${u.role === 'provider' ? 'provider' : 'admin'}.html">${I('book')}Guide: how ONE Desk works<span class="chev">${I('chev', 18)}</span></a>
       <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a></div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
   $('#lo').onclick = logout;

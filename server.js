@@ -230,12 +230,11 @@ async function ticketVars(t, extra = {}) {
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, ...extra };
 }
 const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' };
-// The step-by-step guides the app serves (public/guide), linked from the welcome email and a requestor's first ticket.
+// The requestor's step-by-step guide the app serves (public/guide), linked from a requestor's first ticket email.
 const guideLink = kind => ({ kind, url: `${base()}/guide/${kind}.html` });
 const staffVars = async (u, pw) => {
   const svcs = (await all('SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.is_active=1 ORDER BY s.name', u.id)).map(r => r.name);
   return { staff_name: u.name, staff_email: u.email, temp_password: pw, campus: u.tenant_id ? (await tenantRow(u.tenant_id))?.name : 'ONE Desk', role_name: ROLE_NAMES[u.role] || 'Staff',
-    guide: guideLink(u.role === 'provider' ? 'provider' : 'admin'),
     services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
 };
 const trackUrl = async (t) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${t.tracking_token}`; };

@@ -71,6 +71,20 @@ const flowServer = http.createServer((req, res) => { let b = ''; req.on('data', 
 await new Promise(r => flowServer.listen(0, '127.0.0.1', r));
 const FLOW_URL = `http://localhost:${flowServer.address().port}/flow`;
 const GMAIL = href => `http://localhost:${flowServer.address().port}/url?q=${encodeURIComponent(href)}&source=gmail`;
+// A stand-in device voice for the guide: each sentence takes 40 ms, and it refuses ('not-allowed') like a browser that wants
+// a tap first. ?tts=ok stands for arriving from the app with a tap (Chrome counts that); a real tap on the page counts too.
+const FAKE_TTS = `(() => {
+  const allowed = () => /[?&]tts=ok/.test(location.search) || navigator.userActivation?.hasBeenActive;
+  let cur = null, timer = 0; const queue = []; window.__said = [];
+  const say = () => { cur = queue.shift(); if (!cur) { synth.speaking = false; return; } synth.speaking = true; const u = cur;
+    timer = setTimeout(() => { u.onstart?.({}); window.__said.push({ t: u.text, at: location.hash, sub: document.querySelector('.card:not([hidden]) .subtitle .t')?.textContent || '' });
+      timer = setTimeout(() => { cur = null; u.onend?.({}); say(); }, 30); }, 10); };
+  const synth = { speaking: false, pending: false, paused: false, getVoices: () => [{ name: 'Stand-in Natural English', lang: 'en-IN', localService: false }],
+    speak(u) { if (!u.text) return; if (!allowed()) { setTimeout(() => u.onerror?.({ error: 'not-allowed' }), 5); return; } queue.push(u); if (!cur) say(); },
+    cancel() { queue.length = 0; clearTimeout(timer); const u = cur; cur = null; synth.speaking = false; if (u) setTimeout(() => u.onerror?.({ error: 'interrupted' }), 0); },
+    pause() {}, resume() {}, addEventListener() {}, removeEventListener() {} };
+  Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true });
+  window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } }; })();`;
 
 const T = {}, ids = {}; // tokens and ids shared across sections
 try {
@@ -115,11 +129,10 @@ try {
   check('welcome email has role, services, sign-in link and password', /Welcome/.test(welcome.subject) && welcome.body.includes('Service provider') && welcome.body.includes('Not assigned yet')
     && welcome.body.includes('pavan@example.com') && welcome.body.includes(pavan.temp) && welcome.body.includes('/#/login'));
   const inviteTo = async to => (await q("SELECT html, text_body FROM notifications WHERE template_key='invite' AND recipient=?", to))[0];
-  check('welcome emails link the guide for the role (provider guide, admin guide)', (await inviteTo('pavan@example.com')).html.includes('/guide/provider.html')
-    && (await inviteTo('pavan@example.com')).text_body.includes('/guide/provider.html') && (await inviteTo('asha@example.com')).html.includes('/guide/admin.html'));
+  check('staff welcome emails carry no guide link (the guide is for requestors)', !(await inviteTo('pavan@example.com')).html.includes('/guide/') && !(await inviteTo('asha@example.com')).html.includes('/guide/'));
   const gp = await fetch(APP + '/guide/requestor.html');
-  check('the app serves the guides at /guide/ (requestor, provider, admin, pictures)', gp.ok && (await gp.text()).includes('window.GUIDE') && (await fetch(APP + '/guide/provider.html')).ok
-    && (await fetch(APP + '/guide/admin.html')).ok && (await fetch(APP + '/guide/img/r1-portal.jpg')).ok);
+  check('the app serves only the requestor guide (/guide/ opens it; no staff guides)', gp.ok && (await gp.text()).includes("key: 'requestor'") && (await fetch(APP + '/guide/provider.html')).status === 404
+    && (await fetch(APP + '/guide/admin.html')).status === 404 && (await (await fetch(APP + '/guide/')).text()).includes('requestor.html') && (await fetch(APP + '/guide/img/r1-portal.jpg')).ok);
 
   sec('Services and form types');
   const mkSvc = async (t, body) => ok(`create service ${body.code}`, '/services', { ...t, method: 'POST', body });
@@ -532,6 +545,7 @@ async function uiSmoke(tok, id) {
       else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(m.params.args.map(a => a.value || a.description).join(' ')); };
     const send = (method, params = {}) => new Promise((res, rej) => { const i = ++seq; pend.set(i, m => m.error ? rej(new Error(m.error.message)) : res(m.result)); ws.send(JSON.stringify({ id: i, method, params })); });
     const js = async src => (await send('Runtime.evaluate', { expression: `(async()=>{${src}})()`, awaitPromise: true, returnByValue: true })).result.value;
+    await send('Page.enable'); await send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE_TTS }); // the guide's voice is the stand-in
     await send('Page.enable'); await send('Runtime.enable');
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: APP + '/' }); await sleep(600);
@@ -561,7 +575,7 @@ async function uiSmoke(tok, id) {
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
-    await visit('provider home offers the provider guide at first sign-in', '/c', tok.pavan, '.guidecard a[href="guide/provider.html"]');
+    check('staff screens offer no guide card (the guide is for requestors)', !(await js("return !!document.querySelector('.guidecard')")));
     await visit('provider ticket workspace', '/c/t/' + id.t1, tok.pavan, '#act #to');
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
@@ -604,6 +618,27 @@ async function uiSmoke(tok, id) {
       for (let i = 0; i < 40 && !document.querySelector('#act #to'); i++) await new Promise(r => setTimeout(r, 150));
       return !!document.querySelector('#act #to') && location.hash === ${JSON.stringify(mine.slice(mine.indexOf('#')))};`);
     check('Gmail click: "Open the ticket" when signed out → sign in → that ticket, not Home', via, mine);
+    // the guide talks by itself in English, in step with the screens (?tts=ok = arriving from the app with a tap)
+    await js('localStorage.clear(); sessionStorage.clear();'); errors.length = 0;
+    await send('Page.navigate', { url: `${APP}/guide/requestor.html?tts=ok` });
+    let talk = null; for (let i = 0; i < 60 && !talk?.done; i++) { await sleep(250); talk = await js(`const s = window.__said || [];
+      return { first: s[0]?.t, openSubs: s.filter(x => x.at === '#open').map(x => x.sub), open: [...document.querySelectorAll('.card[data-id="open"] [data-line]')].map(b => b.textContent),
+        cards: [...new Set(s.map(x => x.at))].length, done: location.hash === '#done' && !speechSynthesis.speaking };`).catch(() => null); }
+    check('the guide starts talking on its own: the opening line, then step 1', /^Raise and track a ticket\./.test(talk?.first || '') && talk.openSubs.length === talk.open.length, JSON.stringify(talk)?.slice(0, 300));
+    check('each sentence is read while its own line shows; the steps move on with the voice to the end', !!talk?.done && JSON.stringify(talk.openSubs) === JSON.stringify(talk.open) && talk.cards >= 15 && !errors.length,
+      JSON.stringify(talk)?.slice(0, 300) + errors.join(' | '));
+    // where sound needs a tap first (iPhone, a page opened from an email): the guide waits, and one tap starts the voice
+    await send('Page.navigate', { url: `${APP}/guide/requestor.html` }); await sleep(3200);
+    const wait1 = await js(`const t = document.querySelector('#tapvoice'); return { pill: !!t && !t.hidden, said: window.__said.length, at: location.hash };`);
+    const [px, py] = await js(`const r = document.querySelector('#tapvoice').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2];`);
+    for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: px, y: py, button: 'left', clickCount: 1 });
+    await sleep(700);
+    const wait2 = await js(`return { pill: !document.querySelector('#tapvoice').hidden, said: window.__said.length };`);
+    check('if sound needs a tap first: a "Tap to hear the guide" button, and the guide waits', wait1.pill && wait1.said === 0 && wait1.at === '#start', JSON.stringify(wait1));
+    check('one tap on it starts the voice', !wait2.pill && wait2.said > 0, JSON.stringify(wait2));
+    await send('Page.navigate', { url: `${APP}/guide/` }); let gi = false;
+    for (let i = 0; i < 20 && !gi; i++) { await sleep(250); gi = await js(`return location.pathname.endsWith('/guide/requestor.html') && !!document.querySelector('.card[data-id="start"]');`).catch(() => false); }
+    check('/guide/ opens the requestor guide', gi);
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }
 }

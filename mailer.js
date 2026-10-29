@@ -21,7 +21,7 @@ export const VARS = {
   from_service: 'Previous service', to_service: 'New service', staff_name: 'Staff member’s name', staff_email: 'Staff sign-in email',
   escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', password: 'The new password they chose', role_name: 'Staff member’s role', services: 'Services they handle', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
-  guide: 'Block: the step-by-step guide for this person (welcome email, and a requestor’s first ticket)',
+  guide: 'Block: link to the step-by-step guide (a requestor’s first ticket)',
 };
 // Block fields: put one alone on its own line and it becomes a designed section of the email.
 export const BLOCKS = ['progress', 'ticket_details', 'timeline', 'guide'];
@@ -73,13 +73,13 @@ export const MAIL_EVENTS = [
   { key: 'escalated_requestor', label: 'Escalation acknowledgement', who: 'Requestor', when: 'Their ticket is escalated', vars: [...T, 'escalated_to_name'],
     subject: '[{{ticket_no}}] We have escalated your ticket',
     body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is taking longer than we planned, so it has been escalated to **{{escalated_to_name}}** for faster help. We are sorry for the wait.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
-  { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: [...STAFF, 'guide'],
+  { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: STAFF,
     subject: '[ONE Desk] Welcome to ONE Desk, your sign-in details',
     body: 'Hi {{staff_name}},\nWelcome to **ONE Desk**, the service desk of {{campus}}. Students and staff raise their requests here, and you help solve them.\n'
       + 'Your role: {{role_name}}\nYour services: {{services}}\n**How it works**\n'
       + '• You get an email when a new ticket arrives in your services. It also shows on your ONE Desk home screen.\n'
       + '• Open the ticket, choose the status (In progress, On hold, Closed) and add a short note. The requestor is emailed every update.\n'
-      + '• Every ticket has a target time, counted in working hours only. Closing on time earns you points; tickets that miss it are escalated.\n{{guide}}\n'
+      + '• Every ticket has a target time, counted in working hours only. Closing on time earns you points; tickets that miss it are escalated.\n'
       + '**Your sign-in details**\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
       + 'You will be asked to choose your own password the first time you sign in. Please keep these details private.' },
   { key: 'password_changed', label: 'Password changed', who: 'Staff member', when: 'They set their own password (first sign-in or Profile)', vars: STAFF_PW,
@@ -108,7 +108,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
 const SAMPLE_STATE = { created: 'open', new_ticket: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
-export const sampleVars = (base, key) => ({ ...SAMPLE, guide: { kind: key === 'invite' ? 'provider' : 'requestor', url: `${base}/guide/${key === 'invite' ? 'provider' : 'requestor'}.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
+export const sampleVars = (base, key) => ({ ...SAMPLE, guide: { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
 
 // Values typed by people are cleaned so they can't add buttons or bold to an email.
 const clean = v => String(v ?? '').replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]').replace(/\*\*/g, '* *').replace(/\{\{/g, '{ {');
@@ -184,11 +184,9 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
 </table></td></tr></table></body></html>`;
 }
 
-// The guide section's words, per guide (the guides are served by the app at /guide/<kind>.html).
+// The guide section's words (the requestor guide is served by the app at /guide/requestor.html).
 const GUIDE_COPY = {
   requestor: { title: 'New to ONE Desk?', text: 'See how to raise and track a ticket, step by step, in 2 minutes. In English with a voice that reads it out, or in Telugu.', label: 'Open the guide' },
-  provider: { title: 'Your 2-minute guide', text: 'How to see your tickets, update them and close them on time, step by step. In English with a voice that reads it out, or in Telugu.', label: 'Open the provider guide' },
-  admin: { title: 'Your admin guide', text: 'How to set up services and their forms, add people, set the time rules and read the reports, step by step.', label: 'Open the admin guide' },
 };
 // Designed sections (email-safe tables, inline styles).
 const sectionTitle = t => `<p style="margin:22px 0 8px;font-size:12px;font-weight:700;letter-spacing:.6px;color:#8b8fa8;text-transform:uppercase">${t}</p>`;
