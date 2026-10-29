@@ -313,31 +313,34 @@ async function workspace(main, id, { admin }) {
     closed: `Emails the requestor, who can reopen within ${tenantObj()?.reopen_window_days ?? 7} days. Add a proof photo if you can.`,
     rejected: 'Write the reason. The requestor is told and can raise a new ticket.' };
   const fd = Object.entries(t.form_data || {}).filter(([, v]) => v !== '' && v != null);
+  const head = (icon, c, title) => `<div class="cardh"><span class="chip ${c}">${I(icon, 17)}</span><b>${title}</b></div>`;
+  const ini = n => esc(String(n || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase());
   main.innerHTML = `<div class="ws">
-   <div><div class="card"><div class="mono muted small">${t.ticket_no}</div>${pill(t.status)} ${ppill(t.priority)} ${t.is_internal ? '<span class="pill s-hold">internal</span>' : ''}
-     <h2 style="margin:10px 0">${esc(t.subject)}</h2><div class="muted">${esc(t.service.name)} · ${t.channel}</div>
-     <p>${esc(t.description || '')}</p><p><b>Location:</b> ${esc(t.location || '—')}</p>
-     ${fd.map(([k, v]) => `<div><b>${esc((t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)).find(f => f.key === k)?.label : k) || k)}:</b> ${esc(Array.isArray(v) ? v.join(', ') : v)}</div>`).join('')}
-     <p class="muted small">Created ${fmt(t.created_at)}</p>
+   <div><div class="card tk"><div class="tk-head"><div class="tk-top"><span class="mono">#${t.ticket_no}</span><span>${pill(t.status)} ${ppill(t.priority)} ${t.is_internal ? '<span class="pill s-hold">internal</span>' : ''}</span></div>
+     <h2>${esc(t.subject)}</h2><div class="tk-svc">${esc(t.service.name)} · ${t.channel}</div></div>
+     ${t.description ? `<p class="tk-desc">${esc(t.description)}</p>` : ''}
+     <div class="tk-fields">${t.location ? `<div><span>Location</span><b>${esc(t.location)}</b></div>` : ''}
+     ${fd.map(([k, v]) => `<div><span>${esc((t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)).find(f => f.key === k)?.label : k) || k)}</span><b>${esc(Array.isArray(v) ? v.join(', ') : v)}</b></div>`).join('')}
+     <div><span>Created</span><b>${fmt(t.created_at)}</b></div></div>
      ${ACTIVE.includes(t.status) ? `<div class="slabox ${t.sla_left_min < 0 ? 'late' : ''}">${I('clock', 20)}<div><b>${t.sla_left_min >= 0 ? fmtLeft(t.sla_left_min) + ' working time left' : fmtLeft(t.sla_left_min) + ' past SLA'}</b><div class="small">Due ${fmt(t.due_at)}</div></div></div>` : ''}
      ${t.status === 'hold' ? `<div class="slabox hold ${t.hold_over ? 'late' : ''}">${I('pause', 20)}<div><b>On hold · ${esc(t.hold_label || '')}</b><div class="small">${t.hold_over ? 'Hold SLA passed at' : 'Resume by'} ${fmt(t.hold_due_at)} · main SLA paused</div></div></div>` : ''}
      ${t.escalated_name && [...ACTIVE, 'hold'].includes(t.status) ? `<div class="slabox late" style="margin-top:8px">${I('alert', 20)}<div><b>Escalated to ${esc(t.escalated_name)}</b><div class="small">${fmt(t.escalated_at)} · it missed its target</div></div></div>` : ''}
      ${t.held_minutes ? `<div class="muted small" style="margin-top:6px">Total time on hold: ${fmtLeft(t.held_minutes)} (working)</div>` : ''}
      <p><a href="${t.tracking_url}" target="_blank" style="font-size:13px">Requestor's view ↗</a></p></div></div>
-   <div><div class="card"><b>Timeline</b><div style="margin-top:10px">${t.events.map(e => `<div class="ev ${e.is_internal ? 'int' : ''}"><b>${evLabel(e)}</b>${e.is_internal ? ' <span class="muted">(internal)</span>' : ''}
+   <div><div class="card k-blue">${head('clock', 'c4', 'Timeline')}<div style="margin-top:12px">${t.events.map(e => `<div class="ev ${e.is_internal ? 'int' : ''}"><b>${evLabel(e)}</b>${e.is_internal ? ' <span class="muted">(internal)</span>' : ''}
       <div class="meta">${fmt(e.created_at)} · ${esc(e.actor_name || e.actor_type)}</div>${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div>`).join('')}</div></div>
-     <form id="act" class="card"><b>Act on this ticket</b>
+     <form id="act" class="card k-brand">${head('tool', 'c0', 'Act on this ticket')}
        <label>Ticket status</label><select name="to" id="to">${STATUSES.map(s => `<option value="${s}" ${s === t.status ? 'selected' : ''} ${s !== t.status && !targets.includes(s) ? 'disabled' : ''}>${STATUS_INFO[s][0]}${s === t.status ? ' (current)' : ' — ' + STATUS_INFO[s][1]}</option>`).join('')}</select>
        <div class="muted small" id="tohint" style="margin-top:6px"></div>
        <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h limit</option>`).join('')}</select></div>
        <label>Note <small>(required)</small></label><textarea name="note" placeholder="What did you do, or why this change?"></textarea>
        ${fileButtons('act')}<label style="font-weight:400"><input type="checkbox" name="is_internal" style="width:auto;min-height:0"> Internal — hide from requestor</label>
        <div class="actbar"><button class="btn act act-note" id="go">${I('plus', 18)}Add note</button></div></form></div>
-   <div><div class="card"><b>Requestor</b><div>${esc(t.requestor.name)} <span class="muted">${esc(t.requestor.requestor_type || '')}</span></div>
-     <div class="muted" style="font-size:13px">${esc(t.requestor.email || '')}<br>${esc(t.requestor.phone || '')}<br>${esc(t.requestor.identifier || '')} ${esc(t.requestor.department || '')}</div>
-     ${t.requestor_history.length ? `<p style="font-size:13px"><b>Last tickets</b><br>${t.requestor_history.map(h => `<a href="#/c/t/${h.id}">${h.ticket_no}</a> ${pill(h.status)}`).join('<br>')}</p>` : ''}</div>
-    <div class="card"><b>Providers</b>${t.providers.map(p => `<div>${esc(p.name)} <span class="muted">${esc(p.phone || '')}</span></div>`).join('') || '<div class="err">No provider mapped</div>'}</div>
-    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card"><b>Priority</b><select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
+   <div><div class="card k-green">${head('user', 'c2', 'Requestor')}<div class="tk-person"><span class="avatar">${ini(t.requestor.name)}</span><div><b>${esc(t.requestor.name)}</b> <span class="pill s-open">${esc(t.requestor.requestor_type || '')}</span></div></div>
+     <div class="muted" style="font-size:13px;margin-top:10px;line-height:1.6">${esc(t.requestor.email || '')}<br>${esc(t.requestor.phone || '')}<br>${esc(t.requestor.identifier || '')} ${esc(t.requestor.department || '')}</div>
+     ${t.requestor_history.length ? `<p style="font-size:13px;margin-bottom:0"><b>Last tickets</b><br>${t.requestor_history.map(h => `<a href="#/c/t/${h.id}">${h.ticket_no}</a> ${pill(h.status)}`).join('<br>')}</p>` : ''}</div>
+    <div class="card k-orange">${head('users', 'c1', 'Providers')}${t.providers.map(p => `<div class="tk-person" style="margin-top:10px"><span class="avatar sm">${ini(p.name)}</span><div><b>${esc(p.name)}</b><div class="muted small">${esc(p.phone || '')}</div></div></div>`).join('') || '<div class="tk-empty">No provider mapped to this service</div>'}</div>
+    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card k-pink">${head('alert', 'c3', 'Priority')}<select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <p><button class="btn" id="tr" style="width:100%">Transfer (t)</button></p>${admin ? '<p><button class="btn" id="ext" style="width:100%">Extend due time</button></p>' : ''}</div>` : ''}</div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });

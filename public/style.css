@@ -199,3 +199,16 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 #to{text-overflow:ellipsis}
 /* busy top bar (super admin): the menu takes its own row instead of being clipped */
 @media(max-width:1280px) and (min-width:761px){.top{flex-wrap:wrap}.top nav{order:3;flex-basis:100%;flex-wrap:wrap;overflow:visible}}
+/* ticket page: navy summary header, coloured section headings */
+.tk{overflow:hidden}.tk-head{margin:-18px -18px 14px;padding:18px;background:linear-gradient(135deg,var(--brand),#2d63b3);color:#fff;border-bottom:4px solid var(--accent)}
+.tk-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}.tk-top .mono{font-size:13px;font-weight:700;opacity:.85}
+.tk-head h2{margin:12px 0 4px;color:#fff;font-size:21px}.tk-svc{font-size:13px;color:rgba(255,255,255,.82)}
+.tk-desc{background:var(--brand-2);border-left:3px solid var(--brand);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px}
+.tk-fields{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:2px 12px;margin-bottom:12px}
+.tk-fields>div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--line);font-size:13px}.tk-fields>div:last-child{border:0}
+.tk-fields span{color:var(--muted);flex:0 1 50%}.tk-fields b{flex:1 1 50%;text-align:right;font-weight:600;overflow-wrap:anywhere}
+.cardh{display:flex;align-items:center;gap:10px}.cardh .chip{width:32px;height:32px;border-radius:10px}.cardh b{font-size:15px}
+.k-blue{border-top:3px solid var(--blue)}.k-brand{border-top:3px solid var(--brand)}.k-green{border-top:3px solid var(--ok)}.k-orange{border-top:3px solid var(--accent)}.k-pink{border-top:3px solid var(--pink)}
+.tk-person{display:flex;gap:10px;align-items:center;margin-top:12px}.avatar.sm{width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#f6ad45,var(--accent))}
+.tk-person b{font-size:14.5px}.tk-empty{background:var(--hold-2);color:#b45309;border-radius:10px;padding:10px 12px;font-weight:600;font-size:13px;margin-top:12px}
+.ev:last-child::before{background:var(--brand)}.ev:last-child{border-left-color:transparent}
