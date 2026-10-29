@@ -6,6 +6,8 @@ export const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 export const CHANNELS = ['portal', 'walk_in', 'phone', 'internal'];
 export const REQUESTOR_TYPES = ['student', 'faculty', 'staff', 'parent', 'visitor'];
 // Tickets one email may raise per day on the public form, by who they are (a campus can change these on SLA & points).
+// Photos / files one person can attach in one go (raise form, notes, status changes).
+export const MAX_FILES = 4;
 export const DAILY_LIMITS = { student: 5, faculty: 9, staff: 5, parent: 5, visitor: 5 };
 // The two "about you" questions on the public form change with "I'm": [label, placeholder] for the ID and for the department.
 export const WHO_FIELDS = {

@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
+import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -51,7 +51,7 @@ const readFiles = async (inputs) => {
     if (f.size > 5 * 1024 * 1024) throw new Error(`${f.name} is over 5 MB`);
     out.push({ name: f.name, type: f.type, source: inp.dataset.source, data: await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); }) });
   }
-  if (out.length > 5) throw new Error('At most 5 files');
+  if (out.length > MAX_FILES) throw new Error(`You can attach at most ${MAX_FILES} photos. Please remove ${out.length - MAX_FILES}.`);
   return out;
 };
 const fileButtons = (id) => `<div class="files">
@@ -59,7 +59,9 @@ const fileButtons = (id) => `<div class="files">
   <label class="btn">${I('image', 22)}Gallery<input hidden type="file" accept="image/*,application/pdf" multiple data-source="gallery" class="f-${id}"></label></div>
   <div class="muted f-${id}-n" style="font-size:13px"></div>`;
 const wireFiles = id => document.querySelectorAll('.f-' + id).forEach(i => i.onchange = () => {
-  const n = [...document.querySelectorAll('.f-' + id)].reduce((a, x) => a + x.files.length, 0); $(`.f-${id}-n`).textContent = n ? `${n} file(s) attached` : ''; });
+  const n = [...document.querySelectorAll('.f-' + id)].reduce((a, x) => a + x.files.length, 0), el = $(`.f-${id}-n`);
+  el.textContent = !n ? '' : n > MAX_FILES ? `${n} photos chosen, only ${MAX_FILES} allowed. Please choose again.` : `${n} of ${MAX_FILES} photos attached`;
+  el.classList.toggle('err', n > MAX_FILES); });
 const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.mime_type?.startsWith('image/')
   ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}"></a>${f.stamped_at ? `<div class="muted" style="font-size:11px">📷 ${fmt(f.stamped_at)}</div>` : ''}`
   : `<a href="/api/files/${f.storage_key}" target="_blank">📄 ${esc(f.file_name)}</a>`).join('')}</div>` : '';
@@ -140,7 +142,7 @@ function raiseForm(slug, tenant, svc, related) {
     <label>Subject</label><input name="subject" required maxlength="200">
     <label>Describe the problem</label><textarea name="description" required></textarea>
     ${customFields(svc, true)}
-    <label>Photos <small>(up to 5)</small></label>${fileButtons('raise')}
+    <label>Photos <small>(up to ${MAX_FILES})</small></label>${fileButtons('raise')}
     <div class="err" id="err"></div>
     <p><button class="btn primary big">${I('send')} Raise ticket</button></p>
   </form></div>`;
@@ -401,7 +403,7 @@ async function newTicket(main) {
     <div class="row" id="idrow"><div><label>Roll / emp ID</label><input name="identifier"></div><div><label>Department</label><input name="department"></div></div></div><div id="tfs"></div>
     <label>Priority</label><select name="priority">${PRIORITIES.map(p => `<option value="${p}" ${p === 'medium' ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
     <div id="locrow"><label>Location</label><input name="location" required></div><label>Subject</label><input name="subject" required><label>Description</label><textarea name="description"></textarea>
-    <div id="cf"></div><label>Photos</label>${fileButtons('nt')}<p><button class="btn primary big">${I('send')} Create ticket</button></p></form>`;
+    <div id="cf"></div><label>Photos <small>(up to ${MAX_FILES})</small></label>${fileButtons('nt')}<p><button class="btn primary big">${I('send')} Create ticket</button></p></form>`;
   wireFiles('nt');
   const svcOf = () => services.find(s => s.id === $('#svc').value);
   const drawCf = () => { const s = svcOf(), sch = s.form_schema || {};

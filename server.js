@@ -8,7 +8,7 @@ import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db
 import { createSuperAdmin } from './bootstrap.js';
 import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
+import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -160,7 +160,7 @@ async function addEvent(t, actor, type, o = {}) {
 // files arrive as [{name, type, data(base64 dataURL), source}]
 async function saveFiles(t, eventId, files = [], byType) {
   if (!Array.isArray(files)) return;
-  if (files.length > 5) throw bad('At most 5 files');
+  if (files.length > MAX_FILES) throw bad(`You can attach at most ${MAX_FILES} photos or files`);
   for (const f of files) {
     if (!/^(image\/(jpeg|png|webp|gif|heic)|application\/pdf)$/.test(f.type || '')) throw bad('Only images or PDF');
     const buf = Buffer.from(String(f.data).split(',').pop(), 'base64');

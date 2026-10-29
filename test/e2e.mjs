@@ -170,6 +170,8 @@ try {
   check('double submit returns the same ticket', r.data?.ticket_no === '0001');
   r = await raise('alpha', { ...elecBody('Bad', 'r9@example.com'), files: [{ name: 'notes.txt', type: 'text/plain', data: 'data:text/plain;base64,aGk=' }] });
   check('only images and PDFs are accepted', r.status === 400);
+  r = await raise('alpha', { ...elecBody('Five', 'five@example.com'), files: Array.from({ length: 5 }, (_, i) => ({ name: `p${i}.png`, type: 'image/png', source: 'gallery', data: PNG })) });
+  check('at most 4 photos per ticket', r.status === 400 && /at most 4/.test(r.error.message), r.error?.message);
   r = await raise('alpha', { service_id: exam.id, name: 'Sam', email: 's1@example.com', subject: 'Hall ticket missing', form_data: { stu_branch: 'BPT', stu_id: '23BPT014', stu_dept: 'Physio', what_do_you_need: 'Hall ticket' } });
   check('student ticket 0002 raised', r.data?.ticket_no === '0002', r.error?.message);
   r = await raise('alpha', { service_id: trans.id, name: 'Tom', email: 't1@example.com', subject: 'Bus late' });
