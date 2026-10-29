@@ -155,10 +155,8 @@ try {
   check('honeypot rejects bots', r.status === 400);
   r = await raise('alpha', { ...elecBody('Ph', 'ph@example.com'), phone: '' });
   check('public form: phone is required', r.status === 400 && /phone/i.test(r.error.message), r.error?.message);
-  r = await raise('alpha', { ...elecBody('De', 'de@example.com'), description: '' });
-  check('public form: description is required', r.status === 400 && /describe/i.test(r.error.message), r.error?.message);
   r = await raise('alpha', { ...elecBody('Id', 'id@example.com', { requestor_type: 'faculty' }), identifier: '' });
-  check('public form: the ID question is required for everyone', r.status === 400 && /employee ID/.test(r.error.message), r.error?.message);
+  check('public form: the ID question is required for everyone', r.status === 400 && /faculty ID/.test(r.error.message), r.error?.message);
   r = await raise('alpha', { service_id: exam.id, name: 'Sam', email: 's1@example.com', subject: 'Hall ticket', form_data: { what_do_you_need: 'Hall ticket' } });
   check('student service needs Branch, Student ID, Department', r.status === 400 && /Student ID/.test(Object.values(r.error.details || {}).join(' ')), JSON.stringify(r.error));
   r = await raise('alpha', elecBody('Ria', 'r1@example.com', { form_data: { loc_block: 'Main block', loc_floor: 'Mezzanine', loc_room: '1', issue: 'Fan' } }));
@@ -463,6 +461,24 @@ try {
   const repOld = await ok('report for an old range', '/reports?from=2020-01-01&to=2020-01-31', { token: T.asha });
   check('a range with no tickets shows zero', Number(repOld.counts.created_period) === 0 && repOld.daily.length === 0 && repOld.by_service.length === 0);
   await fails('From after To is refused', '/reports?from=2026-02-10&to=2026-02-01', { token: T.asha }, 400);
+
+  sec('Raise form: who you are, optional questions, Other');
+  await stop(); await start(); // fresh hourly counters
+  const oth = await mkSvc(A, { code: 'HELP', name: 'Help desk', form_schema: { form_type: 'general', fields: [
+    { label: 'What do you need help with?', type: 'select', required: true, options: ['Bus pass', 'Other'] }, { label: 'Faculty name (if related)', type: 'short_text', required: false }] } });
+  const [qHelp, qFac] = (await api('/services', { token: T.asha })).data.find(x => x.code === 'HELP').form_schema.fields.map(f => f.key);
+  const base = n => ({ service_id: oth.id, name: n, email: n.toLowerCase() + '@example.com', subject: 'Need help', location: 'Library' });
+  r = await raise('alpha', { ...base('Opt'), description: '', form_data: { [qHelp]: 'Bus pass' } });
+  check('description and unticked questions are optional', r.status === 200, r.error?.message);
+  r = await raise('alpha', { ...base('Oth'), form_data: { [qHelp]: 'Other: Lost my ID card', [qFac]: '' } });
+  check('"Other" with typed words is accepted and saved', r.status === 200 && (await q("SELECT count(*) n FROM tickets WHERE service_id=? AND form_data LIKE '%Other: Lost my ID card%'", oth.id))[0].n === 1, r.error?.message);
+  r = await raise('alpha', { ...base('Bad'), form_data: { [qHelp]: 'Something else' } });
+  check('an answer that is not an option is refused', r.status === 400);
+  r = await raise('alpha', { service_id: exam.id, name: 'Prof Rao', email: 'prof.rao@example.com', subject: 'Exam duty', requestor_type: 'faculty', identifier: 'FAC9', department: 'Physio', form_data: { what_do_you_need: 'Results' } });
+  check('faculty on a student service give a faculty ID, not student details', r.status === 200
+    && (await q("SELECT r.identifier, r.requestor_type FROM requestors r WHERE lower(r.email)='prof.rao@example.com'"))[0]?.identifier === 'FAC9', r.error?.message);
+  r = await raise('alpha', { service_id: exam.id, name: 'Stu Dent', email: 'stu.dent@example.com', subject: 'Results', requestor_type: 'student', form_data: { what_do_you_need: 'Results' } });
+  check('a student on a student service still gives student details', r.status === 400 && /Student ID/.test(Object.values(r.error.details || {}).join(' ')), JSON.stringify(r.error));
 
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });

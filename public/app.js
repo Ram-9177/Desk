@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
+import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -68,6 +68,10 @@ const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.
 const formVals = form => Object.fromEntries(new FormData(form));
 let installEvt = null;
 const installBtn = () => `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install" ${installEvt ? '' : 'hidden'}>${I('plus', 16)} Install ONE Desk app</button></p>`;
+// Picking "Other" in a dropdown shows a box to type the answer (required when the question is).
+document.addEventListener('change', e => { const sel = e.target.closest?.('select[data-other]'); if (!sel) return;
+  const box = sel.nextElementSibling, on = sel.value === sel.dataset.other; if (!box?.classList.contains('other-input')) return;
+  box.hidden = !on; box.required = on && sel.required; if (on) box.focus(); else box.value = ''; });
 // A red * after the label of every required field, on every form the app draws (pages and dialogs).
 const markRequired = root => root.querySelectorAll('input[required],select[required],textarea[required]').forEach(el => {
   const l = el.previousElementSibling; if (l?.tagName !== 'LABEL' || l.querySelector('.req')) return;
@@ -79,7 +83,9 @@ new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType 
 function fieldInput(f, v = '') {
   const req = f.required ? 'required' : '', name = `fd_${f.key}`;
   if (f.type === 'long_text') return `<textarea name="${name}" ${req} placeholder="${esc(f.placeholder)}">${esc(v)}</textarea>`;
-  if (f.type === 'select') return `<select name="${name}" ${req}><option value="">Choose…</option>${f.options.map(o => `<option>${esc(o)}</option>`).join('')}</select>`;
+  if (f.type === 'select') { const oth = otherOf(f.options); // "Other" opens a box to type the answer
+    return `<select name="${name}" ${req} ${oth ? `data-other="${esc(oth)}"` : ''}><option value="">Choose…</option>${f.options.map(o => `<option>${esc(o)}</option>`).join('')}</select>`
+      + (oth ? `<input type="text" name="${name}__other" class="other-input" maxlength="200" placeholder="Please type it here" hidden>` : ''); }
   if (f.type === 'multi_select') return `<select name="${name}" multiple ${req}>${f.options.map(o => `<option>${esc(o)}</option>`).join('')}</select>`;
   if (f.type === 'yes_no') return `<select name="${name}" ${req}><option value="">Choose…</option><option>Yes</option><option>No</option></select>`;
   const t = { number: 'number', date: 'date', phone: 'tel', email: 'email' }[f.type] || 'text';
@@ -87,16 +93,16 @@ function fieldInput(f, v = '') {
 }
 // The form type's built-in questions (student details and/or location), in titled sections.
 const typeFields = svc => { const b = builtinFields(svc.form_schema || {});
-  const sec = (title, pre) => { const f = b.filter(x => x.key.startsWith(pre)); return f.length ? `<div class="fsec"><b>${title}</b>${f.map(x => `<label>${esc(x.label)}</label>${fieldInput(x)}`).join('')}</div>` : ''; };
+  const sec = (title, pre) => { const f = b.filter(x => x.key.startsWith(pre)); return f.length ? `<div class="fsec" data-sec="${pre.slice(0, -1)}"><b>${title}</b>${f.map(x => `<label>${esc(x.label)}</label>${fieldInput(x)}`).join('')}</div>` : ''; };
   return sec('Your student details', 'stu_') + sec('Where is the problem?', 'loc_'); };
-// all: every question required (the public raise form), otherwise each question's own Required setting (staff form)
-const customFields = (svc, all) => (svc.form_schema?.fields || []).map(f => all ? { ...f, required: true } : f)
-  .map(f => `<label>${esc(f.label)}${f.required ? '' : ' <small>(optional)</small>'}</label>${fieldInput(f)}`).join('');
+// the service's own questions; each one is required only if its Required box is ticked
+const customFields = svc => (svc.form_schema?.fields || []).map(f => `<label>${esc(f.label)}${f.required ? '' : ' <small>(optional)</small>'}</label>${fieldInput(f)}`).join('');
 const collectForm = (form, svc) => {
   const fd = {};
   for (const f of fieldsOf(svc.form_schema || {})) {
     const el = form.elements[`fd_${f.key}`]; if (!el) continue;
     fd[f.key] = f.type === 'multi_select' ? [...el.selectedOptions].map(o => o.value) : el.value;
+    const typed = form.elements[`fd_${f.key}__other`]?.value.trim(); if (typed && el.dataset.other && el.value === el.dataset.other) fd[f.key] = `${el.value}: ${typed}`;
   }
   return fd;
 };
@@ -135,21 +141,26 @@ function raiseForm(slug, tenant, svc, related) {
       <div><label>I'm</label><select name="requestor_type" required>${REQUESTOR_TYPES.map(t => `<option value="${t}" ${hasStudent(svc.form_schema) && t === 'student' ? 'selected' : ''}>${cap(t)}</option>`).join('')}</select></div></div>
     <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
       <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
-    ${hasStudent(svc.form_schema) ? '' : `<div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
-      <div><label><span id="dpl"></span></label><input name="department" required></div></div>`}
+    <div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
+      <div><label><span id="dpl"></span></label><input name="department" required></div></div>
     ${typeFields(svc)}
     ${isGeneral(svc.form_schema) ? '<label>Location <small>(room, building)</small></label><input name="location" required>' : ''}
     <label>Subject</label><input name="subject" required maxlength="200">
-    <label>Describe the problem</label><textarea name="description" required></textarea>
-    ${customFields(svc, true)}
+    <label>Describe the problem <small>(optional)</small></label><textarea name="description"></textarea>
+    ${customFields(svc)}
     <label>Photos <small>(up to ${MAX_FILES})</small></label>${fileButtons('raise')}
     <div class="err" id="err"></div>
     <p><button class="btn primary big">${I('send')} Raise ticket</button></p>
   </form></div>`;
   wireFiles('raise');
-  // the two "about you" questions follow "I'm": student ID for students, employee ID for faculty and staff, the ward's ID for parents…
-  const who = $('#f').requestor_type, syncId = () => { if (!$('#idrow')) return; const [[il, ip], [dl, dp]] = WHO_FIELDS[who.value] || WHO_FIELDS.student;
-    $('#idl').textContent = il; $('#dpl').textContent = dl; $('#f').identifier.placeholder = ip; $('#f').department.placeholder = dp; };
+  // the "about you" questions follow "I'm": student ID for students, faculty ID for faculty, staff ID for staff, the ward's ID for parents…
+  // On student services a student fills the student details section instead; everyone else gets the two ID questions.
+  const who = $('#f').requestor_type, idrow = $('#idrow'), stu = $('#f [data-sec="stu"]'), syncId = () => {
+    const [[il, ip], [dl, dp]] = WHO_FIELDS[who.value] || WHO_FIELDS.student, asStudent = !!stu && who.value === 'student';
+    $('#idl').textContent = il; $('#dpl').textContent = dl; $('#f').identifier.placeholder = ip; $('#f').department.placeholder = dp;
+    idrow.hidden = asStudent; idrow.querySelectorAll('input').forEach(i => i.required = !asStudent);
+    if (stu) { stu.hidden = !asStudent; stu.querySelectorAll('input, select').forEach(i => i.required = asStudent); }
+    markRequired($('#f')); }; // fields that just became required get their red *
   who.onchange = syncId; syncId();
   $('#f').onsubmit = async e => {
     e.preventDefault(); const btn = e.target.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
@@ -449,7 +460,7 @@ async function services(main) {
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
-  const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always answer name, contact, location, subject and description first. On the public form every question is required (only photos are optional).</div><div id="fb"></div>`;
+  const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always give their own details, the location and a subject first. Tick Required for questions people must answer. A dropdown option called Other lets people type their own answer.</div><div id="fb"></div>`;
   $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${qHead}`, async f => {
     const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
@@ -513,7 +524,7 @@ function formBuilder(box, initial = []) {
         <select data-k="type">${FIELD_TYPES.map(t => `<option value="${t}" ${t === f.type ? 'selected' : ''}>${TYPE_NAMES[t]}</option>`).join('')}</select></div>
       ${hasOpts(f.type) ? `<textarea data-k="options" placeholder="One choice per line, e.g.&#10;Wi-Fi&#10;Laptop&#10;Printer">${esc(f.options.join('\n'))}</textarea>`
         : ['yes_no', 'date'].includes(f.type) ? '' : `<input data-k="placeholder" value="${esc(f.placeholder || '')}" placeholder="Hint inside the box (optional), e.g. LAP-0231">`}
-      <div class="fact"><label class="switch"><input type="checkbox" data-k="required" ${f.required ? 'checked' : ''}> Required on the staff form</label><span class="sp"></span>
+      <div class="fact"><label class="switch"><input type="checkbox" data-k="required" ${f.required ? 'checked' : ''}> Required</label><span class="sp"></span>
         <button type="button" class="btn" data-m="-1" ${i ? '' : 'disabled'} title="Move up">↑</button>
         <button type="button" class="btn" data-m="1" ${i < fields.length - 1 ? '' : 'disabled'} title="Move down">↓</button>
         <button type="button" class="btn danger" data-x title="Remove question">✕</button></div></div>`).join('')}</div>
@@ -728,6 +739,7 @@ async function mailConnect(box, reload) {
       <div class="row" style="gap:8px"><input name="key" class="mono" style="flex:3" autocomplete="off" placeholder="${c.has_key ? `Saved (${esc(c.key_masked)}). Leave empty to keep it` : 'Generate or paste a key'}">
         <button type="button" class="btn soft" id="gen" style="flex:0 0 auto">Generate</button>${c.has_key ? '<button type="button" class="btn soft" id="cpk" style="flex:0 0 auto">' + I('copy', 15) + ' Copy saved key</button>' : ''}</div>
       <div id="keynote" class="muted small"></div>
+      ${/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(c.base || '') ? `<div class="limitbox">${I('alert', 22)}<div><b>Email buttons point to this computer</b><div>"View your ticket" and "Sign in" buttons open ${esc(c.base)}, which only works on this computer. Set the public address to your live site, e.g. https://stmarys-desk.supercxo.ai.</div></div></div>` : ''}
       <label>Public address of ONE Desk <small>(links inside emails)</small></label><input name="base" value="${esc(c.base)}" placeholder="https://stmarys-desk.supercxo.ai">
       <label class="switch" style="margin-top:14px"><input type="checkbox" name="sending" ${c.sending ? 'checked' : ''}> Send emails <span class="muted small">(untick to pause; emails are then only logged)</span></label>
       <div class="err" id="cerr"></div><p style="margin-bottom:0"><button class="btn primary big">Save connection</button></p></form>

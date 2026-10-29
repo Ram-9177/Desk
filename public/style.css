@@ -235,3 +235,4 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .limitbox{display:flex;gap:12px;align-items:flex-start;background:var(--hold-2);color:#92400e;border:1px solid #fbd9a5;border-left:4px solid var(--accent);border-radius:12px;padding:12px 14px;font-size:13.5px;line-height:1.5;margin:8px 0}
 .limitbox b{display:block;color:#7c2d12;font-size:14.5px;margin-bottom:2px}.limitbox svg{flex-shrink:0;color:var(--accent);margin-top:2px}
 @media(max-width:560px){.hrhead{display:none}}
+.other-input{margin-top:8px}

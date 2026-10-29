@@ -8,7 +8,7 @@ import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db
 import { createSuperAdmin } from './bootstrap.js';
 import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
+import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -27,6 +27,14 @@ app.set('trust proxy', 'loopback');
 app.disable('x-powered-by');
 app.use((_q, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' }); next(); });
 app.use(express.json({ limit: '40mb' }));
+// Email buttons need the site's public address. Until someone sets it on the Email page, learn it from the first real
+// (non-local) visit, e.g. https://stmarys-desk.supercxo.ai behind nginx, so links never point at the server's own localhost.
+app.use((req, _res, next) => {
+  const host = req.get('host') || '';
+  if (!getSettings().public_base_url && !process.env.PUBLIC_BASE_URL && host && !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host))
+    setSetting('public_base_url', `${req.protocol}://${host}`).catch(e => console.error('public address', e.message));
+  next();
+});
 
 // ---------- helpers ----------
 class HttpErr extends Error { constructor(status, code, message, details) { super(message); Object.assign(this, { status, code, details }); } }
@@ -129,16 +137,17 @@ function cleanSchema(fs) {
     lists: { block: list(fs?.lists?.block), floor: list(fs?.lists?.floor ?? ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floor']), branch: list(fs?.lists?.branch) }, fields: out };
 }
 
-function buildFormCheck(schema, data = {}) {
+function buildFormCheck(schema, data = {}, skip = () => false) {
   const errs = {};
   for (const f of fieldsOf(schema)) {
+    if (skip(f)) continue;
     const v = data[f.key];
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
     if (f.required && empty) { errs[f.key] = `${f.label} is required`; continue; }
     if (empty) continue;
     if (f.type === 'number' && isNaN(Number(v))) errs[f.key] = 'Must be a number';
     if (f.type === 'email' && !/^\S+@\S+\.\S+$/.test(v)) errs[f.key] = 'Invalid email';
-    if (f.type === 'select' && !(f.options || []).includes(v)) errs[f.key] = 'Pick an option';
+    if (f.type === 'select' && !(f.options || []).includes(v) && !isOtherAnswer(f.options, v)) errs[f.key] = 'Pick an option';
     if (f.type === 'multi_select' && (!Array.isArray(v) || v.some(x => !(f.options || []).includes(x)))) errs[f.key] = 'Pick options';
   }
   if (Object.keys(errs).length) throw bad('Please fix the form', errs);
@@ -311,17 +320,20 @@ async function createTicket(tenant, b, opts) {
   if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('A valid email address is required, so we can send you updates');
   if (b.requestor_type && !REQUESTOR_TYPES.includes(b.requestor_type)) throw bad('Bad requestor type');
   const schema = JSON.parse(svc.form_schema || '{}'), fd = b.form_data || {}, portal = opts.channel === 'portal';
-  // the public form asks every question (photos stay optional); the staff form follows each question's Required setting
+  // student details (branch, student ID, department) are asked only when the person says they are a student;
+  // everyone else gives the ID and department that match who they are (faculty ID, staff ID, ward's ID…)
+  const asStudent = hasStudent(schema) && (b.requestor_type || 'student') === 'student';
+  if (!asStudent) for (const k of Object.keys(fd)) if (k.startsWith('stu_')) delete fd[k];
+  // public form: the requestor's own details are required; the service's questions follow their Required setting
   if (portal) {
     if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('A valid phone number is required (7–15 digits)');
-    req_(b.description, 'Please describe the problem');
-    if (!hasStudent(schema)) { req_(b.identifier, 'Please fill in your ID (student ID, employee ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
+    if (!asStudent) { req_(b.identifier, 'Please fill in your ID (student ID, faculty ID, staff ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
   }
-  buildFormCheck(portal ? { ...schema, fields: (schema.fields || []).map(f => ({ ...f, required: true })) } : schema, fd);
+  buildFormCheck(schema, fd, f => f.key.startsWith('stu_') && !asStudent);
   // the form type's answers fill the ticket's location and the requestor's ID / department
   if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');
   else if (isGeneral(schema) && opts.channel !== 'internal') req_(b.location, 'Location is required');
-  if (hasStudent(schema)) Object.assign(b, { identifier: fd.stu_id, department: fd.stu_dept, requestor_type: b.requestor_type || 'student' });
+  if (asStudent) Object.assign(b, { identifier: fd.stu_id, department: fd.stu_dept, requestor_type: 'student' });
   if (b.idempotency_key) {
     const ex = await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
     if (ex) return ex;
