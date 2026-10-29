@@ -45,11 +45,26 @@ async function api(path, { method = 'GET', body, raw } = {}) {
   if (!r.ok) { const e = new Error(j.error?.message || 'Error'); e.details = j.error?.details; e.status = r.status; e.code = j.error?.code; throw e; }
   return j.data;
 }
+// Photos go up as JPEG, at most 1920 px on the long side: a phone's 5–12 MB picture becomes a few hundred KB, and every
+// browser and email app can show it. What this browser can't open (HEIC in Chrome, say) goes up as it is; the server turns it into JPEG.
+const shrinkPhoto = async f => {
+  if (/^image\/(jpeg|png|gif)$/.test(f.type) && f.size <= 1.5e6) return f; // small and already in a format everyone shows
+  const url = URL.createObjectURL(f), img = new Image(); img.src = url;
+  try { await img.decode(); } catch { URL.revokeObjectURL(url); return f; }
+  const k = Math.min(1, 1920 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+  return blob ? new File([blob], f.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }) : f;
+};
 const readFiles = async (inputs) => {
-  const out = [];
-  for (const inp of inputs) for (const f of inp.files) {
-    if (f.size > 5 * 1024 * 1024) throw new Error(`${f.name} is over 5 MB`);
-    out.push({ name: f.name, type: f.type, source: inp.dataset.source, data: await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); }) });
+  const out = []; let total = 0;
+  for (const inp of inputs) for (const f0 of inp.files) {
+    const pic = /^image\//.test(f0.type) || /\.(heic|heif|avif|webp|bmp|tiff?)$/i.test(f0.name), f = pic ? await shrinkPhoto(f0) : f0;
+    const heic = f === f0 && (/\.(heic|heif)$/i.test(f0.name) || /^image\/hei[cf]/.test(f0.type)), max = heic ? 12 : 5; // the server shrinks HEIC
+    if (f.size > max * 1024 * 1024) throw new Error(`${f0.name} is too large (over ${max} MB)`);
+    if ((total += f.size) > 28 * 1024 * 1024) throw new Error('These photos are too large together. Please attach fewer.');
+    out.push({ name: f.name, type: f.type || 'application/octet-stream', source: inp.dataset.source, data: await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); }) });
   }
   if (out.length > MAX_FILES) throw new Error(`You can attach at most ${MAX_FILES} photos. Please remove ${out.length - MAX_FILES}.`);
   return out;
@@ -62,9 +77,13 @@ const wireFiles = id => document.querySelectorAll('.f-' + id).forEach(i => i.onc
   const n = [...document.querySelectorAll('.f-' + id)].reduce((a, x) => a + x.files.length, 0), el = $(`.f-${id}-n`);
   el.textContent = !n ? '' : n > MAX_FILES ? `${n} photos chosen, only ${MAX_FILES} allowed. Please choose again.` : `${n} of ${MAX_FILES} photos attached`;
   el.classList.toggle('err', n > MAX_FILES); });
-const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.mime_type?.startsWith('image/')
-  ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}"></a>${f.stamped_at ? `<div class="muted" style="font-size:11px">📷 ${fmt(f.stamped_at)}</div>` : ''}`
-  : `<a href="/api/files/${f.storage_key}" target="_blank">📄 ${esc(f.file_name)}</a>`).join('')}</div>` : '';
+// Photos show as pictures. Other files (PDF, or a picture type browsers can't show) are a named link; so is a picture
+// that fails to load, never a broken image.
+const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => /^image\/(jpeg|png|gif|webp)$/.test(f.mime_type || '')
+  ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}" loading="lazy"></a>${f.stamped_at ? `<div class="muted" style="font-size:11px">📷 ${fmt(f.stamped_at)}</div>` : ''}`
+  : `<a class="fchip" href="/api/files/${f.storage_key}" target="_blank">${f.mime_type === 'application/pdf' ? '📄' : '📎'} ${esc(f.file_name)}</a>`).join('')}</div>` : '';
+document.addEventListener('error', e => { const img = e.target; if (img.tagName !== 'IMG' || !img.closest?.('.thumbs')) return;
+  const a = img.closest('a'); a.className = 'fchip'; a.textContent = '📎 ' + img.alt; }, true);
 const formVals = form => Object.fromEntries(new FormData(form));
 let installEvt = null;
 const installBtn = () => `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install" ${installEvt ? '' : 'hidden'}>${I('plus', 16)} Install ONE Desk app</button></p>`;

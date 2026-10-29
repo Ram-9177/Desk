@@ -5,7 +5,9 @@
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 import pg from 'pg';
+import jpeg from 'jpeg-js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4397, APP = `http://localhost:${PORT}`, API = APP + '/api';
@@ -21,6 +23,7 @@ const ENV = { NODE_ENV: 'production', JWT_SECRET: 'e2e-' + 'x'.repeat(40) };
 const SUPER = { email: 'super@example.com', password: 'SuperSecret123' };
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const HEIC_FILE = path.join(ROOT, 'test/fixtures/photo.heic'); // a real HEIC photo, as phone cameras save them
 
 // ---------- tiny harness ----------
 let passed = 0, failed = 0, section = ''; const failures = [];
@@ -515,6 +518,33 @@ try {
   r = await raise('alpha', { ...base('Nob'), subject: '' });
   check('a skipped subject is asked for in plain words', r.status === 400 && r.error.message === 'Please fill in the subject', r.error?.message);
 
+  sec('Photos in every format');
+  await stop(); await start(); // fresh hourly counters
+  const heicData = 'data:;base64,' + fs.readFileSync(HEIC_FILE).toString('base64'); // Chrome gives a HEIC file no type at all
+  const attOf = async tok => q('SELECT * FROM attachments WHERE ticket_id=(SELECT id FROM tickets WHERE tracking_token=?) ORDER BY created_at', tok);
+  r = await raise('alpha', { ...elecBody('Heic', 'heic@example.com'), files: [{ name: 'IMG20261029145618.heic', type: '', source: 'gallery', data: heicData }] });
+  const hAtt = r.status === 200 ? (await attOf(r.data.tracking_token))[0] : null;
+  check('a HEIC photo is stored as a JPEG picture', hAtt?.mime_type === 'image/jpeg' && hAtt.file_name === 'IMG20261029145618.jpg' && hAtt.storage_key.endsWith('.jpg'), JSON.stringify(hAtt || r.error));
+  const hf = await fetch(`${APP}/api/files/${hAtt?.storage_key}`), hb = Buffer.from(await hf.arrayBuffer());
+  check('it is served as image/jpeg, never sniffed', hf.headers.get('content-type') === 'image/jpeg' && hf.headers.get('x-content-type-options') === 'nosniff' && hb[0] === 0xff && hb[1] === 0xd8);
+  r = await raise('alpha', { ...elecBody('Mislabel', 'mislabel@example.com'), files: [{ name: 'shot.heic', type: 'image/heic', source: 'gallery', data: PNG }] });
+  check('the bytes decide the type: a PNG named .heic stays a PNG', r.status === 200 && (await attOf(r.data.tracking_token))[0]?.mime_type === 'image/png', r.error?.message);
+  r = await raise('alpha', { ...elecBody('Fake', 'fake@example.com'), files: [{ name: 'x.png', type: 'image/png', source: 'gallery', data: 'data:image/png;base64,' + Buffer.from('<html><script>alert(1)</script></html>').toString('base64') }] });
+  check('a web page dressed up as a picture is refused', r.status === 400, r.error?.message);
+  const pUrl = `${APP}/api/files/${hAtt?.storage_key}`, mailsOf = (key, id) => q('SELECT html, text_body FROM notifications WHERE template_key=? AND ticket_id=? ORDER BY created_at DESC', key, id);
+  const hMail = (await mailsOf('created', hAtt?.ticket_id))[0];
+  check("the requestor's email shows the photo (and links it in the text version)", !!hMail && hMail.html.includes(`<img src="${pUrl}"`) && hMail.text_body.includes(pUrl));
+  check("the providers' new-ticket email shows the photo", (await mailsOf('new_ticket', hAtt?.ticket_id)).some(m => m.html.includes(`<img src="${pUrl}"`)));
+  await ok('provider adds a note with a photo', `/tickets/${hAtt?.ticket_id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Fixed, see the photo', files: [{ name: 'after.heic', type: '', source: 'camera', data: heicData }] } });
+  const after = (await q("SELECT storage_key FROM attachments WHERE ticket_id=? AND file_name='after.jpg'", hAtt?.ticket_id))[0];
+  check("the update email shows the provider's photo under that update", !!after && (await mailsOf('note', hAtt?.ticket_id))[0]?.html.includes(`<img src="${APP}/api/files/${after.storage_key}"`));
+  // a HEIC photo stored before uploads were converted: turned into JPEG once, when the server starts
+  const oldKey = crypto.randomBytes(18).toString('hex') + '.heic'; fs.copyFileSync(HEIC_FILE, path.join(UPLOADS, oldKey));
+  await q("INSERT INTO attachments (id, tenant_id, ticket_id, uploaded_by_type, source, file_name, mime_type, size_bytes, storage_key, created_at) SELECT 'old-heic', tenant_id, id, 'requestor', 'gallery', 'IMG_OLD.heic', 'image/heic', 1, ?, created_at FROM tickets WHERE id=?", oldKey, hAtt?.ticket_id);
+  await stop(); await start();
+  let conv; for (let i = 0; i < 40 && conv?.mime_type !== 'image/jpeg'; i++) { await sleep(250); conv = (await q("SELECT * FROM attachments WHERE id='old-heic'"))[0]; }
+  check('HEIC photos stored earlier become JPEG at start-up', conv?.mime_type === 'image/jpeg' && conv.file_name === 'IMG_OLD.jpg' && fs.existsSync(path.join(UPLOADS, conv.storage_key)) && !fs.existsSync(path.join(UPLOADS, oldKey)), JSON.stringify(conv));
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {
@@ -639,6 +669,30 @@ async function uiSmoke(tok, id) {
     await send('Page.navigate', { url: `${APP}/guide/` }); let gi = false;
     for (let i = 0; i < 20 && !gi; i++) { await sleep(250); gi = await js(`return location.pathname.endsWith('/guide/requestor.html') && !!document.querySelector('.card[data-id="start"]');`).catch(() => false); }
     check('/guide/ opens the requestor guide', gi);
+    // photos: a converted HEIC shows as a picture on the ticket page; photos picked in the form are shrunk on the phone
+    const ht = (await q("SELECT t.ticket_no, t.tracking_token FROM tickets t JOIN attachments a ON a.ticket_id=t.id WHERE a.file_name='IMG20261029145618.jpg'"))[0];
+    await visit('requestor ticket page with photos', `/d/alpha/t/${ht.ticket_no}?k=${ht.tracking_token}`, null, '.thumbs img');
+    await sleep(500);
+    check('photos show as pictures on the ticket (no broken images)', await js(`const i = [...document.querySelectorAll('.thumbs img')]; return i.length >= 2 && i.every(x => x.complete && x.naturalWidth > 0) && !document.querySelector('.thumbs .fchip');`));
+    const bigW = 3000, bigH = 2250, pix = Buffer.alloc(bigW * bigH * 4);
+    for (let i = 0; i < pix.length; i += 4) { const n = (i * 2654435761) >>> 24; pix[i] = n; pix[i + 1] = (n * 7) & 255; pix[i + 2] = (n * 13) & 255; pix[i + 3] = 255; }
+    const bigFile = path.join(TMP, 'phone-photo.jpg'); fs.writeFileSync(bigFile, jpeg.encode({ data: pix, width: bigW, height: bigH }, 92).data);
+    await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
+    const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });
+    await send('DOM.setFileInputFiles', { nodeId, files: [bigFile, HEIC_FILE] });
+    await js(`const f = document.querySelector('#f');
+      for (let pass = 0; pass < 2; pass++) for (const el of f.querySelectorAll('input[required], select[required], textarea[required]')) {
+        if (el.offsetParent === null || el.type === 'file') continue;
+        if (el.tagName === 'SELECT') { if (!el.value) { el.value = [...el.options].find(o => o.value && !/^other/i.test(o.value))?.value || ''; el.dispatchEvent(new Event('change', { bubbles: true })); } }
+        else if (!el.value) el.value = el.type === 'email' ? 'shrink@example.com' : el.name === 'phone' ? '9000077777' : 'Test value';
+      }
+      f.requestSubmit();`);
+    let raised = false; for (let i = 0; i < 60 && !raised; i++) { await sleep(250); raised = await js(`return !!document.querySelector('.stub .no');`).catch(() => false); }
+    const up = await q("SELECT a.* FROM attachments a JOIN tickets t ON t.id=a.ticket_id JOIN requestors r ON r.id=t.requestor_id WHERE r.email='shrink@example.com' ORDER BY a.file_name");
+    const bigUp = up.find(a => a.file_name === 'phone-photo.jpg'), dims = bigUp && jpeg.decode(fs.readFileSync(path.join(UPLOADS, bigUp.storage_key)), { useTArray: true });
+    check(`a ${(fs.statSync(bigFile).size / 1048576).toFixed(1)} MB phone photo goes up shrunk: JPEG, at most 1920 px, under 1.5 MB`, raised && bigUp?.mime_type === 'image/jpeg' && Math.max(dims.width, dims.height) <= 1920 && bigUp.size_bytes < 1.5e6,
+      JSON.stringify({ raised, bigUp: bigUp && { size: bigUp.size_bytes, w: dims.width, h: dims.height } }) + errors.join(' | ').slice(0, 200));
+    check('a HEIC picked in Chrome goes up as it is and comes back a JPEG', up.some(a => a.file_name === 'photo.jpg' && a.mime_type === 'image/jpeg'), JSON.stringify(up.map(a => [a.file_name, a.mime_type])));
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }
 }

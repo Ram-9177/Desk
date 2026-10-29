@@ -60,7 +60,8 @@ input[type=checkbox]{width:auto;min-height:0;accent-color:var(--brand)}
 .stamps li::before{content:'';position:absolute;left:-8px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid var(--brand)}
 .stamps li.faint{opacity:.45}.stamps li.faint::before{border-color:var(--line)}
 .stamps .when{font-size:12px;color:var(--muted)}
-.thumbs img{width:72px;height:72px;object-fit:cover;border-radius:12px;margin:8px 8px 0 0;border:1px solid var(--line)}
+.thumbs img{width:96px;height:96px;object-fit:cover;border-radius:12px;margin:8px 8px 0 0;border:1px solid var(--line);background:var(--bg)}
+.thumbs .fchip{display:inline-flex;align-items:center;gap:6px;margin:8px 8px 0 0;padding:8px 12px;border:1px solid var(--line);border-radius:12px;background:var(--card);font-size:13px;font-weight:600;max-width:100%;overflow-wrap:anywhere}
 #toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:11px 18px;border-radius:14px;display:none;z-index:20;max-width:90vw;box-shadow:var(--shadow)}
 
 /* ring */

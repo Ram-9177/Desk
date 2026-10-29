@@ -7,7 +7,7 @@ Service desk for the St. Mary's Group campuses. Requestors raise and track ticke
 - **Admins**: campuses, services with form types and question builder, people (add, reset password, deactivate), SLA & points, attention list, reports, audit log.
 - **Email**: sent through a Power Automate HTTP flow from the Digital Services mailbox, with editable templates per step (progress tracker, ticket details, latest updates).
 
-Stack: Node.js 24, Express, PostgreSQL (`pg`), plain JavaScript front end. The database holds everything except uploaded photos, which live in `data/uploads/`. The schema is created automatically on start.
+Stack: Node.js 24, Express, PostgreSQL (`pg`), plain JavaScript front end. The database holds everything except uploaded photos, which live in `data/uploads/`. Photos are kept as JPEG, PNG, GIF or WebP so every browser and email app shows them: the app shrinks photos to JPEG (at most 1920 px) on the phone before upload, and the server turns HEIC photos (iPhone and many Android cameras) into JPEG with `heic-decode`, which needs nothing installed on the server. The schema is created automatically on start.
 
 ## Run locally
 

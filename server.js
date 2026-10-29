@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.js';
 import { createSuperAdmin } from './bootstrap.js';
+import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
 import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
@@ -176,14 +177,17 @@ async function saveFiles(t, eventId, files = [], byType) {
   if (!Array.isArray(files)) return;
   if (files.length > MAX_FILES) throw bad(`You can attach at most ${MAX_FILES} photos or files`);
   for (const f of files) {
-    if (!/^(image\/(jpeg|png|webp|gif|heic)|application\/pdf)$/.test(f.type || '')) throw bad('Only images or PDF');
-    const buf = Buffer.from(String(f.data).split(',').pop(), 'base64');
-    if (buf.length > 5 * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', 'Each file must be under 5 MB');
-    const key = crypto.randomBytes(18).toString('hex') + path.extname(f.name || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
+    // the bytes decide what a file is (not its name or the browser's word); HEIC photos become JPEG, so every browser and email app shows them
+    let buf = Buffer.from(String(f.data).split(',').pop(), 'base64'), kind = kindOf(buf), name = String(f.name || 'file').slice(0, 120);
+    if (!kind) throw bad('Only photos or PDF files');
+    const max = kind === 'heic' ? 12 : 5; // the app shrinks other photos on the phone; HEIC is shrunk here
+    if (buf.length > max * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${name} is too large: each file must be under ${max} MB`);
+    if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; name = name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.jpg'; } catch (e) { console.error(`photo ${name}: ${e.message}`); }
+    const key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
     fs.writeFileSync(path.join(UPLOAD_DIR, key), buf);
     await insert('attachments', { id: uid(), tenant_id: t.tenant_id, ticket_id: t.id, event_id: eventId, uploaded_by_type: byType,
-      source: ['camera', 'gallery', 'file'].includes(f.source) ? f.source : 'file', file_name: String(f.name || 'file').slice(0, 120),
-      mime_type: f.type, size_bytes: buf.length, stamped_at: f.source === 'camera' ? now() : null, storage_key: key, created_at: now() });
+      source: ['camera', 'gallery', 'file'].includes(f.source) ? f.source : 'file', file_name: name,
+      mime_type: MIME[kind], size_bytes: buf.length, stamped_at: f.source === 'camera' ? now() : null, storage_key: key, created_at: now() });
   }
 }
 
@@ -216,12 +220,18 @@ async function ticketVars(t, extra = {}) {
   const ticket_details = [['Ticket', t.ticket_no], ['Service', svc?.name], ['Subject', t.subject], ['Description', t.description], ['Location', t.location], ...answers,
     ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)], ...([...ACTIVE, 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
     ['Handled by', provNames || 'Being assigned']].filter(([, x]) => x !== undefined && x !== null && String(x).trim() !== '').map(([k, x]) => [k, String(x)]);
+  // photos: the ones sent with the ticket go with its details, later ones with the update they came with
+  const files = await all('SELECT event_id, file_name, mime_type, storage_key FROM attachments WHERE ticket_id=? ORDER BY created_at', t.id);
+  const pics = id => files.filter(f => f.event_id === id && Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
+  const first = await one("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='created' ORDER BY id LIMIT 1", t.id);
+  if (first && pics(first.id).length) ticket_details.push(['Photos', pics(first.id)]);
   const SW = { hold: 'Put on hold', in_progress: 'Work started', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
   const timeline = (await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)).map(e => {
     const m = JSON.parse(e.meta || '{}'), who = e.actor_name || '';
     const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
       status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
-    return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), label, body: e.body || '' };
+    return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), label, body: e.body || '',
+      photos: e.event_type === 'created' ? [] : pics(e.id) };
   });
   return { progress, ticket_details, timeline, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
@@ -445,6 +455,9 @@ app.use('/api/public', P);
 app.get('/api/files/:key', mw(async (req, res) => {
   const a = await one('SELECT * FROM attachments WHERE storage_key=?', req.params.key);
   if (!a) return res.status(404).end();
+  // the key is the permission (it is in the ticket and its emails); a stored file never changes, so it may be kept
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=31536000, immutable' });
+  if (!Object.values(SHOWN).includes(a.mime_type) && a.mime_type !== 'application/pdf') res.attachment(a.file_name); // other files download
   res.type(a.mime_type).sendFile(path.resolve(UPLOAD_DIR, a.storage_key));
 }));
 app.get('/api/health', mw(async (_q, r) => { await one('SELECT 1'); r.json({ ok: true }); })); // also checks the database
@@ -1003,6 +1016,22 @@ async function provision() {
 await provision();
 
 const server = app.listen(PORT, process.env.HOST, () => console.log(`ONE Desk on http://${process.env.HOST || 'localhost'}:${PORT}`));
+// HEIC photos stored before uploads were converted: turn them into JPEG once, in the background
+(async () => {
+  for (const a of await all("SELECT * FROM attachments WHERE mime_type IN ('image/heic','image/heif') OR lower(file_name) LIKE '%.heic' OR lower(file_name) LIKE '%.heif'")) {
+    try {
+      const file = path.join(UPLOAD_DIR, a.storage_key); if (!fs.existsSync(file)) continue;
+      const buf = fs.readFileSync(file), kind = kindOf(buf), base = a.file_name.replace(/\.[a-z0-9]{2,5}$/i, '');
+      if (kind !== 'heic') { // named .heic but really another picture: just put the record right
+        if (MIME[kind]) await run('UPDATE attachments SET mime_type=?, file_name=? WHERE id=?', MIME[kind], `${base}.${kind === 'jpeg' ? 'jpg' : kind}`, a.id);
+        continue; }
+      const jpg = await heicToJpeg(buf), key = crypto.randomBytes(18).toString('hex') + '.jpg';
+      fs.writeFileSync(path.join(UPLOAD_DIR, key), jpg);
+      await run('UPDATE attachments SET storage_key=?, mime_type=?, file_name=?, size_bytes=? WHERE id=?', key, 'image/jpeg', `${base}.jpg`, jpg.length, a.id);
+      fs.rmSync(file); console.log(`photo ${a.file_name}: turned from HEIC into JPEG`);
+    } catch (e) { console.error(`photo ${a.file_name}: ${e.message}`); }
+  }
+})().catch(e => console.error('photo conversion', e.message));
 // pm2 stop / restart send SIGTERM: finish in-flight requests, then close the Postgres pool
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => {
   console.log(`${sig}: shutting down`);

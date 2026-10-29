@@ -108,7 +108,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
 const SAMPLE_STATE = { created: 'open', new_ticket: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
-export const sampleVars = (base, key) => ({ ...SAMPLE, guide: { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
+export const sampleVars = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
 
 // Values typed by people are cleaned so they can't add buttons or bold to an email.
 const clean = v => String(v ?? '').replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]').replace(/\*\*/g, '* *').replace(/\{\{/g, '{ {');
@@ -133,8 +133,8 @@ const STEP_TEXT = { open: 'Open', in_progress: 'In progress', hold: 'On hold', c
 export const toText = (body, blocks = {}) => String(body).split('\n').map(line => {
   const b = /^\s*\{\{(\w+)\}\}\s*$/.exec(line)?.[1];
   if (b === 'progress' && blocks.progress) return `Status: ${STEP_TEXT[blocks.progress.status] || blocks.progress.status}. ${nextStep(blocks.progress)}`;
-  if (b === 'ticket_details' && blocks.ticket_details) return '\nTicket details\n' + blocks.ticket_details.map(([k, v]) => `${k}: ${v}`).join('\n');
-  if (b === 'timeline' && blocks.timeline) return '\nLatest updates\n' + blocks.timeline.map(e => `${e.at} · ${e.label}${e.body ? `: ${e.body}` : ''}`).join('\n');
+  if (b === 'ticket_details' && blocks.ticket_details) return '\nTicket details\n' + blocks.ticket_details.map(([k, v]) => `${k}: ${Array.isArray(v) ? v.map(p => p.url).join(' ') : v}`).join('\n');
+  if (b === 'timeline' && blocks.timeline) return '\nLatest updates\n' + blocks.timeline.map(e => `${e.at} · ${e.label}${e.body ? `: ${e.body}` : ''}${e.photos?.length ? `\nPhotos: ${e.photos.map(p => p.url).join(' ')}` : ''}`).join('\n');
   if (b === 'guide' && blocks.guide) { const c = GUIDE_COPY[blocks.guide.kind] || GUIDE_COPY.requestor; return `\n${c.title}${/[?.!]$/.test(c.title) ? '' : '.'} ${c.label}: ${blocks.guide.url}`; }
   if (b && BLOCKS.includes(b)) return '';
   return line.replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$1: $2').replace(/\*\*(.+?)\*\*/g, '$1');
@@ -174,7 +174,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
     if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|ticket/i.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
     return `<p style="margin:0 0 10px;line-height:1.55">${links(bold(esc(line)))}</p>`;
   }).join('');
-  return `<!doctype html><html><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
 <tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE Desk${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
@@ -188,6 +188,8 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
 const GUIDE_COPY = {
   requestor: { title: 'New to ONE Desk?', text: 'See how to raise and track a ticket, step by step, in 2 minutes. In English with a voice that reads it out, or in Telugu.', label: 'Open the guide' },
 };
+// Photos in an email: linked pictures 120 px wide that wrap on a phone; a tap opens the full photo.
+const photosHtml = list => list.map((p, i) => `<a href="${esc(p.url)}" style="display:inline-block;margin:4px 8px 4px 0;text-decoration:none"><img src="${esc(p.url)}" width="120" alt="${esc(p.name || `Photo ${i + 1}`)}" style="display:block;width:120px;max-width:120px;height:auto;border:1px solid #eceef5;border-radius:10px"></a>`).join('');
 // Designed sections (email-safe tables, inline styles).
 const sectionTitle = t => `<p style="margin:22px 0 8px;font-size:12px;font-weight:700;letter-spacing:.6px;color:#8b8fa8;text-transform:uppercase">${t}</p>`;
 const BLOCK_HTML = {
@@ -209,7 +211,7 @@ const BLOCK_HTML = {
   ticket_details(rows) {
     return `${sectionTitle('Ticket details')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px;border-collapse:separate;overflow:hidden">${rows.map(([k, v], i) =>
       `<tr><td valign="top" style="padding:9px 14px;width:34%;color:#8b8fa8;font-size:13px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${esc(k)}</td>
-       <td valign="top" style="padding:9px 14px;font-size:14px;color:#1c1d2e;${i ? 'border-top:1px solid #f0f1f6;' : ''}${k === 'Ticket' ? 'font-family:Consolas,monospace;font-weight:700;' : ''}">${esc(v).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>`;
+       <td valign="top" style="padding:9px 14px;font-size:14px;color:#1c1d2e;${i ? 'border-top:1px solid #f0f1f6;' : ''}${k === 'Ticket' ? 'font-family:Consolas,monospace;font-weight:700;' : ''}">${Array.isArray(v) ? photosHtml(v) : esc(v).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>`;
   },
   guide(g) {
     const c = GUIDE_COPY[g.kind] || GUIDE_COPY.requestor;
@@ -222,7 +224,7 @@ const BLOCK_HTML = {
     return `${sectionTitle('Latest updates')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${items.map(e =>
       `<tr><td valign="top" style="width:14px;padding-top:6px"><div style="width:10px;height:10px;border-radius:50%;background:#1e4b8f"></div></td>
        <td style="padding:0 0 14px 10px;border-left:0"><div style="font-size:12px;color:#8b8fa8">${esc(e.at)}</div><div style="font-size:14px;font-weight:700;color:#1c1d2e">${esc(e.label)}</div>
-       ${e.body ? `<div style="font-size:14px;color:#3a3b4f;line-height:1.5;margin-top:2px">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}</td></tr>`).join('')}</table>`;
+       ${e.body ? `<div style="font-size:14px;color:#3a3b4f;line-height:1.5;margin-top:2px">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}${e.photos?.length ? `<div style="margin-top:6px">${photosHtml(e.photos)}</div>` : ''}</td></tr>`).join('')}</table>`;
   },
 };
 
