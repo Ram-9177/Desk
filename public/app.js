@@ -64,6 +64,13 @@ const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => f.
   ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}"></a>${f.stamped_at ? `<div class="muted" style="font-size:11px">📷 ${fmt(f.stamped_at)}</div>` : ''}`
   : `<a href="/api/files/${f.storage_key}" target="_blank">📄 ${esc(f.file_name)}</a>`).join('')}</div>` : '';
 const formVals = form => Object.fromEntries(new FormData(form));
+// A red * after the label of every required field, on every form the app draws (pages and dialogs).
+const markRequired = root => root.querySelectorAll('input[required],select[required],textarea[required]').forEach(el => {
+  const l = el.previousElementSibling; if (l?.tagName !== 'LABEL' || l.querySelector('.req')) return;
+  const s = document.createElement('span'), small = l.querySelector('small'); s.className = 'req'; s.title = 'Required';
+  s.textContent = small ? '* ' : ' *'; small ? l.insertBefore(s, small) : l.append(s);
+});
+new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && markRequired(n.parentNode || n)))).observe(document.body, { childList: true, subtree: true });
 
 function fieldInput(f, v = '') {
   const req = f.required ? 'required' : '', name = `fd_${f.key}`;
