@@ -84,7 +84,7 @@ input[type=checkbox]{width:auto;min-height:0;accent-color:var(--brand)}
 /* dashboard */
 .hello{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:6px}.hello h1{font-size:26px}
 .dash{display:grid;grid-template-columns:minmax(260px,1fr) 2fr;gap:14px;margin:14px 0}@media(max-width:860px){.dash{grid-template-columns:1fr}}
-.progress{display:flex;gap:18px;align-items:center;background:linear-gradient(135deg,#e8eff9,#eaf6ef);margin:0}
+.progress{display:flex;gap:18px;align-items:center;background:var(--brand-2);border:0;margin:0}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}@media(max-width:1000px){.stats{grid-template-columns:repeat(2,1fr)}}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;display:flex;gap:12px;align-items:center;box-shadow:var(--shadow);cursor:pointer}
 .stat .chip{width:38px;height:38px;border-radius:50%}.stat b{display:block;font-size:22px;line-height:1.1}.stat span{font-size:12.5px;color:var(--muted)}
