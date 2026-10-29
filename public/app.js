@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
+import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -42,7 +42,7 @@ async function api(path, { method = 'GET', body, raw } = {}) {
   if (raw) return r;
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && S.token && !path.startsWith('/auth')) { logout(); throw new Error('Session expired'); }
-  if (!r.ok) { const e = new Error(j.error?.message || 'Error'); e.details = j.error?.details; e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error(j.error?.message || 'Error'); e.details = j.error?.details; e.status = r.status; e.code = j.error?.code; throw e; }
   return j.data;
 }
 const readFiles = async (inputs) => {
@@ -133,8 +133,8 @@ function raiseForm(slug, tenant, svc, related) {
       <div><label>I'm</label><select name="requestor_type" required>${REQUESTOR_TYPES.map(t => `<option value="${t}" ${hasStudent(svc.form_schema) && t === 'student' ? 'selected' : ''}>${cap(t)}</option>`).join('')}</select></div></div>
     <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
       <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
-    ${hasStudent(svc.form_schema) ? '' : `<div class="row" id="idrow"><div><label>Roll / employee ID</label><input name="identifier" required></div>
-      <div><label>Department</label><input name="department" required></div></div>`}
+    ${hasStudent(svc.form_schema) ? '' : `<div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
+      <div><label><span id="dpl"></span></label><input name="department" required></div></div>`}
     ${typeFields(svc)}
     ${isGeneral(svc.form_schema) ? '<label>Location <small>(room, building)</small></label><input name="location" required>' : ''}
     <label>Subject</label><input name="subject" required maxlength="200">
@@ -145,9 +145,9 @@ function raiseForm(slug, tenant, svc, related) {
     <p><button class="btn primary big">${I('send')} Raise ticket</button></p>
   </form></div>`;
   wireFiles('raise');
-  // parents and visitors have no roll / employee ID: hide those two for them, require them for everyone else
-  const idrow = $('#idrow'), who = $('#f').requestor_type, syncId = () => { if (!idrow) return; const need = !['parent', 'visitor'].includes(who.value);
-    idrow.hidden = !need; idrow.querySelectorAll('input').forEach(i => { i.required = need; if (!need) i.value = ''; }); };
+  // the two "about you" questions follow "I'm": student ID for students, employee ID for faculty and staff, the ward's ID for parents…
+  const who = $('#f').requestor_type, syncId = () => { if (!$('#idrow')) return; const [[il, ip], [dl, dp]] = WHO_FIELDS[who.value] || WHO_FIELDS.student;
+    $('#idl').textContent = il; $('#dpl').textContent = dl; $('#f').identifier.placeholder = ip; $('#f').department.placeholder = dp; };
   who.onchange = syncId; syncId();
   $('#f').onsubmit = async e => {
     e.preventDefault(); const btn = e.target.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
@@ -165,7 +165,10 @@ function raiseForm(slug, tenant, svc, related) {
         <p class="muted small" style="margin:14px 0 30px">${v.email ? 'We also emailed these details to you.' : 'Save this link — it is your key to the ticket.'}</p>
         <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Open ticket</a></div></div></div>`;
       $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
-    } catch (er) { $('#err').textContent = er.message + (er.details ? ': ' + Object.values(er.details).join(', ') : ''); btn.disabled = false; }
+    } catch (er) {
+      if (er.code === 'DAILY_LIMIT') $('#err').innerHTML = `<div class="limitbox">${I('clock', 22)}<div><b>Daily ticket limit reached</b><div>${esc(cap(er.message.replace(/^Daily limit reached: /, '')))}</div></div></div>`;
+      else $('#err').textContent = er.message + (er.details ? ': ' + Object.values(er.details).join(', ') : '');
+      btn.disabled = false; }
   };
 }
 
@@ -604,11 +607,15 @@ function setOwnPassword() {
 }
 
 async function reports(main, { sa }) {
-  const days = Number(sessionStorage.getItem('rd') || 30);
-  const [r, g] = await Promise.all([api('/reports?days=' + days), sa ? api('/group/report') : null]);
+  const rd = sessionStorage.getItem('rd') || '30', custom = rd === 'custom', today = new Date().toLocaleDateString('en-CA');
+  const rf = sessionStorage.getItem('rfrom') || today, rt = sessionStorage.getItem('rto') || today;
+  const [r, g] = await Promise.all([api('/reports?' + (custom ? `from=${rf}&to=${rt}` : 'days=' + rd)), sa ? api('/group/report') : null]);
+  const day = iso => new Date(iso).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium' });
   const c = r.counts || {}, max = Math.max(1, ...r.daily.map(d => d.c));
   const bars = (rows) => rows.map(x => `<div class="brow"><span style="flex:0 0 70px;text-transform:capitalize">${esc(x.k)}</span><div style="flex:1"><div class="bartrack"><div class="bar" style="width:${100 * x.c / Math.max(1, ...rows.map(y => y.c))}%"></div></div></div><span style="flex:0 0 40px" class="mono">${x.c}</span></div>`).join('') || '<p class="muted">No data</p>';
-  main.innerHTML = `<div class="filters"><select id="rd">${[7, 30, 90, 365].map(d => `<option value="${d}" ${d === days ? 'selected' : ''}>Last ${d} days</option>`).join('')}</select></div>
+  main.innerHTML = `<div class="filters rfil"><select id="rd">${[7, 30, 90, 365].map(d => `<option value="${d}" ${String(d) === rd ? 'selected' : ''}>Last ${d} days</option>`).join('')}<option value="custom" ${custom ? 'selected' : ''}>Custom dates…</option></select>
+      ${custom ? `<label class="dfield">From<input type="date" id="rfrom" value="${rf}" max="${today}"></label><label class="dfield">To<input type="date" id="rto" value="${rt}" max="${today}"></label><button class="btn primary" id="rgo">Show</button>` : ''}</div>
+    <div class="muted small" style="margin:-4px 0 10px">Showing tickets raised from <b>${day(r.range.from)}</b> to <b>${day(new Date(new Date(r.range.to).getTime() - 1).toISOString())}</b> · status counts and overdue are as of now</div>
     <div class="kpis"><div class="kpi"><span class="muted">Raised</span><b>${c.created_period || 0}</b></div><div class="kpi"><span class="muted">Closed</span><b>${c.closed_period || 0}</b></div>
     <div class="kpi"><span class="muted">Avg hours to close</span><b>${c.avg_hours ?? '—'}</b></div>
     <div class="kpi warn"><span class="muted">Overdue now</span><b>${c.overdue || 0}</b></div></div>
@@ -623,6 +630,9 @@ async function reports(main, { sa }) {
     ${g ? `<div class="card"><b>Group-wide</b><table><tr><th>Tenant</th><th>Open</th><th>Hold</th><th>Closed</th><th>Overdue</th></tr>${g.map(t => `<tr><td>${esc(t.name)}</td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td>${t.overdue || 0}</td></tr>`).join('')}</table></div>` : ''}`;
   api('/points').then(p => $('#lb').innerHTML = leaderboard(p.leaderboard));
   $('#rd').onchange = e => { sessionStorage.setItem('rd', e.target.value); reports(main, { sa }); };
+  if (custom) $('#rgo').onclick = () => { const f = $('#rfrom').value, t = $('#rto').value;
+    if (!f || !t) return toast('Pick both dates'); if (f > t) return toast('From must be on or before To');
+    sessionStorage.setItem('rfrom', f); sessionStorage.setItem('rto', t); reports(main, { sa }); };
 }
 
 async function auditPage(main) {
@@ -657,8 +667,10 @@ async function slaPage(main) {
     <b style="display:block;margin-top:18px">Escalation</b><div class="muted small">A ticket goes to the service's providers first. If it misses its target by this many working days, it moves to the service's escalation person and the requestor is told.</div>
     <div class="row" style="align-items:end"><div><label>Escalate after <small>(working days past the target; 0 = as soon as it's missed)</small></label><input type="number" name="esc_days" min="0" max="60" step="0.5" value="${c.escalate_after_days}"></div></div>
     <label class="switch" style="margin-top:10px"><input type="checkbox" name="esc_holds" ${c.escalate_holds ? 'checked' : ''}> Also escalate holds that run past their limit</label>
+    <b style="display:block;margin-top:18px">Daily ticket limit, per email</b><div class="muted small">How many tickets one email address can raise in a day on the public form. Past it, the requestor is told when they can raise the next one. Tickets entered by staff don't count.</div>
+    <div class="prow">${Object.entries(c.daily_limits).map(([k, v]) => `<div><label style="text-transform:capitalize">${k}</label><input type="number" min="1" max="100" name="dl_${k}" value="${v}"></div>`).join('')}</div>
     <b style="display:block;margin-top:18px">Hold reasons — each with its own hold SLA</b><div class="muted small">On hold, the provider picks a reason. The main clock pauses and the hold must end within that many working hours.</div>
-    <div class="row muted small" style="margin-top:8px"><span style="flex:3">Reason</span><span style="flex:1;min-width:80px">Hold limit (h)</span><span style="flex:0 0 44px"></span></div>
+    <div class="row muted small hrhead" style="margin-top:8px"><span style="flex:3">Reason</span><span style="flex:1;min-width:80px">Hold limit (h)</span><span style="flex:0 0 44px"></span></div>
     <div id="hrs">${c.hold_reasons.map(rRow).join('')}</div><button type="button" class="btn soft" id="addr" style="margin-top:10px">${I('plus', 16)} Add reason</button>
     <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn primary big">Save SLA settings</button></p></form>
     <div><div class="card" style="margin-top:0"><b>How providers earn points</b><div class="muted small">Given to whoever closes the ticket, by how much of the SLA window they used.</div>
@@ -678,6 +690,7 @@ async function slaPage(main) {
         work_days: [...f.querySelectorAll('[name=wd]:checked')].map(i => +i.value),
         targets: Object.fromEntries(['critical', 'high', 'medium', 'low'].map(p => [p, f['t_' + p].value])),
         escalate_after_days: f.esc_days.value, escalate_holds: f.esc_holds.checked,
+        daily_limits: Object.fromEntries(Object.keys(c.daily_limits).map(k => [k, f['dl_' + k].value])),
         hold_reasons: [...f.querySelectorAll('.hr')].map(r => ({ key: r.querySelector('[name=hk]').value || undefined, label: r.querySelector('[name=hl]').value, hours: r.querySelector('[name=hh]').value })) } });
       toast('SLA settings saved'); slaPage(main);
     } catch (er) { $('#err').textContent = er.message; } };

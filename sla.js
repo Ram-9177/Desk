@@ -27,6 +27,15 @@ function offsetMin(tz, d) {
   return (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - Math.floor(d.getTime() / MIN) * MIN) / MIN;
 }
 
+// The local calendar day (in tz) that contains iso: its start and the next day's start, as ISO (UTC) strings.
+export function localDay(tz, iso = new Date().toISOString()) {
+  const d = new Date(iso), d0 = Math.floor((d.getTime() + offsetMin(tz, d) * MIN) / DAY) * DAY;
+  const back = ms => new Date(ms - offsetMin(tz, new Date(ms)) * MIN).toISOString();
+  return { start: back(d0), next: back(d0 + DAY) };
+}
+// Local midnight at the start of a 'YYYY-MM-DD' date in tz.
+export const dateStart = (tz, ymd) => localDay(tz, new Date(Date.parse(ymd + 'T12:00:00Z') - offsetMin(tz, new Date(Date.parse(ymd + 'T12:00:00Z'))) * MIN).toISOString()).start;
+
 export function calendar(tenant) {
   const days = new Set(String(tenant.work_days ?? '1,2,3,4,5,6').split(',').filter(Boolean).map(Number));
   return { tz: tenant.timezone || 'Asia/Kolkata', start: hm(tenant.work_start || '09:00'), end: hm(tenant.work_end || '17:00'), days };

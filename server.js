@@ -7,8 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.js';
 import { createSuperAdmin } from './bootstrap.js';
 import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
-import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
+import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
+import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -293,6 +293,17 @@ const escalations = () => runEscalations().catch(e => console.error('escalation'
 setInterval(escalations, 60e3); setTimeout(escalations, 3000);
 
 // ---------- ticket creation (shared by portal and staff) ----------
+const dailyLimits = tn => ({ ...DAILY_LIMITS, ...(tn.daily_limits ? JSON.parse(tn.daily_limits) : {}) });
+// Public form: each email may raise N tickets per local day (5 by default, 9 for faculty). Staff-entered tickets don't count.
+async function checkDailyLimit(tn, b) {
+  const type = b.requestor_type || 'student', max = dailyLimits(tn)[type] ?? DAILY_LIMITS.student, day = localDay(tn.timezone || 'Asia/Kolkata');
+  const { n } = await one(`SELECT count(*)::int n FROM tickets t JOIN requestors r ON r.id=t.requestor_id
+    WHERE t.tenant_id=? AND t.channel='portal' AND lower(r.email)=? AND t.created_at>=?`, tn.id, String(b.email).toLowerCase().trim(), day.start);
+  if (n < max) return;
+  const when = new Date(day.next).toLocaleString('en-IN', { timeZone: tn.timezone || 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+  throw new HttpErr(429, 'DAILY_LIMIT', `Daily limit reached: ${{ student: 'students', faculty: 'faculty', staff: 'staff', parent: 'parents', visitor: 'visitors' }[type] || 'each person'} can raise ${max} tickets a day, and ${String(b.email).trim()} has raised ${n} today. `
+    + `You can raise a new ticket after ${when}. For something urgent, add a note to one of today's tickets or contact the help desk.`);
+}
 async function createTicket(tenant, b, opts) {
   const svc = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', b.service_id, tenant.id);
   if (!svc) throw notFound();
@@ -304,7 +315,7 @@ async function createTicket(tenant, b, opts) {
   if (portal) {
     if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('A valid phone number is required (7–15 digits)');
     req_(b.description, 'Please describe the problem');
-    if (!hasStudent(schema) && !['parent', 'visitor'].includes(b.requestor_type)) { req_(b.identifier, 'Roll / employee ID is required'); req_(b.department, 'Department is required'); }
+    if (!hasStudent(schema)) { req_(b.identifier, 'Please fill in your ID (student ID, employee ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
   }
   buildFormCheck(portal ? { ...schema, fields: (schema.fields || []).map(f => ({ ...f, required: true })) } : schema, fd);
   // the form type's answers fill the ticket's location and the requestor's ID / department
@@ -315,6 +326,7 @@ async function createTicket(tenant, b, opts) {
     const ex = await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
     if (ex) return ex;
   }
+  if (portal) await checkDailyLimit(tenant, b);
   let t;
   try { t = await tx(async () => {
     const email = b.email ? String(b.email).toLowerCase().trim() : null, phone = b.phone ? String(b.phone).trim() : null;
@@ -374,7 +386,7 @@ P.get('/:slug', wrap(async req => {
 P.post('/:slug/tickets', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), b = req.body;
   if (b.website) throw bad('Rejected'); // honeypot
-  limit('ip:' + req.ip, 20); limit('c:' + (b.email || b.phone || ''), 5);
+  limit('ip:' + req.ip, 20); limit('c:' + (b.email || b.phone || ''), 12);
   const t = await createTicket(tn, b, { channel: 'portal', actor: { type: 'requestor', name: b.name } });
   return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at,
     providers: (await providersFor(tn.id, t.service_id)).map(({ name, phone }) => ({ name, phone })) };
@@ -584,7 +596,7 @@ S.get('/sla', wrap(async req => {
   return { work_start: tn.work_start, work_end: tn.work_end, work_days: String(tn.work_days).split(',').filter(Boolean).map(Number),
     targets: Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id IS NULL', req.tenantId)).map(x => [x.priority, x.target_hours])),
     escalate_after_days: tn.escalate_after_days ?? 0, escalate_holds: !!tn.escalate_holds,
-    hold_reasons: holdReasons(tn), point_rules: POINT_RULES.map(r => ({ ...r, upTo: r.upTo === Infinity ? null : r.upTo })), points: POINTS };
+    hold_reasons: holdReasons(tn), daily_limits: dailyLimits(tn), point_rules: POINT_RULES.map(r => ({ ...r, upTo: r.upTo === Infinity ? null : r.upTo })), points: POINTS };
 }));
 S.put('/sla', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body, hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -597,6 +609,11 @@ S.put('/sla', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (new Set(reasons.map(r => r.key)).size !== reasons.length) throw bad('Hold reasons must have different names');
   await tx(async () => {
     await run('UPDATE tenants SET work_start=?, work_end=?, work_days=?, hold_reasons=? WHERE id=?', b.work_start, b.work_end, days.join(','), JSON.stringify(reasons), req.tenantId);
+    if (b.daily_limits) {
+      const lim = Object.fromEntries(REQUESTOR_TYPES.map(t => [t, Number(b.daily_limits[t] ?? DAILY_LIMITS[t])]));
+      if (Object.values(lim).some(v => !(Number.isInteger(v) && v >= 1 && v <= 100))) throw bad('Daily limits must be whole numbers from 1 to 100');
+      await run('UPDATE tenants SET daily_limits=? WHERE id=?', JSON.stringify(lim), req.tenantId);
+    }
     if (b.escalate_after_days !== undefined) {
       const d = Number(b.escalate_after_days); if (!(d >= 0 && d <= 60)) throw bad('Escalate after must be between 0 and 60 working days');
       await run('UPDATE tenants SET escalate_after_days=?, escalate_holds=? WHERE id=?', d, b.escalate_holds ? 1 : 0, req.tenantId);
@@ -767,18 +784,24 @@ S.post('/notifications/:id/resend', role('super_admin', 'tenant_admin'), wrap(as
 S.get('/reports', wrap(async req => {
   // my services' tickets plus any escalated to me
   const sids = await myServiceIds(req.user, req.tenantId);
-  const inS = sids.length ? `(service_id IN (${sids.map(() => '?').join()}) OR escalated_to=?)` : 'escalated_to=?', base = [req.tenantId, ...sids, req.user.id], from = addH(now(), -24 * (Number(req.query.days) || 30));
-  const n = now();
-  return {
+  const inS = sids.length ? `(service_id IN (${sids.map(() => '?').join()}) OR escalated_to=?)` : 'escalated_to=?', base = [req.tenantId, ...sids, req.user.id];
+  const n = now(), tz = (await tenantRow(req.tenantId))?.timezone || 'Asia/Kolkata', ymd = /^\d{4}-\d{2}-\d{2}$/;
+  let from = addH(n, -24 * (Number(req.query.days) || 30)), to = '9999';
+  if (req.query.from || req.query.to) {
+    if (!ymd.test(req.query.from || '') || !ymd.test(req.query.to || '')) throw bad('Pick both a From and a To date');
+    if (req.query.from > req.query.to) throw bad('From must be on or before To');
+    from = dateStart(tz, req.query.from); to = localDay(tz, dateStart(tz, req.query.to)).next;
+  }
+  return { range: { from, to: to === '9999' ? n : to },
     counts: await one(`SELECT count(*) FILTER (WHERE status='open') open, count(*) FILTER (WHERE status='in_progress') in_progress, count(*) FILTER (WHERE status='hold') hold, count(*) FILTER (WHERE status IN ('open','in_progress') AND due_at<?) overdue,
-      count(*) FILTER (WHERE status='closed' AND closed_at>=?) closed_period, count(*) FILTER (WHERE created_at>=?) created_period,
-      round(avg(CASE WHEN status='closed' AND closed_at>=? THEN extract(epoch FROM closed_at::timestamptz - created_at::timestamptz)/3600 - held_minutes/60.0 END),1) avg_hours,
-      round(100.0*count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<=due_at)/greatest(1,count(*) FILTER (WHERE status='closed' AND closed_at>=?)),0) on_time_pct
-      FROM tickets WHERE tenant_id=? AND ${inS}`, n, from, from, from, from, from, ...base),
+      count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<?) closed_period, count(*) FILTER (WHERE created_at>=? AND created_at<?) created_period,
+      round(avg(CASE WHEN status='closed' AND closed_at>=? AND closed_at<? THEN extract(epoch FROM closed_at::timestamptz - created_at::timestamptz)/3600 - held_minutes/60.0 END),1) avg_hours,
+      round(100.0*count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<? AND closed_at<=due_at)/greatest(1,count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<?)),0) on_time_pct
+      FROM tickets WHERE tenant_id=? AND ${inS}`, n, from, to, from, to, from, to, from, to, from, to, ...base),
     by_service: await all(`SELECT s.name, count(*) FILTER (WHERE t.status='open') open, count(*) FILTER (WHERE t.status='in_progress') in_progress, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status='rejected') rejected,
-      count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? GROUP BY s.name`, n, ...base, from),
-    daily: await all(`SELECT substr(created_at,1,10) d, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? GROUP BY d ORDER BY d`, ...base, from),
-    by_priority: await all(`SELECT priority k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? GROUP BY priority`, ...base, from),
+      count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? AND t.created_at<? GROUP BY s.name`, n, ...base, from, to),
+    daily: await all(`SELECT substr(created_at,1,10) d, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY d ORDER BY d`, ...base, from, to),
+    by_priority: await all(`SELECT priority k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY priority`, ...base, from, to),
     aging: await all(`SELECT CASE WHEN extract(epoch FROM ?::timestamptz - created_at::timestamptz)/86400<1 THEN '<1d' WHEN extract(epoch FROM ?::timestamptz - created_at::timestamptz)/86400<3 THEN '1-3d'
       WHEN extract(epoch FROM ?::timestamptz - created_at::timestamptz)/86400<7 THEN '3-7d' ELSE '7d+' END k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND status IN ('open','in_progress','hold') GROUP BY k`, n, n, n, ...base),
   };

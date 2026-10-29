@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS provider_points (id TEXT PRIMARY KEY, tenant_id TEXT 
   points INT NOT NULL, reason TEXT, created_at TEXT);
 CREATE INDEX IF NOT EXISTS pp_u ON provider_points(tenant_id, user_id);
 CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
+-- columns added after the first release (existing databases get them on start-up)
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS daily_limits TEXT;
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;

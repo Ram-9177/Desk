@@ -230,3 +230,8 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 @media(max-width:560px){.wrap{padding-left:14px;padding-right:14px}.card{padding:16px}h1{font-size:24px}.tblwrap table{font-size:13px}}
 @media(max-width:380px){.top{padding:10px 12px;gap:4px}.top select{max-width:120px;padding:4px 6px;font-size:13px}.top .logo{margin-right:4px;font-size:14px}.top .logo img{height:28px}.bnav{box-sizing:border-box}}
 [hidden]{display:none!important}
+.rfil{flex-wrap:wrap;align-items:end;gap:10px}.rfil select{flex:0 1 200px}.dfield{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;color:var(--muted);margin:0;flex:1 1 140px}.dfield input{min-height:44px}
+@media(max-width:560px){.rfil select{flex:1 1 100%}.rfil .btn{flex:1 1 100%}}
+.limitbox{display:flex;gap:12px;align-items:flex-start;background:var(--hold-2);color:#92400e;border:1px solid #fbd9a5;border-left:4px solid var(--accent);border-radius:12px;padding:12px 14px;font-size:13.5px;line-height:1.5;margin:8px 0}
+.limitbox b{display:block;color:#7c2d12;font-size:14.5px;margin-bottom:2px}.limitbox svg{flex-shrink:0;color:var(--accent);margin-top:2px}
+@media(max-width:560px){.hrhead{display:none}}

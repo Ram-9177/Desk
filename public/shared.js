@@ -5,6 +5,16 @@ export const ACTIVE = ['open', 'in_progress']; // the target clock runs in these
 export const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 export const CHANNELS = ['portal', 'walk_in', 'phone', 'internal'];
 export const REQUESTOR_TYPES = ['student', 'faculty', 'staff', 'parent', 'visitor'];
+// Tickets one email may raise per day on the public form, by who they are (a campus can change these on SLA & points).
+export const DAILY_LIMITS = { student: 5, faculty: 9, staff: 5, parent: 5, visitor: 5 };
+// The two "about you" questions on the public form change with "I'm": [label, placeholder] for the ID and for the department.
+export const WHO_FIELDS = {
+  student: [['Student ID / roll no', 'e.g. 23BPT014'], ['Department / branch', 'e.g. Physiotherapy']],
+  faculty: [['Employee ID', 'e.g. EMP1024'], ['Department', 'e.g. Physiotherapy']],
+  staff: [['Employee ID', 'e.g. EMP2048'], ['Department / office', 'e.g. Accounts']],
+  parent: [["Your ward's student ID", 'e.g. 23BPT014'], ["Ward's department", 'e.g. Physiotherapy']],
+  visitor: [['Organisation / where you are from', 'e.g. ABC Hospital'], ['Purpose of your visit', 'e.g. Meeting the Dean']],
+};
 export const FIELD_TYPES = ['short_text', 'long_text', 'number', 'date', 'select', 'multi_select', 'phone', 'email', 'yes_no'];
 // working hours (09:00–17:00 clock): critical 3h, high 5h, medium 8h (1 day), low 24h (3 days)
 export const DEFAULT_HOURS = { critical: 3, high: 5, medium: 8, low: 24 };

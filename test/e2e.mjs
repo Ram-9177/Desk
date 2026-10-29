@@ -158,7 +158,7 @@ try {
   r = await raise('alpha', { ...elecBody('De', 'de@example.com'), description: '' });
   check('public form: description is required', r.status === 400 && /describe/i.test(r.error.message), r.error?.message);
   r = await raise('alpha', { ...elecBody('Id', 'id@example.com', { requestor_type: 'faculty' }), identifier: '' });
-  check('public form: roll / employee ID is required (not for parents or visitors)', r.status === 400 && /employee ID/.test(r.error.message), r.error?.message);
+  check('public form: the ID question is required for everyone', r.status === 400 && /employee ID/.test(r.error.message), r.error?.message);
   r = await raise('alpha', { service_id: exam.id, name: 'Sam', email: 's1@example.com', subject: 'Hall ticket', form_data: { what_do_you_need: 'Hall ticket' } });
   check('student service needs Branch, Student ID, Department', r.status === 400 && /Student ID/.test(Object.values(r.error.details || {}).join(' ')), JSON.stringify(r.error));
   r = await raise('alpha', elecBody('Ria', 'r1@example.com', { form_data: { loc_block: 'Main block', loc_floor: 'Mezzanine', loc_room: '1', issue: 'Fan' } }));
@@ -444,6 +444,23 @@ try {
     && (await q("SELECT count(*) n FROM users WHERE email IN ('dev@example.com','esha@example.com')"))[0].n === 2);
   check('provisioning is in the audit log', (await q("SELECT count(*) n FROM audit_logs WHERE action='provision'"))[0].n >= 1);
   fs.rmSync(PDIR, { recursive: true, force: true });
+
+  sec('Daily ticket limit and report dates');
+  await stop(); await start(); // fresh hourly counters
+  const day = async (email, type, n) => { let r; for (let i = 0; i < n; i++) r = await raise('alpha', { service_id: trans.id, name: 'Day', email, subject: 'Daily ' + i, location: 'Gate', requestor_type: type }); return r; };
+  check('limits are on the SLA page: 5 a day, 9 for faculty', (await api('/sla', { token: T.asha })).data.daily_limits?.student === 5 && (await api('/sla', { token: T.asha })).data.daily_limits?.faculty === 9);
+  check('a student email raises 5 tickets today', (await day('stud@example.com', 'student', 5)).status === 200);
+  r = await day('stud@example.com', 'student', 1);
+  check('6th is refused with when they can raise again', r.status === 429 && r.error.code === 'DAILY_LIMIT' && /5 tickets a day/.test(r.error.message) && /after/.test(r.error.message), r.error?.message);
+  check('a faculty email raises 9 tickets today', (await day('fac@example.com', 'faculty', 9)).status === 200);
+  r = await day('fac@example.com', 'faculty', 1);
+  check('10th faculty ticket is refused', r.status === 429 && /9 tickets a day/.test(r.error.message), r.error?.message);
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const repToday = await ok('report for a custom range (today)', `/reports?from=${todayIST}&to=${todayIST}`, { token: T.asha });
+  check('custom range counts today\'s tickets', repToday.counts.created_period >= 14 && repToday.range.from < repToday.range.to);
+  const repOld = await ok('report for an old range', '/reports?from=2020-01-01&to=2020-01-31', { token: T.asha });
+  check('a range with no tickets shows zero', Number(repOld.counts.created_period) === 0 && repOld.daily.length === 0 && repOld.by_service.length === 0);
+  await fails('From after To is refused', '/reports?from=2026-02-10&to=2026-02-01', { token: T.asha }, 400);
 
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
