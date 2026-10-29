@@ -29,8 +29,8 @@ const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small"
   <span class="rank">${['🥇', '🥈', '🥉'][i] || i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
   <b class="mono" style="color:${u.points < 0 ? 'var(--warn)' : 'var(--brand)'}">${u.points} pts</b></div>`).join('') : '<p class="muted">No providers yet.</p>'}`;
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
-const ring = (pct, size = 96, color = 'var(--brand)') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
-  return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="#fff" stroke-width="10" fill="none"/>
+const ring = (pct, size = 96, color = 'var(--brand)', track = '#fff') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
+  return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${track}" stroke-width="10" fill="none"/>
   <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${color}" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><b>${pct}%</b></div>`; };
 const S = { token: localStorage.getItem('tok'), tenant: localStorage.getItem('tid'), me: null };
 
@@ -266,18 +266,18 @@ async function queue(main) {
     const c = rep.counts || {};
     const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
     const h = new Date().getHours(), greet = h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : 'Good Evening';
-    const tile = (k, label, n, ic, cls) => `<div class="stat" data-s="${k}"><span class="chip ${cls}">${I(ic, 18)}</span><div><span>${label}</span><b>${n || 0}</b></div></div>`;
+    const tile = (k, label, n, ic, cls) => `<div class="stat k${cls} ${st.status === k ? 'on' : ''} ${k === 'overdue' && n ? 'hot' : ''}" data-s="${k}"><span class="chip ${cls}">${I(ic, 18)}</span><div><span>${label}</span><b>${n || 0}</b></div></div>`;
     main.innerHTML = `<div class="hello"><div><div class="muted">${greet},</div><h1>${esc(S.me.user.name.split(' ')[0])} 👋</h1><div class="muted small">Here's what's happening at ${esc(tenantObj()?.code || '')} today.</div></div>
-      <div style="display:flex;gap:8px;align-items:center"><a href="#/c/me" class="pill p-int" style="font-size:13px;padding:9px 12px;border-radius:12px">⭐ ${pts.me} pts</a>
+      <div style="display:flex;gap:8px;align-items:center"><a href="#/c/me" class="ptsbadge">⭐ ${pts.me} pts</a>
       ${S.me.user.role !== 'provider' ? `<a class="iconbtn" href="#/c/attention">${I('bell')}</a>` : ''}</div></div>
-      <div class="dash"><div class="card progress">${ring(pct)}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
-        <div class="muted small">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
-      <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c2')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
+      <div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--accent)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
+        <div class="small soft">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
+      <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c0')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
       <div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="fq" placeholder="Search tickets…" value="${esc(st.q || '')}"></label>
       <select id="fsv"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
       <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
-      <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1">${I('tasks', 40)}<p>Nothing here — all clear.</p></div>`}</div>`;
+      <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1"><span class="chip c2 big">${I('check', 30)}</span><p><b>Nothing here — all clear.</b><br><span class="small">New tickets for your services will show up here.</span></p></div>`}</div>`;
     main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
     main.querySelectorAll('[data-s]').forEach(b => b.onclick = () => set('status', b.dataset.s)); $('#fsv').onchange = e => set('service', e.target.value);

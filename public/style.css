@@ -212,3 +212,11 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 .tk-person{display:flex;gap:10px;align-items:center;margin-top:12px}.avatar.sm{width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#f6ad45,var(--accent))}
 .tk-person b{font-size:14.5px}.tk-empty{background:var(--hold-2);color:#b45309;border-radius:10px;padding:10px 12px;font-weight:600;font-size:13px;margin-top:12px}
 .ev:last-child::before{background:var(--brand)}.ev:last-child{border-left-color:transparent}
+/* home: navy weekly-progress card, coloured stat tiles */
+.progress.week{background:var(--brand);color:#fff;border-bottom:4px solid var(--accent);box-shadow:0 10px 26px rgba(30,75,143,.25)}.progress.week .ring b{color:#fff}.progress.week b{font-size:16px}.progress.week .soft{color:rgba(255,255,255,.72);margin-top:2px}
+.stat{border-top:3px solid var(--line);transition:transform .12s,box-shadow .12s}.stat:hover{transform:translateY(-2px)}
+.stat.kc0{border-top-color:var(--brand)}.stat.kc1{border-top-color:var(--hold)}.stat.kc2{border-top-color:var(--ok)}.stat.kc4{border-top-color:var(--blue)}.stat.kc5{border-top-color:var(--warn)}
+.stat.on{background:var(--brand-2);border-color:var(--brand)}.stat.hot b{color:var(--warn)}
+.ptsbadge{white-space:nowrap;display:inline-flex;align-items:center;gap:4px;background:var(--hold-2);color:#b45309;font-weight:700;font-size:13px;padding:9px 12px;border-radius:12px;border:1px solid #fbd9a5}
+.empty .chip.big{width:64px;height:64px;border-radius:50%;margin:0 auto 4px}.empty p b{color:var(--ink);font-size:15px}
+@media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}.stats .stat:last-child:nth-child(odd){grid-column:1/-1}}
