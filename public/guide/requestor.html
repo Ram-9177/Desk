@@ -138,7 +138,6 @@ dialog.zoom button{all:unset;cursor:pointer;background:var(--surface);color:var(
 .langrow span{font-weight:700;color:var(--muted);font-size:14px}
 .langrow button{all:unset;cursor:pointer;padding:8px 16px;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);font-weight:700}
 .langrow button{display:inline-flex;align-items:center;gap:6px}
-.vhint{display:flex;gap:8px;align-items:flex-start;margin:-4px 0 14px;color:var(--muted);font-size:14px;line-height:1.6}.vhint svg{flex:none;margin-top:3px}
 .langrow button[aria-pressed="true"]{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
 .langrow button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 
@@ -205,20 +204,32 @@ dialog.zoom button{all:unset;cursor:pointer;background:var(--surface);color:var(
 window.APP = {"home":"../"};
 window.SIZES = {"r1-portal":[624,1350],"r2-services":[624,1350],"r3-form-top":[624,1350],"r3b-visitor":[624,1350],"r4-form-location":[624,1350],"r5-student":[624,1350],"r5b-describe":[624,1350],"r5c-limit":[624,1350],"r6-raised":[624,1350],"r7-track":[624,1350],"r8-ticket":[624,1350],"r9-ticket-history":[624,1350],"r10-email":[800,1225]};
 window.REGIONS = {"r1-portal":{"top":[2.3,2.3,95.4,22],"raise":[2.3,32,95.4,12.7],"track":[2.3,44.7,95.4,10.1],"staff":[2.3,54.8,95.4,10.1],"install":[21.7,71.3,56.6,6.5]},"r2-services":{"first":[2.3,13.4,95.4,16.1],"names":[21,23.9,17.4,3.8]},"r3-form-top":{"name":[6.7,13.6,86.7,9.8],"who":[6.7,23.9,86.7,9.7],"email":[6.7,34.1,86.7,9.8],"phone":[6.7,44.4,86.7,9.8],"ids":[6.7,53,86.7,21.7]},"r3b-visitor":{"who":[6.7,0,86.7,7.9],"org":[6.7,28.9,86.7,9.8],"purpose":[6.7,39.2,86.7,9.8],"both":[6.7,27.3,86.7,21.7]},"r4-form-location":{"section":[6.7,1.3,86.7,37.5],"block":[11,6.5,77.9,9.8],"floor":[11,16.8,77.9,9.7],"room":[11,27,77.9,9.8]},"r5-student":{"section":[6.7,1.2,86.7,37.6],"branch":[11,6.5,77.9,9.8],"sid":[11,16.7,77.9,9.8],"dept":[11,27,77.9,9.8]},"r5b-describe":{"subject":[6.7,30.5,86.7,9.8],"desc":[6.7,40.8,86.7,16.1],"topic":[6.7,58.1,86.7,9.7],"photos":[6.7,71.4,86.7,11.3],"submit":[6.7,83.2,86.7,7.3]},"r5c-limit":{"limit":[6.7,61.3,86.7,21.5]},"r6-raised":{"no":[7.4,21.7,85.1,4.9],"handler":[7.4,27.2,85.1,11.6],"copy":[7.4,45.1,42.3,6.5]},"r7-track":{"head":[2.3,2.3,95.4,6.2],"no":[6.7,12.3,86.7,9.8],"find":[6.7,22.7,86.7,7.3]},"r8-ticket":{"pill":[78.3,3.4,19.4,3.9],"ring":[7.4,23.8,85.1,14.5],"plate":[7.4,37.8,44.7,3.8]},"r9-ticket-history":{"history":[2.3,10.5,95.4,44.1],"note":[2.3,54.9,95.4,39.5]},"r10-email":{"title":[9.4,12.4,81.3,3.7],"progress":[9.4,35.9,81.3,17.3],"button":[9.4,54.1,27.4,5.3]}};
-window.AUDIO = {"en":{}};
-// What the voice says: the same English sentences as on screen, with the web address and short forms spelled out to be read aloud.
+window.AUDIO = {"en":{},"te":{}};
+// What the voice says: the same sentences as on screen. For the Telugu voice, the English words in the Telugu text are spelled
+// in Telugu letters, so it says them the way people here do (Tenglish) instead of skipping them or spelling them out.
 // Shared by the page (window.SAY) and make-voice.mjs, so a recording is used only while its words still match the page.
 (function (g) {
+  const TE = [['stmarys-desk.supercxo.ai', 'ఎస్ టి మేరీస్ డెస్క్ డాట్ సూపర్ సి ఎక్స్ ఓ డాట్ ఏ ఐ'], ['Install ONE Desk app', 'ఇన్‌స్టాల్ వన్ డెస్క్ యాప్'], ['Sign in to ONE Desk', 'సైన్ ఇన్ టు వన్ డెస్క్'],
+    ['Act on this ticket', 'యాక్ట్ ఆన్ దిస్ టికెట్'], ['Add to Home Screen', 'యాడ్ టు హోమ్ స్క్రీన్'], ['Ceiling fan not working', 'సీలింగ్ ఫ్యాన్ నాట్ వర్కింగ్'], ['Save and continue', 'సేవ్ అండ్ కంటిన్యూ'],
+    ['View your ticket', 'వ్యూ యువర్ టికెట్'], ['Raise a ticket', 'రెయిజ్ ఎ టికెట్'], ['Find my ticket', 'ఫైండ్ మై టికెట్'], ['Ticket status', 'టికెట్ స్టేటస్'], ['What happened', 'వాట్ హ్యాపెన్డ్'],
+    ['Digital Services', 'డిజిటల్ సర్వీసెస్'], ['Microsoft Edge', 'మైక్రోసాఫ్ట్ ఎడ్జ్'], ['Text-to-speech', 'టెక్స్ట్ టు స్పీచ్'], ['Raise ticket', 'రెయిజ్ టికెట్'], ['Track ticket', 'ట్రాక్ టికెట్'],
+    ['Staff login', 'స్టాఫ్ లాగిన్'], ['Get started', 'గెట్ స్టార్టెడ్'], ['Put on hold', 'పుట్ ఆన్ హోల్డ్'], ['Close ticket', 'క్లోజ్ టికెట్'], ['In progress', 'ఇన్ ప్రోగ్రెస్'], ['Copy link', 'కాపీ లింక్'],
+    ['Send note', 'సెండ్ నోట్'], ['Examinations', 'ఎగ్జామినేషన్స్'], ['Maintenance', 'మెయింటెనెన్స్'], ['Escalated', 'ఎస్కలేటెడ్'], ['IT & ERP', 'ఐ టి అండ్ ఈ ఆర్ పి'], ['ONE Desk', 'వన్ డెస్క్'],
+    ['St. Mary’s', 'సెయింట్ మేరీస్'], ['On hold', 'ఆన్ హోల్డ్'], ['Rejected', 'రిజెక్టెడ్'], ['Transfer', 'ట్రాన్స్‌ఫర్'], ['Settings', 'సెట్టింగ్స్'], ['Critical', 'క్రిటికల్'], ['Overdue', 'ఓవర్‌డ్యూ'],
+    ['Profile', 'ప్రొఫైల్'], ['Reports', 'రిపోర్ట్స్'], ['Closed', 'క్లోజ్డ్'], ['Android', 'ఆండ్రాయిడ్'], ['Telugu', 'తెలుగు'], ['Google', 'గూగుల్'], ['Safari', 'సఫారీ'], ['iPhone', 'ఐఫోన్'],
+    ['Hostel', 'హాస్టల్'], ['Medium', 'మీడియం'], ['Wi-Fi', 'వై ఫై'], ['Share', 'షేర్'], ['Home', 'హోమ్'], ['Open', 'ఓపెన్'], ['Other', 'అదర్'], ['High', 'హై'], ['Low', 'లో'], ['I’m', 'ఐ యామ్'], ['QR', 'క్యూ ఆర్'],
+    ['ID', 'ఐడి'], ['EN', 'ఇ ఎన్'], ['→', ', ']];
   const strip = h => String(h).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-  const text = html => { let t = strip(html);
-    t = t.replace('stmarys-desk.supercxo.ai', 'st marys desk dot super C X O dot A I').replace(/ONE Desk/g, 'One Desk').replace(/IT & ERP|IT and ERP/g, 'I T and E R P');
+  const text = (html, lang) => { let t = strip(html);
+    if (lang === 'te') for (const [a, b] of TE) t = t.split(a).join(b);
+    else t = t.replace('stmarys-desk.supercxo.ai', 'st marys desk dot super C X O dot A I').replace(/ONE Desk/g, 'One Desk').replace(/IT & ERP|IT and ERP/g, 'I T and E R P');
     return t; };
   // everything the voice reads, in order: the welcome's opening line, each sentence of each step, the closing card
   const items = (G, lang) => [
     { id: 'w0', at: 0, t: strip(G.welcome.title[lang]) + '. ' + G.welcome.lead[lang] },
     ...G.steps.flatMap((s, i) => s.lines.map((l, k) => ({ id: `${s.id}-${k}`, at: i + 1, k, t: (k === 0 ? strip(s.title[lang]) + '. ' : '') + l[lang] }))),
     { id: 'done', at: G.steps.length + 1, t: G.done.title[lang] + '. ' + G.done.lead[lang] },
-  ].map(x => ({ ...x, say: text(x.t) }));
+  ].map(x => ({ ...x, say: text(x.t, lang) }));
   g.SAY = { text, items, strip };
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -333,8 +344,9 @@ window.GUIDE = {
 // Back / Next, swipe, arrow keys and the Steps menu move between steps; Listen reads each step and moves on by itself.
 // With the voice on (the default) the guide starts talking in English as soon as it opens, in step with the screens.
 // Where the browser wants a tap before any sound (iPhone, or a page opened from an email), a "Tap to hear the guide" button shows.
-// The voice is English only; Telugu is read on screen. Listen plays the recorded natural voice where a recording exists
-// (window.AUDIO.en), and otherwise the most natural English voice the device has, sentence after sentence without gaps.
+// The voice speaks the guide's language: English, or Telugu with its English words said the Telugu way (Tenglish). Listen plays
+// the recorded natural voice where a recording exists (window.AUDIO), and otherwise the most natural voice the device has for
+// that language, sentence after sentence without gaps.
 (() => {
   const G = window.GUIDE, REG = window.REGIONS || {}, SIZE = window.SIZES || {}, APP = window.APP || null; // APP: the copy served inside ONE Desk
   const $ = id => document.getElementById(id), deck = $('deck'), prev = $('prev'), next = $('next'), fill = $('fill'), toc = $('toc'), list = $('toclist'), live = $('live');
@@ -342,18 +354,19 @@ window.GUIDE = {
   const UI = {
     en: { back: 'Back', next: 'Next', start: 'Start', again: 'Again', listen: 'Listen', stop: 'Stop', steps: 'Steps', all: 'All steps', done: 'Done',
       step: (n, m) => `Step ${n} of ${m}`, choose: 'Language:', tap: 'Tap any sentence to see where it is on the screen.', restart: 'Start the guide again',
-      demo: 'Screens show demo data.', welcome: 'Welcome', voice: 'Voice:', on: 'On', off: 'Off', novoice: 'This device has no English voice for reading aloud. Open the guide in Chrome, Edge or Safari.' },
+      demo: 'Screens show demo data.', welcome: 'Welcome', voice: 'Voice:', on: 'On', off: 'Off', hear: 'Tap to hear the guide', novoice: 'This device has no English voice for reading aloud. Open the guide in Chrome, Edge or Safari.' },
     te: { back: 'వెనక్కి', next: 'నెక్స్ట్', start: 'స్టార్ట్', again: 'మళ్లీ', listen: 'వినండి', stop: 'ఆపండి', steps: 'స్టెప్స్', all: 'అన్ని స్టెప్స్', done: 'పూర్తయింది',
       step: (n, m) => `స్టెప్ ${n} / ${m}`, choose: 'భాష:', tap: 'ఏ లైన్ నొక్కినా, అది స్క్రీన్‌లో ఎక్కడ ఉందో చూపిస్తుంది.', restart: 'గైడ్ మళ్లీ మొదటి నుంచి',
       demo: 'స్క్రీన్‌షాట్స్‌లో ఉన్నది డెమో డేటా.', welcome: 'వెల్కమ్', voice: 'వాయిస్:', on: 'ఆన్', off: 'ఆఫ్',
-      enonly: 'వాయిస్ ఇంగ్లీష్‌లో మాత్రమే ఉంది. వినాలంటే పైన English సెలెక్ట్ చేయండి.' },
+      hear: 'గైడ్ వినడానికి ఇక్కడ నొక్కండి',
+      novoice: 'ఈ ఫోన్‌లో తెలుగు వాయిస్ లేదు. Android లో Settings → Text-to-speech → Google లో Telugu వాయిస్ ఇన్‌స్టాల్ చేయండి, లేదా ఈ పేజీ Microsoft Edge లో ఓపెన్ చేయండి. అప్పటి వరకు EN నొక్కి ఇంగ్లీష్‌లో వినొచ్చు.' },
   };
   const strip = window.SAY.strip, AUD = window.AUDIO || {};
   let lang = (() => { try { const s = localStorage.getItem('guide-lang'); if (s === 'en' || s === 'te') return s; } catch { /* storage off */ }
     return /^te/i.test(navigator.language || '') ? 'te' : 'en'; })();
   let voiceOn = (() => { try { return localStorage.getItem('guide-voice') !== 'off'; } catch { return true; } })();
-  const canSpeak = Object.keys((window.AUDIO || {}).en || {}).length > 0 || ('speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined');
-  const voiceHere = () => lang === 'en' && canSpeak; // English only: in Telugu the text is the guide
+  const canSpeak = Object.values(window.AUDIO || {}).some(o => Object.keys(o).length > 0) || ('speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined');
+  const voiceHere = () => canSpeak; // both languages are spoken
   const SPK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
   const N = G.steps.length, last = N + 1; // 0 = welcome, 1..N = steps, last = done
   let at = 0, line = 0, speaking = false, note = '', q = [], qi = 0;
@@ -363,7 +376,7 @@ window.GUIDE = {
   const welcome = () => { const W = G.welcome;
     return `<section class="card" data-id="start"><div class="kicker">${W.kicker[lang]}</div><h1>${W.title[lang]}</h1>
       <div class="langrow"><span>${T().choose}</span><button type="button" data-lang="en" aria-pressed="${lang === 'en'}">English</button><button type="button" data-lang="te" aria-pressed="${lang === 'te'}">తెలుగు</button></div>
-      ${lang === 'te' && canSpeak ? `<p class="vhint">${SPK}${T().enonly}</p>` : ''}${voiceHere() ? `<div class="langrow"><span>${T().voice}</span><button type="button" data-voice="on" aria-pressed="${voiceOn}">${SPK}${T().on}</button><button type="button" data-voice="off" aria-pressed="${!voiceOn}">${T().off}</button></div>` : ''}
+      ${voiceHere() ? `<div class="langrow"><span>${T().voice}</span><button type="button" data-voice="on" aria-pressed="${voiceOn}">${SPK}${T().on}</button><button type="button" data-voice="off" aria-pressed="${!voiceOn}">${T().off}</button></div>` : ''}
       <p class="lead">${W.lead[lang]}</p>
       <ol class="qsteps">${W.summary.map(s => `<li><div><b>${s[lang][0]}</b>${s[lang][1]}</div></li>`).join('')}</ol>
       <ul class="chips">${W.chips[lang].map(c => `<li>${c}</li>`).join('')}</ul>
@@ -447,18 +460,19 @@ window.GUIDE = {
   // ---------- Listen: the device's own voice, sentence by sentence ----------
   const synth = window.speechSynthesis, lb = $('listen'), tap = $('tapvoice');
   if (synth) synth.getVoices(); // starts loading the voice list, so it is ready by the time Start is tapped
-  // the most natural English voice on this device: Microsoft's natural voices (Edge), Apple's Premium and Enhanced voices,
-  // Google's, then the better standard ones. Indian English first among equals; never the novelty or robotic voices.
+  // the most natural voice on this device for the guide's language: Microsoft's natural voices (Edge, including Telugu),
+  // Apple's Premium and Enhanced voices, Google's (Telugu on Android), then the better standard ones. Indian English first
+  // among equals; never the novelty or robotic voices.
   const ODD = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox|fred|junior|kathy|ralph|princess|deranged|hysterical|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley)\b/i;
   const score = v => (/natural|neural/i.test(v.name) ? 60 : /online/i.test(v.name) ? 50 : 0) + (/premium/i.test(v.name) ? 45 : /enhanced/i.test(v.name) ? 40 : 0)
     + (/google/i.test(v.name) ? 30 : 0) + (/^(samantha|daniel|karen|moira|tessa|serena|ava|allison|zoe|evan|nathan|alex)\b/i.test(v.name) ? 10 : 0)
     + (/^en-IN/i.test(v.lang) ? 8 : /^en-GB/i.test(v.lang) ? 4 : /^en-US/i.test(v.lang) ? 3 : 0) + (v.localService === false ? 2 : 0)
     - (ODD.test(v.name) || /espeak|compact/i.test(v.name) ? 100 : 0);
-  const pick = () => (synth ? synth.getVoices() : []).filter(x => /^en/i.test(x.lang.replace('_', '-'))).sort((a, b) => score(b) - score(a))[0] || null;
+  const pick = (l = lang) => (synth ? synth.getVoices() : []).filter(x => (l === 'te' ? /^te/i : /^en/i).test(x.lang.replace('_', '-'))).sort((a, b) => score(b) - score(a))[0] || null;
   const voicesReady = () => new Promise(r => { if (!synth || synth.getVoices().length) return r();
     if (synth.addEventListener) synth.addEventListener('voiceschanged', () => r(), { once: true }); setTimeout(r, 1500); });
   const queueFor = i => window.SAY.items(G, lang).filter(x => x.at === i);
-  const player = new Audio(), recorded = () => lang === 'en' && Object.keys(AUD.en || {}).length > 0;
+  const player = new Audio(), recorded = () => Object.keys(AUD[lang] || {}).length > 0;
   player.preload = 'auto';
   const advance = () => { if (speaking) { qi++; speakNext(); } };
   const speakNext = () => {
@@ -481,8 +495,8 @@ window.GUIDE = {
   const deviceSay = item => { // the device's own voice
     if (!synth) return advance();
     const u = new SpeechSynthesisUtterance(item.say), v = pick(); current = u;
-    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-IN';
-    u.rate = 1;
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = lang === 'te' ? 'te-IN' : 'en-IN';
+    u.rate = lang === 'te' ? 0.95 : 1;
     let over = false, dog = 0; const due = Date.now() + 1500 + item.say.split(/\s+/).length * 450, cap = due + 15000;
     const end = () => { if (over || current !== u) return; over = true; clearInterval(dog); advance(); };
     u.onstart = () => { heard = true; if (item.k != null) setLine(item.k); };
@@ -498,7 +512,7 @@ window.GUIDE = {
     lb.querySelector('.lbl').textContent = speaking ? T().stop : T().listen; lb.setAttribute('aria-pressed', String(speaking));
     next.querySelector('.lbl').textContent = at === 0 ? T().start : at === last ? T().again : T().next;
     lb.hidden = !voiceHere(); next.parentElement.style.gridTemplateColumns = lb.hidden ? '1fr 1fr' : '';
-    if (tap && (speaking || !voiceHere())) tap.hidden = true;
+    if (tap) { tap.lastChild.textContent = T().hear; if (speaking || !voiceHere()) tap.hidden = true; }
     prev.setAttribute('aria-disabled', String(at === 0));
   }
   const begin = () => { speaking = true; ui(); speakFrom(at >= 1 && at <= N ? line : 0); };
@@ -519,7 +533,7 @@ window.GUIDE = {
   function setLang(l) { if (l === lang) return; stopVoice(); lang = l; note = '';
     try { localStorage.setItem('guide-lang', l); } catch { /* storage off */ }
     const keep = at; render(); go(keep, 'load');
-    if (l === 'en' && voiceOn) listen(); } // back to English: the voice carries on from this step
+    if (voiceOn) listen(); } // the voice carries on in the new language from this step
   addEventListener('pagehide', () => synth && synth.cancel());
 
   render();

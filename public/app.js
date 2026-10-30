@@ -146,7 +146,7 @@ async function portal(slug, q, view, code) {
     const seen = guideSeen('guide-seen');
     app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
-      ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with a voice that reads it out. Also in తెలుగు.')}
+      ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with voice in English or తెలుగు.')}
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
       ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}

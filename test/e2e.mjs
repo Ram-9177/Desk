@@ -81,8 +81,8 @@ const FAKE_TTS = `(() => {
   let cur = null, timer = 0; const queue = []; window.__said = [];
   const say = () => { cur = queue.shift(); if (!cur) { synth.speaking = false; return; } synth.speaking = true; const u = cur;
     timer = setTimeout(() => { u.onstart?.({}); window.__said.push({ t: u.text, at: location.hash, sub: document.querySelector('.card:not([hidden]) .subtitle .t')?.textContent || '' });
-      timer = setTimeout(() => { cur = null; u.onend?.({}); say(); }, 30); }, 10); };
-  const synth = { speaking: false, pending: false, paused: false, getVoices: () => [{ name: 'Stand-in Natural English', lang: 'en-IN', localService: false }],
+      timer = setTimeout(() => { cur = null; u.onend?.({}); if (!cur) say(); }, 30); }, 10); }; // onend may already have started the next one
+  const synth = { speaking: false, pending: false, paused: false, getVoices: () => [{ name: 'Stand-in Natural English', lang: 'en-IN', localService: false }, ...(/[?&]te=none/.test(location.search) ? [] : [{ name: 'Stand-in Telugu', lang: 'te-IN', localService: false }])],
     speak(u) { if (!u.text) return; if (!allowed()) { setTimeout(() => u.onerror?.({ error: 'not-allowed' }), 5); return; } queue.push(u); if (!cur) say(); },
     cancel() { queue.length = 0; clearTimeout(timer); const u = cur; cur = null; synth.speaking = false; if (u) setTimeout(() => u.onerror?.({ error: 'interrupted' }), 0); },
     pause() {}, resume() {}, addEventListener() {}, removeEventListener() {} };
@@ -623,11 +623,8 @@ async function uiSmoke(tok, id) {
     const g1 = gok && await js(`document.querySelector('[data-voice="off"]').click(); document.querySelector('.card[data-id="start"] .big').click(); await new Promise(r => setTimeout(r, 700));
       const c = document.querySelector('.card[data-id="open"]'), h = c.querySelector('.hl'), img = c.querySelector('.frame img').getBoundingClientRect(), b = h.getBoundingClientRect();
       const shot = { shown: !c.hidden, on: h.classList.contains('on'), roomy: b.height > img.height * 0.22 + 8 };
-      document.querySelector('.lang [data-lang="te"]').click(); // Telugu is read on screen: no voice, a note pointing to English
-      shot.teQuiet = document.querySelector('#listen').hidden && !document.querySelector('[data-voice]') && !!document.querySelector('.card[data-id="start"] .vhint');
-      localStorage.removeItem('guide-lang'); return shot;`);
+      return shot;`);
     check('guide in the app opens; Start shows step 1 with the outline clear of the words', gok && g1?.shown && g1.on && g1.roomy && !errors.length, JSON.stringify(g1) + errors.join(' | ').slice(0, 200));
-    check('the voice is English only: Telugu shows the text, no Listen button', g1?.teQuiet, JSON.stringify(g1));
     // every kind of email button, opened the way Gmail opens it: the address travels encoded in a redirect link
     const mails = await q('SELECT recipient, html FROM notifications'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
     const hrefs = [...new Set(mails.flatMap(n => hrefsOf(n.html)))], big = Math.max(...mails.map(n => String(n.html || '').length));
@@ -638,7 +635,8 @@ async function uiSmoke(tok, id) {
       errors.length = 0; await send('Page.navigate', { url: GMAIL(href) });
       for (let i = 0; i < 24; i++) { await sleep(250); if (await js(`return !!document.querySelector(${JSON.stringify(probe)});`).catch(() => false)) return !errors.length; }
       return false; };
-    const tk = find(/#\/d\/[^/]+\/t\/[^?]+\?k=/), pt = find(/#\/d\/[^/?]+$/), gd = find(/\/guide\/\w+\.html$/), lg = find(/#\/login$/);
+    // links of the active campus (the other one is switched off earlier, so its links rightly stop opening)
+    const tk = find(/#\/d\/alpha\/t\/[^?]+\?k=/), pt = find(/#\/d\/alpha$/), gd = find(/\/guide\/\w+\.html$/), lg = find(/#\/login$/);
     check('Gmail click: "View your ticket" opens the requestor\'s ticket', !!tk && await open(tk, '.stamps li'), tk);
     check('Gmail click: "Raise a new ticket" opens the campus page', !!pt && await open(pt, 'a.svc[href*="raise"]'), pt);
     check('Gmail click: the guide button opens the guide', !!gd && await open(gd, '.card[data-id="start"]'), gd);
@@ -653,10 +651,25 @@ async function uiSmoke(tok, id) {
     await send('Page.navigate', { url: `${APP}/guide/requestor.html?tts=ok` });
     let talk = null; for (let i = 0; i < 60 && !talk?.done; i++) { await sleep(250); talk = await js(`const s = window.__said || [];
       return { first: s[0]?.t, openSubs: s.filter(x => x.at === '#open').map(x => x.sub), open: [...document.querySelectorAll('.card[data-id="open"] [data-line]')].map(b => b.textContent),
-        cards: [...new Set(s.map(x => x.at))].length, done: location.hash === '#done' && !speechSynthesis.speaking };`).catch(() => null); }
+        cards: [...new Set(s.map(x => x.at))].length, list: [...new Set(s.map(x => x.at))].join(' '), done: s.at(-1)?.at === '#done' && !speechSynthesis.speaking };`).catch(() => null); }
     check('the guide starts talking on its own: the opening line, then step 1', /^Raise and track a ticket\./.test(talk?.first || '') && talk.openSubs.length === talk.open.length, JSON.stringify(talk)?.slice(0, 300));
     check('each sentence is read while its own line shows; the steps move on with the voice to the end', !!talk?.done && JSON.stringify(talk.openSubs) === JSON.stringify(talk.open) && talk.cards >= 15 && !errors.length,
-      JSON.stringify(talk)?.slice(0, 300) + errors.join(' | '));
+      JSON.stringify({ list: talk?.list, done: talk?.done, cards: talk?.cards, subs: talk?.openSubs?.length, lines: talk?.open?.length, same: JSON.stringify(talk?.openSubs) === JSON.stringify(talk?.open), errors }).slice(0, 400));
+    // in Telugu: a Telugu voice reads the Telugu text, its English words said the Telugu way (Tenglish), in step line by line
+    await js("localStorage.clear(); localStorage.setItem('guide-lang', 'te');"); errors.length = 0;
+    await send('Page.navigate', { url: `${APP}/guide/requestor.html?tts=ok` });
+    let te = null; for (let i = 0; i < 60 && !te?.done; i++) { await sleep(250); te = await js(`const s = window.__said || [];
+      return { first: s[0]?.t, open: s.filter(x => x.at === '#open'), lines: [...document.querySelectorAll('.card[data-id="open"] [data-line]')].map(b => b.textContent),
+        done: s.at(-1)?.at === '#done' && !speechSynthesis.speaking };`).catch(() => null); }
+    const latin = (te?.open || []).filter(x => /[A-Za-z]/.test(x.t));
+    check('in Telugu the guide talks in Telugu, its English words said the Telugu way', !!te?.done && /[\u0C00-\u0C7F]/.test(te.first || '') && te.open.length === te.lines.length
+      && !latin.length && te.open.some(x => x.t.includes('వన్ డెస్క్')), JSON.stringify({ first: te?.first, latin: latin.map(x => x.t).slice(0, 2) }));
+    check('each Telugu sentence is read while its own line shows', !!te && JSON.stringify(te.open.map(x => x.sub)) === JSON.stringify(te.lines) && !errors.length, JSON.stringify(te?.open?.map(x => x.sub))?.slice(0, 200));
+    // a phone without a Telugu voice: a note says how to add one (or listen in English), and nothing is read
+    await send('Page.navigate', { url: `${APP}/guide/requestor.html?tts=ok&te=none` }); await sleep(2500);
+    const nov = await js(`const r = { note: document.querySelector('.vnote')?.textContent || '', said: window.__said.length, listen: !document.querySelector('#listen').hidden };
+      localStorage.removeItem('guide-lang'); return r;`);
+    check('no Telugu voice on the phone: a note explains, and nothing is read', /తెలుగు వాయిస్ లేదు/.test(nov.note) && nov.said === 0 && nov.listen, JSON.stringify(nov));
     // where sound needs a tap first (iPhone, a page opened from an email): the guide waits, and one tap starts the voice
     await send('Page.navigate', { url: `${APP}/guide/requestor.html` }); await sleep(3200);
     const wait1 = await js(`const t = document.querySelector('#tapvoice'); return { pill: !!t && !t.hidden, said: window.__said.length, at: location.hash };`);

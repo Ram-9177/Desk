@@ -186,7 +186,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
 
 // The guide section's words (the requestor guide is served by the app at /guide/requestor.html).
 const GUIDE_COPY = {
-  requestor: { title: 'New to ONE Desk?', text: 'See how to raise and track a ticket, step by step, in 2 minutes. In English with a voice that reads it out, or in Telugu.', label: 'Open the guide' },
+  requestor: { title: 'New to ONE Desk?', text: 'See how to raise and track a ticket, step by step, in 2 minutes, with voice in English or Telugu.', label: 'Open the guide' },
 };
 // Photos in an email: linked pictures 120 px wide that wrap on a phone; a tap opens the full photo.
 const photosHtml = list => list.map((p, i) => `<a href="${esc(p.url)}" style="display:inline-block;margin:4px 8px 4px 0;text-decoration:none"><img src="${esc(p.url)}" width="120" alt="${esc(p.name || `Photo ${i + 1}`)}" style="display:block;width:120px;max-width:120px;height:auto;border:1px solid #eceef5;border-radius:10px"></a>`).join('');
