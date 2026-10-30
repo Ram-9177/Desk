@@ -546,6 +546,36 @@ try {
   let conv; for (let i = 0; i < 40 && conv?.mime_type !== 'image/jpeg'; i++) { await sleep(250); conv = (await q("SELECT * FROM attachments WHERE id='old-heic'"))[0]; }
   check('HEIC photos stored earlier become JPEG at start-up', conv?.mime_type === 'image/jpeg' && conv.file_name === 'IMG_OLD.jpg' && fs.existsSync(path.join(UPLOADS, conv.storage_key)) && !fs.existsSync(path.join(UPLOADS, oldKey)), JSON.stringify(conv));
 
+  sec('ONE Desk Bot (answers from the app, by who is asking)');
+  {
+    const pb = q => api('/public/alpha/bot', { method: 'POST', body: { q } }), sb = (q, token) => api('/bot', { method: 'POST', token, body: { q } });
+    let b = (await pb('hi')).data;
+    check('requestor: a greeting with quick choices', /ONE Desk Bot/.test(b.text) && b.chips.includes('Track my ticket'));
+    b = (await pb('status of ticket 0001')).data;
+    check('requestor: a ticket number gives its status, team and a link', /Ticket 0001 is/.test(b.text) && /Electrical/.test(b.text) && b.items[0].href === '#/d/alpha/t/0001' && !/r1@example\.com|Ria/.test(b.text), b.text);
+    check('requestor: no personal details of others (no requestor name or email)', !/@example\.com/.test(JSON.stringify(b)));
+    b = (await pb('how do I raise a complaint?')).data;
+    check('requestor: how to raise, with links to the form and the guide', /To raise a ticket/.test(b.text) && b.items.some(x => x.href === '#/d/alpha/raise'));
+    b = (await pb('which teams can help')).data;
+    check('requestor: the campus teams, each linking to its form', b.items.some(x => x.href === '#/d/alpha/raise/ELEC'));
+    check('requestor: the daily limit from the campus settings', /5 tickets a day \(faculty 9/.test((await pb('daily limit')).data.text));
+    check('requestor: an unknown ticket is said plainly', /couldn't find ticket 9999/.test((await pb('9999')).data.text));
+    b = (await sb('overdue', T.pavan)).data;
+    check('provider: overdue lists only tickets in their services', b.items.every(x => /Electrical/.test(x.sub)), JSON.stringify(b.items.slice(0, 2)));
+    b = (await sb('my open tickets', T.pavan)).data;
+    check('provider: open tickets, most urgent first, linking to each', /open ticket/.test(b.text) && b.items.every(x => x.href.startsWith('#/c/t/')));
+    const examNo = (await q("SELECT t.ticket_no FROM tickets t JOIN services s ON s.id=t.service_id WHERE s.code='EXAM' AND t.tenant_id=? LIMIT 1", alpha.id))[0]?.ticket_no;
+    b = (await sb(`ticket ${examNo}`, T.pavan)).data;
+    check("provider: another team's ticket is not shown", !!examNo && /not in your services/.test(b.text), b.text);
+    check('provider: admin questions are for admins', /for admins/.test((await sb('services with no provider', T.pavan)).data.text));
+    check('provider: own points and rank', /You have \d+ points, rank \d+ of \d+/.test((await sb('my points', T.pavan)).data.text));
+    b = (await sb(`ticket ${examNo}`, T.asha)).data;
+    check('admin: any ticket of the campus', new RegExp(`#${examNo}`).test(b.text) && /Raised by/.test(b.text), b.text);
+    check("admin: today's summary for the campus", /Today at Alpha Campus: \d+ raised/.test((await sb("today's summary", T.asha)).data.text));
+    check('admin: provider workload', (await sb('provider workload', T.asha)).data.items.some(x => /Pavan/.test(x.title)));
+    check('the bot needs a sign-in for staff answers', (await api('/bot', { method: 'POST', body: { q: 'overdue' } })).status === 401);
+  }
+
   sec('Same-day duplicate reports');
   { // its own block, so its names don't clash with the rest
   await stop(); await start(); // fresh rate limits
@@ -755,6 +785,18 @@ async function uiSmoke(tok, id) {
     await send('Page.navigate', { url: `${APP}/guide/` }); let gi = false;
     for (let i = 0; i < 20 && !gi; i++) { await sleep(250); gi = await js(`return location.pathname.endsWith('/guide/requestor.html') && !!document.querySelector('.card[data-id="start"]');`).catch(() => false); }
     check('/guide/ opens the requestor guide', gi);
+    // the bot window: on the campus page, a tap on a quick choice gets an answer
+    await visit('campus page with the bot button', '/d/alpha', null, '#botbtn');
+    const chat = await js(`document.querySelector('#botbtn').click();
+      for (let i = 0; i < 20 && !document.querySelector('.bchips [data-q]'); i++) await new Promise(r => setTimeout(r, 150));
+      document.querySelector('.bchips [data-q="How to raise a ticket"]').click();
+      for (let i = 0; i < 20 && !/To raise a ticket/.test(document.querySelector('#botlog').textContent); i++) await new Promise(r => setTimeout(r, 150));
+      return { open: !document.querySelector('#botp').hidden, answered: /To raise a ticket/.test(document.querySelector('#botlog').textContent) };`);
+    check('the bot opens and answers a quick choice', chat.open && chat.answered, JSON.stringify(chat));
+    await visit('staff desk with the bot', '/c', tok.pavan, '#botbtn');
+    check('staff get their own bot (queue questions)', await js(`document.querySelector('#botbtn').click();
+      for (let i = 0; i < 20 && !document.querySelector('.bchips [data-q]'); i++) await new Promise(r => setTimeout(r, 150));
+      return !!document.querySelector('.bchips [data-q="Overdue"]');`));
     // a merged ticket: the requestor sees the known-issue note; the provider sees every requestor
     const mt = (await q("SELECT id, ticket_no, affected_count FROM tickets WHERE location_key='hostel block:203' AND problem_key='fan'"))[0];
     await visit('requestor ticket page of a merged ticket', `/d/alpha/t/${mt.ticket_no}`, null, '.stamps li');

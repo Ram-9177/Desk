@@ -947,10 +947,43 @@ async function profile(main) {
       await api('/me/password', { method: 'POST', body: formVals(f) }); toast('Password changed. Your sign-in details were emailed to you.'); }); };
 }
 
+// ================= ONE DESK BOT =================
+// A chat window answered by the server from the app's own data (no AI): requestors on the campus pages ask about their
+// ticket and how things work; staff inside the desk ask about their queue (admins about the whole campus).
+const BOT_ICON = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></svg>';
+let botUrl = null;
+function botFor(url) { // url: '/public/<slug>/bot', '/bot', or null to hide the bot
+  if (url !== botUrl) { botUrl = url; const log = $('#botlog'); if (log) log.innerHTML = ''; }
+  let b = $('#botbtn');
+  if (!b && url) {
+    document.body.insertAdjacentHTML('beforeend', `<button type="button" id="botbtn" class="botbtn" aria-label="Ask the ONE Desk Bot">${BOT_ICON}</button>
+      <section id="botp" class="botp" hidden role="dialog" aria-label="ONE Desk Bot"><header><span class="botava">${BOT_ICON}</span><div><b>ONE Desk Bot</b><small>Answers from ONE Desk itself</small></div>
+      <button type="button" class="iconbtn" id="botx" aria-label="Close">${I('xmark')}</button></header><div id="botlog" class="botlog" aria-live="polite"></div>
+      <form id="botf" class="botf"><input name="q" autocomplete="off" maxlength="300" placeholder="Ask, or type a ticket number"><button class="btn primary" aria-label="Send">${I('send', 18)}</button></form></section>`);
+    b = $('#botbtn');
+    b.onclick = () => { const p = $('#botp'); p.hidden = !p.hidden; if (!p.hidden) { if (!$('#botlog').children.length) botAsk('help', true); $('#botf').q.focus(); } };
+    $('#botx').onclick = () => { $('#botp').hidden = true; };
+    $('#botf').onsubmit = e => { e.preventDefault(); const q = e.target.q.value.trim(); if (q) { e.target.q.value = ''; botAsk(q); } };
+  }
+  if (b) { b.hidden = !url; if (!url) $('#botp').hidden = true; }
+}
+async function botAsk(q, quiet) {
+  const log = $('#botlog'), add = html => { log.insertAdjacentHTML('beforeend', html); log.scrollTop = log.scrollHeight; };
+  if (!quiet) add(`<div class="bmsg me">${esc(q)}</div>`);
+  add('<div class="bmsg bot typing">…</div>');
+  let r; try { r = await api(botUrl, { method: 'POST', body: { q } }); } catch (er) { r = { text: er.message } }
+  log.querySelector('.typing')?.remove();
+  add(`<div class="bmsg bot">${esc(r.text).replace(/\n/g, '<br>')}${r.items?.length ? `<div class="bitems">${r.items.map(x => `<a href="${esc(x.href)}" class="bitem"><b>${esc(x.title)}</b>${x.sub ? `<small>${esc(x.sub)}</small>` : ''}</a>`).join('')}</div>` : ''}</div>`
+    + (r.chips?.length ? `<div class="bchips">${r.chips.map(c => `<button type="button" class="chip-btn" data-q="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''));
+  log.querySelectorAll('.bchips:last-child [data-q]').forEach(c => { c.onclick = () => botAsk(c.dataset.q); });
+  log.querySelectorAll('.bitem').forEach(a => { a.onclick = () => { if (matchMedia('(max-width:700px)').matches) $('#botp').hidden = true; }; });
+}
+
 // ================= ROUTER =================
 async function route() {
   document.onkeydown = null; clearInterval(pollT);
   const [p, qs] = location.hash.slice(1).split('?'), q = new URLSearchParams(qs), seg = p.split('/').filter(Boolean);
+  botFor(seg[0] === 'd' && seg[1] ? `/public/${seg[1]}/bot` : seg[0] === 'c' && S.token ? '/bot' : null); // the bot, for who is looking
   try {
     if (seg[0] === 'd' && seg[2] === 't') return await ticketPage(seg[1], seg[3], q);
     if (seg[0] === 'd' && seg[2] === 'track') return await track(seg[1]);
