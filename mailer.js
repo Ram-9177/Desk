@@ -22,6 +22,7 @@ export const VARS = {
   escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', password: 'The new password they chose', role_name: 'Staff member’s role', services: 'Services they handle', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
   guide: 'Block: link to the step-by-step guide (a requestor’s first ticket)',
+  affected_note: 'When the report joined a ticket others raised the same day: how many others reported it',
 };
 // Block fields: put one alone on its own line and it becomes a designed section of the email.
 export const BLOCKS = ['progress', 'ticket_details', 'timeline', 'guide'];
@@ -31,9 +32,9 @@ const STAFF_PW = ['staff_name', 'staff_email', 'password', 'login_link', 'campus
 
 // Every step that sends mail, with its default template.
 export const MAIL_EVENTS = [
-  { key: 'created', label: 'Ticket received', who: 'Requestor', when: 'A ticket is raised (portal, walk-in or phone)', vars: [...T, 'guide'],
+  { key: 'created', label: 'Ticket received', who: 'Requestor', when: 'A ticket is raised (portal, walk-in or phone)', vars: [...T, 'guide', 'affected_note'],
     subject: '[{{ticket_no}}] Ticket received: {{subject}}',
-    body: 'Hi {{requestor_name}},\nThank you, we have received your request and the {{service}} team has been notified. You don\'t need to do anything else.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}\n{{guide}}' },
+    body: 'Hi {{requestor_name}},\nThank you, we have received your request and the {{service}} team has been notified. You don\'t need to do anything else.\n**{{affected_note}}**\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}\n{{guide}}' },
   { key: 'new_ticket', label: 'New ticket in the queue', who: 'Service providers', when: 'A ticket arrives in their service', vars: T,
     subject: '[{{ticket_no}}] New ticket: {{subject}}',
     body: 'A new ticket has arrived in **{{service}}**. Target: {{due}}.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },

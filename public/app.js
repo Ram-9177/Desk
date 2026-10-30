@@ -200,15 +200,20 @@ function raiseForm(slug, tenant, svc, related) {
       if (!/^\S+@\S+\.\S+$/.test(v.email || '')) throw new Error('Enter a valid email address so we can send you updates');
       const body = { ...v, service_id: svc.id, form_data: collectForm(e.target, svc), idempotency_key: idem, related_ticket_no: related,
         files: await readFiles(document.querySelectorAll('.f-raise')) };
-      const r = await api(`/public/${slug}/tickets`, { method: 'POST', body });
+      let r; try { r = await api(`/public/${slug}/tickets`, { method: 'POST', body }); }
+      catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; // confirm mode: the person says whether it is the same issue
+        r = await api(`/public/${slug}/tickets`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
       const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
       app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Ticket raised</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-        <div class="muted">Ticket raised! Your number is</div><div class="no">${r.ticket_no}</div>
+        <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+        <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
+        ${r.merged ? knownIssue(r.affected_count) : ''}
         <p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>
         ${r.providers.map(p => `<span class="plate">${esc(p.name)} ${p.phone ? '· ' + esc(p.phone) : ''}</span>`).join('')}
         <p class="muted small" style="margin:14px 0 30px">${v.email ? 'We also emailed these details to you.' : 'Save this link — it is your key to the ticket.'}</p>
         <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Open ticket</a></div></div></div>`;
       $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
+      $('#cpn').onclick = () => navigator.clipboard.writeText(r.ticket_no).then(() => toast('Number copied'), () => toast(r.ticket_no));
     } catch (er) {
       if (er.code === 'DAILY_LIMIT') $('#err').innerHTML = `<div class="limitbox">${I('clock', 22)}<div><b>Daily ticket limit reached</b><div>${esc(cap(er.message.replace(/^Daily limit reached: /, '')))}</div></div></div>`;
       else $('#err').textContent = er.message;
@@ -227,6 +232,13 @@ async function track(slug) {
     } catch { $('#err').textContent = 'No ticket with that number.'; } };
 }
 
+// Many people reporting the same problem the same day share one ticket (see merge.js on the server)
+const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. You will get updates by email.</span></div>` : '';
+const sameIssue = d => new Promise(res => {
+  $('#err').innerHTML = `<div class="limitbox">${I('alert', 22)}<div><b>Ticket #${esc(d.ticket_no)} already exists for this problem.</b><div>${esc(d.subject)} · reported by ${d.affected_count} so far. Same issue?</div>
+    <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="sy">Yes, add me</button><button type="button" class="btn" id="sn">No, raise new</button></div></div></div>`;
+  $('#sy').onclick = () => { $('#err').textContent = ''; res('yes'); }; $('#sn').onclick = () => { $('#err').textContent = ''; res('no'); };
+});
 async function ticketPage(slug, no, q) {
   document.body.className = '';
   const key = q.get('k') ? { k: q.get('k') } : {};
@@ -241,7 +253,7 @@ async function ticketPage(slug, no, q) {
   const step = { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>My Ticket</h1>${pill(t.status)}</div>
     <div class="stub left"><div class="mono muted small">${t.ticket_no}</div><h2 style="margin:4px 0 2px;font-size:20px">${esc(t.subject)}</h2>
-    <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>
+    <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>${knownIssue(t.affected_count)}
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
       <div><b>${STATUS_WORDS[t.status]}</b><div class="muted small">${ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
@@ -314,11 +326,11 @@ function ticketCard(r, services) {
   const foot = ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
     : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause'] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark'];
   return `<div class="tcard st-${state} ${r.status === 'rejected' ? 'dim' : ''}" data-id="${r.id}" tabindex="0">
-    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${pill(r.status)}${ppill(r.priority)}</div>
+    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${r.affected_count > 1 ? `<span class="pill p-many">${r.affected_count} students</span>` : ''}${pill(r.status)}${ppill(r.priority)}</div>
     <b class="tc-title">${esc(r.subject)}</b>
     <div class="tc-svc"><span class="chip c0">${I(svcIcon(svc), 16)}</span>${esc(r.service)}</div>
-    <div class="tc-row">${I('user', 15)}<span>${esc(r.requestor)}</span></div>
-    ${r.location ? `<div class="tc-row">${I('building', 15)}<span>${esc(r.location)}</span></div>` : ''}
+    <div class="tc-row">${I('user', 15)}<span>${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}</span></div>
+    ${r.location ? `<div class="tc-row">${I('building', 15)}<span>${esc(r.location)}${r.problem_label ? ' · ' + esc(r.problem_label) : ''}</span></div>` : ''}
     ${esc_on ? `<div class="tc-row esc">${I('alert', 15)}<span>Escalated to ${esc(r.escalated_name || '')}</span></div>` : ''}
     <div class="tc-foot">${I(foot[2], 15)}<span>${foot[0]} <b>${fmt(foot[1])}</b></span></div></div>`;
 }
@@ -369,7 +381,8 @@ async function workspace(main, id, { admin }) {
   const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]);
   const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${(STATUS_INFO[e.from_value] || [e.from_value])[0]} → ${(STATUS_INFO[e.to_value] || [e.to_value])[0]}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(JSON.parse(e.meta || '{}')), priority_changed: `Priority ${e.from_value} → ${e.to_value}`, note: 'Note',
-    reopened: 'Reopened', due_extended: `Due extended to ${fmt(e.to_value)}` })[e.event_type] || e.event_type;
+    reopened: 'Reopened', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
+    priority_changed: `Priority ${esc(e.from_value)} → ${esc(e.to_value)}${JSON.parse(e.meta || '{}').reason ? ' · ' + esc(JSON.parse(e.meta).reason) : ''}` })[e.event_type] || e.event_type;
   const targets = allowedTargets(t.status);
   // the one button changes with the status picked in the dropdown
   const BTN = { open: ['Reopen ticket', 'act-reopen'], in_progress: [t.status === 'hold' ? 'Resume work' : 'Start work', 'act-open'], hold: ['Put on hold', 'act-hold'], closed: ['Close ticket', 'act-closed'], rejected: ['Reject ticket', 'act-rejected'] };
@@ -402,17 +415,20 @@ async function workspace(main, id, { admin }) {
        <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h limit</option>`).join('')}</select></div>
        <label>Note</label><textarea name="note" required placeholder="What did you do, or why this change?"></textarea>
        ${fileButtons('act')}<label style="font-weight:400"><input type="checkbox" name="is_internal" style="width:auto;min-height:0"> Internal — hide from requestor</label>
+       ${t.location_key && t.problem_key ? `<label id="earlyrow" hidden style="font-weight:400"><input type="checkbox" name="close_earlier" style="width:auto;min-height:0"> Also close earlier open tickets for the same problem and location</label>` : ''}
        <div class="actbar"><button class="btn act act-note" id="go">${I('plus', 18)}Add note</button></div></form></div>
    <div><div class="card k-green">${head('user', 'c2', 'Requestor')}<div class="tk-person"><span class="avatar">${ini(t.requestor.name)}</span><div><b>${esc(t.requestor.name)}</b> <span class="pill s-open">${esc(t.requestor.requestor_type || '')}</span></div></div>
      <div class="muted" style="font-size:13px;margin-top:10px;line-height:1.6">${esc(t.requestor.email || '')}<br>${esc(t.requestor.phone || '')}<br>${esc(t.requestor.identifier || '')} ${esc(t.requestor.department || '')}</div>
      ${t.requestor_history.length ? `<p style="font-size:13px;margin-bottom:0"><b>Last tickets</b><br>${t.requestor_history.map(h => `<a href="#/c/t/${h.id}">${h.ticket_no}</a> ${pill(h.status)}`).join('<br>')}</p>` : ''}</div>
+     ${t.requestors?.length > 1 ? `<div class="card k-orange">${head('users', 'c1', `Requestors (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="pill s-open">first</span>' : ''}
+       <div class="muted small">${esc(q.contact)} · ${fmt(q.raised_at)}</div>${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}</div>`).join('')}</div>` : ''}
     <div class="card k-orange">${head('users', 'c1', 'Providers')}${t.providers.map(p => `<div class="tk-person" style="margin-top:10px"><span class="avatar sm">${ini(p.name)}</span><div><b>${esc(p.name)}</b><div class="muted small">${esc(p.phone || '')}</div></div></div>`).join('') || '<div class="tk-empty">No provider mapped to this service</div>'}</div>
     ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card k-pink">${head('alert', 'c3', 'Priority')}<select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <p><button class="btn" id="tr" style="width:100%">Transfer (t)</button></p>${admin ? '<p><button class="btn" id="ext" style="width:100%">Extend due time</button></p>' : ''}</div>` : ''}</div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
   const sel = $('#to'), go = $('#go'), sync = () => { const to = sel.value, same = to === t.status;
-    $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to];
+    $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to]; if ($('#earlyrow')) $('#earlyrow').hidden = to !== 'closed';
     const [label, cls] = same ? ['Add note', 'act-note'] : BTN[to]; go.className = 'btn act ' + cls; go.innerHTML = I(same ? 'plus' : ACT_ICON[to] || 'check', 18) + label; };
   sel.onchange = sync; sync();
   $('#act').onsubmit = async e => {
@@ -421,8 +437,8 @@ async function workspace(main, id, { admin }) {
     if (to === 'hold' && !f.hold_reason.value) return toast('Pick a hold reason');
     try { const body = { note, body: note, is_internal: f.is_internal.checked, files: await readFiles(document.querySelectorAll('.f-act')) };
       if (to === t.status) { await api(`/tickets/${id}/notes`, { method: 'POST', body }); toast('Note added'); }
-      else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value } });
-        toast(res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : `Status: ${STATUS_INFO[to][0]}`); }
+      else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value, close_earlier: !!f.close_earlier?.checked } });
+        toast((res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : `Status: ${STATUS_INFO[to][0]}`) + (res.closed_earlier ? ` · ${res.closed_earlier} earlier closed too` : '')); }
       reload();
     } catch (er) { toast(er.message); if (er.status === 409) reload(); }
   };
@@ -666,7 +682,7 @@ async function reports(main, { sa }) {
       ${custom ? `<label class="dfield">From<input type="date" id="rfrom" value="${rf}" max="${today}"></label><label class="dfield">To<input type="date" id="rto" value="${rt}" max="${today}"></label><button class="btn primary" id="rgo">Show</button>` : ''}</div>
     <div class="muted small" style="margin:-4px 0 10px">Showing tickets raised from <b>${day(r.range.from)}</b> to <b>${day(new Date(new Date(r.range.to).getTime() - 1).toISOString())}</b> · status counts and overdue are as of now</div>
     <div class="kpis"><div class="kpi"><span class="muted">Raised</span><b>${c.created_period || 0}</b></div><div class="kpi"><span class="muted">Closed</span><b>${c.closed_period || 0}</b></div>
-    <div class="kpi"><span class="muted">Avg hours to close</span><b>${c.avg_hours ?? '—'}</b></div>
+    <div class="kpi"><span class="muted">Students affected</span><b>${r.affected ?? 0}</b></div><div class="kpi"><span class="muted">Avg hours to close</span><b>${c.avg_hours ?? '—'}</b></div>
     <div class="kpi warn"><span class="muted">Overdue now</span><b>${c.overdue || 0}</b></div></div>
     <div class="two"><div class="card progress" style="margin:0">${ring(c.on_time_pct ?? 0, 110)}<div><b>On-time score</b><div class="muted small">Tickets closed before their due time</div></div></div>
     <div class="card" style="margin:0"><b>Raised per day</b><svg viewBox="0 0 ${Math.max(1, r.daily.length) * 20} 100" style="width:100%;height:110px" preserveAspectRatio="none">
@@ -676,6 +692,8 @@ async function reports(main, { sa }) {
     <div class="card" id="lb"></div>
     <div class="card"><b>By service</b><table><tr><th>Service</th><th>Open</th><th>In progress</th><th>Hold</th><th>Closed</th><th>Rejected</th><th>Overdue</th></tr>
       ${r.by_service.map(s => `<tr><td>${esc(s.name)}</td><td>${s.open}</td><td>${s.in_progress || 0}</td><td>${s.hold}</td><td>${s.closed}</td><td>${s.rejected}</td><td>${s.overdue}</td></tr>`).join('')}</table></div>
+    ${r.by_location?.length ? `<div class="card"><b>Students affected by place</b><div class="muted small">Every requestor of every ticket raised in this period, per service and location</div><div class="tblwrap"><table><tr><th>Service</th><th>Location</th><th>Tickets</th><th>Students affected</th></tr>
+      ${r.by_location.map(x => `<tr><td>${esc(x.service)}</td><td>${esc(x.location)}</td><td>${x.tickets}</td><td><b>${x.affected}</b></td></tr>`).join('')}</table></div></div>` : ''}
     ${g ? `<div class="card"><b>Group-wide</b><table><tr><th>Tenant</th><th>Open</th><th>Hold</th><th>Closed</th><th>Overdue</th></tr>${g.map(t => `<tr><td>${esc(t.name)}</td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td>${t.overdue || 0}</td></tr>`).join('')}</table></div>` : ''}`;
   api('/points').then(p => $('#lb').innerHTML = leaderboard(p.leaderboard));
   $('#rd').onchange = e => { sessionStorage.setItem('rd', e.target.value); reports(main, { sa }); };
@@ -694,7 +712,11 @@ async function tenants(main) {
   main.innerHTML = `<p><button class="btn primary" id="add">+ New tenant</button></p><table><tr><th>Code</th><th>Name</th><th>Portal</th><th>Reopen days</th><th></th></tr>
     ${list.map(t => `<tr class="${t.is_active ? '' : 'dim'}"><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td><td><a href="#/d/${t.slug}" target="_blank">/d/${esc(t.slug)}</a></td><td>${t.reopen_window_days}</td>
     <td><button class="btn" data-t="${t.id}" data-a="${t.is_active ? 0 : 1}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('')}</table>
-    <p class="muted">To add a tenant admin, switch to the tenant (top right), then People → Add person → Tenant admin.</p>`;
+    <p class="muted">To add a tenant admin, switch to the tenant (top right), then People → Add person → Tenant admin.</p>
+    <div class="card"><b>Same-day duplicate reports</b><div class="muted small">When people report the same problem at the same place on the same day, later reports join the first ticket.</div>
+      <label>When a report matches today's ticket</label><select id="mm"><option value="silent">Add it to that ticket automatically</option><option value="confirm">Ask the person "Same issue?" first</option></select></div>`;
+  api('/merge-mode').then(m => { $('#mm').value = m.mode; });
+  $('#mm').onchange = async e => { try { await api('/merge-mode', { method: 'PUT', body: { mode: e.target.value } }); toast('Saved'); } catch (er) { toast(er.message); } };
   $('#add').onclick = () => dlg(`<h2>New tenant</h2><label>Code</label><input name="code" required placeholder="SMRU"><label>Name</label><input name="name" required>
     <label>Slug (URL)</label><input name="slug" required placeholder="smru"><label>Reopen window days</label><input name="reopen_window_days" type="number" value="7">`,
     async f => { const t = await api('/tenants', { method: 'POST', body: formVals(f) }); S.tenant = t.id; S.me = null; route(); });

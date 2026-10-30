@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw } from './db.js';
+import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
+import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { createSuperAdmin } from './bootstrap.js';
 import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
 import { getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS } from './mailer.js';
@@ -306,7 +307,7 @@ async function escalate(t) {
   if (!done) return;
   const v = await ticketVars(t, { escalated_to_name: target.name, note: `The ticket passed ${missed}.` });
   await notify(t, [target.email, ...(await providersFor(t.tenant_id, t.service_id)).map(p => p.email)], 'escalated', v);
-  await notify(t, [(await one('SELECT email FROM requestors WHERE id=?', t.requestor_id))?.email], 'escalated_requestor', v);
+  await notifyRequestors(t, 'escalated_requestor', v);
 }
 async function runEscalations() {
   const n = now();
@@ -356,27 +357,46 @@ async function createTicket(tenant, b, opts) {
     if (ex) return ex;
   }
   if (portal) await checkDailyLimit(tenant, b);
-  let t, first = false; // first: this person's first ticket here, so the email also links the guide
+  // same-day duplicates: a report from the portal joins today's open ticket for the same place and problem (merge.js)
+  const ts = now(), day = dayIn(tenant.timezone, ts), lkey = opts.channel === 'internal' ? null : locationKey(schema, fd, b.location), prob = problemOf(schema, fd);
+  const mergeable = portal && lkey && prob && b.merge !== 'no';
+  let t, first = false, merged = null; // first: this person's first report here, so the email also links the guide
   try { t = await tx(async () => {
-    const email = b.email ? String(b.email).toLowerCase().trim() : null, phone = b.phone ? String(b.phone).trim() : null;
+    // every report for this place today waits its turn here, so 200 at once still make one ticket
+    if (mergeable) await one('SELECT pg_advisory_xact_lock(hashtext(?)) AS x', `${tenant.id}|${svc.id}|${lkey}|${day}`);
+    const email = b.email ? String(b.email).toLowerCase().trim() : null, phone = b.phone ? String(b.phone).trim() : null, contact = email || phone;
     let r = (email && await one('SELECT * FROM requestors WHERE tenant_id=? AND lower(email)=?', tenant.id, email))
       || (phone && await one('SELECT * FROM requestors WHERE tenant_id=? AND phone=?', tenant.id, phone));
-    first = !r || !(await one('SELECT 1 AS x FROM tickets WHERE requestor_id=? LIMIT 1', r.id));
+    first = !r || !(await one('SELECT 1 AS x FROM ticket_requestors WHERE requestor_id=? LIMIT 1', r.id));
     if (r) await run('UPDATE requestors SET name=?, email=coalesce(?,email), phone=coalesce(?,phone), requestor_type=coalesce(?,requestor_type), identifier=coalesce(?,identifier), department=coalesce(?,department) WHERE id=?',
       b.name, email, phone, b.requestor_type || null, b.identifier || null, b.department || null, r.id);
     else r = await insert('requestors', { id: uid(), tenant_id: tenant.id, name: b.name, email, phone, requestor_type: b.requestor_type, identifier: b.identifier, department: b.department });
-    const ts = now(), priority = PRIORITIES.includes(b.priority) && opts.actor.type === 'user' ? b.priority : 'medium';
+    const m = mergeable && await findMatch(tenant, svc.id, lkey, prob, day);
+    if (m) {
+      if (mergeMode() === 'confirm' && b.merge !== 'yes') // the form asks "Same issue?" first
+        throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `Ticket ${m.ticket_no} already exists for this problem.`, { ticket_no: m.ticket_no, subject: m.subject, affected_count: m.affected_count });
+      merged = await joinTicket(m, r, b, contact, opts.actor, ts);
+      return merged.ticket;
+    }
+    const byStaff = PRIORITIES.includes(b.priority) && opts.actor.type === 'user', priority = byStaff ? b.priority : 'medium';
     const t = await insert('tickets', { id: uid(), tenant_id: tenant.id, ticket_no: await nextTicketNo(tenant), service_id: svc.id, requestor_id: r.id,
       subject: String(b.subject).slice(0, 200), description: b.description, location: b.location, form_data: JSON.stringify(b.form_data || {}),
       priority, status: 'open', channel: opts.channel, is_internal: opts.channel === 'internal' ? 1 : 0, created_by_user_id: opts.actor.type === 'user' ? opts.actor.id : null,
       due_at: await dueFrom(tenant.id, ts, await targetHours(tenant.id, svc.id, priority) * 60), tracking_token: crypto.randomBytes(24).toString('base64url'),
-      idempotency_key: b.idempotency_key || null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0 });
+      idempotency_key: b.idempotency_key || null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,
+      location_key: lkey, problem_key: prob?.key, problem_label: prob?.label, created_date: day, affected_count: 1, priority_by_staff: byStaff ? 1 : 0, not_merged: b.merge === 'no' ? 1 : 0 });
+    await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, raised_at: ts, is_first: 1 });
     const ev = await addEvent(t, opts.actor, 'created', { to: svc.name, meta: b.related_ticket_no ? { related_ticket_no: b.related_ticket_no } : {} });
     await saveFiles(t, ev, b.files, opts.actor.type);
     return t;
   }); } catch (e) { // the same submission arriving twice at once: the unique index keeps one, return it
     const ex = e.code === '23505' && b.idempotency_key && await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
     if (ex) return ex; throw e;
+  }
+  if (merged) { // the person gets their own acknowledgement for the ticket they joined; the providers already have it
+    const others = merged.count - 1, guide = first ? { guide: guideLink('requestor') } : {};
+    if (!merged.again) await notify(t, [b.email || null], 'created', { ...await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), requestor_name: b.name, ...guide });
+    return Object.assign(t, { merged: true, affected_count: merged.count });
   }
   const prov = await providersFor(tenant.id, svc.id);
   const v = await ticketVars(t);
@@ -385,12 +405,62 @@ async function createTicket(tenant, b, opts) {
   return t;
 }
 
+// ---------- same-day duplicate reports (rules in merge.js) ----------
+const mergeMode = () => [getSettings().merge_mode, process.env.DUPLICATE_MERGE_MODE].find(m => MERGE_MODES.includes(m)) || 'silent';
+// The ticket a report joins: same campus, service, place and problem, raised the same day, not closed or rejected
+async function findMatch(tn, svcId, lkey, prob, day) {
+  const base = `tenant_id=? AND service_id=? AND location_key=? AND created_date=? AND status IN (${MERGEABLE.map(() => '?').join()})`, a = [tn.id, svcId, lkey, day, ...MERGEABLE];
+  if (!prob.fuzzy) return one(`SELECT * FROM tickets WHERE ${base} AND problem_key=? ORDER BY created_at LIMIT 1`, ...a, prob.key);
+  const typed = prob.key.slice(6); // "Other": the typed words, matched by similarity
+  if (trgm) return one(`SELECT * FROM tickets WHERE ${base} AND problem_key LIKE 'other:%' AND similarity(substr(problem_key, 7), ?) >= ?
+    ORDER BY similarity(substr(problem_key, 7), ?) DESC, created_at LIMIT 1`, ...a, typed, SIMILARITY, typed);
+  return (await all(`SELECT * FROM tickets WHERE ${base} AND problem_key LIKE 'other:%' ORDER BY created_at`, ...a))
+    .map(t => [t, similarity(t.problem_key.slice(6), typed)]).filter(([, x]) => x >= SIMILARITY).sort((x, y) => y[1] - x[1])[0]?.[0];
+}
+// A later report of the same problem: one more requestor (and their photos) on the ticket. The same person never counts twice.
+async function joinTicket(t, r, b, contact, actor, ts) {
+  if (await one('SELECT 1 AS x FROM ticket_requestors WHERE ticket_id=? AND contact=?', t.id, contact)) return { ticket: t, again: true, count: t.affected_count };
+  const ev = await addEvent(t, actor, 'merged', { body: `Also reported by ${b.name}${b.description ? `: ${b.description}` : ''}`, internal: true, meta: { contact } });
+  await saveFiles(t, ev, b.files, actor.type);
+  const pic = await one('SELECT storage_key FROM attachments WHERE event_id=? ORDER BY created_at LIMIT 1', ev);
+  await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, photo_url: pic ? `/api/files/${pic.storage_key}` : null, event_id: ev, raised_at: ts, is_first: 0 });
+  const { n } = await one('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=?', t.id);
+  // more people affected raises the priority; it is never lowered, and a priority a provider set by hand is left alone
+  const p = !t.priority_by_staff && RANK[priorityFor(n)] > RANK[t.priority] ? priorityFor(n) : t.priority;
+  const due = p === t.priority ? t.due_at : await dueFrom(t.tenant_id, t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
+  await run('UPDATE tickets SET affected_count=?, priority=?, due_at=?, updated_at=? WHERE id=?', n, p, due, ts, t.id);
+  if (p !== t.priority) await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'priority_changed', { from: t.priority, to: p, internal: true, meta: { reason: `${n} people affected` } });
+  return { ticket: { ...t, affected_count: n, priority: p, due_at: due }, again: false, count: n };
+}
+// One email per person who reported the ticket, each greeted by name. A long list goes out after the reply (the outbox sends it).
+async function notifyRequestors(t, key, vars) {
+  const list = await all("SELECT name, contact FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
+  const send = async () => { for (const r of list) await notify(t, [r.contact], key, { ...vars, requestor_name: r.name }); };
+  if (list.length <= 25) return send();
+  send().catch(e => console.error('requestor emails', e.message));
+}
+// "Also close earlier open tickets for the same problem and location": older days' tickets close with the same note
+async function closeEarlier(t, req, note) {
+  const olds = await all(`SELECT * FROM tickets WHERE tenant_id=? AND service_id=? AND location_key=? AND problem_key=? AND id<>? AND created_date<? AND status IN (${MERGEABLE.map(() => '?').join()})`,
+    t.tenant_id, t.service_id, t.location_key, t.problem_key, t.id, t.created_date, ...MERGEABLE);
+  let n = 0;
+  for (const o of olds) {
+    const ts = now(); let done = false;
+    await tx(async () => {
+      if (!(await run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', 'closed', ts, req.user.id, ts, o.id, o.status)).changes) return;
+      await addEvent(o, actorOf(req), 'status_changed', { from: o.status, to: 'closed', body: note, meta: { closed_with: t.ticket_no } }); done = true;
+    });
+    if (done) { n++; await notifyRequestors(o, 'status_closed', await ticketVars(o, { note, actor_name: req.user.name })); }
+  }
+  return n;
+}
+
 // ---------- public view ----------
 async function publicTicket(t) {
   const svc = await one('SELECT name, code FROM services WHERE id=?', t.service_id), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
   const ev = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_name,created_at FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
   const att = await all('SELECT event_id,file_name,mime_type,storage_key,source,stamped_at FROM attachments WHERE ticket_id=?', t.id);
-  return { ticket_no: t.ticket_no, subject: t.subject, description: t.description, location: t.location, status: t.status, priority: t.priority,
+  return { ticket_no: t.ticket_no, subject: t.subject, description: t.description, location: t.location, status: t.status, priority: t.priority, affected_count: t.affected_count || 1,
     due_at: t.due_at, created_at: t.created_at, closed_at: t.closed_at, reopen_count: t.reopen_count, service: svc.name,
     hold_label: t.status === 'hold' && t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label : null, hold_due_at: t.status === 'hold' ? t.hold_due_at : null,
     reopen_until: t.status === 'closed' ? addH(t.closed_at, tn.reopen_window_days * 24) : null,
@@ -416,9 +486,9 @@ P.get('/:slug', wrap(async req => {
 P.post('/:slug/tickets', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), b = req.body;
   if (b.website) throw bad('Rejected'); // honeypot
-  limit('ip:' + req.ip, 20); limit('c:' + (b.email || b.phone || ''), 12);
+  limit('ip:' + req.ip, 300); limit('c:' + (b.email || b.phone || ''), 12); // a hostel on one campus Wi-Fi shares one address
   const t = await createTicket(tn, b, { channel: 'portal', actor: { type: 'requestor', name: b.name } });
-  return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at,
+  return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1,
     providers: (await providersFor(tn.id, t.service_id)).map(({ name, phone }) => ({ name, phone })) };
 }));
 P.get('/:slug/tickets/:no', wrap(async req => await publicTicket(await findPublic(req.params.slug, req.params.no, req.query))));
@@ -691,7 +761,7 @@ const ticketQuery = async (req) => {
   return { sql: w.join(' AND '), args: a };
 };
 const LIST_SQL = `SELECT t.id,t.ticket_no,t.subject,t.status,t.priority,t.channel,t.is_internal,t.location,t.due_at,t.created_at,t.updated_at,t.closed_at,t.hold_due_at,t.hold_reason,
-  t.escalated_at, eu.name escalated_name, s.name service, s.code service_code, r.name requestor
+  t.escalated_at, t.affected_count, t.problem_label, eu.name escalated_name, s.name service, s.code service_code, r.name requestor
   FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id LEFT JOIN users eu ON eu.id=t.escalated_to`;
 S.get('/tickets', wrap(async req => {
   const { sql, args } = await ticketQuery(req);
@@ -701,7 +771,7 @@ S.get('/tickets', wrap(async req => {
 S.get('/tickets.csv', async (req, res, next) => { try {
   const { sql, args } = await ticketQuery(req);
   const rows = await all(`${LIST_SQL} WHERE ${sql} ORDER BY t.created_at DESC`, ...args);
-  const cols = ['ticket_no', 'service', 'subject', 'status', 'priority', 'channel', 'requestor', 'location', 'created_at', 'due_at', 'closed_at'];
+  const cols = ['ticket_no', 'service', 'subject', 'status', 'priority', 'affected_count', 'channel', 'requestor', 'location', 'created_at', 'due_at', 'closed_at'];
   res.type('text/csv').attachment('tickets.csv').send([cols.join(','), ...rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n'));
 } catch (e) { next(e); } });
 S.get('/tickets/:id', wrap(async req => {
@@ -715,6 +785,7 @@ S.get('/tickets/:id', wrap(async req => {
     service: await one('SELECT id,name,code,form_schema FROM services WHERE id=?', t.service_id),
     providers: await providersFor(req.tenantId, t.service_id),
     requestor: await one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
+    requestors: await all('SELECT id, name, contact, raised_at, is_first, event_id, photo_url FROM ticket_requestors WHERE ticket_id=? ORDER BY raised_at', t.id),
     requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),
@@ -756,19 +827,19 @@ S.post('/tickets/:id/status', wrap(async req => {
     await saveFiles(t, ev, req.body.files, 'user');
   });
   if (!req.body.is_internal) {
-    const r = await one('SELECT * FROM requestors WHERE id=?', t.requestor_id), url = await trackUrl(t);
     // after a hold, moving to "in progress" is a resume ("work resumed"); from open it is a fresh start ("work started")
     const key = to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
-    await notify(t, [r.email], key, await ticketVars(t, { note, actor_name: req.user.name,
+    await notifyRequestors(t, key, await ticketVars(t, { note, actor_name: req.user.name,
       hold_reason: meta.hold_reason || '', resume_by: meta.hold_due_at ? fmtIST(meta.hold_due_at) : '' }));
   }
-  return { ok: true, points: meta.points };
+  const closedEarlier = to === 'closed' && req.body.close_earlier && t.location_key && t.problem_key ? await closeEarlier(t, req, note) : 0;
+  return { ok: true, points: meta.points, closed_earlier: closedEarlier };
 }));
 S.post('/tickets/:id/notes', wrap(async req => {
   const t = await loadTicket(req), body = req_(req.body.body, 'Write a note');
   await tx(async () => { const ev = await addEvent(t, actorOf(req), 'note', { body, internal: req.body.is_internal }); await saveFiles(t, ev, req.body.files, 'user');
     await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
-  if (!req.body.is_internal) await notify(t, [(await one('SELECT email FROM requestors WHERE id=?', t.requestor_id)).email], 'note', await ticketVars(t, { note: body, actor_name: req.user.name }));
+  if (!req.body.is_internal) await notifyRequestors(t, 'note', await ticketVars(t, { note: body, actor_name: req.user.name }));
   return { ok: true };
 }));
 S.post('/tickets/:id/transfer', wrap(async req => {
@@ -781,7 +852,7 @@ S.post('/tickets/:id/transfer', wrap(async req => {
     await addEvent(t, actorOf(req), 'transferred', { from: old.name, to: ns.name, body: note }); });
   const tv = await ticketVars(t, { note, actor_name: req.user.name, from_service: old.name, to_service: ns.name });
   await notify(t, [...oldProv, ...(await providersFor(t.tenant_id, ns.id))].map(p => p.email), 'transferred', tv);
-  await notify(t, [(await one('SELECT email FROM requestors WHERE id=?', t.requestor_id)).email], 'transferred_requestor', tv);
+  await notifyRequestors(t, 'transferred_requestor', tv);
   return { ok: true };
 }));
 S.post('/tickets/:id/priority', wrap(async req => {
@@ -789,7 +860,7 @@ S.post('/tickets/:id/priority', wrap(async req => {
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
   const due = await dueFrom(t.tenant_id, t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
-  await tx(async () => { await run('UPDATE tickets SET priority=?, due_at=?, updated_at=? WHERE id=?', p, due, now(), t.id);
+  await tx(async () => { await run('UPDATE tickets SET priority=?, priority_by_staff=1, due_at=?, updated_at=? WHERE id=?', p, due, now(), t.id); // reports joining later never change it
     await addEvent(t, actorOf(req), 'priority_changed', { from: t.priority, to: p, internal: true }); });
   return { ok: true };
 }));
@@ -834,10 +905,20 @@ S.get('/reports', wrap(async req => {
     by_service: await all(`SELECT s.name, count(*) FILTER (WHERE t.status='open') open, count(*) FILTER (WHERE t.status='in_progress') in_progress, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status='rejected') rejected,
       count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? AND t.created_at<? GROUP BY s.name`, n, ...base, from, to),
     daily: await all(`SELECT substr(created_at,1,10) d, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY d ORDER BY d`, ...base, from, to),
+    // people affected: every requestor of every ticket raised in the range, per service and place
+    affected: (await one(`SELECT coalesce(sum(affected_count),0)::int n FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<?`, ...base, from, to)).n,
+    by_location: await all(`SELECT s.name service, t.location, count(*)::int tickets, sum(t.affected_count)::int affected FROM tickets t JOIN services s ON s.id=t.service_id
+      WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? AND t.created_at<? AND coalesce(t.location,'')<>'' GROUP BY s.name, t.location ORDER BY affected DESC, tickets DESC LIMIT 25`, ...base, from, to),
     by_priority: await all(`SELECT priority k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY priority`, ...base, from, to),
     aging: await all(`SELECT CASE WHEN extract(epoch FROM ?::timestamptz - created_at::timestamptz)/86400<1 THEN '<1d' WHEN extract(epoch FROM ?::timestamptz - created_at::timestamptz)/86400<3 THEN '1-3d'
       WHEN extract(epoch FROM ?::timestamptz - created_at::timestamptz)/86400<7 THEN '3-7d' ELSE '7d+' END k, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND status IN ('open','in_progress','hold') GROUP BY k`, n, n, n, ...base),
   };
+}));
+// duplicate merge mode: silent (join automatically) or confirm (ask "Same issue?" first); only the super admin changes it
+S.get('/merge-mode', wrap(async () => ({ mode: mergeMode(), modes: MERGE_MODES })));
+S.put('/merge-mode', role('super_admin'), wrap(async req => {
+  if (!MERGE_MODES.includes(req.body.mode)) throw bad('Pick silent or confirm');
+  await setSetting('merge_mode', req.body.mode); await audit(req, 'merge.mode', 'setting', 'merge_mode', { mode: req.body.mode }); return { mode: req.body.mode };
 }));
 S.get('/audit', role('super_admin', 'tenant_admin'), wrap(async req =>
   await all('SELECT a.*, u.name actor FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id WHERE a.tenant_id=? ORDER BY a.created_at DESC LIMIT 200', req.tenantId)));

@@ -173,7 +173,7 @@ try {
   let phoneNo = 9000000100; // a different phone per request, so requestors are not matched to each other by phone
   const raise = (slug, body) => api(`/public/${slug}/tickets`, { method: 'POST', body: { phone: String(phoneNo++), description: 'Details of the problem', identifier: 'ID-1', department: 'General', ...body } });
   const elecBody = (n, email, extra = {}) => ({ service_id: elec.id, name: n, email, subject: `Ticket from ${n}`, description: 'Something is broken.',
-    form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Room 214', issue: 'Fan' }, ...extra });
+    form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: n === 'Ria' ? 'Room 214' : `Room ${n}`, issue: 'Fan' }, ...extra }); // own room each: same-day reports of one spot merge
   let r = await raise('alpha', { ...elecBody('Ria', ''), phone: '9000000001' });
   check('email is required', r.status === 400 && /email/i.test(r.error.message), r.error?.message);
   r = await raise('alpha', { ...elecBody('Spam', 'spam@example.com'), website: 'http://spam' });
@@ -545,6 +545,77 @@ try {
   let conv; for (let i = 0; i < 40 && conv?.mime_type !== 'image/jpeg'; i++) { await sleep(250); conv = (await q("SELECT * FROM attachments WHERE id='old-heic'"))[0]; }
   check('HEIC photos stored earlier become JPEG at start-up', conv?.mime_type === 'image/jpeg' && conv.file_name === 'IMG_OLD.jpg' && fs.existsSync(path.join(UPLOADS, conv.storage_key)) && !fs.existsSync(path.join(UPLOADS, oldKey)), JSON.stringify(conv));
 
+  sec('Same-day duplicate reports');
+  { // its own block, so its names don't clash with the rest
+  await stop(); await start(); // fresh rate limits
+  const { dayIn, normRoom } = await import('../merge.js');
+  const dup = (n, room = '203', extra = {}) => raise('alpha', { ...elecBody(n, `${n.toLowerCase()}@dup.example.com`), ...extra,
+    form_data: { loc_block: 'Hostel block', loc_floor: '2nd floor', loc_room: room, issue: 'Fan', ...extra.form_data } });
+  const tk = async no => (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', alpha.id, no))[0];
+  check('room numbers written any way are the same room', ['203', 'Room no. 203', '203 room', '#203'].every(x => normRoom(x) === '203'));
+  check('the day turns at midnight IST: 11:58 pm and 12:02 am are different days', dayIn('Asia/Kolkata', '2026-10-30T18:28:00Z') === '2026-10-30' && dayIn('Asia/Kolkata', '2026-10-30T18:32:00Z') === '2026-10-31');
+  const d1 = (await dup('Dupa')).data;
+  check('the first report makes a ticket (1 affected, normal priority)', !d1.merged && d1.affected_count === 1 && (await tk(d1.ticket_no)).priority === 'medium', JSON.stringify(d1));
+  const d2 = (await dup('Dupb', 'Room no. 203')).data;
+  check('a second report of the same spot and problem the same day joins it: 2 affected', d2.merged && d2.ticket_no === d1.ticket_no && d2.affected_count === 2, JSON.stringify(d2));
+  const d3 = (await dup('Dupc', '#203')).data, d4 = (await dup('Dupd', '203 room')).data;
+  check('"#203" and "203 room" join it too; 3+ affected makes it High', d3.ticket_no === d1.ticket_no && d4.ticket_no === d1.ticket_no && d4.affected_count === 4 && (await tk(d1.ticket_no)).priority === 'high');
+  const again = (await dup('Dupb', '203')).data;
+  check('the same person reporting twice is not counted twice', again.ticket_no === d1.ticket_no && (await tk(d1.ticket_no)).affected_count === 4, JSON.stringify(again));
+  check("the joiner's email says how many others reported it", (await q("SELECT body FROM notifications WHERE template_key='created' AND recipient='dupb@dup.example.com'"))[0]?.body.includes('Known issue: 1 other reported this too'));
+  check('the ticket page shows how many reported it', (await api(`/public/alpha/tickets/${d1.ticket_no}`)).data.affected_count === 4);
+  const other = (await dup('Dupe', '203', { form_data: { loc_block: 'Main block' } })).data;
+  check('another building with the same room number is a new ticket', !other.merged && other.ticket_no !== d1.ticket_no);
+  const light = (await dup('Dupf', '203', { form_data: { issue: 'Light' } })).data;
+  check('same place, different problem is a new ticket', !light.merged && light.ticket_no !== d1.ticket_no);
+  for (const n of ['Dupg', 'Duph', 'Dupi', 'Dupj', 'Dupk']) await dup(n);
+  const t9 = await tk(d1.ticket_no); await dup('Dupl'); const t10 = await tk(d1.ticket_no);
+  check('priority by people affected: 9 still High, 10 makes it Urgent', t9.affected_count === 9 && t9.priority === 'high' && t10.affected_count === 10 && t10.priority === 'critical', `${t9.affected_count}/${t9.priority} ${t10.affected_count}/${t10.priority}`);
+  const lt = await tk(light.ticket_no);
+  await ok('provider sets a priority by hand', `/tickets/${lt.id}/priority`, { token: T.pavan, method: 'POST', body: { priority: 'low' } });
+  for (const n of ['Dupm', 'Dupn', 'Dupo']) await dup(n, '203', { form_data: { issue: 'Light' } });
+  check('a priority the provider set is never changed by more reports', (await tk(light.ticket_no)).priority === 'low' && (await tk(light.ticket_no)).affected_count === 4);
+  // yesterday's ticket takes no reports after midnight
+  const y = (await dup('Dupp', '404')).data; await q("UPDATE tickets SET created_date = created_date - 1 WHERE tenant_id=? AND ticket_no=?", alpha.id, y.ticket_no);
+  const y2 = (await dup('Dupq', '404')).data;
+  check("yesterday's ticket does not take today's report", !y2.merged && y2.ticket_no !== y.ticket_no);
+  // a closed ticket takes no more reports
+  const c1 = (await dup('Dupr', '505')).data; r = await act((await tk(c1.ticket_no)).id, { to: 'closed', note: 'Fixed' });
+  const c2 = (await dup('Dups', '505')).data;
+  check('a closed ticket does not take a new report', r.status === 200 && !c2.merged && c2.ticket_no !== c1.ticket_no, r.error?.message);
+  // "Other": typed problems match when they are alike (pg_trgm similarity ≥ 0.6)
+  const o1 = await raise('alpha', { ...base('Otha'), form_data: { [qHelp]: 'Other: Lost my ID card!!' } });
+  const o2 = await raise('alpha', { ...base('Othb'), form_data: { [qHelp]: 'Other: water tap leaking' } });
+  check('"Other" problems: alike words join, different ones do not', o1.data?.merged && !o2.data?.merged, JSON.stringify([o1.data || o1.error, o2.data || o2.error]));
+  // 50 at once still make exactly one ticket
+  const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => dup(`Burst${i}`, '301')));
+  const bt = await q("SELECT ticket_no, affected_count, priority FROM tickets WHERE tenant_id=? AND location_key='hostel block:301'", alpha.id);
+  check('50 reports at the same moment make exactly one ticket with 50 affected', burst.every(x => x.status === 200) && bt.length === 1 && bt[0].affected_count === 50 && bt[0].priority === 'critical',
+    JSON.stringify({ errors: burst.filter(x => x.status !== 200).map(x => x.error?.message).slice(0, 2), tickets: bt }));
+  check('…and every one of them got that ticket number', new Set(burst.map(x => x.data.ticket_no)).size === 1);
+  // one status change: one email to every requestor, each by name
+  const big = await tk(d1.ticket_no); r = await act(big.id, { to: 'in_progress', note: 'Electrician on the way' });
+  const sent = await q("SELECT recipient, body FROM notifications WHERE template_key='status_in_progress' AND ticket_id=?", big.id);
+  check('a status change emails all 10 requestors, each greeted by name', r.status === 200 && sent.length === 10 && new Set(sent.map(m => m.recipient)).size === 10 && sent.some(m => m.recipient === 'dupb@dup.example.com' && /Hi Dupb/.test(m.body)), sent.length);
+  // closing can close the same problem's older tickets too
+  const e1 = (await dup('Dupt', '606')).data; await q('UPDATE tickets SET created_date = created_date - 1 WHERE tenant_id=? AND ticket_no=?', alpha.id, e1.ticket_no);
+  const e2 = (await dup('Dupu', '606')).data; r = await act((await tk(e2.ticket_no)).id, { to: 'closed', note: 'Rewired the room', close_earlier: true });
+  const old = await tk(e1.ticket_no);
+  check("closing with \"also close earlier\" closes yesterday's ticket for the same spot and problem, and emails its requestor", r.status === 200 && r.data.closed_earlier === 1 && old.status === 'closed'
+    && (await q("SELECT 1 FROM notifications WHERE template_key='status_closed' AND ticket_id=? AND recipient='dupt@dup.example.com'", old.id)).length === 1, JSON.stringify(r.data || r.error));
+  // confirm mode: the person is asked first
+  await ok('super admin switches to confirm mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'confirm' } });
+  await fails('a tenant admin cannot switch it', '/merge-mode', { token: T.asha, method: 'PUT', body: { mode: 'silent' } }, 403);
+  const ask = await dup('Dupv', '301');
+  check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.ticket_no === bt[0].ticket_no, JSON.stringify(ask.error));
+  const no = (await dup('Dupv', '301', { merge: 'no' })).data, yes = (await dup('Dupw', '301', { merge: 'yes' })).data;
+  check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no === bt[0].ticket_no);
+  await ok('back to silent mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'silent' } });
+  const rep = (await api('/reports?days=1', { token: T.asha })).data, row = rep.by_location.find(x => x.location === 'Hostel block · 2nd floor · 301');
+  check('reports: students affected in total and per place', rep.affected >= 70 && row?.affected === 52 && row.tickets === 2, JSON.stringify({ affected: rep.affected, row }));
+  check('CSV export has the number affected', (await (await fetch(`${API}/tickets.csv`, { headers: { authorization: 'Bearer ' + T.asha } })).text()).split('\n')[0].includes('affected_count'));
+  }
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {
@@ -682,6 +753,13 @@ async function uiSmoke(tok, id) {
     await send('Page.navigate', { url: `${APP}/guide/` }); let gi = false;
     for (let i = 0; i < 20 && !gi; i++) { await sleep(250); gi = await js(`return location.pathname.endsWith('/guide/requestor.html') && !!document.querySelector('.card[data-id="start"]');`).catch(() => false); }
     check('/guide/ opens the requestor guide', gi);
+    // a merged ticket: the requestor sees the known-issue note; the provider sees every requestor
+    const mt = (await q("SELECT id, ticket_no, affected_count FROM tickets WHERE location_key='hostel block:203' AND problem_key='fan'"))[0];
+    await visit('requestor ticket page of a merged ticket', `/d/alpha/t/${mt.ticket_no}`, null, '.stamps li');
+    check('it says how many others reported it', await js(`return /Known issue: ${mt.affected_count - 1} others reported this too/.test(document.querySelector('.knownissue')?.textContent || '')`));
+    await visit('provider workspace of a merged ticket', '/c/t/' + mt.id, tok.pavan, '#act #to');
+    check('the provider sees every requestor, and a "close earlier" choice when closing', await js(`document.querySelector('#to').value = 'closed'; document.querySelector('#to').dispatchEvent(new Event('change'));
+      return document.querySelectorAll('.rqrow').length === ${mt.affected_count} && !document.querySelector('#earlyrow').hidden;`));
     // photos: a converted HEIC shows as a picture on the ticket page; photos picked in the form are shrunk on the phone
     const ht = (await q("SELECT t.ticket_no, t.tracking_token FROM tickets t JOIN attachments a ON a.ticket_id=t.id WHERE a.file_name='IMG20261029145618.jpg'"))[0];
     await visit('requestor ticket page with photos', `/d/alpha/t/${ht.ticket_no}?k=${ht.tracking_token}`, null, '.thumbs img');

@@ -7,6 +7,7 @@ fs.mkdirSync(process.env.UPLOAD_DIR || 'data/uploads', { recursive: true });
 // count()/sum() come back as int8 and round()/avg() as numeric; both arrive as strings unless parsed
 pg.types.setTypeParser(20, Number);
 pg.types.setTypeParser(1700, parseFloat);
+pg.types.setTypeParser(1082, v => v); // DATE stays 'YYYY-MM-DD', not a JS Date at the server's own midnight
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://localhost/onedesk', max: 10 });
 pool.on('error', e => console.error('postgres idle client', e.message));
 
@@ -56,12 +57,32 @@ CREATE INDEX IF NOT EXISTS pp_u ON provider_points(tenant_id, user_id);
 CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
 -- columns added after the first release (existing databases get them on start-up)
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS daily_limits TEXT;
+-- same-day duplicate reports: the first report is the ticket, later ones join it as more requestors (see merge.js)
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS location_key TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS problem_key TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS problem_label TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_date DATE;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS affected_count INT DEFAULT 1;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS priority_by_staff INT DEFAULT 0;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS not_merged INT DEFAULT 0;
+UPDATE tickets t SET created_date = (t.created_at::timestamptz AT TIME ZONE coalesce(n.timezone, 'Asia/Kolkata'))::date
+  FROM tenants n WHERE n.id = t.tenant_id AND t.created_date IS NULL AND t.created_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS t_match ON tickets(tenant_id, service_id, location_key, problem_key, created_date, status);
+CREATE TABLE IF NOT EXISTS ticket_requestors (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL REFERENCES tickets(id), requestor_id TEXT,
+  name TEXT NOT NULL, contact TEXT NOT NULL, photo_url TEXT, event_id INT, raised_at TEXT, is_first INT DEFAULT 0, UNIQUE (ticket_id, contact));
+-- every ticket's original requestor is its first row
+INSERT INTO ticket_requestors (id, ticket_id, requestor_id, name, contact, raised_at, is_first)
+  SELECT md5(t.id || ':first'), t.id, r.id, r.name, coalesce(lower(r.email), r.phone), t.created_at, 1 FROM tickets t JOIN requestors r ON r.id = t.requestor_id
+  WHERE NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;
 CREATE OR REPLACE TRIGGER ev_no_change BEFORE UPDATE OR DELETE ON ticket_events FOR EACH ROW EXECUTE FUNCTION append_only();
 CREATE OR REPLACE TRIGGER pp_no_upd BEFORE UPDATE ON provider_points FOR EACH ROW EXECUTE FUNCTION append_only();
 `);
+
+// "Other" problems are matched by similarity with pg_trgm when it can be enabled (a trusted extension the database owner may add)
+export const trgm = await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm').then(() => true, e => { console.error('pg_trgm not available, using the built-in similarity:', e.message); return false; });
 
 export const uid = () => crypto.randomUUID();
 export const now = () => new Date().toISOString();
