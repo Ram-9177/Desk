@@ -132,7 +132,8 @@ try {
   check('welcome email has role, services, sign-in link and password', /Welcome/.test(welcome.subject) && welcome.body.includes('Service provider') && welcome.body.includes('Not assigned yet')
     && welcome.body.includes('pavan@example.com') && welcome.body.includes(pavan.temp) && welcome.body.includes('/#/login'));
   const inviteTo = async to => (await q("SELECT html, text_body FROM notifications WHERE template_key='invite' AND recipient=?", to))[0];
-  check('staff welcome emails carry no guide link (the guide is for requestors)', !(await inviteTo('pavan@example.com')).html.includes('/guide/') && !(await inviteTo('asha@example.com')).html.includes('/guide/'));
+  check('every welcome email links the provider guide', (await inviteTo('pavan@example.com')).html.includes('https://claude.ai/artifact/XwZ2wYi78wQ7t8PcCMpHhv')
+    && (await inviteTo('asha@example.com')).html.includes('Open the provider guide') && (await inviteTo('pavan@example.com')).text_body.includes('https://claude.ai/artifact/XwZ2wYi78wQ7t8PcCMpHhv'));
   const gp = await fetch(APP + '/guide/requestor.html');
   check('the app serves only the requestor guide (/guide/ opens it; no staff guides)', gp.ok && (await gp.text()).includes("key: 'requestor'") && (await fetch(APP + '/guide/provider.html')).status === 404
     && (await fetch(APP + '/guide/admin.html')).status === 404 && (await (await fetch(APP + '/guide/')).text()).includes('requestor.html') && (await fetch(APP + '/guide/img/r1-portal.jpg')).ok);
@@ -699,7 +700,8 @@ async function uiSmoke(tok, id) {
     // every kind of email button, opened the way Gmail opens it: the address travels encoded in a redirect link
     const mails = await q('SELECT recipient, html FROM notifications'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
     const hrefs = [...new Set(mails.flatMap(n => hrefsOf(n.html)))], big = Math.max(...mails.map(n => String(n.html || '').length));
-    check('every link in every email is a full address of this site', hrefs.length > 0 && hrefs.every(h => h.startsWith(APP + '/')), hrefs.filter(h => !h.startsWith(APP + '/')).slice(0, 3).join(' '));
+    const ours = h => h.startsWith(APP + '/') || h === 'https://claude.ai/artifact/XwZ2wYi78wQ7t8PcCMpHhv'; // the provider guide is a shared claude.ai page
+    check('every link in every email is a full address of this site (or the provider guide)', hrefs.length > 0 && hrefs.every(ours), hrefs.filter(h => !ours(h)).slice(0, 3).join(' '));
     check("every email stays under Gmail's 102 KB clipping limit", big < 100000, big);
     const find = re => hrefs.find(h => re.test(h)), mine = mails.filter(n => n.recipient === 'pavan@example.com').flatMap(n => hrefsOf(n.html)).find(h => /#\/c\/t\//.test(h));
     const open = async (href, probe, token) => { await js(`localStorage.clear(); sessionStorage.clear(); ${token ? `localStorage.setItem('tok', ${JSON.stringify(token)});` : ''}`);
