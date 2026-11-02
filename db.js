@@ -65,8 +65,14 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_date DATE;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS affected_count INT DEFAULT 1;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS priority_by_staff INT DEFAULT 0;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS not_merged INT DEFAULT 0;
+-- a team's daily intake: a service may take N tickets a day; the rest wait in its queue (queued=1) and land on queue_day at lands_at
+ALTER TABLE services ADD COLUMN IF NOT EXISTS daily_cap INT DEFAULT 0;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS queued INT DEFAULT 0;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS queue_day DATE;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS lands_at TEXT;
 UPDATE tickets t SET created_date = (t.created_at::timestamptz AT TIME ZONE coalesce(n.timezone, 'Asia/Kolkata'))::date
   FROM tenants n WHERE n.id = t.tenant_id AND t.created_date IS NULL AND t.created_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS t_queue ON tickets(service_id, queue_day) WHERE queue_day IS NOT NULL;
 CREATE INDEX IF NOT EXISTS t_match ON tickets(tenant_id, service_id, location_key, problem_key, created_date, status);
 CREATE TABLE IF NOT EXISTS ticket_requestors (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL REFERENCES tickets(id), requestor_id TEXT,
   name TEXT NOT NULL, contact TEXT NOT NULL, photo_url TEXT, event_id INT, raised_at TEXT, is_first INT DEFAULT 0, UNIQUE (ticket_id, contact));

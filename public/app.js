@@ -1,4 +1,5 @@
 import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
+import { installBtnHtml, iosHintHtml, mountGuide } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -85,8 +86,8 @@ const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => /^
 document.addEventListener('error', e => { const img = e.target; if (img.tagName !== 'IMG' || !img.closest?.('.thumbs')) return;
   const a = img.closest('a'); a.className = 'fchip'; a.textContent = '📎 ' + img.alt; }, true);
 const formVals = form => Object.fromEntries(new FormData(form));
-let installEvt = null;
-const installBtn = () => `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install" ${installEvt ? '' : 'hidden'}>${I('plus', 16)} Install ONE Desk app</button></p>`;
+// Get the app (install.js): Android / Chrome install in one tap, iPhone gets the Add to Home Screen steps
+const installBtn = () => installBtnHtml();
 // The requestor's step-by-step guide lives beside the app, at guide/requestor.html. A first visit gets a card offering it;
 // Start guide or Not now hides that card for good on this device.
 const guideSeen = k => { try { return localStorage.getItem(k) === '1'; } catch { return true; } };
@@ -150,7 +151,7 @@ async function portal(slug, q, view, code) {
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
       ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}
-      ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}</div>${installBtn()}`;
+      ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
     wireGuide('guide-seen', route);
     return;
   }
@@ -207,9 +208,9 @@ function raiseForm(slug, tenant, svc, related) {
       app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Ticket raised</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
         <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
         <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
-        ${r.merged ? knownIssue(r.affected_count) : ''}
+        ${r.merged ? knownIssue(r.affected_count) : ''}${queueBox(r.queue)}
         <p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>
-        ${r.providers.map(p => `<span class="plate">${esc(p.name)} ${p.phone ? '· ' + esc(p.phone) : ''}</span>`).join('')}
+        ${r.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone && v.requestor_type !== 'student' ? ' · ' + esc(p.phone) : ''}</span>`).join('')}
         <p class="muted small" style="margin:14px 0 30px">${v.email ? 'We also emailed these details to you.' : 'Save this link — it is your key to the ticket.'}</p>
         <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Open ticket</a></div></div></div>`;
       $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
@@ -232,6 +233,10 @@ async function track(slug) {
     } catch { $('#err').textContent = 'No ticket with that number.'; } };
 }
 
+// A team that takes N tickets a day: past that, the ticket waits in the team's queue with a number and the day it reaches them
+const queueBox = q => q ? `<div class="queuebox">${I('clock', 22)}<div><b>Queue number ${q.queue_no}</b>
+  <div>Today's tickets for ${esc(q.service)} are full (the team takes ${q.daily_cap} a day). ${q.ahead ? `${q.ahead} ticket${q.ahead === 1 ? ' is' : 's are'} ahead of you` : 'You are next'}${q.waiting > 1 ? ` · ${q.waiting} waiting in all` : ''}.</div>
+  <div>Your ticket reaches the team on <b>${esc(q.lands_on)}</b>. We'll email you then; you don't need to raise it again.</div></div></div>` : '';
 // Many people reporting the same problem the same day share one ticket (see merge.js on the server)
 const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. You will get updates by email.</span></div>` : '';
 const sameIssue = d => new Promise(res => {
@@ -246,16 +251,17 @@ async function ticketPage(slug, no, q) {
   let t;
   try { t = await api(`/public/${slug}/tickets/${no}?${qs}`); } catch { return track(slug); }
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
+    landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
     note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && new Date(t.reopen_until) > new Date();
-  const step = { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
+  const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>My Ticket</h1>${pill(t.status)}</div>
     <div class="stub left"><div class="mono muted small">${t.ticket_no}</div><h2 style="margin:4px 0 2px;font-size:20px">${esc(t.subject)}</h2>
-    <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>${knownIssue(t.affected_count)}
+    <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>${knownIssue(t.affected_count)}${queueBox(t.queue)}
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
-      <div><b>${STATUS_WORDS[t.status]}</b><div class="muted small">${ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
+      <div><b>${t.queue ? `In the queue · number ${t.queue.queue_no}` : STATUS_WORDS[t.status]}</b><div class="muted small">${ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
     <h2>What happened</h2><div class="card"><ul class="stamps">${t.events.map(e => `<li><b>${label(e)}</b><div class="when">${fmt(e.created_at)}${e.actor_type === 'user' ? ' · ' + esc(e.actor_name) : ''}</div>
       ${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
@@ -281,7 +287,7 @@ function login() {
   app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Your Desk,<br><span>Organized</span> in One Place</h1><p class="muted">Sign in to see your service queue, act on tickets and track your progress.</p>
     <form id="f" class="card"><label style="margin-top:0">Email</label><input name="email" type="email" required autofocus><label>Password</label><input name="password" type="password" required>
-    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form></div>`;
+    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form>${installBtn()}</div>`;
   $('#bk').onclick = e => { if (history.length > 1) { e.preventDefault(); history.back(); } };
   $('#f').onsubmit = async e => { e.preventDefault();
     try { const r = await api('/auth/login', { method: 'POST', body: formVals(e.target) }); S.token = r.token; localStorage.setItem('tok', r.token);
@@ -323,10 +329,10 @@ function ticketCard(r, services) {
   const now = new Date().toISOString(), holdOver = r.status === 'hold' && r.hold_due_at && r.hold_due_at < now;
   const esc_on = r.escalated_at && [...ACTIVE, 'hold'].includes(r.status);
   const state = r.overdue || holdOver ? 'over' : r.status, svc = services.find(s => s.code === r.service_code) || { code: r.service_code };
-  const foot = ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
+  const foot = r.queued ? ['Reaches the team', r.lands_at, 'clock'] : ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
     : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause'] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark'];
   return `<div class="tcard st-${state} ${r.status === 'rejected' ? 'dim' : ''}" data-id="${r.id}" tabindex="0">
-    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${r.affected_count > 1 ? `<span class="pill p-many">${r.affected_count} students</span>` : ''}${pill(r.status)}${ppill(r.priority)}</div>
+    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${r.affected_count > 1 ? `<span class="pill p-many">${r.affected_count} students</span>` : ''}${r.queued ? '<span class="pill p-queue">In queue</span>' : ''}${pill(r.status)}${ppill(r.priority)}</div>
     <b class="tc-title">${esc(r.subject)}</b>
     <div class="tc-svc"><span class="chip c0">${I(svcIcon(svc), 16)}</span>${esc(r.service)}</div>
     <div class="tc-row">${I('user', 15)}<span>${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}</span></div>
@@ -355,7 +361,8 @@ async function queue(main) {
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
       <div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="fq" placeholder="Search tickets…" value="${esc(st.q || '')}"></label>
       <select id="fsv"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
-      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
+      ${c.queued ? `<div class="queuebar" data-s="queued">${I('clock', 20)}<div><b>${c.queued} ticket${c.queued === 1 ? '' : 's'} waiting in the queue</b><div class="small">Your team's tickets for today are full. These reach you on the next working days, a day's worth at a time.</div></div><span class="chev">${I('chev')}</span></div>` : ''}
+      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['queued', `In queue${c.queued ? ` (${c.queued})` : ''}`]].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
       <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1"><span class="chip c2 big">${I('check', 30)}</span><p><b>Nothing here — all clear.</b><br><span class="small">New tickets for your services will show up here.</span></p></div>`}</div>`;
     main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
@@ -381,7 +388,7 @@ async function workspace(main, id, { admin }) {
   const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]);
   const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${(STATUS_INFO[e.from_value] || [e.from_value])[0]} → ${(STATUS_INFO[e.to_value] || [e.to_value])[0]}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(JSON.parse(e.meta || '{}')), priority_changed: `Priority ${e.from_value} → ${e.to_value}`, note: 'Note',
-    reopened: 'Reopened', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
+    reopened: 'Reopened', landed: `Reached the team from the daily queue`, due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
     priority_changed: `Priority ${esc(e.from_value)} → ${esc(e.to_value)}${JSON.parse(e.meta || '{}').reason ? ' · ' + esc(JSON.parse(e.meta).reason) : ''}` })[e.event_type] || e.event_type;
   const targets = allowedTargets(t.status);
   // the one button changes with the status picked in the dropdown
@@ -402,6 +409,7 @@ async function workspace(main, id, { admin }) {
      <div class="tk-fields">${t.location ? `<div><span>Location</span><b>${esc(t.location)}</b></div>` : ''}
      ${fd.map(([k, v]) => `<div><span>${esc((t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)).find(f => f.key === k)?.label : k) || k)}</span><b>${esc(Array.isArray(v) ? v.join(', ') : v)}</b></div>`).join('')}
      <div><span>Created</span><b>${fmt(t.created_at)}</b></div></div>
+     ${t.queue ? `<div class="slabox hold">${I('clock', 20)}<div><b>In the daily queue · number ${t.queue.queue_no} of ${t.queue.waiting}</b><div class="small">Reaches the team on ${esc(t.queue.lands_on)}. Changing its status takes it now.</div></div></div>` : ''}
      ${ACTIVE.includes(t.status) ? `<div class="slabox ${t.sla_left_min < 0 ? 'late' : ''}">${I('clock', 20)}<div><b>${t.sla_left_min >= 0 ? fmtLeft(t.sla_left_min) + ' working time left' : fmtLeft(t.sla_left_min) + ' past SLA'}</b><div class="small">Due ${fmt(t.due_at)}</div></div></div>` : ''}
      ${t.status === 'hold' ? `<div class="slabox hold ${t.hold_over ? 'late' : ''}">${I('pause', 20)}<div><b>On hold · ${esc(t.hold_label || '')}</b><div class="small">${t.hold_over ? 'Hold SLA passed at' : 'Resume by'} ${fmt(t.hold_due_at)} · main SLA paused</div></div></div>` : ''}
      ${t.escalated_name && [...ACTIVE, 'hold'].includes(t.status) ? `<div class="slabox late" style="margin-top:8px">${I('alert', 20)}<div><b>Escalated to ${esc(t.escalated_name)}</b><div class="small">${fmt(t.escalated_at)} · it missed its target</div></div></div>` : ''}
@@ -423,7 +431,7 @@ async function workspace(main, id, { admin }) {
      ${t.requestors?.length > 1 ? `<div class="card k-orange">${head('users', 'c1', `Requestors (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="pill s-open">first</span>' : ''}
        <div class="muted small">${esc(q.contact)} · ${fmt(q.raised_at)}</div>${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}</div>`).join('')}</div>` : ''}
     <div class="card k-orange">${head('users', 'c1', 'Providers')}${t.providers.map(p => `<div class="tk-person" style="margin-top:10px"><span class="avatar sm">${ini(p.name)}</span><div><b>${esc(p.name)}</b><div class="muted small">${esc(p.phone || '')}</div></div></div>`).join('') || '<div class="tk-empty">No provider mapped to this service</div>'}</div>
-    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card k-pink">${head('alert', 'c3', 'Priority')}<select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
+    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card k-pink">${head('alert', 'c3', 'Priority')}<div class="muted small" style="margin:6px 0">Set by your team. The requestor never sees it.</div><select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <p><button class="btn" id="tr" style="width:100%">Transfer (t)</button></p>${admin ? '<p><button class="btn" id="ext" style="width:100%">Extend due time</button></p>' : ''}</div>` : ''}</div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
@@ -501,20 +509,23 @@ async function services(main) {
     <label>Icon</label>${iconPick(s.id ? svcIcon(s) : 'grid')}
     ${typePick(s.form_schema || { form_type: 'general' })}
     <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2</label>${provSel('p2', s.members?.[1]?.id)}</div></div>
-    <label>Escalation person <small>(gets the ticket if it misses its target; empty = the admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Admin (default) —')}`;
+    <label>Escalation person <small>(gets the ticket if it misses its target; empty = the admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Admin (default) —')}
+    <label>Tickets a day <small>(how many new tickets the team takes each day; empty = no limit)</small></label><input name="daily_cap" type="number" min="0" step="1" inputmode="numeric" placeholder="No limit" value="${s.daily_cap || ''}">
+    <div class="muted small">Example: 100. If 500 students raise a ticket today, the first 100 reach the team today. The others get a queue number, are told how many are ahead of them, and reach the team 100 a day on the next working days.</div>`;
   const members = f => [...new Set([f.elements.p1.value, f.elements.p2.value].filter(Boolean))];
   main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each service needs one or two providers.</span>
       <button class="btn primary" id="add">${I('plus', 18)} New service</button></div>
     ${svcs.map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
-      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc(s.escalation_user?.name || 'admin')}</span></span>
+      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc(s.escalation_user?.name || 'admin')}</span>
+      ${s.daily_cap ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Takes ${s.daily_cap} tickets a day${s.queue?.waiting ? ` · <b>${s.queue.waiting} waiting in the queue</b>` : ''}</span>` : ''}</span>
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
   const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always give their own details, the location and a subject first. Tick Required for questions people must answer. A dropdown option called Other lets people type their own answer.</div><div id="fb"></div>`;
   $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${qHead}`, async f => {
-    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
+    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, daily_cap: f.elements.daily_cap.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
     toast('Service created'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), []);
@@ -529,7 +540,7 @@ async function services(main) {
       <div class="row">${PRIORITIES.map(p => `<div><label style="text-transform:capitalize">${p} target <small>working h, override</small></label><input type="number" name="sla_${p}" value="${s.sla[p] || ''}"></div>`).join('')}</div>
       <label style="font-weight:400"><input type="checkbox" name="is_active" ${s.is_active ? 'checked' : ''}> Active (shown on the portal)</label>`,
       async f => {
-        await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },
+        await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, daily_cap: f.elements.daily_cap.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },
           is_active: f.elements.is_active.checked ? 1 : 0, sla: Object.fromEntries(PRIORITIES.map(p => [p, f.elements['sla_' + p].value])) } });
         await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } }); toast('Saved'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), schema.fields);
@@ -937,7 +948,8 @@ async function profile(main) {
     ${pts.history.length ? `<div class="card"><b>Recent points</b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
-      <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a></div>
+      <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a>
+      <a href="#/install">${I('plus')}Get the app (iPhone, Android, computer)<span class="chev">${I('chev', 18)}</span></a></div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
   $('#lo').onclick = logout;
   $('#pw').onclick = e => { e.preventDefault(); dlg(`<h2>Change password</h2><label>Current password</label><input name="current" type="password" required autocomplete="current-password">
@@ -989,6 +1001,7 @@ async function route() {
     if (seg[0] === 'd' && seg[2] === 'track') return await track(seg[1]);
     if (seg[0] === 'd') return await portal(seg[1], q, seg[2], seg[3] && decodeURIComponent(seg[3]));
     if (seg[0] === 'login') return login();
+    if (seg[0] === 'install') return installPage();
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
       const map = { c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile };
@@ -1005,11 +1018,16 @@ async function route() {
       <p class="muted" style="text-align:center;margin-top:20px">Staff? <a href="#/login">Sign in</a></p>${installBtn()}</div>`;
   } catch (e) { app.innerHTML = `<div class="wrap"><h1>Not found</h1><p class="muted">${esc(e.message)}</p><a href="#/">Home</a></div>`; }
 }
+// #/install: the full "get the app" page, for a link or a QR code on a notice board
+function installPage() {
+  document.body.className = '';
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/">${I('back')}</a><h1>Get the app</h1></div>
+    <div class="card"><div class="idlg-h" style="padding:0 0 10px"><img src="icon-192.png" alt="" width="48" height="48"><div><b>ONE Desk</b><div class="muted small">St. Mary's service desk · free</div></div></div><div id="ig"></div></div></div>`;
+  mountGuide($('#ig'), () => toast('ONE Desk installed. Find it on your home screen.'));
+}
+window.__toast = toast;
 addEventListener('hashchange', route);
 route();
-// Installable app (PWA): the service worker caches the screens for offline opening; the Install button appears where the browser allows it.
+// Installable app (PWA): the service worker caches the screens for offline opening; install.js handles the Install button and the guide.
 if ('serviceWorker' in navigator && isSecureContext) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
-addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; document.querySelectorAll('.install').forEach(b => b.hidden = false); });
-addEventListener('appinstalled', () => { installEvt = null; document.querySelectorAll('.install').forEach(b => b.hidden = true); toast('ONE Desk installed'); });
-document.addEventListener('click', async e => { if (!e.target.closest('.install') || !installEvt) return;
-  installEvt.prompt(); await installEvt.userChoice; installEvt = null; document.querySelectorAll('.install').forEach(b => b.hidden = true); });
+addEventListener('appinstalled', () => { document.querySelectorAll('.install').forEach(b => b.closest('p')?.remove()); toast('ONE Desk installed. Find it on your home screen.'); });

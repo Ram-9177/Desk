@@ -14,7 +14,7 @@ export async function setSetting(k, v) {
 // Fill-in fields an admin can use in subjects and messages. {{name}} is replaced with the value.
 export const VARS = {
   requestor_name: 'Requestor’s name', ticket_no: 'Ticket number, e.g. 0042', subject: 'Ticket subject', description: 'What the requestor wrote',
-  service: 'Service (team) name', location: 'Location / room', campus: 'Campus name', status: 'Status in words', priority: 'Priority',
+  service: 'Service (team) name', location: 'Location / room', campus: 'Campus name', status: 'Status in words', priority: 'Priority (staff emails only; requestors never see it)',
   due: 'Target close time', providers: 'Provider names', ticket_link: 'Requestor’s ticket page link', staff_link: 'Staff link to the ticket',
   portal_link: 'Campus portal link', note: 'Note / reason typed at this step', actor_name: 'Person who made the change',
   hold_reason: 'Hold reason', resume_by: 'Expected resume time', reopen_days: 'Days allowed to reopen',
@@ -23,10 +23,14 @@ export const VARS = {
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
   guide: 'Block: link to the step-by-step guide (a requestor’s first ticket; the provider guide in the welcome email)',
   affected_note: 'When the report joined a ticket others raised the same day: how many others reported it',
+  queue_note: 'When the team’s tickets for today are full: the queue number, how many are ahead and the day it reaches the team',
+  queue_no: 'Queue number (empty once the ticket reaches the team)', lands_on: 'Day and time a queued ticket reaches the team',
 };
+// What a requestor's email leaves out: the priority (the service provider sets it, for the team only).
+export const forRequestor = v => ({ ...v, priority: '', ...(Array.isArray(v.ticket_details) ? { ticket_details: v.ticket_details.filter(([k]) => k !== 'Priority') } : {}) });
 // Block fields: put one alone on its own line and it becomes a designed section of the email.
 export const BLOCKS = ['progress', 'ticket_details', 'timeline', 'guide'];
-const T = ['requestor_name', 'ticket_no', 'subject', 'description', 'service', 'location', 'campus', 'status', 'priority', 'due', 'providers', 'ticket_link', 'staff_link', 'portal_link', ...BLOCKS];
+const T = ['requestor_name', 'ticket_no', 'subject', 'description', 'service', 'location', 'campus', 'status', 'priority', 'due', 'providers', 'ticket_link', 'staff_link', 'portal_link', 'queue_no', 'lands_on', 'queue_note', ...BLOCKS];
 const STAFF = ['staff_name', 'staff_email', 'temp_password', 'login_link', 'campus', 'role_name', 'services'];
 const STAFF_PW = ['staff_name', 'staff_email', 'password', 'login_link', 'campus', 'role_name', 'services'];
 
@@ -37,7 +41,10 @@ export const PROVIDER_GUIDE = process.env.PROVIDER_GUIDE_URL || 'https://claude.
 export const MAIL_EVENTS = [
   { key: 'created', label: 'Ticket received', who: 'Requestor', when: 'A ticket is raised (portal, walk-in or phone)', vars: [...T, 'guide', 'affected_note'],
     subject: '[{{ticket_no}}] Ticket received: {{subject}}',
-    body: 'Hi {{requestor_name}},\nThank you, we have received your request and the {{service}} team has been notified. You don\'t need to do anything else.\n**{{affected_note}}**\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}\n{{guide}}' },
+    body: 'Hi {{requestor_name}},\nThank you, we have received your request for the {{service}} team. You don\'t need to do anything else.\n**{{affected_note}}**\n**{{queue_note}}**\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}\n{{guide}}' },
+  { key: 'queue_landed', label: 'Ticket reached the team (from the queue)', who: 'Requestor', when: 'A ticket that waited in the team’s daily queue reaches the team', vars: T,
+    subject: '[{{ticket_no}}] Your ticket has reached the {{service}} team',
+    body: 'Hi {{requestor_name}},\nYour wait in the queue is over: "{{subject}}" is now with the **{{service}}** team, who will pick it up shortly.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
   { key: 'new_ticket', label: 'New ticket in the queue', who: 'Service providers', when: 'A ticket arrives in their service', vars: T,
     subject: '[{{ticket_no}}] New ticket: {{subject}}',
     body: 'A new ticket has arrived in **{{service}}**. Target: {{due}}.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },
@@ -111,8 +118,9 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
-const SAMPLE_STATE = { created: 'open', new_ticket: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
-export const sampleVars = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: key === 'invite' ? { kind: 'provider', url: PROVIDER_GUIDE } : { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
+const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
+const sampleAll = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: key === 'invite' ? { kind: 'provider', url: PROVIDER_GUIDE } : { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
+export const sampleVars = (base, key) => eventByKey(key)?.who === 'Requestor' ? forRequestor(sampleAll(base, key)) : sampleAll(base, key);
 
 // Values typed by people are cleaned so they can't add buttons or bold to an email.
 const clean = v => String(v ?? '').replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]').replace(/\*\*/g, '* *').replace(/\{\{/g, '{ {');
@@ -146,6 +154,8 @@ export const toText = (body, blocks = {}) => String(body).split('\n').map(line =
 // One reassuring sentence about what happens next, per status.
 export function nextStep(p) {
   const working = p.escalated_to ? `Escalated to ${p.escalated_to}, who is now following it up with the ${p.service} team.` : `The ${p.service} team is working on it. Target: ${p.due}.`;
+  if (p.status === 'open' && p.queue_no) return `Today's tickets for the ${p.service} team are full${p.daily_cap ? ` (they take ${p.daily_cap} a day)` : ''}. Your queue number is ${p.queue_no}`
+    + `${p.queue_ahead ? `, with ${p.queue_ahead} ticket${p.queue_ahead === 1 ? '' : 's'} ahead of you` : ', you are next'}. It reaches the team on ${p.lands_on}; we'll email you then. Target: ${p.due}.`;
   return { open: p.escalated_to ? working : `The ${p.service} team has received it and will pick it up shortly. Target: ${p.due}.`, in_progress: working,
     hold: `Paused: ${p.hold_reason || 'waiting on something'}.${p.resume_by ? ` Expected to resume by ${p.resume_by}.` : ''} We'll email you when work resumes.`,
     closed: `Completed${p.closed_at ? ` on ${p.closed_at}` : ''}. Not fixed? You can reopen it within ${p.reopen_days} days.`,
@@ -201,6 +211,7 @@ const BLOCK_HTML = {
   progress(p) {
     const st = p.status, C = { done: '#1e4b8f', open: '#1e4b8f', hold: '#f59e0b', ok: '#1a9a56', bad: '#ef4444', todo: '#d6d8e6' };
     const steps = st === 'rejected' ? [['Received', 'done'], ['Not accepted', 'bad']]
+      : st === 'open' && p.queue_no ? [['Received', 'done'], [`In queue · No. ${p.queue_no}`, 'hold'], ['In progress', 'todo'], ['Closed', 'todo']]
       : [['Received', st === 'open' ? 'open' : 'done'], ['In progress', st === 'in_progress' ? 'open' : st === 'open' ? 'todo' : 'done'], ...(st === 'hold' ? [['On hold', 'hold']] : []), ['Closed', st === 'closed' ? 'ok' : 'todo']];
     const cur = steps.findIndex(s => s[1] !== 'done');
     const cells = steps.map(([label, k], i) => {

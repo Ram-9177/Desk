@@ -1,8 +1,8 @@
 // ONE Desk service worker: makes the app installable and lets the screens open without a connection.
 // Network first, so a new deploy shows up on the next load; the cache is only the offline fallback.
 // API calls (tickets, sign-in, files) always go to the server and are never cached.
-const CACHE = 'onedesk-v1';
-const SHELL = ['./', 'index.html', 'app.js', 'shared.js', 'style.css', 'logo.png', 'logo-mark.png', 'favicon.png', 'icon-192.png', 'manifest.webmanifest'];
+const CACHE = 'onedesk-v2';
+const SHELL = ['./', 'index.html', 'app.js', 'shared.js', 'install.js', 'style.css', 'logo.png', 'logo-mark.png', 'favicon.png', 'icon-192.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -343,7 +343,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('18 email steps listed, none connected yet', cfg0.events.length === 18 && !cfg0.url);
+  check('19 email steps listed, none connected yet', cfg0.events.length === 19 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -645,6 +645,49 @@ try {
   const rep = (await api('/reports?days=1', { token: T.asha })).data, row = rep.by_location.find(x => x.location === 'Hostel block · 2nd floor · 301');
   check('reports: students affected in total and per place', rep.affected >= 70 && row?.affected === 52 && row.tickets === 2, JSON.stringify({ affected: rep.affected, row }));
   check('CSV export has the number affected', (await (await fetch(`${API}/tickets.csv`, { headers: { authorization: 'Bearer ' + T.asha } })).text()).split('\n')[0].includes('affected_count'));
+  }
+
+  sec('Team daily queue, provider phone and priority for requestors');
+  { // its own block, so its names don't clash with the rest
+  await stop(); await start(); // fresh rate limits
+  const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id }, aid = A.tenant;
+  const pavanId = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id;
+  await ok('Pavan has a mobile number', `/users/${pavanId}`, { ...A, method: 'PATCH', body: { phone: '9000055555' } });
+  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND (queue_day=current_date OR (queue_day IS NULL AND created_date=current_date))", ids.elec))[0];
+  await ok('admin sets Electrical to take today’s tickets + 2 a day', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: today + 2 } });
+  await fails('tickets a day must be a whole number', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: -3 } }, 400);
+  check('the service shows its daily limit', (await api('/services', A)).data.find(x => x.id === ids.elec)?.daily_cap === today + 2);
+  const qb = (n, type) => raise('alpha', { ...elecBody(n, `${n.toLowerCase()}@queue.example.com`, { requestor_type: type }), form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: `Q-${n}`, issue: 'Fan' } });
+  const r1 = (await qb('Qa', 'student')).data, r2 = (await qb('Qb', 'faculty')).data, r3 = (await qb('Qc', 'student')).data, r4 = (await qb('Qd', 'faculty')).data;
+  check('the first tickets within the limit land today, no queue number', r1?.ticket_no && !r1.queue && !r2.queue, JSON.stringify(r1));
+  check('past the limit: queue number 1 and 2, how many ahead, and the day it reaches the team', r3.queue?.queue_no === 1 && r3.queue.ahead === 0 && r4.queue?.queue_no === 2 && r4.queue.ahead === 1 && r4.queue.waiting === 2 && !!r4.queue.lands_on, JSON.stringify(r4.queue));
+  const t3 = (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, r3.ticket_no))[0];
+  check('a queued ticket waits for the next working day, its target counted from then', t3.queued === 1 && t3.queue_day > t3.created_date && t3.lands_at > t3.created_at && t3.due_at > t3.lands_at, JSON.stringify({ d: t3.queue_day, l: t3.lands_at, due: t3.due_at }));
+  check('students never see the provider’s mobile number; others do', r1.providers.every(p => !('phone' in p)) && r2.providers.some(p => p.phone === '9000055555'), JSON.stringify([r1.providers, r2.providers]));
+  const pub1 = (await api(`/public/alpha/tickets/${r1.ticket_no}`)).data, pub2 = (await api(`/public/alpha/tickets/${r2.ticket_no}`)).data, pub3 = (await api(`/public/alpha/tickets/${r3.ticket_no}`)).data;
+  check('ticket page: no phone for a student, phone for faculty', pub1.providers.every(p => !p.phone) && pub2.providers.some(p => p.phone === '9000055555'));
+  check('ticket page never shows the priority to the requestor', !('priority' in pub1) && !('priority' in pub3));
+  check('ticket page shows the queue number', pub3.queue?.queue_no === 1 && !pub1.queue);
+  const mails = async (key, id) => q('SELECT recipient, html, text_body FROM notifications WHERE template_key=? AND ticket_id=?', key, id);
+  const c3 = (await mails('created', t3.id))[0];
+  check('the received email gives the queue number and the day', /Queue number: 1/.test(c3?.text_body) && /In queue/.test(c3.html), c3?.text_body);
+  check('no new-ticket email to the providers while it waits', (await mails('new_ticket', t3.id)).length === 0);
+  check('requestor emails never show the priority; provider emails do', !/Priority/.test(c3.html) && !/Priority/.test((await mails('created', (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, r1.ticket_no))[0].id))[0].html)
+    && /Priority/.test((await mails('new_ticket', (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, r1.ticket_no))[0].id))[0]?.html || ''));
+  const list = (await api('/tickets?status=all', { token: T.pavan })).data, inq = (await api('/tickets?status=queued', { token: T.pavan })).data;
+  check('the provider’s list holds only what landed; "In queue" holds the rest, in order', !list.some(x => x.ticket_no === r3.ticket_no) && list.some(x => x.ticket_no === r1.ticket_no) && inq.map(x => x.ticket_no).join() === [r3.ticket_no, r4.ticket_no].join());
+  check('reports count the queue apart from open', (await api('/reports?days=1', { token: T.pavan })).data.counts.queued === 2);
+  // the day comes: the queue lands at the start of working hours, the team and the requestor are emailed
+  await run('UPDATE tickets SET lands_at=? WHERE id=?', new Date(Date.now() - 60e3).toISOString(), t3.id);
+  await stop(); await start(); // the release runs a few seconds after start
+  const landed = await waitFor(async () => (await q('SELECT queued FROM tickets WHERE id=?', t3.id))[0].queued === 0, 9000);
+  check('on its day the ticket reaches the team', landed && (await mails('new_ticket', t3.id)).some(m => m.recipient === 'pavan@example.com'));
+  check('the requestor is told it reached the team', (await mails('queue_landed', t3.id)).length === 1);
+  check('the one behind it moves up to number 1', (await api(`/public/alpha/tickets/${r4.ticket_no}`)).data.queue?.queue_no === 1);
+  const t4 = (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, r4.ticket_no))[0];
+  r = await act(t4.id, { to: 'in_progress', note: 'Taking it early' });
+  check('a provider can take a queued ticket early', r.status === 200 && (await q('SELECT queued FROM tickets WHERE id=?', t4.id))[0].queued === 0);
+  await ok('limit off again', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: '' } });
   }
 
   // ======================= H. UI smoke test =======================

@@ -2,12 +2,19 @@
   "name": "ONE Desk · St. Mary's",
   "short_name": "ONE Desk",
   "description": "Raise and track service requests at St. Mary's, and work your ticket queue.",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f3f5f9",
   "theme_color": "#1e4b8f",
+  "lang": "en-IN",
+  "categories": ["education", "productivity"],
+  "shortcuts": [
+    { "name": "Get the app on another phone", "short_name": "Get the app", "url": "./#/install", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "Staff sign in", "short_name": "Sign in", "url": "./#/login", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
