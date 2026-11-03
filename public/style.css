@@ -280,3 +280,10 @@ body.console .botp{bottom:calc(152px + env(safe-area-inset-bottom,0px))}@media(m
 .iguide [data-install-now]{width:100%;margin-top:12px}
 .iosbar{display:flex;gap:10px;align-items:center;margin:14px 0 0;padding:10px 12px;border-radius:16px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);text-align:left}
 .iosbar>div{flex:1;min-width:0;font-size:13.5px;line-height:1.4}.iosbar img{border-radius:9px}.iosbar svg{vertical-align:-5px}.iosbar .btn{margin:0;min-height:36px;padding:6px 12px}
+/* sticky Install button: on every screen until ONE Desk runs installed */
+.istick{position:fixed;left:max(16px,env(safe-area-inset-left,0px));bottom:calc(24px + env(safe-area-inset-bottom,0px));z-index:39;display:inline-flex;gap:8px;align-items:center;
+  padding:10px 16px;border:0;border-radius:99px;background:var(--accent);color:#1f1406;font:700 14px var(--sans,inherit);box-shadow:0 8px 22px rgba(0,0,0,.18);cursor:pointer}
+.istick:hover{filter:brightness(1.05)}
+@media(max-width:760px){body.console .istick{bottom:calc(86px + env(safe-area-inset-bottom,0px))}}
+@media print{.istick{display:none}}
+.wrap{padding-bottom:max(90px,var(--pb,0px))}

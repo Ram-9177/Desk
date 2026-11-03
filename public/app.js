@@ -1,5 +1,5 @@
 import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE } from './shared.js';
-import { installBtnHtml, iosHintHtml, mountGuide } from './install.js';
+import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -160,6 +160,7 @@ async function portal(slug, q, view, code) {
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
       ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}
+      ${opt('#/install', 'settings', 'c3', 'App & settings', 'Install ONE Desk on iPhone, Android, Mac or PC')}
       ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
     wireGuide('guide-seen', route);
     return;
@@ -962,7 +963,7 @@ async function profile(main) {
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
       <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a>
-      <a href="#/install">${I('plus')}Get the app (iPhone, Android, computer)<span class="chev">${I('chev', 18)}</span></a></div>
+      <a href="#/install">${I('settings')}App &amp; settings: install on iPhone, Android, Mac, PC<span class="chev">${I('chev', 18)}</span></a></div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
   $('#lo').onclick = logout;
   $('#pw').onclick = e => { e.preventDefault(); dlg(`<h2>Change password</h2><label>Current password</label><input name="current" type="password" required autocomplete="current-password">
@@ -1006,7 +1007,7 @@ async function botAsk(q, quiet) {
 
 // ================= ROUTER =================
 async function route() {
-  document.onkeydown = null; clearInterval(pollT);
+  document.onkeydown = null; clearInterval(pollT); stickyInstall(); // the Install button stays on every screen until installed
   const [p, qs] = location.hash.slice(1).split('?'), q = new URLSearchParams(qs), seg = p.split('/').filter(Boolean);
   botFor(seg[0] === 'd' && seg[1] ? `/public/${seg[1]}/bot` : seg[0] === 'c' && S.token ? '/bot' : null); // the bot, for who is looking
   try {
@@ -1014,7 +1015,7 @@ async function route() {
     if (seg[0] === 'd' && seg[2] === 'track') return await track(seg[1]);
     if (seg[0] === 'd') return await portal(seg[1], q, seg[2], seg[3] && decodeURIComponent(seg[3]));
     if (seg[0] === 'login') return login();
-    if (seg[0] === 'install') return installPage();
+    if (seg[0] === 'install' || seg[0] === 'settings') return installPage();
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
       const map = { c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile };
@@ -1034,7 +1035,7 @@ async function route() {
 // #/install: the full "get the app" page, for a link or a QR code on a notice board
 function installPage() {
   document.body.className = '';
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/">${I('back')}</a><h1>Get the app</h1></div>
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/" onclick="if(history.length>1){history.back();return false}">${I('back')}</a><h1>App &amp; settings</h1></div>
     <div class="card"><div class="idlg-h" style="padding:0 0 10px"><img src="icon-192.png" alt="" width="48" height="48"><div><b>ONE Desk</b><div class="muted small">St. Mary's service desk · free</div></div></div><div id="ig"></div></div></div>`;
   mountGuide($('#ig'), () => toast('ONE Desk installed. Find it on your home screen.'));
 }

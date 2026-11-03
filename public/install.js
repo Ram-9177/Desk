@@ -6,6 +6,7 @@
 const ua = navigator.userAgent;
 export const isIOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 export const isAndroid = /Android/i.test(ua);
+export const isMac = !isIOS && /Macintosh|Mac OS X/.test(ua);
 // opened from the home-screen icon: already installed, no button needed
 export const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 // iOS browsers: all can add to the Home Screen from iOS 16.4; in-app browsers (WhatsApp, Instagram, Gmail…) cannot
@@ -70,28 +71,37 @@ function androidSteps() {
   ];
   return inst + (inst ? '<p class="muted small" style="margin-top:14px">No button? Do it from the browser menu:</p>' : '') + ol(steps);
 }
-function desktopSteps() {
-  const inst = promptEvt ? `<button type="button" class="btn primary big" data-install-now>${G.dl} Install ONE Desk now</button>` : '';
-  return inst + ol([
-    `<b>Chrome or Edge</b>: click the install icon at the right end of the address bar, or open the menu ${G.dots} → ${k('Cast, save and share')} → ${k('Install page as app')} (Edge: ${k('Apps')} → ${k('Install this site as an app')}).`,
-    `<b>Safari on a Mac</b>: ${k('File')} → ${k('Add to Dock')}.`,
-    'ONE Desk then opens in its own window from your Start menu, Dock or desktop.',
+const nowBtn = () => promptEvt ? `<button type="button" class="btn primary big" data-install-now>${G.dl} Install ONE Desk now</button><p class="muted small" style="text-align:center">One click. Or do it from the browser:</p>` : '';
+function desktopSteps() { // Windows, Linux, Chromebook
+  return nowBtn() + ol([
+    `<b>Chrome</b>: click the install icon ${G.dl} at the right end of the address bar. Or open the menu ${G.dots} → ${k('Cast, save and share')} → ${k('Install page as app')} → ${k('Install')}.`,
+    `<b>Edge</b>: open the menu ${G.more} → ${k('Apps')} → ${k('Install this site as an app')} → ${k('Install')}.`,
+    'ONE Desk opens in its own window. Find it in the Start menu or on the desktop, and pin it to the taskbar if you like.',
+  ]) + '<p class="muted small">Firefox can’t install apps; open this page in Chrome or Edge.</p>';
+}
+function macSteps() {
+  return nowBtn() + ol([
+    `<b>Safari</b> (macOS Sonoma 14 or later): click ${k('File')} in the menu bar → ${k('Add to Dock…')} → ${k('Add')}. Or click the Share button ${G.share} → ${k('Add to Dock')}.`,
+    `<b>Chrome</b>: click the install icon ${G.dl} at the right end of the address bar, or menu ${G.dots} → ${k('Cast, save and share')} → ${k('Install page as app')}.`,
+    `<b>Edge</b>: menu ${G.more} → ${k('Apps')} → ${k('Install this site as an app')}.`,
+    'ONE Desk is now in your Dock and in Launchpad / Applications, and opens in its own window.',
   ]);
 }
 
-const TABS = [['ios', 'iPhone / iPad', G.apple, iosSteps], ['android', 'Android', G.android, androidSteps], ['desktop', 'Computer', G.pc, desktopSteps]];
-export const defaultTab = () => isIOS ? 'ios' : isAndroid ? 'android' : 'desktop';
+const TABS = [['ios', 'iPhone / iPad', G.apple, iosSteps], ['android', 'Android', G.android, androidSteps], ['mac', 'Mac', G.pc, macSteps], ['desktop', 'Windows / PC', G.pc, desktopSteps]];
+export const defaultTab = () => isIOS ? 'ios' : isAndroid ? 'android' : isMac ? 'mac' : 'desktop';
 // The guide: a tab per platform (the visitor's own picked), each with its steps.
-export function guideHtml(tab = defaultTab()) {
+export function guideHtml(tab = defaultTab(), only = false) {
+  if (only) return `<div class="iguide">${TABS.find(t => t[0] === tab)[3]()}<p class="muted small">Another phone or a computer? <a href="#/install" data-close-dlg>See the steps for every device</a>.</p></div>`;
   return `<div class="iguide">${standalone() ? '<div class="iok">✓ You are using the installed ONE Desk app.</div>' : ''}
     <div class="tabs itabs">${TABS.map(([key, label, ic]) => `<button type="button" class="tab ${key === tab ? 'on' : ''}" data-itab="${key}">${ic} ${label}</button>`).join('')}</div>
     <div class="ibody">${TABS.find(t => t[0] === tab)[3]()}</div>
     <p class="muted small">The app is ONE Desk itself: raise and track tickets, or work your queue, with your sign-in kept. It updates on its own and uses almost no space.</p></div>`;
 }
 // Draw the guide into el and keep it current (tab taps, the install prompt arriving later, Install now).
-export function mountGuide(el, onInstalled) {
+export function mountGuide(el, onInstalled, only = false) {
   let tab = defaultTab();
-  const draw = () => { el.innerHTML = guideHtml(tab); };
+  const draw = () => { el.innerHTML = guideHtml(tab, only); };
   el.addEventListener('click', async e => {
     const t = e.target.closest('[data-itab]'); if (t) { tab = t.dataset.itab; return draw(); }
     if (e.target.closest('[data-install-now]') && await installNow()) onInstalled?.();
@@ -103,15 +113,16 @@ export function mountGuide(el, onInstalled) {
 export const installBtnHtml = label => standalone() ? '' : `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install">${G.dl} ${label || (isIOS ? 'Add ONE Desk to your iPhone' : 'Install ONE Desk app')}</button></p>`;
 export function openGuideDialog(toast) {
   const d = document.createElement('dialog'); d.className = 'idlg';
-  d.innerHTML = `<div class="idlg-h"><img src="icon-192.png" alt="" width="40" height="40"><div><b>Get the ONE Desk app</b><div class="muted small">Free · installs from this page</div></div>
+  d.innerHTML = `<div class="idlg-h"><img src="icon-192.png" alt="" width="40" height="40"><div><b>${isIOS ? 'Add ONE Desk to your iPhone' : 'Get the ONE Desk app'}</b><div class="muted small">Free · installs from this page</div></div>
     <button type="button" class="iconbtn" data-close aria-label="Close">✕</button></div><div class="idlg-b"></div>`;
   document.body.append(d); d.showModal(); d.onclose = () => d.remove();
   d.querySelector('[data-close]').onclick = () => d.close();
-  mountGuide(d.querySelector('.idlg-b'), () => { d.close(); toast?.('ONE Desk installed. Find it on your home screen.'); });
+  d.addEventListener('click', e => { if (e.target.closest('[data-close-dlg]')) d.close(); });
+  mountGuide(d.querySelector('.idlg-b'), () => { d.close(); toast?.('ONE Desk installed. Find it on your home screen.'); }, isIOS); // iPhone: its own steps only
 }
 document.addEventListener('click', async e => {
   if (!e.target.closest('.install')) return;
-  if (promptEvt) { if (await installNow()) document.querySelectorAll('.install').forEach(b => b.closest('p')?.remove()); return; } // one-tap install
+  if (promptEvt) { await installNow(); return; } // one-tap install (Android, Chrome, Edge); the buttons go once it is installed
   openGuideDialog(window.__toast);
 });
 // iPhone visitors in the browser get a one-time hint, since iOS never offers to install by itself.
@@ -123,3 +134,16 @@ export const iosHintHtml = () => {
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-ioshide]'); if (!b) return;
   try { localStorage.setItem('ios-hint', '1'); } catch { /* storage off */ } b.closest('.iosbar').remove(); });
+
+// A sticky "Install app" button on every screen, on every device, until ONE Desk runs as the installed app.
+// Android / Chrome / Edge: one tap installs. iPhone: its own Add to Home Screen steps. Mac and PC: their steps.
+const STICK_LABEL = () => isIOS ? 'Add to iPhone' : isAndroid ? 'Install app' : isMac ? 'Install on Mac' : 'Install app';
+export function stickyInstall() {
+  let el = document.querySelector('.istick');
+  if (standalone()) { el?.remove(); return; }
+  if (!el) { el = document.createElement('button'); el.type = 'button'; el.className = 'istick install'; document.body.append(el); }
+  el.innerHTML = `${G.dl}<span>${STICK_LABEL()}</span>`;
+  el.setAttribute('aria-label', 'Install the ONE Desk app');
+}
+addEventListener('appinstalled', () => { document.querySelectorAll('.istick, .install').forEach(b => (b.closest('p') || b).remove()); });
+matchMedia('(display-mode: standalone)').addEventListener?.('change', stickyInstall);
