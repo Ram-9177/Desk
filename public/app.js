@@ -245,7 +245,7 @@ async function track(slug) {
 // A team that takes N tickets a day: past that, the ticket waits in the team's queue with a number and the day it reaches them
 const queueBox = q => q ? `<div class="queuebox">${I('clock', 22)}<div><b>Queue number ${q.queue_no}</b>
   <div>Today's tickets for ${esc(q.service)} are full (the team takes ${q.daily_cap} a day). ${q.ahead ? `${q.ahead} ticket${q.ahead === 1 ? ' is' : 's are'} ahead of you` : 'You are next'}${q.waiting > 1 ? ` · ${q.waiting} waiting in all` : ''}.</div>
-  <div>Your ticket reaches the team on <b>${esc(q.lands_on)}</b>. We'll email you then; you don't need to raise it again.</div></div></div>` : '';
+  <div>Your ticket reaches the team on <strong>${esc(q.lands_on)}</strong>. We'll email you then; you don't need to raise it again.</div></div></div>` : '';
 // Many people reporting the same problem the same day share one ticket (see merge.js on the server)
 const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. You will get updates by email.</span></div>` : '';
 const sameIssue = d => new Promise(res => {
@@ -527,12 +527,12 @@ async function services(main) {
   const members = f => checked(f, 'prov');
   main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each team needs at least one provider; a team can have sub-teams with their own providers, limit and queue.</span>
       <button class="btn primary" id="add">${I('plus', 18)} New service</button></div>
-    ${svcs.filter(s => !s.parent_id).flatMap(s => [s, ...svcs.filter(x => x.parent_id === s.id)]).concat(svcs.filter(s => s.parent_id && !svcs.some(x => x.id === s.parent_id))).map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default${s.parent_id ? ';margin-left:28px;border-left:3px solid var(--accent)' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
+    ${svcs.filter(s => !s.parent_id).flatMap(s => [s, ...svcs.filter(x => x.parent_id === s.id)]).concat(svcs.filter(s => s.parent_id && !svcs.some(x => x.id === s.parent_id))).map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default${s.parent_id ? ';margin-left:28px;width:calc(100% - 28px);box-sizing:border-box;border-left:3px solid var(--accent)' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
       <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc((s.escalation_users || []).map(x => x.name).join(', ') || (s.parent_id ? 'the main team’s officers' : 'admin'))}</span>
       ${s.parent_id ? `<span class="muted small" style="display:block;margin-top:4px">${I('grid', 13)} Sub-team of ${esc(svcs.find(x => x.id === s.parent_id)?.name || '')}</span>` : ''}
-      ${s.daily_cap ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Takes ${s.daily_cap} tickets a day${s.queue?.waiting ? ` · <b>${s.queue.waiting} waiting in the queue</b>` : ''}</span>` : ''}</span>
+      ${s.daily_cap ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Takes ${s.daily_cap} tickets a day${s.queue?.waiting ? ` · <strong>${s.queue.waiting} waiting in the queue</strong>` : ''}</span>` : ''}</span>
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
