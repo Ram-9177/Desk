@@ -141,6 +141,15 @@ async function portal(slug, q, view, code) {
   const { tenant, services } = await api(`/public/${slug}`);
   document.title = `${tenant.name} · ONE Desk`;
   const want = (code || q.get('service') || '').toUpperCase(), pick = want && services.find(s => s.code === want);
+  // a team with sub-teams (Maintenance → Electrical, Plumbing …): pick the sub-team first
+  const subs = pick ? services.filter(x => x.parent_id === pick.id) : [];
+  if (pick && subs.length) {
+    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise">${I('back')}</a><h1>${esc(pick.name)}</h1></div>
+      <p class="muted">Which team can help? Pick the closest one.</p>
+      ${[...subs, { ...pick, name: `Other ${pick.name} problem`, description: 'Not in the list above', other: true }].map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}${s.other ? '?direct=1' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
+        <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span><br>${(s.providers || []).map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}</div>`;
+    if (!q.get('direct')) return;
+  }
   if (pick) return raiseForm(slug, tenant, pick);
   if (view !== 'raise') {
     const opt = (href, ic, cls, title, sub) => `<a class="svc" href="${href}"><span class="chip ${cls}">${I(ic, 22)}</span><span class="t"><b>${title}</b><span class="muted small">${sub}</span></span><span class="chev">${I('chev')}</span></a>`;
@@ -157,9 +166,9 @@ async function portal(slug, q, view, code) {
   }
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Raise a ticket</h1></div>
     <p class="muted">${services.length ? 'Pick the service you need.' : 'No services are open on this campus yet. Please check back soon.'}</p>
-    ${services.map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
+    ${services.filter(s => !s.parent_id || !services.some(x => x.id === s.parent_id)).map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span><br>
-      ${s.providers.map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}
+      ${services.some(x => x.parent_id === s.id) ? `<span class="plate">${services.filter(x => x.parent_id === s.id).length} teams inside</span>` : s.providers.map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}
 </div>`;
 }
 
@@ -508,24 +517,28 @@ async function services(main) {
     <label>Description</label><input name="description" value="${esc(s.description || '')}" placeholder="What this service covers">
     <label>Icon</label>${iconPick(s.id ? svcIcon(s) : 'grid')}
     ${typePick(s.form_schema || { form_type: 'general' })}
-    <div class="row"><div><label>Service provider 1</label>${provSel('p1', s.members?.[0]?.id)}</div><div><label>Service provider 2</label>${provSel('p2', s.members?.[1]?.id)}</div></div>
-    <label>Escalation person <small>(gets the ticket if it misses its target; empty = the admin)</small></label>${provSel('esc', s.escalation_user?.id).replace('— None —', '— Admin (default) —')}
+    <label>Part of <small>(make this a sub-team, e.g. Electrical under Maintenance)</small></label><select name="parent_id"><option value="">— Main team (not a sub-team) —</option>${svcs.filter(x => !x.parent_id && x.id !== s.id).map(x => `<option value="${x.id}" ${x.id === s.parent_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+    <label>Service providers / nodal officers <small>(any number; they get this team's tickets${s.id && svcs.some(x => x.parent_id === s.id) ? ' and see its sub-teams' : ''})</small></label>${pickMany('prov', (s.members || []).map(m => m.id))}
+    <label>Escalation officers <small>(any number; get the ticket if it misses its target; none = the main team's, else the admin)</small></label>${pickMany('escs', (s.escalation_users || []).map(m => m.id))}
     <label>Tickets a day <small>(how many new tickets the team takes each day; empty = no limit)</small></label><input name="daily_cap" type="number" min="0" step="1" inputmode="numeric" placeholder="No limit" value="${s.daily_cap || ''}">
     <div class="muted small">Example: 100. If 500 students raise a ticket today, the first 100 reach the team today. The others get a queue number, are told how many are ahead of them, and reach the team 100 a day on the next working days.</div>`;
-  const members = f => [...new Set([f.elements.p1.value, f.elements.p2.value].filter(Boolean))];
-  main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each service needs one or two providers.</span>
+  const pickMany = (name, sel) => `<div class="svcpick">${eligible.map(u => `<label><input type="checkbox" name="${name}" value="${u.id}" ${sel.includes(u.id) ? 'checked' : ''}> ${esc(u.name)}${u.role === 'tenant_admin' ? ' <small>(admin)</small>' : ''}</label>`).join('') || '<span class="muted small">Add people first.</span>'}</div>`;
+  const checked = (f, n) => [...f.querySelectorAll(`[name=${n}]:checked`)].map(x => x.value);
+  const members = f => checked(f, 'prov');
+  main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each team needs at least one provider; a team can have sub-teams with their own providers, limit and queue.</span>
       <button class="btn primary" id="add">${I('plus', 18)} New service</button></div>
-    ${svcs.map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
+    ${svcs.filter(s => !s.parent_id).flatMap(s => [s, ...svcs.filter(x => x.parent_id === s.id)]).concat(svcs.filter(s => s.parent_id && !svcs.some(x => x.id === s.parent_id))).map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default${s.parent_id ? ';margin-left:28px;border-left:3px solid var(--accent)' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
-      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc(s.escalation_user?.name || 'admin')}</span>
+      <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc((s.escalation_users || []).map(x => x.name).join(', ') || (s.parent_id ? 'the main team’s officers' : 'admin'))}</span>
+      ${s.parent_id ? `<span class="muted small" style="display:block;margin-top:4px">${I('grid', 13)} Sub-team of ${esc(svcs.find(x => x.id === s.parent_id)?.name || '')}</span>` : ''}
       ${s.daily_cap ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Takes ${s.daily_cap} tickets a day${s.queue?.waiting ? ` · <b>${s.queue.waiting} waiting in the queue</b>` : ''}</span>` : ''}</span>
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
   const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always give their own details, the location and a subject first. Tick Required for questions people must answer. A dropdown option called Other lets people type their own answer.</div><div id="fb"></div>`;
   $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${qHead}`, async f => {
-    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, daily_cap: f.elements.daily_cap.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
+    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_ids: checked(f, 'escs'), parent_id: f.elements.parent_id.value || null, daily_cap: f.elements.daily_cap.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
     toast('Service created'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), []);
@@ -540,7 +553,7 @@ async function services(main) {
       <div class="row">${PRIORITIES.map(p => `<div><label style="text-transform:capitalize">${p} target <small>working h, override</small></label><input type="number" name="sla_${p}" value="${s.sla[p] || ''}"></div>`).join('')}</div>
       <label style="font-weight:400"><input type="checkbox" name="is_active" ${s.is_active ? 'checked' : ''}> Active (shown on the portal)</label>`,
       async f => {
-        await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, escalation_user_id: f.elements.esc.value || null, daily_cap: f.elements.daily_cap.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },
+        await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, escalation_user_ids: checked(f, 'escs'), parent_id: f.elements.parent_id.value || null, daily_cap: f.elements.daily_cap.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },
           is_active: f.elements.is_active.checked ? 1 : 0, sla: Object.fromEntries(PRIORITIES.map(p => [p, f.elements['sla_' + p].value])) } });
         await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } }); toast('Saved'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), schema.fields);
@@ -645,8 +658,8 @@ async function users(main, { sa }) {
     $('#uq').oninput = e => { st.q = e.target.value; save(); const pos = e.target.selectionStart; draw(); $('#uq').focus(); $('#uq').setSelectionRange(pos, pos); };
     $('#add').onclick = async () => { const sv = (await api('/services')).filter(s => s.is_active); dlg(`<h2>Add person</h2><label>Full name</label><input name="name" required><label>Email</label><input name="email" type="email" required>
       <label>Phone</label><input name="phone" type="tel"><label>Role</label><select name="role"><option value="provider">Service provider</option>${sa ? '<option value="tenant_admin">Campus admin</option>' : ''}</select>
-      <label>Services <small>(the tickets they handle; up to 2 providers per service)</small></label>
-      <div class="svcpick">${sv.map(s => `<label><input type="checkbox" name="svc" value="${s.id}" ${s.members.length >= 2 ? 'disabled' : ''}> ${esc(s.name)}${s.members.length >= 2 ? ' <small>(full)</small>' : ''}</label>`).join('') || '<span class="muted small">No services yet. Add them under Services.</span>'}</div>
+      <label>Services <small>(the tickets they handle)</small></label>
+      <div class="svcpick">${sv.map(s => `<label><input type="checkbox" name="svc" value="${s.id}"> ${esc(s.name)}</label>`).join('') || '<span class="muted small">No services yet. Add them under Services.</span>'}</div>
       <p class="muted small">They are emailed a welcome with their role, services, sign-in link and a temporary password.</p>`,
       async f => { const r = await api('/users', { method: 'POST', body: { ...formVals(f), svc: undefined, service_ids: [...f.querySelectorAll('[name=svc]:checked')].map(x => x.value) } });
         showTemp('Account created', formVals(f), r.temp_password); reload(); }); };

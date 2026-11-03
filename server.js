@@ -90,7 +90,8 @@ const role = (...r) => (req, _r, next) => next(r.includes(req.user.role) ? undef
 const isAdmin = u => u.role !== 'provider';
 const myServiceIds = async (u, tenantId) => isAdmin(u)
   ? (await all('SELECT id FROM services WHERE tenant_id=?', tenantId)).map(r => r.id)
-  : (await all('SELECT service_id id FROM service_members WHERE tenant_id=? AND user_id=?', tenantId, u.id)).map(r => r.id);
+  : (await all(`SELECT service_id id FROM service_members WHERE tenant_id=? AND user_id=?
+      UNION SELECT s.id FROM services s JOIN service_members m ON m.service_id=s.parent_id WHERE s.tenant_id=? AND m.user_id=?`, tenantId, u.id, tenantId, u.id)).map(r => r.id); // a team's providers also see its sub-teams
 
 // ---------- domain ----------
 const tenantBySlug = async slug => { const t = await one('SELECT * FROM tenants WHERE slug=? AND is_active=1', slug); if (!t) throw notFound(); return t; };
@@ -307,9 +308,14 @@ function escalationDue(t, tn) {
   if (!from) return null;
   return mins > 0 ? addWorking(cal, from, mins) : from; // 0 days = the moment the target is missed
 }
+const escalationOfficers = sid => all(`SELECT u.id, u.name, u.email FROM service_escalations e JOIN users u ON u.id=e.user_id
+  WHERE e.service_id=? AND u.is_active=1 ORDER BY u.name`, sid);
 async function escalate(t) {
-  const svc = await one('SELECT escalation_user_id FROM services WHERE id=?', t.service_id);
-  const target = (svc?.escalation_user_id && await one('SELECT id, name, email FROM users WHERE id=? AND is_active=1', svc.escalation_user_id))
+  // the service's escalation officers (any number), else its parent team's, else a campus admin, else the super admin
+  const svc = await one('SELECT parent_id FROM services WHERE id=?', t.service_id);
+  let officers = await escalationOfficers(t.service_id);
+  if (!officers.length && svc?.parent_id) officers = await escalationOfficers(svc.parent_id);
+  const target = officers[0]
     || await one("SELECT id, name, email FROM users WHERE tenant_id=? AND role='tenant_admin' AND is_active=1 ORDER BY name LIMIT 1", t.tenant_id)
     || await one("SELECT id, name, email FROM users WHERE role='super_admin' AND is_active=1 ORDER BY name LIMIT 1"); // no campus admin: the super admin
   if (!target) return; // nobody to escalate to: the ticket stays on the attention list as overdue
@@ -321,7 +327,7 @@ async function escalate(t) {
   });
   if (!done) return;
   const v = await ticketVars(t, { escalated_to_name: target.name, note: `The ticket passed ${missed}.` });
-  await notify(t, [target.email, ...(await providersFor(t.tenant_id, t.service_id)).map(p => p.email)], 'escalated', v);
+  await notify(t, [...officers.map(o => o.email), target.email, ...(await providersFor(t.tenant_id, t.service_id)).map(p => p.email)], 'escalated', v);
   await notifyRequestors(t, 'escalated_requestor', v);
 }
 async function runEscalations() {
@@ -536,7 +542,7 @@ P.get('/', wrap(async () => await all('SELECT name, code, slug FROM tenants WHER
 P.get('/:slug', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug);
   return { tenant: { name: tn.name, code: tn.code, slug: tn.slug },
-    services: await Promise.all((await all('SELECT id,code,name,description,form_schema FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order,name', tn.id))
+    services: await Promise.all((await all('SELECT id,code,name,description,form_schema,parent_id FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order,name', tn.id))
       .map(async s => ({ ...s, form_schema: JSON.parse(s.form_schema), providers: (await providersFor(tn.id, s.id)).map(p => p.name.split(' ')[0]) }))) };
 }));
 P.post('/:slug/tickets', wrap(async req => {
@@ -719,7 +725,6 @@ S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
   const svcs = [];
   for (const id of new Set(Array.isArray(b.service_ids) ? b.service_ids : [])) {
     const s = await one('SELECT id, name FROM services WHERE id=? AND tenant_id=? AND is_active=1', id, req.tenantId); if (!s) throw bad('Unknown service');
-    if ((await providersFor(req.tenantId, s.id)).length >= 2) throw bad(`${s.name} already has two providers`);
     svcs.push(s.id);
   }
   const pw = tempPw();
@@ -759,11 +764,29 @@ async function escalationUser(req, id) {
   if (!await one("SELECT 1 FROM users WHERE id=? AND tenant_id=? AND is_active=1 AND role IN ('provider','tenant_admin')", id, req.tenantId)) throw bad('Pick an escalation person from this campus’s providers');
   return id;
 }
+// A sub-team sits under one top-level team of the same campus (one level deep: Maintenance → Electrical)
+async function parentTeam(req, id, selfId) {
+  if (!id) return null;
+  const p = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', id, req.tenantId);
+  if (!p || p.id === selfId) throw bad('Pick a main team from this campus');
+  if (p.parent_id) throw bad('A sub-team cannot have its own sub-teams; pick a main team');
+  if (selfId && await one('SELECT 1 AS x FROM services WHERE parent_id=?', selfId)) throw bad('This team has sub-teams, so it cannot become a sub-team');
+  return p.id;
+}
+// Escalation officers: any number of this campus's providers or admins; the first is also kept as escalation_user_id
+async function setEscalations(req, sid, ids) {
+  ids = [...new Set(ids.filter(Boolean))];
+  for (const id of ids) await escalationUser(req, id);
+  await tx(async () => { await run('DELETE FROM service_escalations WHERE service_id=?', sid);
+    for (const id of ids) await run('INSERT INTO service_escalations (service_id, user_id) VALUES (?, ?)', sid, id);
+    await run('UPDATE services SET escalation_user_id=? WHERE id=?', ids[0] || null, sid); });
+}
 // Tickets a day the team takes in (0 or empty = no limit); the rest wait in its queue
 const dailyCap = v => { const n = v === '' || v == null ? 0 : Number(v); if (!Number.isInteger(n) || n < 0 || n > 100000) throw bad('Tickets a day: a whole number (0 or empty = no limit)'); return n; };
 S.get('/services', wrap(async req => Promise.all((await all('SELECT * FROM services WHERE tenant_id=? ORDER BY sort_order,name', req.tenantId))
   .map(async s => ({ ...s, form_schema: JSON.parse(s.form_schema), members: await providersFor(req.tenantId, s.id),
     queue: await one('SELECT count(*)::int waiting, min(queue_day) next_day FROM tickets WHERE service_id=? AND queued=1', s.id),
+    escalation_users: await escalationOfficers(s.id),
     escalation_user: s.escalation_user_id ? await one('SELECT id, name FROM users WHERE id=? AND is_active=1', s.escalation_user_id) || null : null,
     sla: Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id=?', req.tenantId, s.id)).map(x => [x.priority, x.target_hours])) })))));
 S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -773,7 +796,9 @@ S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', req.tenantId, b.code)) throw new HttpErr(409, 'CONFLICT', 'Code exists');
   const s = await insert('services', { id: uid(), tenant_id: req.tenantId, code: b.code, name: b.name, description: b.description,
     form_schema: JSON.stringify(cleanSchema(b.form_schema)), is_active: 1, sort_order: Number(b.sort_order) || 0, escalation_user_id: await escalationUser(req, b.escalation_user_id),
-    daily_cap: dailyCap(b.daily_cap) });
+    daily_cap: dailyCap(b.daily_cap), parent_id: await parentTeam(req, b.parent_id, null) });
+  if (Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, b.escalation_user_ids);
+  else if (b.escalation_user_id) await setEscalations(req, s.id, [b.escalation_user_id]);
   await audit(req, 'service.create', 'service', s.id, b); return s;
 }));
 S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -781,8 +806,10 @@ S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => 
   const b = req.body;
   await run('UPDATE services SET name=?, description=?, form_schema=?, is_active=?, sort_order=? WHERE id=?', b.name ?? s.name, b.description ?? s.description,
     b.form_schema ? JSON.stringify(cleanSchema(b.form_schema)) : s.form_schema, b.is_active ?? s.is_active, b.sort_order ?? s.sort_order, s.id);
-  if (b.escalation_user_id !== undefined) await run('UPDATE services SET escalation_user_id=? WHERE id=?', await escalationUser(req, b.escalation_user_id), s.id);
+  if (b.escalation_user_id !== undefined && !Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, [b.escalation_user_id]);
   if (b.daily_cap !== undefined) await run('UPDATE services SET daily_cap=? WHERE id=?', dailyCap(b.daily_cap), s.id);
+  if (b.parent_id !== undefined) await run('UPDATE services SET parent_id=? WHERE id=?', await parentTeam(req, b.parent_id, s.id), s.id);
+  if (Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, b.escalation_user_ids);
   if (b.sla) for (const p of PRIORITIES) {
     await run('DELETE FROM sla_policies WHERE tenant_id=? AND service_id=? AND priority=?', req.tenantId, s.id, p);
     if (Number(b.sla[p]) > 0) await insert('sla_policies', { id: uid(), tenant_id: req.tenantId, service_id: s.id, priority: p, target_hours: Number(b.sla[p]) });
@@ -792,7 +819,6 @@ S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => 
 S.put('/services/:id/members', role('super_admin', 'tenant_admin'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const ids = [...new Set(req.body.user_ids || [])];
-  if (ids.length > 2) throw bad('A service holds at most two providers');
   for (const id of ids) if (!await one("SELECT 1 FROM users WHERE id=? AND tenant_id=? AND is_active=1 AND role IN ('provider','tenant_admin')", id, req.tenantId)) throw notFound();
   await tx(async () => { await run('DELETE FROM service_members WHERE service_id=?', s.id);
     for (const id of ids) await insert('service_members', { id: uid(), tenant_id: req.tenantId, service_id: s.id, user_id: id, created_at: now() }); });
@@ -903,14 +929,16 @@ S.get('/points', wrap(async req => ({
 // tickets
 async function loadTicket(req) {
   const t = await one('SELECT * FROM tickets WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
-  if (!t || !((await myServiceIds(req.user, req.tenantId)).includes(t.service_id) || t.escalated_to === req.user.id)) throw notFound();
+  if (!t || !((await myServiceIds(req.user, req.tenantId)).includes(t.service_id) || t.escalated_to === req.user.id
+    || (t.escalated_at && await one('SELECT 1 AS x FROM service_escalations e LEFT JOIN services s ON s.id=? WHERE e.user_id=? AND e.service_id IN (s.id, s.parent_id)', t.service_id, req.user.id)))) throw notFound();
   return t;
 }
 const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
 const ticketQuery = async (req) => {
   const sids = await myServiceIds(req.user, req.tenantId);
   // my services' tickets, plus any ticket escalated to me
-  const w = [`t.tenant_id=?`, sids.length ? `(t.service_id IN (${sids.map(() => '?').join()}) OR t.escalated_to=?)` : 't.escalated_to=?'], a = [req.tenantId, ...sids, req.user.id], q = req.query;
+  const esc = `t.escalated_to=? OR (t.escalated_at IS NOT NULL AND EXISTS (SELECT 1 FROM service_escalations e JOIN services sv ON sv.id=t.service_id WHERE e.user_id=? AND e.service_id IN (sv.id, sv.parent_id)))`;
+  const w = [`t.tenant_id=?`, sids.length ? `(t.service_id IN (${sids.map(() => '?').join()}) OR ${esc})` : `(${esc})`], a = [req.tenantId, ...sids, req.user.id, req.user.id], q = req.query;
   // tickets waiting in a team's daily queue show only under "In queue" until the day they land
   w.push(q.status === 'queued' ? 't.queued=1' : 't.queued=0');
   if (q.status === 'overdue') { w.push("t.status IN ('open','in_progress') AND t.due_at<?"); a.push(now()); }
@@ -1247,6 +1275,7 @@ async function provision() {
       if (a.escalation) await step(`${code}:escalation:${sc}`, `escalation for ${sc}`, async () => {
         const id = await userId(a.escalation); if (svc.escalation_user_id || !id) return false;
         await run('UPDATE services SET escalation_user_id=? WHERE id=?', id, svc.id);
+        await run('INSERT INTO service_escalations (service_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING', svc.id, id);
       });
     }
     for (const [u, pw] of invites) await notify({ tenant_id: tn.id }, [u.email], 'invite', await staffVars(u, pw), { hold: true });

@@ -155,7 +155,8 @@ try {
   await ok('EXAM → Lata', `/services/${exam.id}/members`, { ...A, method: 'PUT', body: { user_ids: [lata.id] } });
   await ok('HOSTEL → Asha (an admin can be a provider)', `/services/${hostel.id}/members`, { ...A, method: 'PUT', body: { user_ids: [asha.id] } });
   await ok('GEN (Beta) → Bina', `/services/${gen.id}/members`, { ...Bt, method: 'PUT', body: { user_ids: [bina.id] } });
-  await fails('more than two providers is rejected', `/services/${elec.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavan.id, lata.id, asha.id] } }, 400);
+  await ok('any number of providers can serve one team', `/services/${elec.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavan.id, lata.id, asha.id] } });
+  await ok('back to Pavan alone', `/services/${elec.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavan.id] } });
   await fails('a provider from another campus is rejected', `/services/${elec.id}/members`, { ...A, method: 'PUT', body: { user_ids: [bina.id] } }, 404);
   const svcs = await ok('list services', '/services', A);
   check('service list shows members, form type and escalation person', svcs.find(x => x.code === 'ELEC')?.members[0]?.name === 'Pavan Provider' && svcs.find(x => x.code === 'ELEC')?.form_schema.form_type === 'location' && svcs.find(x => x.code === 'ELEC')?.escalation_user?.name === 'Lata Lead');
@@ -467,7 +468,7 @@ try {
   const zed = await ok('add a provider with a service', '/users', { ...DT, method: 'POST', body: { name: 'Zed Provider', email: 'zed@example.com', role: 'provider', service_ids: [open1.id] } });
   check('new provider is on the service and their welcome lists it', (await api('/services', DT)).data.find(x => x.id === open1.id).members.some(m => m.email === 'zed@example.com')
     && (await q("SELECT body FROM notifications WHERE template_key='invite' AND recipient='zed@example.com'"))[0].body.includes(open1.name));
-  if (full) await fails('a service with two providers is refused', '/users', { ...DT, method: 'POST', body: { name: 'Yan', email: 'yan@example.com', role: 'provider', service_ids: [full.id] } }, 400);
+  if (full) await ok('a third provider can join a team', '/users', { ...DT, method: 'POST', body: { name: 'Yan', email: 'yan@example.com', role: 'provider', service_ids: [full.id] } });
   await ok('deactivate the extra provider', `/users/${zed.id}`, { ...DT, method: 'PATCH', body: { is_active: 0 } });
   await ok('admin removes DEXAM’s providers', `/services/${dsv.find(x => x.code === 'DEXAM').id}/members`, { token: T.sa, tenant: delta.id, method: 'PUT', body: { user_ids: [] } });
   await ok('admin renames DHELP', `/services/${dsv.find(x => x.code === 'DHELP').id}`, { token: T.sa, tenant: delta.id, method: 'PATCH', body: { name: 'Delta helpdesk' } });
@@ -688,6 +689,23 @@ try {
   r = await act(t4.id, { to: 'in_progress', note: 'Taking it early' });
   check('a provider can take a queued ticket early', r.status === 200 && (await q('SELECT queued FROM tickets WHERE id=?', t4.id))[0].queued === 0);
   await ok('limit off again', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: '' } });
+
+  // sub-teams: Maintenance → Plumbing, each with its own providers, escalation officers, limit and queue
+  const latId = (await q("SELECT id FROM users WHERE email='lata@example.com'"))[0].id, ashaId = (await q("SELECT id FROM users WHERE email='asha@example.com'"))[0].id;
+  const maint = await ok('main team Maintenance', '/services', { ...A, method: 'POST', body: { code: 'MAINT', name: 'Maintenance', form_schema: { form_type: 'general', fields: [] } } });
+  await ok('Lata is Maintenance’s nodal officer', `/services/${maint.id}/members`, { ...A, method: 'PUT', body: { user_ids: [latId] } });
+  const plumb = await ok('sub-team Plumbing with two escalation officers and 1 ticket a day', '/services', { ...A, method: 'POST', body: { code: 'PLUMB', name: 'Plumbing', parent_id: maint.id, daily_cap: 1,
+    escalation_user_ids: [latId, ashaId], form_schema: { form_type: 'general', fields: [] } } });
+  await ok('Plumbing’s providers', `/services/${plumb.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavanId] } });
+  await fails('a sub-team cannot have sub-teams', '/services', { ...A, method: 'POST', body: { code: 'DEEP', name: 'Deep', parent_id: plumb.id } }, 400);
+  const sv = (await api('/services', A)).data.find(x => x.id === plumb.id);
+  check('the sub-team shows its main team and every escalation officer', sv.parent_id === maint.id && sv.escalation_users.length === 2);
+  check('the portal knows which team a sub-team belongs to', (await api('/public/alpha')).data.services.find(x => x.code === 'PLUMB')?.parent_id === maint.id);
+  const pr = n => raise('alpha', { service_id: plumb.id, name: n, email: `${n.toLowerCase()}@plumb.example.com`, subject: 'Tap leaking ' + n, location: 'Washroom ' + n, requestor_type: 'staff' });
+  const p1 = (await pr('Pa')).data, p2 = (await pr('Pb')).data;
+  check('the sub-team has its own limit and queue', p1?.ticket_no && !p1.queue && p2?.queue?.queue_no === 1, JSON.stringify(p2));
+  check('the main team’s nodal officer sees the sub-team’s tickets', (await api('/tickets?status=all', { token: T.lata })).data.some(x => x.ticket_no === p1.ticket_no));
+  check('the sub-team’s provider sees them too', (await api('/tickets?status=all', { token: T.pavan })).data.some(x => x.ticket_no === p1.ticket_no));
   }
 
   // ======================= H. UI smoke test =======================
