@@ -287,3 +287,4 @@ body.console .botp{bottom:calc(152px + env(safe-area-inset-bottom,0px))}@media(m
 @media(max-width:760px){body.console .istick{bottom:calc(86px + env(safe-area-inset-bottom,0px))}}
 @media print{.istick{display:none}}
 .wrap{padding-bottom:max(90px,var(--pb,0px))}
+.istick.one{background:var(--ok);color:#fff}

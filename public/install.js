@@ -14,17 +14,17 @@ const iosBrowser = /CriOS/.test(ua) ? 'Chrome' : /FxiOS/.test(ua) ? 'Firefox' : 
   : /FBAN|FBAV|Instagram|Line\/|WhatsApp|GSA\//.test(ua) || !/Safari/.test(ua) ? 'in-app' : 'Safari';
 const androidBrowser = /SamsungBrowser/.test(ua) ? 'Samsung' : /Firefox/.test(ua) ? 'Firefox' : /; wv\)|FBAN|Instagram|WhatsApp/.test(ua) ? 'in-app' : 'Chrome';
 
-let promptEvt = null; // the browser's install prompt, kept until the person taps Install
+let promptEvt = window.__bip || null; // the browser's install prompt (index.html may have caught it first), kept until the person taps Install
 const listeners = new Set();
 const changed = () => listeners.forEach(f => f());
-addEventListener('beforeinstallprompt', e => { e.preventDefault(); promptEvt = e; changed(); });
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); promptEvt = e; changed(); stickyInstall(); });
 addEventListener('appinstalled', () => { promptEvt = null; changed(); });
 export const canPromptInstall = () => !!promptEvt;
 // Android / desktop Chrome: the real install, one tap. Returns true when the person accepted.
 export async function installNow() {
   if (!promptEvt) return false;
   const e = promptEvt; promptEvt = null; e.prompt();
-  const { outcome } = await e.userChoice.catch(() => ({ outcome: 'dismissed' })); changed();
+  const { outcome } = await e.userChoice.catch(() => ({ outcome: 'dismissed' })); changed(); stickyInstall();
   return outcome === 'accepted';
 }
 
@@ -110,7 +110,7 @@ export function mountGuide(el, onInstalled, only = false) {
   draw();
 }
 // The "Install the app" button: on Android / Chrome it installs in one tap; elsewhere it opens the steps.
-export const installBtnHtml = label => standalone() ? '' : `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install">${G.dl} ${label || (isIOS ? 'Add ONE Desk to your iPhone' : 'Install ONE Desk app')}</button></p>`;
+export const installBtnHtml = label => standalone() ? '' : `<p style="text-align:center;margin-top:14px"><button type="button" class="btn soft install">${G.dl} ${label || (promptEvt ? 'Install ONE Desk · 1 click' : isIOS ? 'Add ONE Desk to your iPhone' : 'Install ONE Desk app')}</button></p>`;
 export function openGuideDialog(toast) {
   const d = document.createElement('dialog'); d.className = 'idlg';
   d.innerHTML = `<div class="idlg-h"><img src="icon-192.png" alt="" width="40" height="40"><div><b>${isIOS ? 'Add ONE Desk to your iPhone' : 'Get the ONE Desk app'}</b><div class="muted small">Free · installs from this page</div></div>
@@ -137,12 +137,12 @@ document.addEventListener('click', e => { const b = e.target.closest('[data-iosh
 
 // A sticky "Install app" button on every screen, on every device, until ONE Desk runs as the installed app.
 // Android / Chrome / Edge: one tap installs. iPhone: its own Add to Home Screen steps. Mac and PC: their steps.
-const STICK_LABEL = () => isIOS ? 'Add to iPhone' : isAndroid ? 'Install app' : isMac ? 'Install on Mac' : 'Install app';
+const STICK_LABEL = () => promptEvt ? 'Install app · 1 click' : isIOS ? 'Add to iPhone' : isAndroid ? 'Install app' : isMac ? 'Install on Mac' : 'Install app';
 export function stickyInstall() {
   let el = document.querySelector('.istick');
   if (standalone()) { el?.remove(); return; }
   if (!el) { el = document.createElement('button'); el.type = 'button'; el.className = 'istick install'; document.body.append(el); }
-  el.innerHTML = `${G.dl}<span>${STICK_LABEL()}</span>`;
+  el.innerHTML = `${G.dl}<span>${STICK_LABEL()}</span>`; el.classList.toggle('one', !!promptEvt);
   el.setAttribute('aria-label', 'Install the ONE Desk app');
 }
 addEventListener('appinstalled', () => { document.querySelectorAll('.istick, .install').forEach(b => (b.closest('p') || b).remove()); });

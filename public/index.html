@@ -17,6 +17,8 @@
 <body>
 <div id="app"></div>
 <div id="toast"></div>
+<script>/* catch the browser's one-click install offer even if it comes before the app has loaded */
+addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); window.__bip = e; });</script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
