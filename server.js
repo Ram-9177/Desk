@@ -302,8 +302,9 @@ async function digest() {
 // ---------- escalation ----------
 // A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
 // campus's "escalate after" working days, it escalates to the service's escalation person (else a campus admin, else the super admin).
-function escalationDue(t, tn) {
-  const cal = calendar(tn), mins = Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
+// The team's own time (hours, Services → Escalate after) wins over the campus's (days, SLA & points); a sub-team without one uses its main team's.
+function escalationDue(t, tn, hours) {
+  const cal = calendar(tn), mins = hours != null ? Math.round(hours * 60) : Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
   const from = ACTIVE.includes(t.status) ? t.due_at : tn.escalate_holds ? t.hold_due_at : null;
   if (!from) return null;
   return mins > 0 ? addWorking(cal, from, mins) : from; // 0 days = the moment the target is missed
@@ -322,19 +323,21 @@ async function escalate(t) {
   const ts = now(), missed = t.status === 'hold' ? `its hold limit of ${fmtIST(t.hold_due_at)}` : `its target of ${fmtIST(t.due_at)}`;
   const done = await tx(async () => {
     if (!(await run('UPDATE tickets SET escalated_at=?, escalated_to=?, updated_at=? WHERE id=? AND escalated_at IS NULL', ts, target.id, ts, t.id)).changes) return false;
-    await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'escalated', { to: target.name, body: `Escalated automatically: the ticket passed ${missed}.` });
+    await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'escalated', { to: officers.length ? officers.map(o => o.name).join(', ') : target.name, body: `Escalated automatically: the ticket passed ${missed}.` });
     return true;
   });
   if (!done) return;
-  const v = await ticketVars(t, { escalated_to_name: target.name, note: `The ticket passed ${missed}.` });
-  await notify(t, [...officers.map(o => o.email), target.email, ...(await providersFor(t.tenant_id, t.service_id)).map(p => p.email)], 'escalated', v);
+  const names = officers.length ? officers.map(o => o.name).join(', ') : target.name;
+  const v = await ticketVars(t, { escalated_to_name: names, note: `The ticket passed ${missed}.` });
+  await notify(t, officers.length ? officers.map(o => o.email) : [target.email], 'escalated', v); // only the escalation officers (or the admin when the team has none)
   await notifyRequestors(t, 'escalated_requestor', v);
 }
 async function runEscalations() {
   const n = now();
   for (const tn of await all('SELECT * FROM tenants WHERE is_active=1')) {
     const due = await all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND ((status IN ('open','in_progress') AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
-    for (const t of due) { try { const at = escalationDue(t, tn); if (at && at <= n) await escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
+    const hrs = Object.fromEntries((await all('SELECT s.id, coalesce(s.escalate_after_hours, p.escalate_after_hours) h FROM services s LEFT JOIN services p ON p.id=s.parent_id WHERE s.tenant_id=?', tn.id)).map(r => [r.id, r.h]));
+    for (const t of due) { try { const at = escalationDue(t, tn, hrs[t.service_id] ?? null); if (at && at <= n) await escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
   }
 }
 const escalations = () => runEscalations().catch(e => console.error('escalation', e.message));
@@ -792,6 +795,8 @@ async function setEscalations(req, sid, ids) {
     await notify(t, officers.map(o => o.email), 'escalated', await ticketVars(t, { escalated_to_name: to.name, note: 'The escalation officers for this team were changed; this ticket is now with you.' }));
   }
 }
+// Escalate after: working hours past the target (0 = the moment it is missed; empty = the campus setting)
+const escHours = v => { if (v === '' || v == null) return null; const n = Number(v); if (!(n >= 0 && n <= 2000)) throw bad('Escalate after: working hours, 0 to 2000 (empty = campus setting)'); return n; };
 // Tickets a day the team takes in (0 or empty = no limit); the rest wait in its queue
 const dailyCap = v => { const n = v === '' || v == null ? 0 : Number(v); if (!Number.isInteger(n) || n < 0 || n > 100000) throw bad('Tickets a day: a whole number (0 or empty = no limit)'); return n; };
 S.get('/services', wrap(async req => Promise.all((await all('SELECT * FROM services WHERE tenant_id=? ORDER BY sort_order,name', req.tenantId))
@@ -807,7 +812,7 @@ S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', req.tenantId, b.code)) throw new HttpErr(409, 'CONFLICT', 'Code exists');
   const s = await insert('services', { id: uid(), tenant_id: req.tenantId, code: b.code, name: b.name, description: b.description,
     form_schema: JSON.stringify(cleanSchema(b.form_schema)), is_active: 1, sort_order: Number(b.sort_order) || 0, escalation_user_id: await escalationUser(req, b.escalation_user_id),
-    daily_cap: dailyCap(b.daily_cap), parent_id: await parentTeam(req, b.parent_id, null) });
+    daily_cap: dailyCap(b.daily_cap), parent_id: await parentTeam(req, b.parent_id, null), escalate_after_hours: escHours(b.escalate_after_hours) });
   if (Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, b.escalation_user_ids);
   else if (b.escalation_user_id) await setEscalations(req, s.id, [b.escalation_user_id]);
   await audit(req, 'service.create', 'service', s.id, b); return s;
@@ -819,6 +824,7 @@ S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => 
     b.form_schema ? JSON.stringify(cleanSchema(b.form_schema)) : s.form_schema, b.is_active ?? s.is_active, b.sort_order ?? s.sort_order, s.id);
   if (b.escalation_user_id !== undefined && !Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, [b.escalation_user_id]);
   if (b.daily_cap !== undefined) await run('UPDATE services SET daily_cap=? WHERE id=?', dailyCap(b.daily_cap), s.id);
+  if (b.escalate_after_hours !== undefined) await run('UPDATE services SET escalate_after_hours=? WHERE id=?', escHours(b.escalate_after_hours), s.id);
   if (b.parent_id !== undefined) await run('UPDATE services SET parent_id=? WHERE id=?', await parentTeam(req, b.parent_id, s.id), s.id);
   if (Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, b.escalation_user_ids);
   if (b.sla) for (const p of PRIORITIES) {

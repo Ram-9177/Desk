@@ -78,7 +78,7 @@ export const MAIL_EVENTS = [
   { key: 'reopened', label: 'Ticket reopened', who: 'Service providers', when: 'The requestor (or staff) reopens a closed ticket', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Ticket reopened: {{subject}}',
     body: '"{{subject}}" was reopened by {{actor_name}}.\nReason: {{note}}\nNew target: {{due}}\n[[Open the ticket|{{staff_link}}]]\n{{timeline}}\n{{ticket_details}}' },
-  { key: 'escalated', label: 'Ticket escalated', who: 'Escalation person and service providers', when: 'A ticket misses its target by the campus’s escalate-after days', vars: [...T, 'note', 'escalated_to_name'],
+  { key: 'escalated', label: 'Ticket escalated', who: 'Escalation officers', when: 'A ticket misses its target by the campus’s escalate-after days', vars: [...T, 'note', 'escalated_to_name'],
     subject: '[{{ticket_no}}] Escalated to {{escalated_to_name}}: {{subject}}',
     body: 'This ticket has been escalated to **{{escalated_to_name}}**.\n{{note}}\nPlease take it forward and update the requestor.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}\n{{timeline}}' },
   { key: 'escalated_requestor', label: 'Escalation acknowledgement', who: 'Requestor', when: 'Their ticket is escalated', vars: [...T, 'escalated_to_name'],

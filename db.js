@@ -69,6 +69,8 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS not_merged INT DEFAULT 0;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS daily_cap INT DEFAULT 0;
 -- sub-teams: a service may sit under a parent team (Maintenance → Electrical, Plumbing …); each has its own providers, limit and queue
 ALTER TABLE services ADD COLUMN IF NOT EXISTS parent_id TEXT;
+-- a team's own escalation time: working hours past the target before it escalates (NULL = the campus setting)
+ALTER TABLE services ADD COLUMN IF NOT EXISTS escalate_after_hours DOUBLE PRECISION;
 -- escalation officers: any number per service (escalation_user_id stays the first, for older code paths)
 CREATE TABLE IF NOT EXISTS service_escalations (service_id TEXT NOT NULL REFERENCES services(id), user_id TEXT NOT NULL REFERENCES users(id), PRIMARY KEY (service_id, user_id));
 INSERT INTO service_escalations (service_id, user_id) SELECT id, escalation_user_id FROM services WHERE escalation_user_id IS NOT NULL ON CONFLICT DO NOTHING;

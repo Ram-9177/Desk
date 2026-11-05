@@ -331,7 +331,7 @@ try {
   check('workspace shows the escalation and the timeline entry', ld.escalated_name === 'Lata Lead' && ld.events.some(e => e.event_type === 'escalated'));
   check('Lata’s home tiles count it', (await api('/reports?days=7', { token: T.lata })).data.counts.open >= 1);
   const mA = await mailsFor(noA);
-  check('escalation emails: escalation person + provider, and the requestor acknowledgement', mA.some(m => m.k === 'escalated' && m.recipient === 'lata@example.com') && mA.some(m => m.k === 'escalated' && m.recipient === 'pavan@example.com') && mA.some(m => m.k === 'escalated_requestor' && m.recipient === 'r6@example.com'));
+  check('escalation emails: only the escalation person (not the provider), and the requestor acknowledgement', mA.some(m => m.k === 'escalated' && m.recipient === 'lata@example.com') && !mA.some(m => m.k === 'escalated' && m.recipient === 'pavan@example.com') && mA.some(m => m.k === 'escalated_requestor' && m.recipient === 'r6@example.com'));
   check('requestor timeline says who it went to', (await api(`/public/alpha/tickets/${noA}`)).data.events.some(e => e.event_type === 'escalated' && e.to_value === 'Lata Lead'));
   r = await act(ids.tA, { to: 'closed', note: 'Fixed by the lead' }, T.lata); check('escalation person can close it', r.status === 200);
   await ok('requestor reopens it', `/public/alpha/tickets/${noA}/reopen`, { method: 'POST', body: { reason: 'Still broken' } });
@@ -712,6 +712,18 @@ try {
   check('the change is saved', (await api('/services', A)).data.find(x => x.id === plumb.id).escalation_users.map(u => u.id).join() === ashaId);
   check('open escalated tickets move to the new escalation officer, who is emailed', (await q('SELECT escalated_to FROM tickets WHERE id=?', pt.id))[0].escalated_to === ashaId
     && (await q("SELECT 1 FROM notifications WHERE template_key='escalated' AND ticket_id=? AND recipient='asha@example.com'", pt.id)).length === 1);
+  // the team's own escalation time, and only its escalation officers are told
+  const late = (await pr('Pc')).data, lt = (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, late.ticket_no))[0];
+  await run("UPDATE tickets SET queued=0, due_at=? WHERE id=?", new Date(Date.now() - 60e3).toISOString(), lt.id); // missed its target a minute ago
+  await ok('Plumbing escalates 200 working hours after the target', `/services/${plumb.id}`, { ...A, method: 'PATCH', body: { escalate_after_hours: 200 } });
+  await stop(); await start(); await sleep(5000);
+  check('not escalated before the team’s time is up', !(await q('SELECT escalated_at FROM tickets WHERE id=?', lt.id))[0].escalated_at);
+  await ok('Plumbing escalates the moment the target is missed', `/services/${plumb.id}`, { ...A, method: 'PATCH', body: { escalate_after_hours: 0 } });
+  await stop(); await start();
+  const escd = await waitFor(async () => (await q('SELECT escalated_to FROM tickets WHERE id=? AND escalated_at IS NOT NULL', lt.id))[0], 9000);
+  const em = (await waitFor(async () => { const r = await q("SELECT recipient FROM notifications WHERE template_key='escalated' AND ticket_id=?", lt.id); return r.length ? r : null; }, 5000) || []).map(r => r.recipient);
+  check('on time it escalates to the chosen officer', escd?.escalated_to === ashaId, JSON.stringify(escd));
+  check('only the escalation officer is emailed, not the team’s providers', em.length === 1 && em[0] === 'asha@example.com', JSON.stringify(em));
   }
 
   // ======================= H. UI smoke test =======================
