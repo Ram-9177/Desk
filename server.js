@@ -780,6 +780,17 @@ async function setEscalations(req, sid, ids) {
   await tx(async () => { await run('DELETE FROM service_escalations WHERE service_id=?', sid);
     for (const id of ids) await run('INSERT INTO service_escalations (service_id, user_id) VALUES (?, ?)', sid, id);
     await run('UPDATE services SET escalation_user_id=? WHERE id=?', ids[0] || null, sid); });
+  // tickets of this team (and its sub-teams that have no officers of their own) already escalated and still open move to the new officers
+  if (!ids.length) return;
+  const to = await one('SELECT id, name, email FROM users WHERE id=?', ids[0]);
+  const open = await all(`SELECT t.* FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.escalated_at IS NOT NULL AND t.status IN ('open','in_progress','hold')
+    AND t.escalated_to IS DISTINCT FROM ? AND (s.id=? OR (s.parent_id=? AND NOT EXISTS (SELECT 1 FROM service_escalations e WHERE e.service_id=s.id)))`, to.id, sid, sid);
+  for (const t of open) {
+    await tx(async () => { await run('UPDATE tickets SET escalated_to=?, updated_at=? WHERE id=?', to.id, now(), t.id);
+      await addEvent(t, actorOf(req), 'escalated', { to: to.name, body: 'Escalation officers changed by the admin.', internal: true }); });
+    const officers = await all(`SELECT u.email FROM users u WHERE u.id IN (${ids.map(() => '?').join()}) AND u.is_active=1`, ...ids);
+    await notify(t, officers.map(o => o.email), 'escalated', await ticketVars(t, { escalated_to_name: to.name, note: 'The escalation officers for this team were changed; this ticket is now with you.' }));
+  }
 }
 // Tickets a day the team takes in (0 or empty = no limit); the rest wait in its queue
 const dailyCap = v => { const n = v === '' || v == null ? 0 : Number(v); if (!Number.isInteger(n) || n < 0 || n > 100000) throw bad('Tickets a day: a whole number (0 or empty = no limit)'); return n; };

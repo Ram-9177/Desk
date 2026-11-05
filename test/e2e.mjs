@@ -706,6 +706,12 @@ try {
   check('the sub-team has its own limit and queue', p1?.ticket_no && !p1.queue && p2?.queue?.queue_no === 1, JSON.stringify(p2));
   check('the main team’s nodal officer sees the sub-team’s tickets', (await api('/tickets?status=all', { token: T.lata })).data.some(x => x.ticket_no === p1.ticket_no));
   check('the sub-team’s provider sees them too', (await api('/tickets?status=all', { token: T.pavan })).data.some(x => x.ticket_no === p1.ticket_no));
+  const pt = (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, p1.ticket_no))[0];
+  await run('UPDATE tickets SET escalated_at=?, escalated_to=? WHERE id=?', new Date().toISOString(), latId, pt.id);
+  await ok('admin changes Plumbing’s escalation officers to Asha only', `/services/${plumb.id}`, { ...A, method: 'PATCH', body: { escalation_user_ids: [ashaId] } });
+  check('the change is saved', (await api('/services', A)).data.find(x => x.id === plumb.id).escalation_users.map(u => u.id).join() === ashaId);
+  check('open escalated tickets move to the new escalation officer, who is emailed', (await q('SELECT escalated_to FROM tickets WHERE id=?', pt.id))[0].escalated_to === ashaId
+    && (await q("SELECT 1 FROM notifications WHERE template_key='escalated' AND ticket_id=? AND recipient='asha@example.com'", pt.id)).length === 1);
   }
 
   // ======================= H. UI smoke test =======================
