@@ -319,6 +319,7 @@ async function shell(active, render, title) {
   app.innerHTML = `<div class="top"><span class="logo"><img src="logo-mark.png" alt="">ONE Desk</span>
     <nav>${nav.map(([h, l, ic]) => `<a href="#/${h}" class="${active === h ? 'on' : ''}">${I(ic, 17)}${l}</a>`).join('')}</nav>
     <span class="sp"></span>${sa ? `<select id="tsw">${S.me.tenants.map(t => `<option value="${t.id}" ${t.id === S.tenant ? 'selected' : ''}>${esc(t.code)}</option>`).join('')}</select>` : ''}
+    <a href="#/settings" class="iconbtn" title="App &amp; settings: install ONE Desk" aria-label="App and settings" style="margin-right:4px">${I('settings', 20)}</a>
     <a href="#/c/me" title="${esc(u.name)}" style="display:flex;gap:10px;align-items:center;color:var(--ink)"><span class="who" style="text-align:right;line-height:1.2"><b style="font-size:13.5px">${esc(u.name)}</b><br><span class="muted small">${u.role.replace('_', ' ')}</span></span><span class="avatar">${initials}</span></a></div>
     <div class="cwrap">${active !== 'c' || title ? `<div class="head"><a class="iconbtn" href="#/c" id="bk">${I('back')}</a><h1>${esc(title || (nav.find(n => n[0] === active) || [])[1] || '')}</h1></div>` : ''}<div id="main">Loading…</div></div>
     <div class="bnav">${bn('c', 'Home', 'home')}${bn('c/reports', 'Reports', 'chart')}<a href="#/c/new" class="fab">${I('plus', 26)}</a>
