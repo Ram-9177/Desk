@@ -96,6 +96,20 @@ Sign in at `https://stmarys-desk.supercxo.ai/#/login`, then remove the two `SUPE
 
 The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is set (32+ characters). It listens on `HOST` (127.0.0.1) and trusts `X-Forwarded-For` only from loopback, i.e. nginx, so per-IP rate limits see the real client. Run exactly **one** process (the pm2 file does): the email queue, rate limits and settings cache are in memory.
 
+### Add a super admin, or reset a forgotten super admin password
+
+On the server, in the app folder (the password goes in quotes; it is never stored in the repo):
+
+```bash
+SUPER_ADMIN_EMAIL=you@example.com SUPER_ADMIN_PASSWORD='YourPassword' SUPER_ADMIN_NAME='Your Name' npm run add-super-admin
+```
+
+A new email becomes another super admin; an existing one becomes a super admin with this password. Nobody else is changed. Sign in, then change the password under Profile.
+
+## Add a new campus (tenant)
+
+Super admin → **Tenants → Add**: code (e.g. `VJA`), name, slug (e.g. `vijayawada`). The campus gets its own link `/#/d/<slug>`, its own ticket numbers from 0001, its own people, teams, sub-teams, limits, queue and escalation. A code or slug already in use is refused, so existing campus links never change. Then switch to it (top right) and add People, Services and SLA as below.
+
 ## First-time setup in the app
 
 1. Sign in as the super admin (Staff login).
