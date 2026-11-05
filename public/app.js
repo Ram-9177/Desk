@@ -87,7 +87,7 @@ document.addEventListener('error', e => { const img = e.target; if (img.tagName 
   const a = img.closest('a'); a.className = 'fchip'; a.textContent = '📎 ' + img.alt; }, true);
 const formVals = form => Object.fromEntries(new FormData(form));
 // Get the app (install.js): Android / Chrome install in one tap, iPhone gets the Add to Home Screen steps
-const installBtn = () => installBtnHtml();
+const installBtn = () => ''; // the sticky Install button (install.js) is on every screen, so no second one in the page
 // The requestor's step-by-step guide lives beside the app, at guide/requestor.html. A first visit gets a card offering it;
 // Start guide or Not now hides that card for good on this device.
 const guideSeen = k => { try { return localStorage.getItem(k) === '1'; } catch { return true; } };
@@ -159,8 +159,6 @@ async function portal(slug, q, view, code) {
       ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with voice in English or తెలుగు.')}
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
-      ${opt('#/login', 'user', 'c1', 'Staff login', 'Providers and admins sign in here')}
-      ${opt('#/install', 'settings', 'c3', 'App & settings', 'Install ONE Desk on iPhone, Android, Mac or PC')}
       ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
     wireGuide('guide-seen', route);
     return;
@@ -1007,7 +1005,7 @@ async function botAsk(q, quiet) {
 
 // ================= ROUTER =================
 async function route() {
-  document.onkeydown = null; clearInterval(pollT); stickyInstall(); // the Install button stays on every screen until installed
+  document.onkeydown = null; clearInterval(pollT); stickyInstall(); cornerMenu(location.hash); // Install button and the Sign in corner on every screen
   const [p, qs] = location.hash.slice(1).split('?'), q = new URLSearchParams(qs), seg = p.split('/').filter(Boolean);
   botFor(seg[0] === 'd' && seg[1] ? `/public/${seg[1]}/bot` : seg[0] === 'c' && S.token ? '/bot' : null); // the bot, for who is looking
   try {
@@ -1026,10 +1024,10 @@ async function route() {
     const camps = await api('/public');
     if (camps.length === 1) return location.replace(`#/d/${camps[0].slug}`);
     if (!camps.length) { app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University"><h1>ONE <span>Desk</span></h1>
-      <p class="muted">The service desk is being set up. Please check back soon.</p><p class="muted" style="margin-top:20px">Staff? <a href="#/login">Sign in</a></p></div>`; return; }
+      <p class="muted">The service desk is being set up. Please check back soon.</p></div>`; return; }
     app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University"><h1>ONE <span>Desk</span></h1><p class="muted">St. Mary's Group service desk. Choose your campus.</p>
       ${camps.map((c, i) => `<a class="svc" href="#/d/${c.slug}"><span class="chip c${i % 5}">${I('building', 22)}</span><span class="t"><b>${esc(c.name)}</b><span class="muted small">${esc(c.code)}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}
-      <p class="muted" style="text-align:center;margin-top:20px">Staff? <a href="#/login">Sign in</a></p>${installBtn()}</div>`;
+      ${installBtn()}</div>`;
   } catch (e) { app.innerHTML = `<div class="wrap"><h1>Not found</h1><p class="muted">${esc(e.message)}</p><a href="#/">Home</a></div>`; }
 }
 // #/install: the full "get the app" page, for a link or a QR code on a notice board
@@ -1040,6 +1038,20 @@ function installPage() {
   mountGuide($('#ig'), () => toast('ONE Desk installed. Find it on your home screen.'));
 }
 window.__toast = toast;
+// Top-right corner on every public screen (phone and desktop): Sign in, and under it App & settings.
+function cornerMenu(hash) {
+  let el = document.querySelector('.corner');
+  if (/^#\/(c|login)\b/.test(hash)) { el?.remove(); return; } // the staff desk and the sign-in page have their own header
+  if (!el) { el = document.createElement('div'); el.className = 'corner'; document.body.append(el); }
+  const signed = !!S.token;
+  el.innerHTML = `<button type="button" class="corner-btn" aria-haspopup="true" aria-label="Sign in and settings">${I('user', 18)}<span>${signed ? 'My desk' : 'Sign in'}</span>${I('chev', 14)}</button>
+    <div class="corner-menu" role="menu">
+      <a href="${signed ? '#/c' : '#/login'}" role="menuitem">${I('user', 18)}<span><b>${signed ? 'Open my desk' : 'Staff sign in'}</b><small>Service providers and admins</small></span></a>
+      <a href="#/settings" role="menuitem">${I('settings', 18)}<span><b>App &amp; settings</b><small>Install on iPhone, Android, Mac or PC</small></span></a>
+    </div>`;
+}
+document.addEventListener('click', e => { const c = document.querySelector('.corner'); if (!c) return;
+  if (e.target.closest('.corner-btn')) c.classList.toggle('open'); else c.classList.remove('open'); });
 addEventListener('hashchange', route);
 route();
 // Installable app (PWA): the service worker caches the screens for offline opening; install.js handles the Install button and the guide.

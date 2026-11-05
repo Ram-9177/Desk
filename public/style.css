@@ -288,3 +288,12 @@ body.console .botp{bottom:calc(152px + env(safe-area-inset-bottom,0px))}@media(m
 @media print{.istick{display:none}}
 .wrap{padding-bottom:max(90px,var(--pb,0px))}
 .istick.one{background:var(--ok);color:#fff}
+/* top-right corner on public screens: Sign in, with App & settings under it */
+.corner{position:absolute;top:calc(14px + env(safe-area-inset-top,0px));right:max(14px,env(safe-area-inset-right,0px));z-index:30}
+.corner-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-weight:700;font-size:14px;cursor:pointer;box-shadow:var(--shadow)}
+.corner-btn svg:last-child{transform:rotate(90deg);transition:transform .15s}.corner.open .corner-btn svg:last-child{transform:rotate(-90deg)}
+.corner-menu{display:none;position:absolute;right:0;top:calc(100% + 8px);min-width:250px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 30px rgba(0,0,0,.14);padding:6px}
+.corner.open .corner-menu{display:block}
+.corner-menu a{display:flex;gap:12px;align-items:center;padding:10px 12px;border-radius:10px;color:var(--ink)}.corner-menu a:hover{background:var(--brand-2)}
+.corner-menu a svg{color:var(--brand);flex:none}.corner-menu b{display:block;font-size:14px}.corner-menu small{display:block;color:var(--muted);font-size:12px}
+body:not(.console) .wrap{padding-top:64px}
