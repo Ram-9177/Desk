@@ -66,6 +66,15 @@ export const MAIL_EVENTS = [
   { key: 'note', label: 'Update from the provider', who: 'Requestor', when: 'A provider adds a public note', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] New update on your ticket',
     body: 'Hi {{requestor_name}},\n{{actor_name}} added an update to "{{subject}}":\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
+  { key: 'reopen_requested', label: 'Reopen requested', who: 'Provider who closed it', when: 'The requestor asks to reopen a closed ticket (they accept or decline)', vars: [...T, 'note', 'actor_name'],
+    subject: '[{{ticket_no}}] Reopen requested: {{subject}}',
+    body: '{{actor_name}} asks to reopen "{{subject}}", which you closed.\nReason: {{note}}\nOpen the ticket to accept (it reopens with a fresh target) or decline (it stays closed). You can reply with a note first.\n[[Accept or decline|{{staff_link}}]]\n{{timeline}}' },
+  { key: 'reopen_accepted', label: 'Reopen accepted', who: 'Requestor', when: 'The provider accepts their reopen request', vars: [...T, 'note', 'actor_name'],
+    subject: '[{{ticket_no}}] Your ticket is reopened',
+    body: 'Hi {{requestor_name}},\n{{actor_name}} accepted your request: "{{subject}}" is open again and the team is on it.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
+  { key: 'reopen_declined', label: 'Reopen declined', who: 'Requestor', when: 'The provider declines their reopen request', vars: [...T, 'note', 'actor_name'],
+    subject: '[{{ticket_no}}] About your reopen request',
+    body: 'Hi {{requestor_name}},\n{{actor_name}} looked at your request to reopen "{{subject}}" and kept it closed:\n{{note}}\nStill a problem? Reply with a note on the ticket, or raise a new ticket.\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
   { key: 'requestor_note', label: 'Requestor added a note', who: 'Service providers', when: 'The requestor adds a note on the ticket page', vars: [...T, 'note'],
     subject: '[{{ticket_no}}] {{requestor_name}} added a note',
     body: '{{requestor_name}} added a note to "{{subject}}":\n{{note}}\n[[Open the ticket|{{staff_link}}]]\n{{timeline}}\n{{ticket_details}}' },
@@ -118,7 +127,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
-const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
+const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', reopen_requested: 'closed', reopen_declined: 'closed', reopen_accepted: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
 const sampleAll = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: key === 'invite' ? { kind: 'provider', url: PROVIDER_GUIDE } : { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
 export const sampleVars = (base, key) => eventByKey(key)?.who === 'Requestor' ? forRequestor(sampleAll(base, key)) : sampleAll(base, key);
 
@@ -154,6 +163,8 @@ export const toText = (body, blocks = {}) => String(body).split('\n').map(line =
 // One reassuring sentence about what happens next, per status.
 export function nextStep(p) {
   const working = p.escalated_to ? `Escalated to ${p.escalated_to}, who is now following it up with the ${p.service} team.` : `The ${p.service} team is working on it. Target: ${p.due}.`;
+  if (p.suggestion) return { closed: `Closed${p.closed_at ? ` on ${p.closed_at}` : ''}. Thank you for the suggestion.`, rejected: 'The team could not take this suggestion forward this time.' }[p.status]
+    || `The ${p.service} team will read your suggestion. If they reply, we'll email you.`;
   if (p.status === 'open' && p.queue_no) return `Today's tickets for the ${p.service} team are full${p.daily_cap ? ` (they take ${p.daily_cap} a day)` : ''}. Your queue number is ${p.queue_no}`
     + `${p.queue_ahead ? `, with ${p.queue_ahead} ticket${p.queue_ahead === 1 ? '' : 's'} ahead of you` : ', you are next'}. It reaches the team on ${p.lands_on}; we'll email you then. Target: ${p.due}.`;
   return { open: p.escalated_to ? working : `The ${p.service} team has received it and will pick it up shortly. Target: ${p.due}.`, in_progress: working,

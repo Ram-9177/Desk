@@ -272,10 +272,22 @@ try {
   check('points total 10', (await api('/points', { token: T.pavan })).data.me === 10);
   check('close email has the reopen offer', /reopen/i.test((await mailsFor('0001')).find(m => m.k === 'status_closed')?.subject + (await q("SELECT body FROM notifications WHERE template_key='status_closed' AND subject LIKE '%[0001]%'"))[0]?.body));
   check('closed → hold is refused', (await act(ids.t1, { to: 'hold', note: 'x', hold_reason: 'parts' })).status === 409);
-  const rp = await ok('requestor reopens within the window', '/public/alpha/tickets/0001/reopen', { method: 'POST', body: { reason: 'Noisy again' } });
-  check('ticket is open again', rp.status === 'open' && rp.reopen_count === 1);
+  const rp = await ok('requestor asks to reopen within the window', '/public/alpha/tickets/0001/reopen', { method: 'POST', body: { reason: 'Noisy again' } });
+  check('a reopen is a request: still closed, waiting for the provider who closed it', rp.status === 'closed' && !!rp.reopen_request && /Pavan/.test(rp.reopen_request.with) && rp.events.some(e => e.event_type === 'reopen_requested'));
+  check('asking twice is refused', (await api('/public/alpha/tickets/0001/reopen', { method: 'POST', body: { reason: 'Again' } })).status === 409);
+  check('the provider who closed it is emailed to accept or decline', (await mailsFor('0001')).some(m => m.k === 'reopen_requested' && m.recipient === 'pavan@example.com'));
+  check('it shows in their Reopen requests list', (await api('/tickets?status=reopen', { token: T.pavan })).data.some(t => t.ticket_no === '0001') && (await api('/reports?days=7', { token: T.pavan })).data.counts.reopen_requests === 1);
+  await ok('they talk first: the provider replies with a note', `/tickets/${ids.t1}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Is it the regulator or the motor?' } });
+  await ok('the requester answers on the ticket page', '/public/alpha/tickets/0001/notes', { method: 'POST', body: { body: 'The motor hums.' } });
+  check('the note conversation is on the closed ticket', (await api('/public/alpha/tickets/0001')).data.events.filter(e => e.event_type === 'note').length >= 2);
+  const dWho = (await api(`/tickets/${ids.t1}`, { token: T.pavan })).data.reopen_request;
+  check('the ticket page tells the closer they decide', dWho?.can_decide === true && dWho.note === 'Noisy again');
+  check('decline needs a note', (await api(`/tickets/${ids.t1}/reopen-request`, { token: T.pavan, method: 'POST', body: { decision: 'accept' } })).status === 400);
+  await ok('the closer accepts', `/tickets/${ids.t1}/reopen-request`, { token: T.pavan, method: 'POST', body: { decision: 'accept', note: 'Sending the electrician again' } });
+  const rp2 = (await api('/public/alpha/tickets/0001')).data;
+  check('ticket is open again, request cleared', rp2.status === 'open' && rp2.reopen_count === 1 && !rp2.reopen_request);
   check('reopen costs the closer 5 points', (await api('/points', { token: T.pavan })).data.me === 5);
-  check('providers emailed about the reopen', (await mailsFor('0001')).some(m => m.k === 'reopened' && m.recipient === 'pavan@example.com'));
+  check('providers emailed about the reopen, the requester told it was accepted', (await mailsFor('0001')).some(m => m.k === 'reopened' && m.recipient === 'pavan@example.com') && (await mailsFor('0001')).some(m => m.k === 'reopen_accepted' && m.recipient === 'r1@example.com'));
   r = await raise('alpha', elecBody('Raj', 'r4@example.com')); ids.t4 = (await q("SELECT id FROM tickets WHERE ticket_no='0004' AND tenant_id=?", alpha.id))[0].id;
   r = await act(ids.t4, { to: 'rejected', note: 'Duplicate of 0001' }); check('reject with reason', r.status === 200);
   check('requestor sees rejected and cannot reopen', (await api('/public/alpha/tickets/0004')).data.status === 'rejected' && (await api('/public/alpha/tickets/0004/reopen', { method: 'POST', body: { reason: 'x' } })).status === 409);
@@ -334,7 +346,13 @@ try {
   check('escalation emails: only the escalation person (not the provider), and the requestor acknowledgement', mA.some(m => m.k === 'escalated' && m.recipient === 'lata@example.com') && !mA.some(m => m.k === 'escalated' && m.recipient === 'pavan@example.com') && mA.some(m => m.k === 'escalated_requestor' && m.recipient === 'r6@example.com'));
   check('requestor timeline says who it went to', (await api(`/public/alpha/tickets/${noA}`)).data.events.some(e => e.event_type === 'escalated' && e.to_value === 'Lata Lead'));
   r = await act(ids.tA, { to: 'closed', note: 'Fixed by the lead' }, T.lata); check('escalation person can close it', r.status === 200);
-  await ok('requestor reopens it', `/public/alpha/tickets/${noA}/reopen`, { method: 'POST', body: { reason: 'Still broken' } });
+  await ok('requestor asks to reopen it', `/public/alpha/tickets/${noA}/reopen`, { method: 'POST', body: { reason: 'Still broken' } });
+  check('only the provider who closed it (or an admin) decides', (await api(`/tickets/${ids.tA}/reopen-request`, { token: T.pavan, method: 'POST', body: { decision: 'accept', note: 'x' } })).status === 403);
+  await ok('the lead who closed it declines first', `/tickets/${ids.tA}/reopen-request`, { token: T.lata, method: 'POST', body: { decision: 'decline', note: 'Please check the switch first' } });
+  const dec = (await api(`/public/alpha/tickets/${noA}`)).data;
+  check('declined: stays closed, the requester sees why and is emailed', dec.status === 'closed' && !dec.reopen_request && dec.events.some(e => e.event_type === 'reopen_declined' && /switch/.test(e.body)) && (await mailsFor(noA)).some(m => m.k === 'reopen_declined'));
+  await ok('the requester asks again', `/public/alpha/tickets/${noA}/reopen`, { method: 'POST', body: { reason: 'Checked the switch, still broken' } });
+  await ok('this time the lead accepts', `/tickets/${ids.tA}/reopen-request`, { token: T.lata, method: 'POST', body: { decision: 'accept', note: 'Reopening' } });
   check('reopen clears the escalation', !(await q('SELECT escalated_at FROM tickets WHERE id=?', ids.tA))[0].escalated_at);
   await run('UPDATE tickets SET due_at=? WHERE id=?', past, wi.id); // make the walk-in ticket overdue
   const att = await ok('attention list', '/attention', { token: T.asha });
@@ -344,7 +362,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('19 email steps listed, none connected yet', cfg0.events.length === 19 && !cfg0.url);
+  check('22 email steps listed, none connected yet', cfg0.events.length === 22 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -724,6 +742,33 @@ try {
   const em = (await waitFor(async () => { const r = await q("SELECT recipient FROM notifications WHERE template_key='escalated' AND ticket_id=?", lt.id); return r.length ? r : null; }, 5000) || []).map(r => r.recipient);
   check('on time it escalates to the chosen officer', escd?.escalated_to === ashaId, JSON.stringify(escd));
   check('only the escalation officer is emailed, not the team’s providers', em.length === 1 && em[0] === 'asha@example.com', JSON.stringify(em));
+  }
+
+  sec('Suggestion box and team SLA');
+  { const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id };
+  await stop(); await start();
+  const sg = await api('/public/alpha/tickets', { method: 'POST', body: { kind: 'suggestion', service_id: ids.elec, name: 'Sia', email: 'sia@sugg.example.com', phone: '9000066666', requestor_type: 'faculty', identifier: 'FAC9', department: 'Physio',
+    subject: 'Motion-sensor lights in corridors', description: 'Lights stay on all night; sensors would save power.', form_data: { loc_block: '', issue: '' } } });
+  const st_ = (await q('SELECT * FROM tickets WHERE ticket_no=? AND tenant_id=?', sg.data?.ticket_no, A.tenant))[0];
+  check('a suggestion goes through the same form: no location or service questions needed', sg.status === 200 && sg.data.kind === 'suggestion', JSON.stringify(sg.error || sg.data));
+  check('it has no target time, low priority, and never counts as overdue', st_.kind === 'suggestion' && st_.due_at === null && st_.priority === 'low');
+  check('a suggestion needs words', (await api('/public/alpha/tickets', { method: 'POST', body: { kind: 'suggestion', service_id: ids.elec, name: 'Sia', email: 'sia2@sugg.example.com', phone: '9000066667', requestor_type: 'faculty', identifier: 'F', department: 'D', subject: 'x' } })).status === 400);
+  check('the provider sees it under Suggestions, with the requester type', (await api('/tickets?status=suggestions', { token: T.pavan })).data.some(t => t.id === st_.id && t.requestor_type === 'faculty'));
+  const sd = (await api(`/tickets/${st_.id}`, { token: T.pavan })).data;
+  check('its page has no SLA clock', sd.kind === 'suggestion' && sd.sla_left_min === null);
+  check('the received email says the team will read it (no target)', (await q("SELECT body, html FROM notifications WHERE template_key='created' AND ticket_id=?", st_.id))[0]?.html.includes('will read your suggestion'));
+  await ok('priority can still change, without a target', `/tickets/${st_.id}/priority`, { token: T.pavan, method: 'POST', body: { priority: 'high' } });
+  check('still no target after that', (await q('SELECT due_at FROM tickets WHERE id=?', st_.id))[0].due_at === null);
+  const cl = await api(`/tickets/${st_.id}/status`, { token: T.pavan, method: 'POST', body: { to: 'closed', note: 'Added to next year’s plan' } });
+  check('closing a suggestion gives no SLA points', cl.status === 200 && cl.data.points === undefined);
+  // team SLA: a sub-team without its own targets uses its main team's
+  const main = await ok('main team with its own SLA', '/services', { ...A, method: 'POST', body: { code: 'CIVIL', name: 'Civil works', sla: { critical: 2, high: 4, medium: 6, low: 12 }, form_schema: { form_type: 'general', fields: [] } } });
+  const sub = await ok('sub-team with none', '/services', { ...A, method: 'POST', body: { code: 'PAINT', name: 'Painting', parent_id: main.id, form_schema: { form_type: 'general', fields: [] } } });
+  check('the team’s SLA is saved', (await api('/services', A)).data.find(x => x.id === main.id)?.sla.medium === 6);
+  const pt = await api('/public/alpha/tickets', { method: 'POST', body: { service_id: sub.id, name: 'Pi', email: 'pi@sla.example.com', phone: '9000077771', requestor_type: 'staff', identifier: 'S1', department: 'Admin', subject: 'Wall paint peeling', location: 'Block C' } });
+  const pr_ = (await q('SELECT created_at, due_at FROM tickets WHERE ticket_no=? AND tenant_id=?', pt.data.ticket_no, A.tenant))[0];
+  const { calendar, workingBetween } = await import('../sla.js'), tnr = (await q('SELECT * FROM tenants WHERE id=?', A.tenant))[0];
+  check('a sub-team ticket uses its main team’s target (6 working hours, not the campus 8)', workingBetween(calendar(tnr), pr_.created_at, pr_.due_at) === 6 * 60, JSON.stringify(pr_));
   }
 
   sec('Food: rate a meal (feedback) or report a problem (ticket)');

@@ -626,3 +626,27 @@ body.on-ticket .cwrap>.head{display:none}
 .kl{display:flex;align-items:center;gap:8px}.kl .tile{width:24px;height:24px;border-radius:7px}
 .stl .sicon{width:26px;height:26px;border-radius:8px;background:#F9FAFB}
 .menu a .tile svg,.mrow .tile svg,.chead .tile svg,.kl .tile svg{color:inherit}
+
+/* ============ Suggestion box, requester-type badges, reopen requests ============ */
+.kindsw{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#EAECF0;border-radius:14px;padding:4px;margin-bottom:6px}
+.kindsw label{margin:0;cursor:pointer}.kindsw input{position:absolute;opacity:0;width:1px;height:1px}
+.kindsw span{display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;border-radius:10px;font-weight:500;font-size:14px;color:var(--text-3)}
+.kindsw input:checked+span{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(16,24,40,.10)}.kindsw input:focus-visible+span{outline:2px solid var(--accent)}
+.kindsw input[value=suggestion]:checked+span svg{color:#DC6803}
+.kindhint{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:#FFFAEB;color:#93370D;font-size:13px;margin-top:8px}.kindhint svg{flex:none;color:#DC6803;margin-top:1px}
+.kindhint[hidden],.prob-only[hidden]{display:none}
+/* requester type: student plain white; the others coloured like priority badges */
+.rtb{display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);font-size:12px;font-weight:600;border:1px solid transparent;white-space:nowrap;vertical-align:1px}
+.rtb.rt-student{background:#fff;border-color:var(--border);color:var(--text-2)}
+.rtb.rt-faculty{background:#F4F3FF;color:#5925DC}.rtb.rt-staff{background:#F0FDF9;color:#107569}.rtb.rt-parent{background:#FFFAEB;color:#B54708}.rtb.rt-visitor{background:#FDF2FA;color:#C11574}
+.whochips{display:flex;flex-wrap:wrap;gap:8px}.whochips label{margin:0;cursor:pointer}.whochips input{position:absolute;opacity:0;width:1px;height:1px}
+.whochips .rtb{min-height:40px;padding:0 16px;font-size:14px;font-weight:500;opacity:.75}
+.whochips input:checked+.rtb{opacity:1;font-weight:600;box-shadow:0 0 0 2px var(--surface),0 0 0 4px currentColor}.whochips input:checked+.rtb.rt-student{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--text-2)}
+.whochips input:focus-visible+.rtb{outline:2px solid var(--accent);outline-offset:4px}
+@media (max-width:767px){.whochips .rtb{min-height:44px}}
+.pill.sugg{color:#B54708;background:#FFFAEB;border-color:#FEDF89}.pill.sugg svg{color:#DC6803}.pill.reoq{color:#B54708;background:#FFFAEB;border-color:#FEDF89}
+.reoreq{flex:1 1 100%;display:flex;flex-direction:column;gap:10px;border-color:#FEDF89;background:#FFFCF5;padding:16px 20px}
+.reo-h{display:flex;gap:10px;align-items:center}.reo-h b{font-weight:600}.reo-acts{display:flex;gap:10px;flex-wrap:wrap}
+.reobar{border-color:#FEDF89;background:#FFFCF5}.reobar svg{color:#DC6803}
+.slarow>*{min-width:110px}
+@media (max-width:767px){.tk-cols .reoreq{order:0}}

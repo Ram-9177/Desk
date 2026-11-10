@@ -99,7 +99,9 @@ const tenantBySlug = async slug => { const t = await one('SELECT * FROM tenants 
 const providersFor = async (tenantId, serviceId) => await all(`SELECT u.id,u.name,u.email,u.phone FROM service_members m JOIN users u ON u.id=m.user_id
   WHERE m.tenant_id=? AND m.service_id=? AND u.is_active=1`, tenantId, serviceId);
 async function targetHours(tenantId, serviceId, priority) {
+  const parent = serviceId ? (await one('SELECT parent_id FROM services WHERE id=?', serviceId))?.parent_id : null; // a sub-team uses its main team's SLA when it has none
   const r = await one('SELECT target_hours h FROM sla_policies WHERE tenant_id=? AND service_id=? AND priority=?', tenantId, serviceId, priority)
+    || (parent && await one('SELECT target_hours h FROM sla_policies WHERE tenant_id=? AND service_id=? AND priority=?', tenantId, parent, priority))
     || await one('SELECT target_hours h FROM sla_policies WHERE tenant_id=? AND service_id IS NULL AND priority=?', tenantId, priority);
   return r ? r.h : DEFAULT_HOURS[priority];
 }
@@ -116,7 +118,7 @@ async function award(t, userId, points, reason) {
 async function leaveHold(t, ts) {
   const held = workingBetween(await calOf(t.tenant_id), t.hold_started_at, ts);
   if (t.hold_due_at && ts > t.hold_due_at) await award(t, t.hold_by, POINTS.holdBreach, 'Hold ran past its hold SLA');
-  return { held, due: addWorking(await calOf(t.tenant_id), t.due_at, held) };
+  return { held, due: t.due_at ? addWorking(await calOf(t.tenant_id), t.due_at, held) : null }; // a suggestion has no target to move
 }
 
 // Validate and normalise a service's custom form (built in the admin's field builder).
@@ -231,11 +233,12 @@ async function ticketVars(t, extra = {}) {
   const provNames = (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', ');
   const escName = t.escalated_to ? (await one('SELECT name FROM users WHERE id=?', t.escalated_to))?.name || '' : '';
   const q = t.status === 'open' ? await queueInfo(t) : null;
-  const progress = { ...(q ? { queue_no: q.queue_no, queue_ahead: q.ahead, lands_on: q.lands_on, daily_cap: q.daily_cap } : {}), escalated_to: [...ACTIVE, 'hold'].includes(t.status) ? escName : '', status: t.status, service: svc?.name, due: fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
+  const sug = t.kind === 'suggestion';
+  const progress = { suggestion: sug, ...(q ? { queue_no: q.queue_no, queue_ahead: q.ahead, lands_on: q.lands_on, daily_cap: q.daily_cap } : {}), escalated_to: [...ACTIVE, 'hold'].includes(t.status) ? escName : '', status: t.status, service: svc?.name, due: sug ? '' : fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
     hold_reason: held && t.hold_reason ? holdReasons(tn).find(x => x.key === t.hold_reason)?.label || '' : '', resume_by: held && t.hold_due_at ? fmtIST(t.hold_due_at) : '' };
   const ticket_details = [['Ticket', t.ticket_no], ['Service', svc?.name], ['Subject', t.subject], ['Description', t.description], ['Location', t.location], ...answers,
     ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)],
-    ...(q ? [['Queue number', `${q.queue_no} · reaches the team on ${q.lands_on}`]] : []), ...([...ACTIVE, 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
+    ...(q ? [['Queue number', `${q.queue_no} · reaches the team on ${q.lands_on}`]] : []), ...(!sug && [...ACTIVE, 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
     ['Handled by', provNames || 'Being assigned']].filter(([, x]) => x !== undefined && x !== null && String(x).trim() !== '').map(([k, x]) => [k, String(x)]);
   // photos: the ones sent with the ticket go with its details, later ones with the update they came with
   const files = await all('SELECT event_id, file_name, mime_type, storage_key FROM attachments WHERE ticket_id=? ORDER BY created_at', t.id);
@@ -252,7 +255,7 @@ async function ticketVars(t, extra = {}) {
   });
   return { progress, ticket_details, timeline, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
-    requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), due: fmtIST(t.due_at),
+    requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), kind: sug ? 'Suggestion' : 'Ticket', due: sug ? 'No target (suggestion)' : fmtIST(t.due_at),
     providers: (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', '), ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, queue_no: q?.queue_no ?? '', lands_on: q?.lands_on || '', queue_note: queueNote(q), ...extra };
 }
@@ -395,7 +398,11 @@ async function createTicket(tenant, b, opts) {
   req_(b.name, 'Please fill in your name'); req_(b.subject, 'Please fill in the subject');
   if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('Please enter a valid email address, so we can send you updates');
   if (b.requestor_type && !REQUESTOR_TYPES.includes(b.requestor_type)) throw bad('Bad requestor type');
-  const schema = JSON.parse(svc.form_schema || '{}'), fd = b.form_data || {}, portal = opts.channel === 'portal';
+  const schema = JSON.parse(svc.form_schema || '{}'), portal = opts.channel === 'portal';
+  // Suggestion box (on the same form): an idea for the team, not a problem; no location, no service questions, no target time
+  const suggestion = b.kind === 'suggestion';
+  // a suggestion keeps only the student's own details (branch, ID, department); the service's problem questions are skipped
+  const fd = suggestion ? Object.fromEntries(Object.entries(b.form_data || {}).filter(([k]) => k.startsWith('stu_'))) : b.form_data || {}; if (suggestion) b.form_data = fd;
   // student details (branch, student ID, department) are asked only when the person says they are a student;
   // everyone else gives the ID and department that match who they are (faculty ID, staff ID, ward's ID…)
   const asStudent = hasStudent(schema) && (b.requestor_type || 'student') === 'student';
@@ -405,9 +412,10 @@ async function createTicket(tenant, b, opts) {
     if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('Please enter a valid phone number (7–15 digits)');
     if (!asStudent && !opts.food) { req_(b.identifier, 'Please fill in your ID (student ID, faculty ID, staff ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
   }
-  buildFormCheck(schema, fd, f => f.key.startsWith('stu_') && !asStudent);
+  buildFormCheck(schema, fd, f => (f.key.startsWith('stu_') && !asStudent) || (suggestion && !f.key.startsWith('stu_')));
   // the form type's answers fill the ticket's location and the requestor's ID / department
-  if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');
+  if (suggestion) { req_(b.description, 'Please write your suggestion'); b.location = b.location ? String(b.location).slice(0, 200) : null; }
+  else if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');
   else if (isGeneral(schema) && opts.channel !== 'internal') req_(b.location, 'Please fill in the location');
   if (asStudent) Object.assign(b, { identifier: fd.stu_id, department: fd.stu_dept, requestor_type: 'student' });
   if (b.idempotency_key) {
@@ -417,7 +425,7 @@ async function createTicket(tenant, b, opts) {
   if (portal) await checkDailyLimit(tenant, b);
   // same-day duplicates: a report from the portal joins today's open ticket for the same place and problem (merge.js)
   const ts = now(), day = dayIn(tenant.timezone, ts), lkey = opts.channel === 'internal' ? null : locationKey(schema, fd, b.location), prob = problemOf(schema, fd);
-  const mergeable = portal && lkey && prob && b.merge !== 'no';
+  const mergeable = !suggestion && portal && lkey && prob && b.merge !== 'no';
   let t, first = false, merged = null; // first: this person's first report here, so the email also links the guide
   try { t = await tx(async () => {
     // every report for this place today waits its turn here, so 200 at once still make one ticket
@@ -436,13 +444,13 @@ async function createTicket(tenant, b, opts) {
       merged = await joinTicket(m, r, b, contact, opts.actor, ts);
       return merged.ticket;
     }
-    const byStaff = PRIORITIES.includes(b.priority) && opts.actor.type === 'user', priority = byStaff ? b.priority : 'medium';
+    const byStaff = PRIORITIES.includes(b.priority) && opts.actor.type === 'user', priority = byStaff ? b.priority : suggestion ? 'low' : 'medium';
     // the team's daily intake: past it, a portal ticket waits in the team's queue (staff-entered tickets always land now)
-    const slot = portal && svc.daily_cap > 0 ? await queueSlot(tenant, svc, day) : { day };
+    const slot = !suggestion && portal && svc.daily_cap > 0 ? await queueSlot(tenant, svc, day) : { day };
     const t = await insert('tickets', { id: uid(), tenant_id: tenant.id, ticket_no: await nextTicketNo(tenant), service_id: svc.id, requestor_id: r.id,
       subject: String(b.subject).slice(0, 200), description: b.description, location: b.location, form_data: JSON.stringify(b.form_data || {}),
       priority, status: 'open', channel: opts.channel, is_internal: opts.channel === 'internal' ? 1 : 0, created_by_user_id: opts.actor.type === 'user' ? opts.actor.id : null,
-      due_at: await dueFrom(tenant.id, slot.lands_at || ts, await targetHours(tenant.id, svc.id, priority) * 60), tracking_token: crypto.randomBytes(24).toString('base64url'),
+      due_at: suggestion ? null : await dueFrom(tenant.id, slot.lands_at || ts, await targetHours(tenant.id, svc.id, priority) * 60), kind: suggestion ? 'suggestion' : 'issue', tracking_token: crypto.randomBytes(24).toString('base64url'),
       idempotency_key: b.idempotency_key || null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,
       location_key: lkey, problem_key: prob?.key, problem_label: prob?.label, created_date: day, affected_count: 1, priority_by_staff: byStaff ? 1 : 0, not_merged: b.merge === 'no' ? 1 : 0,
       queued: slot.queued ? 1 : 0, queue_day: slot.day, lands_at: slot.lands_at || null });
@@ -526,7 +534,8 @@ async function publicTicket(t) {
   const r = await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id);
   // no priority here: the service provider sets it, for the team only
   return { ticket_no: t.ticket_no, subject: t.subject, description: t.description, location: t.location, status: t.status, affected_count: t.affected_count || 1,
-    queue: t.status === 'open' ? await queueInfo(t) : null,
+    queue: t.status === 'open' ? await queueInfo(t) : null, kind: t.kind || 'issue',
+    reopen_request: t.reopen_requested_at && t.status === 'closed' ? { at: t.reopen_requested_at, with: (await reopenDeciders(t)).map(x => x.name.split(' ')[0]).join(' or ') } : null,
     due_at: t.due_at, created_at: t.created_at, closed_at: t.closed_at, reopen_count: t.reopen_count, service: svc.name,
     hold_label: t.status === 'hold' && t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label : null, hold_due_at: t.status === 'hold' ? t.hold_due_at : null,
     reopen_until: t.status === 'closed' ? addH(t.closed_at, tn.reopen_window_days * 24) : null,
@@ -555,7 +564,7 @@ P.post('/:slug/tickets', wrap(async req => {
   limit('ip:' + req.ip, 300); limit('c:' + (b.email || b.phone || ''), 12); // a hostel on one campus Wi-Fi shares one address
   const t = await createTicket(tn, b, { channel: 'portal', actor: { type: 'requestor', name: b.name } });
   const type = (await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id))?.requestor_type;
-  return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1,
+  return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1, kind: t.kind || 'issue',
     queue: t.status === 'open' ? await queueInfo(t) : null,
     providers: (await providersFor(tn.id, t.service_id)).map(p => { const { email, ...c } = providerCard(p, type); return c; }) };
 }));
@@ -574,17 +583,30 @@ P.post('/:slug/tickets/:no/reopen', wrap(async req => {
   const t = await findPublic(req.params.slug, req.params.no, req.body), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
   assertTransition(t.status, 'open', 'requestor');
   if (Date.now() > new Date(addH(t.closed_at, tn.reopen_window_days * 24)).getTime()) throw new HttpErr(409, 'BAD_TRANSITION', 'The reopen window has passed; raise a new ticket');
-  const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
-  await doReopen(t, { type: 'requestor', id: t.requestor_id, name: r.name }, req_(req.body.reason, 'Give a reason'));
+  if (t.reopen_requested_at) throw new HttpErr(409, 'ALREADY_REQUESTED', 'You already asked to reopen this ticket. The team will answer soon; you can add a note meanwhile.');
+  limit('reopen:' + t.id, 5);
+  const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id), reason = req_(req.body.reason, 'Give a reason'), ts = now();
+  // a request, not a reopen: the provider who closed it accepts (it reopens) or declines (it stays closed)
+  await tx(async () => {
+    stillAs(await run('UPDATE tickets SET reopen_requested_at=?, reopen_request_note=?, updated_at=? WHERE id=? AND status=? AND reopen_requested_at IS NULL', ts, String(reason).slice(0, 2000), ts, t.id, 'closed'));
+    await addEvent(t, { type: 'requestor', id: t.requestor_id, name: r.name }, 'reopen_requested', { body: reason });
+  });
+  await notify(t, (await reopenDeciders(t)).map(u => u.email), 'reopen_requested', await ticketVars(t, { note: reason, actor_name: r.name }));
   return await publicTicket(await one('SELECT * FROM tickets WHERE id=?', t.id));
 }));
 // a conditional UPDATE that matched nothing: someone else changed the ticket since we read it
 const stillAs = r => { if (!r.changes) throw new HttpErr(409, 'BAD_TRANSITION', 'This ticket was just changed by someone else. Reload it and try again.'); };
-async function doReopen(t, actor, reason) {
+// Who decides a reopen request: the provider who closed the ticket; if they have left, the service's providers.
+async function reopenDeciders(t) {
+  const closer = t.closed_by && await one('SELECT id, name, email FROM users WHERE id=? AND is_active=1', t.closed_by);
+  return closer ? [closer] : await providersFor(t.tenant_id, t.service_id);
+}
+// penalty: the requestor asked for it (the ticket was not fixed), so the closer loses the reopen points
+async function doReopen(t, actor, reason, { penalty = false } = {}) {
   await tx(async () => {
-    if (actor.type === 'requestor') await award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
-    stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, due_at=?, updated_at=? WHERE id=? AND status=?',
-      'open', await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), t.id, t.status));
+    if (penalty) await award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
+    stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, reopen_requested_at=NULL, reopen_request_note=NULL, due_at=?, updated_at=? WHERE id=? AND status=?',
+      'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), t.id, t.status));
     await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: reason });
   });
   await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'reopened', await ticketVars(t, { note: reason, actor_name: actor.type === 'requestor' ? `the requestor (${actor.name})` : actor.name }));
@@ -603,7 +625,7 @@ async function publicBot(tn, q) {
     if (!t || t.is_internal) return { text: `I couldn't find ticket ${normNo(no)}. Check the number in your email, it looks like 0042.`, chips: ['Track my ticket', 'How to raise a ticket'] };
     const svc = await one('SELECT name FROM services WHERE id=?', t.service_id), up = await lastUpdate(t), names = (await providersFor(tn.id, t.service_id)).map(p => p.name.split(' ')[0]).join(', ');
     const qi = t.status === 'open' ? await queueInfo(t) : null;
-    const when = qi ? `It is in the ${svc.name} queue: number ${qi.queue_no}, reaching the team on ${qi.lands_on}. Target: ${fmtIST(t.due_at)}.` : ACTIVE.includes(t.status) && t.due_at < now() ? `It is taking longer than planned (the target was ${fmtIST(t.due_at)})${t.escalated_at ? ' and has been escalated for faster help' : ''}. We are sorry for the wait.`
+    const when = t.kind === 'suggestion' ? (t.status === 'closed' ? `Your suggestion was closed on ${fmtIST(t.closed_at)}. Thank you!` : `Your suggestion is with the ${svc.name} team. Thank you!`) : qi ? `It is in the ${svc.name} queue: number ${qi.queue_no}, reaching the team on ${qi.lands_on}. Target: ${fmtIST(t.due_at)}.` : ACTIVE.includes(t.status) && t.due_at < now() ? `It is taking longer than planned (the target was ${fmtIST(t.due_at)})${t.escalated_at ? ' and has been escalated for faster help' : ''}. We are sorry for the wait.`
       : t.status === 'hold' ? `It is on hold${t.hold_due_at ? `, expected to resume by ${fmtIST(t.hold_due_at)}` : ''}.` : ACTIVE.includes(t.status) ? `Target: ${fmtIST(t.due_at)}.` : t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}. Not fixed? You can reopen it within ${tn.reopen_window_days} days.` : 'This ticket was not accepted. You can raise a new one.';
     return { text: `Ticket ${t.ticket_no} is ${BOT_ST[t.status]}.\n${svc.name}${t.location ? ' · ' + t.location : ''}\n${when}${names ? `\nHandled by ${names}.` : ''}`
       + `${t.affected_count > 1 ? `\nKnown issue: ${t.affected_count} people reported this.` : ''}${up ? `\nLatest update (${fmtIST(up.created_at)}): ${up.body}` : ''}`,
@@ -820,6 +842,7 @@ S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
     daily_cap: dailyCap(b.daily_cap), parent_id: await parentTeam(req, b.parent_id, null), escalate_after_hours: escHours(b.escalate_after_hours) });
   if (Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, b.escalation_user_ids);
   else if (b.escalation_user_id) await setEscalations(req, s.id, [b.escalation_user_id]);
+  if (b.sla) for (const p of PRIORITIES) if (Number(b.sla[p]) > 0) await insert('sla_policies', { id: uid(), tenant_id: req.tenantId, service_id: s.id, priority: p, target_hours: Number(b.sla[p]) });
   await audit(req, 'service.create', 'service', s.id, b); return s;
 }));
 S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -904,7 +927,7 @@ async function staffBot(req, q) {
       t.status === 'hold' ? `On hold: ${holdReasons(tn).find(x => x.key === t.hold_reason)?.label || 'no reason given'}, resume by ${fmtIST(t.hold_due_at)}` : '',
       t.escalated_at && [...ACTIVE, 'hold'].includes(t.status) ? `Escalated on ${fmtIST(t.escalated_at)}` : '', t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}` : ''].filter(Boolean).join('\n');
     return { text: `#${t.ticket_no} · ${t.subject}\n${BOT_ST[t.status]} · ${t.priority} priority${late ? ' · OVERDUE' : ''}${state ? '\n' + state : ''}\n${t.service}${t.location ? ' · ' + t.location : ''}${t.problem_label ? ' · ' + t.problem_label : ''}`
-      + `\nRaised by ${t.requestor}${t.affected_count > 1 ? ` and ${t.affected_count - 1} more` : ''} on ${fmtIST(t.created_at)}${[...ACTIVE, 'hold'].includes(t.status) ? `\nDue ${fmtIST(t.due_at)}` : ''}${up ? `\nLatest: ${up.body}` : ''}`,
+      + `\nRaised by ${t.requestor}${t.affected_count > 1 ? ` and ${t.affected_count - 1} more` : ''} on ${fmtIST(t.created_at)}${[...ACTIVE, 'hold'].includes(t.status) && t.due_at ? `\nDue ${fmtIST(t.due_at)}` : ''}${up ? `\nLatest: ${up.body}` : ''}`,
       items: [{ title: `Open #${t.ticket_no}`, href: `#/c/t/${t.id}` }] };
   }
   if (said(q, /overdue|late|missed|breach/)) { const c = await count(`t.status IN (${act}) AND t.due_at<?`, [...ACTIVE, n]);
@@ -961,7 +984,7 @@ S.get('/points', wrap(async req => ({
     WHERE p.tenant_id=? AND p.user_id=? ORDER BY p.created_at DESC LIMIT 15`, req.tenantId, req.user.id),
   leaderboard: await all(`SELECT u.id, u.name, coalesce((SELECT sum(points) FROM provider_points p WHERE p.user_id=u.id AND p.tenant_id=u.tenant_id),0) points,
       (SELECT count(*) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed') closed,
-      (SELECT round(100.0*count(*) FILTER (WHERE t.closed_at<=t.due_at)/greatest(1,count(*))) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed') on_time
+      (SELECT round(100.0*count(*) FILTER (WHERE t.closed_at<=t.due_at)/greatest(1,count(*))) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed' AND t.due_at IS NOT NULL) on_time
     FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND (u.role='provider' OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
     ORDER BY points DESC, closed DESC`, req.tenantId),
 })));
@@ -981,16 +1004,18 @@ const ticketQuery = async (req) => {
   const w = [`t.tenant_id=?`, sids.length ? `(t.service_id IN (${sids.map(() => '?').join()}) OR ${esc})` : `(${esc})`], a = [req.tenantId, ...sids, req.user.id, req.user.id], q = req.query;
   // tickets waiting in a team's daily queue show only under "In queue" until the day they land
   w.push(q.status === 'queued' ? 't.queued=1' : 't.queued=0');
-  if (q.status === 'overdue') { w.push("t.status IN ('open','in_progress') AND t.due_at<?"); a.push(now()); }
+  if (q.status === 'reopen') w.push("t.status='closed' AND t.reopen_requested_at IS NOT NULL");
+  else if (q.status === 'suggestions') w.push("t.kind='suggestion'");
+  else if (q.status === 'overdue') { w.push("t.status IN ('open','in_progress') AND t.due_at<?"); a.push(now()); }
   else if (q.status === 'escalated') w.push("t.escalated_at IS NOT NULL AND t.status IN ('open','in_progress','hold')");
-  else if (q.status && !['all', 'queued'].includes(q.status)) { w.push('t.status=?'); a.push(q.status); }
+  else if (q.status && !['all', 'queued', 'reopen', 'suggestions'].includes(q.status)) { w.push('t.status=?'); a.push(q.status); }
   if (q.service) { w.push('t.service_id=?'); a.push(q.service); }
   if (q.internal === '0') w.push('t.is_internal=0');
   if (q.q) { w.push('(t.ticket_no ILIKE ? OR t.subject ILIKE ? OR r.name ILIKE ?)'); a.push(...Array(3).fill(`%${q.q}%`)); }
   return { sql: w.join(' AND '), args: a };
 };
 const LIST_SQL = `SELECT t.id,t.ticket_no,t.subject,t.status,t.priority,t.channel,t.is_internal,t.location,t.due_at,t.created_at,t.updated_at,t.closed_at,t.hold_due_at,t.hold_reason,
-  t.escalated_at, t.affected_count, t.problem_label, t.queued, t.queue_day, t.lands_at, eu.name escalated_name, s.name service, s.code service_code, r.name requestor
+  t.escalated_at, t.affected_count, t.problem_label, t.queued, t.queue_day, t.lands_at, t.kind, t.reopen_requested_at, r.requestor_type, eu.name escalated_name, s.name service, s.code service_code, r.name requestor
   FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id LEFT JOIN users eu ON eu.id=t.escalated_to`;
 S.get('/tickets', wrap(async req => {
   const { sql, args } = await ticketQuery(req);
@@ -1008,7 +1033,7 @@ S.get('/tickets/:id', wrap(async req => {
   const t = await loadTicket(req);
   const tn = await tenantRow(t.tenant_id), cal = calendar(tn), n = now();
   return { ...t, form_data: JSON.parse(t.form_data), overdue: ACTIVE.includes(t.status) && t.due_at < n,
-    sla_left_min: ACTIVE.includes(t.status) ? (n <= t.due_at ? workingBetween(cal, n, t.due_at) : -workingBetween(cal, t.due_at, n)) : null,
+    sla_left_min: ACTIVE.includes(t.status) && t.due_at ? (n <= t.due_at ? workingBetween(cal, n, t.due_at) : -workingBetween(cal, t.due_at, n)) : null,
     hold_label: t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label || t.hold_reason : null,
     hold_over: t.status === 'hold' && t.hold_due_at && t.hold_due_at < n, hold_reasons: holdReasons(tn),
     escalated_name: t.escalated_to ? (await one('SELECT name FROM users WHERE id=?', t.escalated_to))?.name || null : null,
@@ -1019,7 +1044,9 @@ S.get('/tickets/:id', wrap(async req => {
     requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),
-    tracking_url: await trackUrl(t), queue: t.status === 'open' ? await queueInfo(t) : null };
+    tracking_url: await trackUrl(t), queue: t.status === 'open' ? await queueInfo(t) : null,
+    reopen_request: t.reopen_requested_at && t.status === 'closed' ? await (async () => { const d = await reopenDeciders(t);
+      return { at: t.reopen_requested_at, note: t.reopen_request_note, deciders: d.map(x => x.name), can_decide: isAdmin(req.user) || d.some(x => x.id === req.user.id) }; })() : null };
 }));
 S.post('/tickets', wrap(async req => {
   const b = req.body, channel = CHANNELS.includes(b.channel) && b.channel !== 'portal' ? b.channel : 'walk_in';
@@ -1046,7 +1073,7 @@ S.post('/tickets/:id/status', wrap(async req => {
       stillAs(await run('UPDATE tickets SET status=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, held, due, ts, t.id, t.status)); }
     else { let held = 0, due = t.due_at; if (t.status === 'hold') ({ held, due } = await leaveHold(t, ts));
       stillAs(await run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, ts, req.user.id, held, due, ts, t.id, t.status));
-      if (to === 'closed') {
+      if (to === 'closed' && due) {
         // share of the SLA window used: before due → 1 - remaining/target, after due → 1 + late/target
         const cal = await calOf(t.tenant_id), target = await targetHours(t.tenant_id, t.service_id, t.priority) * 60;
         const ratio = ts <= due ? 1 - workingBetween(cal, ts, due) / target : 1 + workingBetween(cal, due, ts) / target;
@@ -1086,11 +1113,28 @@ S.post('/tickets/:id/transfer', wrap(async req => {
   await notifyRequestors(t, 'transferred_requestor', tv);
   return { ok: true };
 }));
+// A requestor asked to reopen: the provider who closed it (or an admin) accepts (it reopens, with a fresh target) or declines (it stays closed)
+S.post('/tickets/:id/reopen-request', wrap(async req => {
+  const t = await loadTicket(req), decision = req.body.decision, note = req_(req.body.note, 'Please write a note for the requester');
+  if (!t.reopen_requested_at || t.status !== 'closed') throw new HttpErr(409, 'BAD_TRANSITION', 'There is no reopen request on this ticket');
+  const deciders = await reopenDeciders(t);
+  if (!isAdmin(req.user) && !deciders.some(x => x.id === req.user.id)) throw new HttpErr(403, 'FORBIDDEN', `Only ${deciders.map(x => x.name).join(' or ') || 'the provider who closed it'} or an admin can decide`);
+  if (decision === 'accept') {
+    await doReopen(t, actorOf(req), note, { penalty: true });
+    await notifyRequestors(t, 'reopen_accepted', await ticketVars(t, { note, actor_name: req.user.name }));
+    return { ok: true, status: 'open' };
+  }
+  if (decision !== 'decline') throw bad('Pick accept or decline');
+  await tx(async () => { stillAs(await run('UPDATE tickets SET reopen_requested_at=NULL, reopen_request_note=NULL, updated_at=? WHERE id=? AND status=? AND reopen_requested_at IS NOT NULL', now(), t.id, 'closed'));
+    await addEvent(t, actorOf(req), 'reopen_declined', { body: note }); });
+  await notifyRequestors(t, 'reopen_declined', await ticketVars(t, { note, actor_name: req.user.name }));
+  return { ok: true, status: 'closed' };
+}));
 S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
-  const due = await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
+  const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
   await tx(async () => { await run('UPDATE tickets SET priority=?, priority_by_staff=1, due_at=?, updated_at=? WHERE id=?', p, due, now(), t.id); // reports joining later never change it
     await addEvent(t, actorOf(req), 'priority_changed', { from: t.priority, to: p, internal: true }); });
   return { ok: true };
@@ -1098,6 +1142,7 @@ S.post('/tickets/:id/priority', wrap(async req => {
 S.post('/tickets/:id/extend', role('super_admin', 'tenant_admin'), wrap(async req => {
   const t = await loadTicket(req), h = Number(req.body.hours), reason = req_(req.body.reason, 'Give a reason');
   if (!(h > 0)) throw bad('Hours must be positive');
+  if (!t.due_at) throw bad('A suggestion has no due time to extend');
   const due = await dueFrom(t.tenant_id, t.due_at, h * 60);
   await tx(async () => { await run('UPDATE tickets SET due_at=?, updated_at=? WHERE id=?', due, now(), t.id);
     await addEvent(t, actorOf(req), 'due_extended', { from: t.due_at, to: due, body: reason, internal: true }); });
@@ -1111,6 +1156,7 @@ S.get('/attention', role('super_admin', 'tenant_admin'), wrap(async req => ({
   overdue: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status IN ('open','in_progress') AND t.due_at<? ORDER BY t.due_at`, req.tenantId, now()),
   escalated: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.escalated_at IS NOT NULL AND t.status IN ('open','in_progress','hold') ORDER BY t.escalated_at`, req.tenantId),
   stuck_hold: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='hold' AND t.hold_due_at<? ORDER BY t.hold_due_at`, req.tenantId, now()),
+  reopen_requests: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='closed' AND t.reopen_requested_at IS NOT NULL ORDER BY t.reopen_requested_at`, req.tenantId),
   failed_mail: await all("SELECT * FROM notifications WHERE tenant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 50", req.tenantId),
 })));
 S.post('/notifications/:id/resend', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -1130,13 +1176,15 @@ S.get('/reports', wrap(async req => {
   return { range: { from, to: to === '9999' ? n : to },
     counts: await one(`SELECT count(*) FILTER (WHERE status='open' AND queued=0) open, count(*) FILTER (WHERE status='open' AND queued=1) queued, count(*) FILTER (WHERE status='in_progress') in_progress, count(*) FILTER (WHERE status='hold') hold, count(*) FILTER (WHERE status IN ('open','in_progress') AND due_at<?) overdue,
       count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<?) closed_period, count(*) FILTER (WHERE created_at>=? AND created_at<?) created_period,
-      round(avg(CASE WHEN status='closed' AND closed_at>=? AND closed_at<? THEN extract(epoch FROM closed_at::timestamptz - created_at::timestamptz)/3600 - held_minutes/60.0 END),1) avg_hours,
-      round(100.0*count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<? AND closed_at<=due_at)/greatest(1,count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<?)),0) on_time_pct
+      round(avg(CASE WHEN status='closed' AND due_at IS NOT NULL AND closed_at>=? AND closed_at<? THEN extract(epoch FROM closed_at::timestamptz - created_at::timestamptz)/3600 - held_minutes/60.0 END),1) avg_hours,
+      round(100.0*count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<? AND closed_at<=due_at)/greatest(1,count(*) FILTER (WHERE status='closed' AND due_at IS NOT NULL AND closed_at>=? AND closed_at<?)),0) on_time_pct,
+      count(*) FILTER (WHERE status='closed' AND reopen_requested_at IS NOT NULL)::int reopen_requests, count(*) FILTER (WHERE kind='suggestion' AND status IN ('open','in_progress','hold'))::int suggestions
       FROM tickets WHERE tenant_id=? AND ${inS}`, n, from, to, from, to, from, to, from, to, from, to, ...base),
     by_service: await all(`SELECT s.name, count(*)::int raised, count(*) FILTER (WHERE t.status='open') open, count(*) FILTER (WHERE t.status='in_progress') in_progress, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status='rejected') rejected,
       count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue,
-      CASE WHEN count(*) FILTER (WHERE t.status='closed')>0 THEN round(100.0*count(*) FILTER (WHERE t.status='closed' AND t.closed_at<=t.due_at)/count(*) FILTER (WHERE t.status='closed'),0) END on_time_pct,
-      round(avg(CASE WHEN t.status='closed' THEN extract(epoch FROM t.closed_at::timestamptz - t.created_at::timestamptz)/3600 - t.held_minutes/60.0 END),1) avg_hours
+      CASE WHEN count(*) FILTER (WHERE t.status='closed' AND t.due_at IS NOT NULL)>0 THEN round(100.0*count(*) FILTER (WHERE t.status='closed' AND t.closed_at<=t.due_at)/count(*) FILTER (WHERE t.status='closed' AND t.due_at IS NOT NULL),0) END on_time_pct,
+      count(*) FILTER (WHERE t.kind='suggestion')::int suggestions,
+      round(avg(CASE WHEN t.status='closed' AND t.due_at IS NOT NULL THEN extract(epoch FROM t.closed_at::timestamptz - t.created_at::timestamptz)/3600 - t.held_minutes/60.0 END),1) avg_hours
       FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? AND t.created_at<? GROUP BY s.name ORDER BY raised DESC, s.name`, n, ...base, from, to),
     // per campus-local day (not UTC): tickets raised, and tickets closed, on that day
     daily: await all(`SELECT to_char((created_at::timestamptz AT TIME ZONE ?)::date, 'YYYY-MM-DD') d, count(*)::int c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY 1 ORDER BY 1`, tz, ...base, from, to),

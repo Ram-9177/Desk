@@ -15,6 +15,8 @@ const ST_ICON = { open: 'cdot', in_progress: 'cplay', hold: 'cpause', closed: 'c
 const statusIcon = (s, size = 18) => `<span class="sicon" style="color:${ST_VAR[s] ? `var(--st-${ST_VAR[s]}-icon)` : 'var(--st-neutral)'}" aria-hidden="true">${I(ST_ICON[s] || 'cdot', size)}</span>`;
 // PriorityTag: flag + label in the priority colour; the pill variant adds the soft background
 const priorityTag = (p, asPill = false) => `<span class="ptag pr-${p} ${asPill ? 'pv' : ''}">${I('flag', 12)}${cap(p)}</span>`;
+// Requester-type badge: Student is plain white; faculty, staff, parent and visitor each have their own colour, for a quick visual identity
+const rtBadge = t => t ? `<span class="rtb rt-${esc(t)}">${esc(cap(t))}</span>` : '';
 // CardHeading: 28px icon tile + title
 const TONE = { clock: 'amber', bell: 'amber', cpause: 'amber', star: 'amber', utensils: 'amber', user: 'blue', history: 'blue', file: 'blue', mail: 'blue', home: 'blue', chart: 'blue', ticket: 'blue',
   users: 'violet', grid: 'violet', building: 'violet', settings: 'slate', download: 'green', pencil: 'green', ccheck: 'green', shield: 'green', check: 'green', flag: 'rose', calert: 'rose', alert: 'rose', swap: 'teal', eye: 'teal', copy: 'slate', plus: 'blue' };
@@ -43,6 +45,7 @@ const I = (n, s = 20) => `<svg aria-hidden="true" width="${s}" height="${s}" vie
   swap: '<path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4"/>', file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6M16 13H8M16 17H8M10 9H8"/>',
   history: '<path d="M3 12a9 9 0 1 0 9-9 9.700 9.700 0 0 0-6.700 2.700L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>', pencil: '<path d="M17 3a2.800 2.800 0 1 1 4 4L7.500 20.500 2 22l1.500-5.500Z"/><path d="m15 5 4 4"/>',
   pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>', phone: '<path d="M22 16.900v3a2 2 0 0 1-2.200 2 19.800 19.800 0 0 1-8.600-3.100 19.500 19.500 0 0 1-6-6A19.800 19.800 0 0 1 2.100 4.200 2 2 0 0 1 4.100 2h3a2 2 0 0 1 2 1.700c.1 1 .4 1.900.7 2.800a2 2 0 0 1-.500 2.100L8.100 9.900a16 16 0 0 0 6 6l1.300-1.300a2 2 0 0 1 2.100-.400c.9.300 1.800.6 2.800.7a2 2 0 0 1 1.700 2Z"/>',
+  idea: '<path d="M9 18h6M10 22h4M15.1 14c.2-1 .7-1.700 1.400-2.500A6 6 0 1 0 7.500 11.500c.7.700 1.200 1.500 1.400 2.500"/>',
   star: '<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1z"/>', filter: '<path d="M22 3H2l8 9.5V19l4 2v-8.500z"/>',
   ticket: '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2M13 17v2M13 11v2"/>', flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7"/>',
   cdot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/>', cplay: '<circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4z"/>', cpause: '<circle cx="12" cy="12" r="10"/><path d="M10 15V9M14 15V9"/>',
@@ -246,7 +249,7 @@ async function foodScreens(slug, tenant, svc, flow) {
         <button type="button" class="btn soft" id="toRate" style="margin-top:8px">${I('play', 16)} Switch to rating</button></div></div>
       <label>Describe what happened</label><textarea name="description" required maxlength="2000" placeholder="What, where and when">${esc(c.description || '')}</textarea>
       <label>Photo <span class="req" aria-hidden="true">*</span> <small>(camera or gallery)</small></label>${fileButtons('food')}
-      <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div><div><label>I'm</label><select name="requestor_type">${['student', 'faculty', 'staff', 'parent', 'visitor'].map(t => `<option value="${t}">${cap(t)}</option>`).join('')}</select></div></div>
+      <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div></div><label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''}><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
       <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
         <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
       <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Continue</button></p></form></div>`;
@@ -306,31 +309,43 @@ function raiseForm(slug, tenant, svc, related) {
     <h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
-    <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div>
-      <div><label>I'm</label><select name="requestor_type" required>${REQUESTOR_TYPES.map(t => `<option value="${t}" ${hasStudent(svc.form_schema) && t === 'student' ? 'selected' : ''}>${cap(t)}</option>`).join('')}</select></div></div>
+    <div class="kindsw" role="radiogroup" aria-label="What would you like to do?">
+      <label><input type="radio" name="kind" value="issue" checked><span>${I('alert', 16)}Report a problem</span></label>
+      <label><input type="radio" name="kind" value="suggestion"><span>${I('idea', 16)}Share a suggestion</span></label></div>
+    <div class="kindhint" id="kindhint" hidden>${I('idea', 16)}<span>A suggestion goes to the ${esc(svc.name)} team as an idea, not a complaint. It has no deadline; they reply when they can.</span></div>
+    <label>Your name</label><input name="name" required autocomplete="name">
+    <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
     <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
       <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
     <div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
       <div><label><span id="dpl"></span></label><input name="department" required></div></div>
-    ${typeFields(svc)}
-    ${isGeneral(svc.form_schema) ? '<label>Location <small>(room, building)</small></label><input name="location" required>' : ''}
-    <label>Subject</label><input name="subject" required maxlength="200">
-    <label>Describe the problem</label><textarea name="description"></textarea>
-    ${customFields(svc)}
+    ${typeFields(svc).replace(/<div class="fsec" data-sec="loc"/, '<div class="fsec prob-only" data-sec="loc"')}
+    ${isGeneral(svc.form_schema) ? '<div class="prob-only"><label>Location <small>(room, building)</small></label><input name="location" required></div>' : ''}
+    <label id="subjL">Subject</label><input name="subject" required maxlength="200">
+    <label id="descL">Describe the problem</label><textarea name="description"></textarea>
+    <div class="prob-only">${customFields(svc)}</div>
     <label>Photos <small>(up to ${MAX_FILES})</small></label>${fileButtons('raise')}
     <div class="err" id="err"></div>
-    <p><button class="btn primary big">${I('send')} Raise ticket</button></p>
+    <p><button class="btn primary big" id="raiseBtn">${I('send')} <span>Raise ticket</span></button></p>
   </form></div>`;
   wireFiles('raise');
+  // Suggestion box: the same form; the problem's place and questions step aside, the wording changes
+  const kindSync = () => { const sug = $('#f').kind.value === 'suggestion';
+    $('#f').querySelectorAll('.prob-only').forEach(x => { x.hidden = sug; x.querySelectorAll('input, select, textarea').forEach(i => { if (sug) { i.dataset.req ??= i.required ? '1' : ''; i.required = false; } else if (i.dataset.req !== undefined) { i.required = i.dataset.req === '1'; } }); });
+    $('#kindhint').hidden = !sug; $('#subjL').firstChild.textContent = sug ? 'Your suggestion in a few words' : 'Subject';
+    $('#descL').firstChild.textContent = sug ? 'Your suggestion' : 'Describe the problem'; $('#f').description.required = sug;
+    $('#f').description.placeholder = sug ? 'What would make it better, and why?' : '';
+    $('#raiseBtn span').textContent = sug ? 'Send suggestion' : 'Raise ticket'; markRequired($('#f')); };
+  $('#f').querySelectorAll('[name=kind]').forEach(r => r.onchange = kindSync);
   // the "about you" questions follow "I'm": student ID for students, faculty ID for faculty, staff ID for staff, the ward's ID for parents…
   // On student services a student fills the student details section instead; everyone else gets the two ID questions.
-  const who = $('#f').requestor_type, idrow = $('#idrow'), stu = $('#f [data-sec="stu"]'), syncId = () => {
+  const who = $('#f').requestor_type, idrow = $('#idrow'), stu = $('#f [data-sec="stu"]'), syncId = () => { // who: the I'm chips (radio group)
     const [[il, ip], [dl, dp]] = WHO_FIELDS[who.value] || WHO_FIELDS.student, asStudent = !!stu && who.value === 'student';
     $('#idl').textContent = il; $('#dpl').textContent = dl; $('#f').identifier.placeholder = ip; $('#f').department.placeholder = dp;
     idrow.hidden = asStudent; idrow.querySelectorAll('input').forEach(i => i.required = !asStudent);
     if (stu) { stu.hidden = !asStudent; stu.querySelectorAll('input, select').forEach(i => i.required = asStudent); }
     markRequired($('#f')); }; // fields that just became required get their red *
-  who.onchange = syncId; syncId();
+  $('#f').querySelectorAll('[name=requestor_type]').forEach(r => r.addEventListener('change', syncId)); syncId(); kindSync();
   $('#f').onsubmit = async e => {
     e.preventDefault(); const btn = e.target.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
     try {
@@ -342,11 +357,11 @@ function raiseForm(slug, tenant, svc, related) {
       catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; // confirm mode: the person says whether it is the same issue
         r = await api(`/public/${slug}/tickets`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
       const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
-      app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Ticket raised</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-        <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+      app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>${r.kind === 'suggestion' ? 'Suggestion sent' : 'Ticket raised'}</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I(r.kind === 'suggestion' ? 'idea' : 'check', 28)}</span>
+        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
         <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
         ${r.merged ? knownIssue(r.affected_count) : ''}${queueBox(r.queue)}
-        <p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>
+        <p>${r.kind === 'suggestion' ? `It went to the ${esc(svc.name)} team. If they reply, we'll email you.` : `${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b>`}</p>
         ${r.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone && v.requestor_type !== 'student' ? ' · ' + esc(p.phone) : ''}</span>`).join('')}
         <p class="muted small" style="margin:14px 0 30px">${v.email ? 'We also emailed these details to you.' : 'Save this link — it is your key to the ticket.'}</p>
         <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Open ticket</a></div></div></div>`;
@@ -390,28 +405,29 @@ async function ticketPage(slug, no, q) {
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
-    note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
+    note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}`, reopen_requested: 'You asked to reopen', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
-  const canReopen = t.status === 'closed' && new Date(t.reopen_until) > new Date();
+  const canReopen = t.status === 'closed' && !t.reopen_request && new Date(t.reopen_until) > new Date(), sug = t.kind === 'suggestion';
   const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>My Ticket</h1>${pill(t.status)}</div>
     <div class="stub left"><div class="mono muted small">${t.ticket_no}</div><h2 style="margin:4px 0 2px;font-size:20px">${esc(t.subject)}</h2>
     <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>${knownIssue(t.affected_count)}${queueBox(t.queue)}
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
-      <div><b>${t.queue ? `In the queue · number ${t.queue.queue_no}` : STATUS_WORDS[t.status]}</b><div class="muted small">${ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
+      <div><b>${sug ? (t.status === 'closed' ? 'Suggestion closed' : 'Suggestion received') : t.queue ? `In the queue · number ${t.queue.queue_no}` : STATUS_WORDS[t.status]}</b><div class="muted small">${sug && t.status !== 'closed' ? `The ${esc(t.service)} team will read it. If they reply, we'll email you.` : ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
     <h2>What happened</h2><div class="card"><ul class="stamps">${t.events.map(e => `<li><b>${label(e)}</b><div class="when">${fmt(e.created_at)}${e.actor_type === 'user' ? ' · ' + esc(e.actor_name) : ''}</div>
       ${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
     ${t.status === 'rejected' ? `<div class="card">This ticket was rejected. <a href="#/d/${slug}" id="newt">Raise a new ticket</a></div>` : `
     <form id="nf" class="card"><b>Add a note</b><textarea name="body" required placeholder="Anything the team should know" style="margin-top:10px"></textarea>${fileButtons('note')}
       <p><button class="btn primary big">${I('send')} Send note</button></p></form>`}
-    ${canReopen ? `<form id="rf" class="card"><b>Not fixed?</b> <span class="muted small">Reopen until ${fmt(t.reopen_until)}.</span><textarea name="reason" required placeholder="What is still wrong?" style="margin-top:10px"></textarea>
-      <p><button class="btn danger big">Reopen ticket</button></p></form>` : ''}</div>`;
+    ${t.reopen_request ? `<div class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">Waiting for ${esc(t.reopen_request.with || 'the team')} to accept. You'll get an email either way; add a note above if there is more to tell.</div></div></div></div>` : ''}
+    ${canReopen ? `<form id="rf" class="card"><b>${sug ? 'Want to add to it?' : 'Not fixed?'}</b> <span class="muted small">Ask to reopen until ${fmt(t.reopen_until)}. ${sug ? '' : 'The person who closed it will accept or reply.'}</span><textarea name="reason" required placeholder="${sug ? 'What would you like the team to look at again?' : 'What is still wrong?'}" style="margin-top:10px"></textarea>
+      <p><button class="btn danger big">Ask to reopen</button></p></form>` : ''}</div>`;
   if ($('#nf')) { wireFiles('note'); $('#nf').onsubmit = async e => { e.preventDefault();
     try { await api(`/public/${slug}/tickets/${no}/notes`, { method: 'POST', body: { ...key, body: e.target.body.value, files: await readFiles(document.querySelectorAll('.f-note')) } });
       toast('Note sent'); ticketPage(slug, no, q); } catch (er) { toast(er.message); } }; }
   if ($('#rf')) $('#rf').onsubmit = async e => { e.preventDefault();
-    try { await api(`/public/${slug}/tickets/${no}/reopen`, { method: 'POST', body: { ...key, reason: e.target.reason.value } }); toast('Reopened'); ticketPage(slug, no, q); } catch (er) { toast(er.message); } };
+    try { await api(`/public/${slug}/tickets/${no}/reopen`, { method: 'POST', body: { ...key, reason: e.target.reason.value } }); toast('Request sent. The team will answer soon.'); ticketPage(slug, no, q); } catch (er) { toast(er.message); } };
 }
 
 // ================= STAFF =================
@@ -476,7 +492,7 @@ async function shell(active, render, title) {
 async function bellDot(admin) {
   const show = () => document.querySelectorAll('.ndot').forEach(d => d.hidden = !S.bell?.on);
   show(); if (!S.tenant || (S.bell && S.bell.for === S.tenant && Date.now() - S.bell.at < 60e3)) return;
-  try { const on = admin ? Object.values(await api('/attention')).some(l => l.length) : ((await api('/reports?days=7')).counts?.overdue || 0) > 0;
+  try { const on = admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7')).counts || {});
     S.bell = { on, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
 }
 // Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
@@ -501,13 +517,15 @@ const shortDate = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone:
 // what the last column / card foot says: [label, date, icon, isClosedLike]
 function ticketWhen(r) {
   const now = new Date().toISOString(), holdOver = r.status === 'hold' && r.hold_due_at && r.hold_due_at < now;
+  if (r.kind === 'suggestion' && [...ACTIVE, 'hold'].includes(r.status)) return ['Suggested', r.created_at, 'idea', false];
+  if (r.reopen_requested_at && r.status === 'closed') return ['Reopen asked', r.reopen_requested_at, 'history', false];
   return r.queued ? ['Reaches the team', r.lands_at, 'clock', false] : ACTIVE.includes(r.status) ? [isOverdue(r) ? 'Overdue since' : 'Due', r.due_at, 'clock', false]
     : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause', false] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark', true];
 }
-const isOverdue = r => r.overdue ?? (ACTIVE.includes(r.status) && !!r.due_at && r.due_at < new Date().toISOString()); // lists that come without the flag
+const isOverdue = r => r.kind === 'suggestion' ? false : r.overdue ?? (ACTIVE.includes(r.status) && !!r.due_at && r.due_at < new Date().toISOString()); // lists that come without the flag
 const ticketStatus = r => isOverdue(r) ? 'overdue' : r.status; // an open ticket past its due time shows as Overdue
-const ticketFlags = r => `${r.escalated_at && [...ACTIVE, 'hold'].includes(r.status) ? `<span class="pill" title="Escalated to ${esc(r.escalated_name || '')}">Escalated</span>` : ''}${r.queued ? '<span class="pill">In queue</span>' : ''}${r.is_internal ? '<span class="pill">Internal</span>' : ''}`;
-const ticketPeople = r => `${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}`;
+const ticketFlags = r => `${r.kind === 'suggestion' ? `<span class="pill sugg">${I('idea', 12)}Suggestion</span>` : ''}${r.reopen_requested_at && r.status === 'closed' ? '<span class="pill reoq">Reopen requested</span>' : ''}${r.escalated_at && [...ACTIVE, 'hold'].includes(r.status) ? `<span class="pill" title="Escalated to ${esc(r.escalated_name || '')}">Escalated</span>` : ''}${r.queued ? '<span class="pill">In queue</span>' : ''}${r.is_internal ? '<span class="pill">Internal</span>' : ''}`;
+const ticketPeople = r => `${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}${r.requestor_type && r.requestor_type !== 'student' ? ' ' + rtBadge(r.requestor_type) : ''}`;
 // One ticket as a card: one link to the ticket (phones, and the short lists on other screens)
 function ticketCard(r) {
   const w = ticketWhen(r);
@@ -544,8 +562,9 @@ async function queue(main) {
     const day = o => now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', ...o }), tn = tenantObj();
     const cell = (k, label, n, cap_) => `<button type="button" class="stcell ${st.status === k ? 'on' : ''}" data-s="${k}" aria-pressed="${st.status === k}"><span class="stl">${statusIcon(k)}${label}</span>
       <b class="${k === 'overdue' && n > 0 ? 'hot' : ''}">${n || 0}</b><span class="stc">${cap_}</span></button>`;
-    const counts = { open: c.open, in_progress: c.in_progress, hold: c.hold, overdue: c.overdue, queued: c.queued };
-    const tabs = [['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['queued', 'In queue']];
+    const counts = { open: c.open, in_progress: c.in_progress, hold: c.hold, overdue: c.overdue, queued: c.queued, reopen: c.reopen_requests, suggestions: c.suggestions };
+    const tabs = [['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['reopen', 'Reopen requests'], ['escalated', 'Escalated'], ['suggestions', 'Suggestions'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['queued', 'In queue']]
+      .filter(([k]) => !['reopen'].includes(k) || counts[k] || st.status === k);
     main.innerHTML = `<div class="home">
       <div class="greet"><div><div class="eyebrow"><span class="d-only">${day({ weekday: 'long', day: 'numeric', month: 'long' })} · ${esc(tn?.name || '')}</span><span class="m-only">${day({ weekday: 'short', day: 'numeric', month: 'short' })} · ${esc(tn?.code || '')}</span></div>
         <h1>${greet}, ${esc(S.me.user.name.split(' ')[0])} <span class="wave" aria-hidden="true">👋</span></h1></div>
@@ -554,6 +573,7 @@ async function queue(main) {
       <div class="ovr"><div class="card wk"><span class="d-only">${ringSvg(pct, 88, 8)}</span><span class="m-only">${ringSvg(pct, 64, 7)}</span><div><div class="eyebrow up">This week</div><div class="wk-l">${done} of ${total} tickets closed</div><div class="wk-s d-only">${total - done} still open this week</div></div></div>
         <div class="card stcard">${cell('open', 'Open', c.open, 'Awaiting action')}${cell('in_progress', 'In progress', c.in_progress, 'Being worked on')}${cell('hold', 'On hold', c.hold, 'Paused, clock stopped')}${cell('closed', 'Closed', c.closed_period, 'Last 7 days')}${cell('overdue', 'Overdue', c.overdue, 'Past SLA due time')}
           <a class="stcell viewrep m-only" href="#/c/reports">View reports ${I('chev', 16)}</a></div></div>
+      ${c.reopen_requests ? `<button type="button" class="queuebar reobar" data-s="reopen">${I('history', 20)}<span><b>${c.reopen_requests} reopen request${c.reopen_requests === 1 ? '' : 's'} waiting for you</b><span class="small">A requester says it is not fixed. Open the ticket to accept or decline; you can reply with a note first.</span></span>${I('chev', 18)}</button>` : ''}
       ${c.queued ? `<button type="button" class="queuebar" data-s="queued">${I('clock', 20)}<span><b>${c.queued} ticket${c.queued === 1 ? '' : 's'} waiting in the queue</b><span class="small">Your team's tickets for today are full. These reach you on the next working days, a day's worth at a time.</span></span>${I('chev', 18)}</button>` : ''}
       <div class="card mt"><div class="mt-h"><div class="mt-t"><h2>My tickets</h2><span class="mt-n">${rows.length} ticket${rows.length === 1 ? '' : 's'}</span>
           <button type="button" class="iconbtn m-only" id="fsvb" aria-label="Filter by service" aria-expanded="${!!more}">${I('filter', 20)}</button></div>
@@ -591,11 +611,11 @@ async function workspace(main, id, { admin }) {
   const stName = v => (STATUS_INFO[v] || [v])[0];
   const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
-    reopened: 'Reopened', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
+    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
     priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
   // timeline dot: a status change takes the new status's colour; reopened = Open; priority = red; created = accent; the rest grey
   const evDot = e => e.event_type === 'status_changed' ? `var(--st-${ST_VAR[e.to_value] || 'neutral'})` : e.event_type === 'reopened' ? 'var(--st-open)'
-    : e.event_type === 'priority_changed' ? 'var(--st-overdue)' : e.event_type === 'created' ? 'var(--accent)' : 'var(--st-neutral)';
+    : e.event_type === 'priority_changed' ? 'var(--st-overdue)' : e.event_type === 'created' ? 'var(--accent)' : e.event_type === 'reopen_requested' ? 'var(--st-hold)' : 'var(--st-neutral)';
   const targets = allowedTargets(t.status);
   const HINT = { same: 'Keeps the status and adds a note.',
     open: 'Reopens the ticket with a fresh target; the service providers are emailed.',
@@ -613,17 +633,18 @@ async function workspace(main, id, { admin }) {
   const start = new Date(t.lands_at || t.created_at).getTime(), due = new Date(t.due_at).getTime(), used = Math.max(0, Math.min(100, Math.round(100 * (Date.now() - start) / Math.max(1, due - start))));
   const dayOf = d => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d), dd = Math.round((new Date(dayOf(new Date(due))) - new Date(dayOf(new Date()))) / 864e5);
   const slaTag = !ACTIVE.includes(t.status) ? '' : t.sla_left_min < 0 ? '<span class="tag danger">Overdue</span>' : t.sla_left_min <= 24 * 60 ? `<span class="tag warn">${dd <= 0 ? 'Due today' : dd === 1 ? 'Due tomorrow' : 'Due soon'}</span>` : '';
-  const slaBig = t.queue ? `Queue no. ${t.queue.queue_no}` : ACTIVE.includes(t.status) ? fmtLeft(t.sla_left_min) + (t.sla_left_min < 0 ? ' late' : '') : t.status === 'hold' ? 'On hold' : stName(t.status);
-  const slaSub = t.queue ? `of ${t.queue.waiting} waiting · reaches the team on ${esc(t.queue.lands_on)}` : ACTIVE.includes(t.status) ? `${t.sla_left_min < 0 ? 'Past the SLA' : 'Working time left'} · due ${shortDate(t.due_at)}`
+  const sug = t.kind === 'suggestion';
+  const slaBig = sug ? 'Suggestion' : t.queue ? `Queue no. ${t.queue.queue_no}` : ACTIVE.includes(t.status) ? fmtLeft(t.sla_left_min) + (t.sla_left_min < 0 ? ' late' : '') : t.status === 'hold' ? 'On hold' : stName(t.status);
+  const slaSub = sug ? 'An idea from the requester: no target time, never overdue.' : t.queue ? `of ${t.queue.waiting} waiting · reaches the team on ${esc(t.queue.lands_on)}` : ACTIVE.includes(t.status) ? `${t.sla_left_min < 0 ? 'Past the SLA' : 'Working time left'} · due ${shortDate(t.due_at)}`
     : t.status === 'hold' ? `${esc(t.hold_label || '')} · ${t.hold_over ? 'hold limit passed' : 'resume by'} ${shortDate(t.hold_due_at)} · SLA clock paused` : t.closed_at ? shortDate(t.closed_at) : '';
   const slaCard = `<div class="card side sla">${`<div class="chead">${tile('clock')}<span>SLA</span><span class="sp"></span>${slaTag}</div>`}
     <div class="sla-row"><span class="sla-tile m-only">${I('clock', 20)}</span><div><div class="sla-big">${slaBig}</div><div class="sla-sub">${slaSub}</div></div></div>
-    ${ACTIVE.includes(t.status) ? `<div class="pbar" role="progressbar" aria-label="Share of the SLA window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><i style="width:${used}%;${t.sla_left_min < 0 ? 'background:var(--danger)' : ''}"></i></div>` : ''}
+    ${ACTIVE.includes(t.status) && !sug ? `<div class="pbar" role="progressbar" aria-label="Share of the SLA window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><i style="width:${used}%;${t.sla_left_min < 0 ? 'background:var(--danger)' : ''}"></i></div>` : ''}
     ${t.escalated_name && live ? `<div class="sla-note danger">${I('calert', 15)}<span>Escalated to ${esc(t.escalated_name)} · ${shortDate(t.escalated_at)}</span></div>` : ''}
-    <div class="sla-foot"><span>Time on hold: ${t.held_minutes ? fmtLeft(t.held_minutes) : '0m'}</span>${admin && live ? '<button type="button" class="linkbtn" id="ext">Extend due time</button>' : ''}</div></div>`;
+    ${sug ? '' : `<div class="sla-foot"><span>Time on hold: ${t.held_minutes ? fmtLeft(t.held_minutes) : '0m'}</span>${admin && live ? '<button type="button" class="linkbtn" id="ext">Extend due time</button>' : ''}</div>`}</div>`;
   const prev = t.requestor_history || [];
   const people = `<div class="card side">${cardHeading('user', 'Requester')}
-      <div class="person">${avatar(r.name, 40, 'accent')}<div><b>${esc(r.name)}</b><div class="psub">${esc([cap(r.requestor_type || ''), r.department, r.identifier].filter(Boolean).join(' · '))}</div></div></div>
+      <div class="person">${avatar(r.name, 40, 'accent')}<div><b>${esc(r.name)}</b> ${rtBadge(r.requestor_type || 'student')}<div class="psub">${esc([r.department, r.identifier].filter(Boolean).join(' · '))}</div></div></div>
       ${r.email ? `<a class="crow" href="mailto:${esc(r.email)}">${I('mail', 15)}<span>${esc(r.email)}</span></a>` : ''}${r.phone ? `<a class="crow" href="tel:${esc(r.phone)}">${I('phone', 15)}<span>${esc(r.phone)}</span></a>` : ''}
       ${prev.length ? `<div class="sdiv"></div><div class="slabel">Previous tickets</div>${prev.map(h => `<a class="prow" href="#/c/t/${h.id}"><span class="mono">#${h.ticket_no}</span>${pill(h.status)}</a>`).join('')}` : ''}</div>
     ${t.requestors?.length > 1 ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}
@@ -650,7 +671,7 @@ async function workspace(main, id, { admin }) {
         <label class="chk"><input type="checkbox" name="is_internal"> Internal — hide from requester</label><span class="sp"></span>
         <button class="btn primary" id="go">${I('check', 16)}<span class="d-only">Update ticket</span><span class="m-only">Save update</span></button></div>
       <div class="muted f-act-n" style="font-size:12px"></div><div class="helper" id="mailhint"></div></form>`;
-  const flags = `${t.is_internal ? '<span class="pill">Internal</span>' : ''}${t.escalated_name && live ? '<span class="pill">Escalated</span>' : ''}${t.queue ? '<span class="pill">In queue</span>' : ''}`;
+  const flags = `${sug ? `<span class="pill sugg">${I('idea', 12)}Suggestion</span>` : ''}${t.is_internal ? '<span class="pill">Internal</span>' : ''}${t.escalated_name && live ? '<span class="pill">Escalated</span>' : ''}${t.queue ? '<span class="pill">In queue</span>' : ''}`;
   const seg = sessionStorage.getItem('tkseg') || 'activity';
   main.innerHTML = `<div class="tkp" data-seg="${seg}">
     <div class="tk-appbar m-only"><button type="button" class="ibtn" data-back aria-label="Back to my tickets">${I('back', 22)}</button><div class="tk-abt"><b>Ticket</b><span class="mono">#${t.ticket_no}</span></div>
@@ -661,6 +682,11 @@ async function workspace(main, id, { admin }) {
       <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
     <div class="tk-cols">
       <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
+      ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
+        ${t.reopen_request.note ? `<div class="bubble">${esc(t.reopen_request.note)}</div>` : ''}
+        ${t.reopen_request.can_decide ? `<div class="psub">Reply with a note below if you need more detail first. Accepting reopens the ticket with a fresh target; the requester is emailed either way.</div>
+          <div class="reo-acts"><button type="button" class="btn primary" data-reo="accept">${I('history', 16)}Accept and reopen</button><button type="button" class="btn" data-reo="decline">Decline</button></div>`
+        : `<div class="psub">Waiting for ${esc(t.reopen_request.deciders.join(' or ') || 'the provider who closed it')} to accept or decline.</div>`}</section>` : ''}
       <div class="tk-main"><section class="card sec-details">${details}</section>
         <section class="card sec-activity"><div class="act-h">${cardHeading('history', 'Activity')}<span class="act-n">${evs.length} event${evs.length === 1 ? '' : 's'}<span class="m-only"> · Newest first</span></span></div>${timeline}${updateForm}</section></div>
       <aside class="tk-side">${slaCard}<div class="sec-people">${people}</div></aside></div>
@@ -697,7 +723,11 @@ async function workspace(main, id, { admin }) {
     <label>Note</label><textarea name="note" required></textarea>`, async f => { await api(`/tickets/${id}/transfer`, { method: 'POST', body: formVals(f) }); toast('Transferred'); location.hash = '#/c'; });
   const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
-  main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
+  main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
+  main.querySelectorAll('[data-reo]').forEach(b => b.onclick = () => { const acc = b.dataset.reo === 'accept';
+    dlg(`<h2>${acc ? 'Accept and reopen' : 'Decline the reopen request'}</h2><p class="muted">${acc ? 'The ticket opens again with a fresh target. The requester is emailed.' : 'The ticket stays closed. The requester is emailed your note.'}</p>
+      <label>Note to the requester</label><textarea name="note" required placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea>`,
+      async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
   // phones: the three-dots menu holds the secondary actions
   $('#tkmore').onclick = () => actionSheet('More actions', [live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
     ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
@@ -749,6 +779,7 @@ async function attention(main) {
   const sec = (icon, title, n, body, hint) => `<section class="card att"><div class="att-h">${cardHeading(icon, title)}<span class="tab-cnt ${n ? 'hot' : ''}">${n}</span></div>${n ? body : emptyState('All clear', hint)}</section>`;
   const tix = rows => `${ticketTable(rows)}<div class="tcards">${rows.map(ticketCard).join('')}</div>`;
   main.innerHTML = `<div class="attp">
+    ${a.reopen_requests?.length ? sec('history', 'Reopen requests', a.reopen_requests.length, tix(a.reopen_requests), '') : ''}
     ${sec('calert', 'Overdue', a.overdue.length, tix(a.overdue), 'No ticket is past its due time.')}
     ${sec('bell', 'Escalated', a.escalated.length, tix(a.escalated), 'No open ticket is escalated.')}
     ${sec('cpause', 'On hold past the hold limit', a.stuck_hold.length, tix(a.stuck_hold), 'No hold has run past its limit.')}
@@ -759,7 +790,12 @@ async function attention(main) {
 }
 
 async function services(main) {
-  const [svcs, users] = await Promise.all([api('/services'), api('/users')]);
+  const [svcs, users, slaCfg] = await Promise.all([api('/services'), api('/users'), api('/sla')]);
+  const campusSla = slaCfg.targets || {};
+  // SLA for this team (department): its own target hours per priority; empty = the main team's, else the campus default
+  const slaBox = (s = {}) => { const par = s.parent_id ? svcs.find(x => x.id === s.parent_id) : null;
+    return `<b style="display:block;margin-top:20px">SLA for this team</b><div class="muted small">Working hours to close, by priority. Leave a box empty to use ${par ? `${esc(par.name)}'s (then the campus default)` : 'the campus default'}. Set on <a href="#/c/sla">SLA &amp; points</a>.</div>
+      <div class="row slarow">${PRIORITIES.slice().reverse().map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" step="1" inputmode="numeric" name="sla_${p}" value="${s.sla?.[p] || ''}" placeholder="${(par?.sla?.[p]) || campusSla[p] || ''} h"></div>`).join('')}</div>`; };
   const eligible = users.filter(u => u.is_active);
   const provSel = (name, val) => `<select name="${name}"><option value="">— None —</option>${eligible.map(u => `<option value="${u.id}" ${u.id === val ? 'selected' : ''}>${esc(u.name)}${u.role === 'tenant_admin' ? ' (admin)' : ''}</option>`).join('')}</select>`;
   const iconPick = cur => `<div class="iconpick">${ICONS.map((ic, i) => `<label><input type="radio" name="icon" value="${ic}" ${ic === cur ? 'checked' : ''}><span class="chip c${i % 5}">${I(ic, 20)}</span></label>`).join('')}</div>`;
@@ -783,14 +819,15 @@ async function services(main) {
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
       <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc((s.escalation_users || []).map(x => x.name).join(', ') || (s.parent_id ? 'the main team’s officers' : 'admin'))}${s.escalate_after_hours != null ? ` · ${s.escalate_after_hours ? `${s.escalate_after_hours} working h after the target` : 'as soon as the target is missed'}` : ''}</span>
+      ${Object.keys(s.sla || {}).length ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Own SLA: ${PRIORITIES.slice().reverse().filter(p => s.sla[p]).map(p => `${cap(p)} ${s.sla[p]}h`).join(' · ')}</span>` : ''}
       ${s.parent_id ? `<span class="muted small" style="display:block;margin-top:4px">${I('grid', 13)} Sub-team of ${esc(svcs.find(x => x.id === s.parent_id)?.name || '')}</span>` : ''}
       ${s.daily_cap ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Takes ${s.daily_cap} tickets a day${s.queue?.waiting ? ` · <strong>${s.queue.waiting} waiting in the queue</strong>` : ''}</span>` : ''}</span>
       <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
   const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always give their own details, the location and a subject first. Tick Required for questions people must answer. A dropdown option called Other lets people type their own answer.</div><div id="fb"></div>`;
-  $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${qHead}`, async f => {
-    const s = await api('/services', { method: 'POST', body: { code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_ids: checked(f, 'escs'), parent_id: f.elements.parent_id.value || null, daily_cap: f.elements.daily_cap.value, escalate_after_hours: f.elements.escalate_after_hours.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
+  $('#add').onclick = () => { let fb; const d = dlg(`<h2>New service</h2>${fields()}${slaBox()}${qHead}`, async f => {
+    const s = await api('/services', { method: 'POST', body: { sla: Object.fromEntries(PRIORITIES.map(p => [p, f.elements['sla_' + p].value])), code: f.elements.code.value, name: f.elements.name.value, description: f.elements.description.value, escalation_user_ids: checked(f, 'escs'), parent_id: f.elements.parent_id.value || null, daily_cap: f.elements.daily_cap.value, escalate_after_hours: f.elements.escalate_after_hours.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) } } });
     if (members(f).length) await api(`/services/${s.id}/members`, { method: 'PUT', body: { user_ids: members(f) } });
     toast('Service created'); services(main); });
     d.style.maxWidth = '680px'; wireType(d); fb = formBuilder(d.querySelector('#fb'), []);
@@ -802,7 +839,7 @@ async function services(main) {
   main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => {
     const s = svcs.find(x => x.id === b.dataset.e), { icon, ...schema } = s.form_schema;
     let fb; const d = dlg(`<h2>Edit ${esc(s.name)}</h2>${fields(s)}${qHead}
-      <div class="row">${PRIORITIES.map(p => `<div><label style="text-transform:capitalize">${p} target <small>working h, override</small></label><input type="number" name="sla_${p}" value="${s.sla[p] || ''}"></div>`).join('')}</div>
+      ${slaBox(s)}
       <label style="font-weight:400"><input type="checkbox" name="is_active" ${s.is_active ? 'checked' : ''}> Active (shown on the portal)</label>`,
       async f => {
         await api(`/services/${s.id}`, { method: 'PATCH', body: { name: f.elements.name.value, description: f.elements.description.value, escalation_user_ids: checked(f, 'escs'), parent_id: f.elements.parent_id.value || null, daily_cap: f.elements.daily_cap.value, escalate_after_hours: f.elements.escalate_after_hours.value, form_schema: { fields: fb.get(), icon: f.elements.icon.value, ...typeOf(f) },

@@ -71,6 +71,11 @@ ALTER TABLE services ADD COLUMN IF NOT EXISTS daily_cap INT DEFAULT 0;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS parent_id TEXT;
 -- a team's own escalation time: working hours past the target before it escalates (NULL = the campus setting)
 ALTER TABLE services ADD COLUMN IF NOT EXISTS escalate_after_hours DOUBLE PRECISION;
+-- a suggestion (Suggestion box on the raise form) is a ticket with kind='suggestion': no target time, never overdue or escalated
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'issue';
+-- reopen is a request: the provider who closed the ticket accepts (it reopens) or declines (it stays closed)
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS reopen_requested_at TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS reopen_request_note TEXT;
 -- escalation officers: any number per service (escalation_user_id stays the first, for older code paths)
 CREATE TABLE IF NOT EXISTS service_escalations (service_id TEXT NOT NULL REFERENCES services(id), user_id TEXT NOT NULL REFERENCES users(id), PRIMARY KEY (service_id, user_id));
 INSERT INTO service_escalations (service_id, user_id) SELECT id, escalation_user_id FROM services WHERE escalation_user_id IS NOT NULL ON CONFLICT DO NOTHING;
