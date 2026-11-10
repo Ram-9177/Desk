@@ -1,13 +1,29 @@
 import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
-import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall } from './install.js';
+import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '—';
 const toast = m => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3500); };
-const pill = s => `<span class="pill s-${s}">${STATUS_INFO[s]?.[0] || s}</span>`;
+// ---------- shared components (design system) ----------
+// StatusPill: white pill with a 7px dot in the status colour (statuses without their own colour use the neutral grey)
+const ST_VAR = { open: 'open', in_progress: 'progress', hold: 'hold', closed: 'closed', overdue: 'overdue' };
+const ST_LABEL = { overdue: 'Overdue', escalated: 'Escalated', queued: 'In queue' };
+const pill = s => `<span class="pill st s-${s}"><i class="sdot" style="background:var(--st-${ST_VAR[s] || 'neutral'})"></i>${STATUS_INFO[s]?.[0] || ST_LABEL[s] || esc(s)}</span>`;
+// StatusIcon: a circle icon stroked in the darker status colour
+const ST_ICON = { open: 'cdot', in_progress: 'cplay', hold: 'cpause', closed: 'ccheck', overdue: 'calert', rejected: 'cx' };
+const statusIcon = (s, size = 18) => `<span class="sicon" style="color:${ST_VAR[s] ? `var(--st-${ST_VAR[s]}-icon)` : 'var(--st-neutral)'}" aria-hidden="true">${I(ST_ICON[s] || 'cdot', size)}</span>`;
+// PriorityTag: flag + label in the priority colour; the pill variant adds the soft background
+const priorityTag = (p, asPill = false) => `<span class="ptag pr-${p} ${asPill ? 'pv' : ''}">${I('flag', 12)}${cap(p)}</span>`;
+// CardHeading: 28px icon tile + title
+const cardHeading = (icon, title) => `<div class="chead"><span class="tile">${I(icon, 16)}</span><span>${title}</span></div>`;
+// Avatar: initials in a circle; sizes 24/28/32/36/40/44; variants neutral, dark, accent
+const initialsOf = n => String(n || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+const avatar = (name, size = 36, variant = 'neutral') => `<span class="av av-${size} ${variant === 'neutral' ? '' : 'av-' + variant}" aria-hidden="true">${esc(initialsOf(name))}</span>`;
+// EmptyState: a 600 title and one grey line
+const emptyState = (title, line = '') => `<div class="empty"><span class="et">${title}</span>${line ? `<span>${line}</span>` : ''}</div>`;
 const cap = s => String(s).charAt(0).toUpperCase() + String(s).slice(1);
-const ppill = p => `<span class="pill p-${p}">${p}</span>`;
+const ppill = p => priorityTag(p, true);
 const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${{
   home: '<path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/>', tasks: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12l3 3 5-6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', chart: '<path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/>', grid: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
@@ -20,6 +36,11 @@ const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fi
   logout: '<path d="M10 17l-5-5 5-5M5 12h11M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>', settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.5a7 7 0 0 0-1.7 1l-2.3-1-2 3.5 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.3-1a7 7 0 0 0 1.7 1l.4 2.5h5l.4-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.5-2-1.5c.1-.3.1-.7.1-1z"/>',
   tool: '<path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 8-8zM3 21l6-6"/><path d="M7 3l4 4-2 2-4-4z"/>', drop: '<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/>',
   book: '<path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-5a2 2 0 0 0-2 2"/><path d="M20 4v14h-7"/>', cash: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 10v4M18 10v4"/>',
+  ticket: '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2M13 17v2M13 11v2"/>', flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7"/>',
+  cdot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/>', cplay: '<circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4z"/>', cpause: '<circle cx="12" cy="12" r="10"/><path d="M10 15V9M14 15V9"/>',
+  ccheck: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>', calert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>', cx: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
+  more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>', x: '<path d="M18 6 6 18M6 6l12 12"/>', download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+  utensils: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2M7 2v20M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 8l9 6 9-6"/>', shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>', copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>', send: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
 }[n]}</svg>`;
 const ICONS = ['wifi', 'bolt', 'bed', 'bus', 'tool', 'drop', 'book', 'cash', 'grid'];
@@ -106,7 +127,9 @@ const markRequired = root => root.querySelectorAll('input[required],select[requi
   const s = document.createElement('span'), small = l.querySelector('small'); s.className = 'req'; s.setAttribute('aria-hidden', 'true');
   s.textContent = small ? '* ' : ' *'; small ? l.insertBefore(s, small) : l.append(s);
 });
-new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && markRequired(n.parentNode || n)))).observe(document.body, { childList: true, subtree: true });
+const tabsA11y = root => root.querySelectorAll?.('.tabs').forEach(t => { t.setAttribute('role', 'tablist');
+  t.querySelectorAll('.tab').forEach(b => { b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', b.classList.contains('on') ? 'true' : 'false'); }); });
+new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType !== 1) return; markRequired(n.parentNode || n); tabsA11y(n.parentNode || n); }))).observe(document.body, { childList: true, subtree: true });
 
 function fieldInput(f, v = '') {
   const req = f.required ? 'required' : '', name = `fd_${f.key}`;
@@ -411,24 +434,56 @@ async function shell(active, render, title) {
   else if (!S.tenant || !S.me.tenants.find(t => t.id === S.tenant)) S.tenant = S.me.tenants[0]?.id;
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
-  const nav = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'cash'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], admin && ['c/services', 'Services', 'grid'],
+  // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
-  const initials = u.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-  const bn = (h, l, ic) => `<a href="#/${h}" class="${active === h ? 'on' : ''}">${I(ic, 22)}${l}</a>`;
-  app.innerHTML = `<div class="top"><span class="logo"><img src="logo-mark.png" alt="">ONE Desk</span>
-    <nav>${nav.map(([h, l, ic]) => `<a href="#/${h}" class="${active === h ? 'on' : ''}">${I(ic, 17)}${l}</a>`).join('')}</nav>
-    <span class="sp"></span>${sa ? `<select id="tsw">${S.me.tenants.map(t => `<option value="${t.id}" ${t.id === S.tenant ? 'selected' : ''}>${esc(t.code)}</option>`).join('')}</select>` : ''}
-    <a href="#/settings" class="iconbtn" title="App &amp; settings: install ONE Desk" aria-label="App and settings" style="margin-right:4px">${I('settings', 20)}</a>
-    <a href="#/c/me" title="${esc(u.name)}" style="display:flex;gap:10px;align-items:center;color:var(--ink)"><span class="who" style="text-align:right;line-height:1.2"><b style="font-size:13.5px">${esc(u.name)}</b><br><span class="muted small">${u.role.replace('_', ' ')}</span></span><span class="avatar">${initials}</span></a></div>
-    <div class="cwrap">${active !== 'c' || title ? `<div class="head"><a class="iconbtn" href="#/c" id="bk">${I('back')}</a><h1>${esc(title || (nav.find(n => n[0] === active) || [])[1] || '')}</h1></div>` : ''}<div id="main">Loading…</div></div>
-    <div class="bnav">${bn('c', 'Home', 'home')}${bn('c/reports', 'Reports', 'chart')}<a href="#/c/new" class="fab">${I('plus', 26)}</a>
-      ${admin ? bn('c/attention', 'Attention', 'bell') : ''}${bn('c/me', 'Profile', 'user')}</div>`;
+  const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
+  const cur = h => active === h ? 'class="on" aria-current="page"' : '';
+  // the bell: admins open Attention; providers their overdue tickets (they have no Attention page)
+  const bellHref = admin ? '#/c/attention' : '#/c', bellAttr = admin ? '' : 'data-overdue';
+  const bn = (h, l, ic, extra = '') => `<a href="#/${h}" ${cur(h)} ${extra}>${I(ic, 22)}<span>${l}</span></a>`;
+  app.innerHTML = `<header class="top"><div class="top-in">
+    <a class="brandlink" href="#/c" aria-label="ONE Desk home"><span class="logo-tile">${I('ticket', 18)}</span>ONE Desk</a>
+    <nav aria-label="Main">${nav.map(([h, l, ic]) => `<a href="#/${h}" ${cur(h)}>${I(ic, 17)}${l}</a>`).join('')}</nav>
+    <div class="top-r">${sa ? `<select id="tsw" aria-label="Campus">${S.me.tenants.map(t => `<option value="${t.id}" ${t.id === S.tenant ? 'selected' : ''}>${esc(t.code)}</option>`).join('')}</select>` : ''}
+      <a class="ibtn bell" href="${bellHref}" ${bellAttr} aria-label="Notifications">${I('bell', 20)}<i class="ndot" hidden></i></a>
+      <a class="ibtn gear" href="#/settings" aria-label="Settings">${I('settings', 20)}</a><span class="vdiv"></span>
+      <a class="melink" href="#/c/me" aria-label="Profile: ${esc(u.name)}">${avatar(u.name, 36, 'dark')}<span class="who"><b>${esc(u.name)}</b><span>${esc(cap(u.role.replace('_', ' ')))}</span></span></a></div></div></header>
+    <div class="cwrap">${active !== 'c' || title ? `<div class="head"><a class="iconbtn" href="#/c" id="bk" aria-label="Back">${I('back')}</a><h1>${esc(title || (all.find(n => n[0] === active) || [])[1] || '')}</h1></div>` : ''}<div id="main">Loading…</div></div>
+    <nav class="bnav" aria-label="Primary">${bn('c', 'Home', 'home')}
+      <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
+      <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
+      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
+  app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
+  $('#moreb').onclick = () => moreSheet(all.filter(n => !['c', 'c/new', 'c/attention', 'c/reports'].includes(n[0])));
+  bellDot(admin);
   if ($('#tsw')) $('#tsw').onchange = e => { S.tenant = e.target.value; localStorage.setItem('tid', S.tenant); route(); };
   const main = $('#main');
-  S.nav = nav;
+  S.nav = all;
   if ($('#bk') && title === 'Ticket') $('#bk').onclick = e => { e.preventDefault(); history.length > 1 ? history.back() : location.hash = '#/c'; };
   if (!S.tenant && !['c/tenants', 'c/me'].includes(active)) { main.innerHTML = '<p>No tenant yet. <a href="#/c/tenants">Create one</a>.</p>'; return; }
   try { await render(main, { sa, admin, u }); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+// The red dot on the bell: something needs attention (admins: the Attention lists; providers: overdue tickets). Checked at most once a minute.
+async function bellDot(admin) {
+  const show = () => document.querySelectorAll('.ndot').forEach(d => d.hidden = !S.bell?.on);
+  show(); if (!S.tenant || (S.bell && S.bell.for === S.tenant && Date.now() - S.bell.at < 60e3)) return;
+  try { const on = admin ? Object.values(await api('/attention')).some(l => l.length) : ((await api('/reports?days=7')).counts?.overdue || 0) > 0;
+    S.bell = { on, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
+}
+// Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
+function moreSheet(items) {
+  document.querySelector('.msheet-back')?.remove(); document.querySelector('.msheet')?.remove();
+  const row = (tag, attrs, ic, label) => `<${tag} class="mrow ${attrs.cls || ''}" ${attrs.a}><span class="tile">${I(ic, 18)}</span><span class="l">${label}</span><span class="chv">${I('chev', 18)}</span></${tag}>`;
+  document.body.insertAdjacentHTML('beforeend', `<div class="msheet-back"></div><div class="msheet" role="dialog" aria-modal="true" aria-labelledby="mshT"><div class="grab"></div>
+    <div class="msheet-h"><h2 id="mshT">More</h2><button type="button" class="msheet-x" aria-label="Close">${I('x', 20)}</button></div>
+    ${items.map(([h, l, ic]) => row('a', { a: `href="#/${h}"` }, ic, l)).join('')}${row('a', { a: 'href="#/settings"' }, 'settings', 'Settings')}
+    ${canInstall() ? row('button', { a: 'type="button"', cls: 'install' }, 'download', 'Install app') : ''}</div>`);
+  const sheet = document.querySelector('.msheet'), close = () => { document.querySelector('.msheet-back')?.remove(); sheet.remove(); document.removeEventListener('keydown', esc_); $('#moreb')?.focus(); };
+  const esc_ = e => { if (e.key === 'Escape') close(); };
+  document.querySelector('.msheet-back').onclick = close; sheet.querySelector('.msheet-x').onclick = close; document.addEventListener('keydown', esc_);
+  sheet.querySelectorAll('.mrow').forEach(r => r.addEventListener('click', () => setTimeout(close, 0)));
+  sheet.querySelector('.msheet-x').focus();
 }
 const tenantObj = () => S.me.tenants.find(t => t.id === S.tenant);
 
@@ -463,7 +518,7 @@ async function queue(main) {
     main.innerHTML = `<div class="hello"><div><div class="muted">${greet},</div><h1>${esc(S.me.user.name.split(' ')[0])} 👋</h1><div class="muted small">Here's what's happening at ${esc(tenantObj()?.code || '')} today.</div></div>
       <div style="display:flex;gap:8px;align-items:center"><a href="#/c/me" class="ptsbadge">⭐ ${pts.me} pts</a>
       ${S.me.user.role !== 'provider' ? `<a class="iconbtn" href="#/c/attention">${I('bell')}</a>` : ''}</div></div>
-      <div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--accent)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
+      <div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--amber)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
         <div class="small soft">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
       <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c0')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
       <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
@@ -627,7 +682,7 @@ async function services(main) {
   const members = f => checked(f, 'prov');
   main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">What requestors see on the portal. Each team needs at least one provider; a team can have sub-teams with their own providers, limit and queue.</span>
       <button class="btn primary" id="add">${I('plus', 18)} New service</button></div>
-    ${svcs.filter(s => !s.parent_id).flatMap(s => [s, ...svcs.filter(x => x.parent_id === s.id)]).concat(svcs.filter(s => s.parent_id && !svcs.some(x => x.id === s.parent_id))).map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default${s.parent_id ? ';margin-left:28px;width:calc(100% - 28px);box-sizing:border-box;border-left:3px solid var(--accent)' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
+    ${svcs.filter(s => !s.parent_id).flatMap(s => [s, ...svcs.filter(x => x.parent_id === s.id)]).concat(svcs.filter(s => s.parent_id && !svcs.some(x => x.id === s.parent_id))).map((s, i) => `<div class="svc ${s.is_active ? '' : 'dim'}" style="cursor:default${s.parent_id ? ';margin-left:28px;width:calc(100% - 28px);box-sizing:border-box;border-left:3px solid var(--amber)' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)} <span class="muted small mono">${esc(s.code)}</span> <span class="pill c4">${FORM_TYPES[s.form_schema.form_type] || 'General'}</span>${s.is_active ? '' : ' <span class="pill s-closed">inactive</span>'}</b><span class="muted small">${esc(s.description || '')}</span><br>
       ${s.members.map(m => `<span class="plate">${esc(m.name)}</span>`).join('') || '<span class="pill s-rejected" style="margin-top:6px">No provider assigned</span>'}
       <span class="muted small" style="display:block;margin-top:6px">${I('alert', 13)} Escalates to ${esc((s.escalation_users || []).map(x => x.name).join(', ') || (s.parent_id ? 'the main team’s officers' : 'admin'))}${s.escalate_after_hours != null ? ` · ${s.escalate_after_hours ? `${s.escalate_after_hours} working h after the target` : 'as soon as the target is missed'}` : ''}</span>
@@ -1118,7 +1173,8 @@ async function profile(main) {
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
       <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a>
-      <a href="#/install">${I('settings')}App &amp; settings: install on iPhone, Android, Mac, PC<span class="chev">${I('chev', 18)}</span></a></div>
+      <a href="#/settings">${I('settings')}Settings<span class="chev">${I('chev', 18)}</span></a>
+      ${canInstall() ? `<a href="#" class="install" onclick="return false">${I('download')}Install app<span class="chev">${I('chev', 18)}</span></a>` : ''}</div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
   $('#lo').onclick = logout;
   $('#pw').onclick = e => { e.preventDefault(); dlg(`<h2>Change password</h2><label>Current password</label><input name="current" type="password" required autocomplete="current-password">
@@ -1137,7 +1193,7 @@ function botFor(url) { // url: '/public/<slug>/bot', '/bot', or null to hide the
   if (url !== botUrl) { botUrl = url; const log = $('#botlog'); if (log) log.innerHTML = ''; }
   let b = $('#botbtn');
   if (!b && url) {
-    document.body.insertAdjacentHTML('beforeend', `<button type="button" id="botbtn" class="botbtn" aria-label="Ask the ONE Desk Bot">${BOT_ICON}</button>
+    document.body.insertAdjacentHTML('beforeend', `<button type="button" id="botbtn" class="botbtn" aria-label="Open help chat">${BOT_ICON}</button>
       <section id="botp" class="botp" hidden role="dialog" aria-label="ONE Desk Bot"><header><span class="botava">${BOT_ICON}</span><div><b>ONE Desk Bot</b><small>Answers from ONE Desk itself</small></div>
       <button type="button" class="iconbtn" id="botx" aria-label="Close">${I('xmark')}</button></header><div id="botlog" class="botlog" aria-live="polite"></div>
       <form id="botf" class="botf"><input name="q" autocomplete="off" maxlength="300" placeholder="Ask, or type a ticket number"><button class="btn primary" aria-label="Send">${I('send', 18)}</button></form></section>`);
@@ -1204,7 +1260,8 @@ function cornerMenu(hash) {
   el.innerHTML = `<button type="button" class="corner-btn" aria-haspopup="true" aria-label="Sign in and settings">${I('user', 18)}<span>${signed ? 'My desk' : 'Sign in'}</span>${I('chev', 14)}</button>
     <div class="corner-menu" role="menu">
       <a href="${signed ? '#/c' : '#/login'}" role="menuitem">${I('user', 18)}<span><b>${signed ? 'Open my desk' : 'Staff sign in'}</b><small>Service providers and admins</small></span></a>
-      <a href="#/settings" role="menuitem">${I('settings', 18)}<span><b>App &amp; settings</b><small>Install on iPhone, Android, Mac or PC</small></span></a>
+      <a href="#/settings" role="menuitem">${I('settings', 18)}<span><b>App &amp; settings</b><small>Steps for iPhone, Android, Mac or PC</small></span></a>
+      ${canInstall() ? `<a href="#" class="install" role="menuitem" onclick="return false">${I('download', 18)}<span><b>Install app</b><small>Add ONE Desk to this device</small></span></a>` : ''}
     </div>`;
 }
 document.addEventListener('click', e => { const c = document.querySelector('.corner'); if (!c) return;

@@ -135,15 +135,9 @@ export const iosHintHtml = () => {
 document.addEventListener('click', e => { const b = e.target.closest('[data-ioshide]'); if (!b) return;
   try { localStorage.setItem('ios-hint', '1'); } catch { /* storage off */ } b.closest('.iosbar').remove(); });
 
-// A sticky "Install app" button on every screen, on every device, until ONE Desk runs as the installed app.
-// Android / Chrome / Edge: one tap installs. iPhone: its own Add to Home Screen steps. Mac and PC: their steps.
-const STICK_LABEL = () => promptEvt ? 'Install app · 1 click' : isIOS ? 'Add to iPhone' : isAndroid ? 'Install app' : isMac ? 'Install on Mac' : 'Install app';
-export function stickyInstall() {
-  let el = document.querySelector('.istick');
-  if (standalone()) { el?.remove(); return; }
-  if (!el) { el = document.createElement('button'); el.type = 'button'; el.className = 'istick install'; document.body.append(el); }
-  el.innerHTML = `${G.dl}<span>${STICK_LABEL()}</span>`; el.classList.toggle('one', !!promptEvt);
-  el.setAttribute('aria-label', 'Install the ONE Desk app');
-}
+// Install app is a menu item now (profile menu, the phone's More sheet, the public corner menu), shown only while
+// ONE Desk can still be installed, i.e. it is not already running as the installed app. No floating button.
+export const canInstall = () => !standalone();
+export function stickyInstall() { document.querySelector('.istick')?.remove(); }
 addEventListener('appinstalled', () => { document.querySelectorAll('.istick, .install').forEach(b => (b.closest('p') || b).remove()); });
 matchMedia('(display-mode: standalone)').addEventListener?.('change', stickyInstall);
