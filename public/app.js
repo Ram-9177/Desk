@@ -56,7 +56,7 @@ const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small"
   <span class="rank">${i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
   <b class="mono" style="color:${u.points < 0 ? 'var(--warn)' : 'var(--brand)'}">${u.points} pts</b></div>`).join('') : '<p class="muted">No providers yet.</p>'}`;
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
-const ring = (pct, size = 96, color = 'var(--brand)', track = '#fff') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
+const ring = (pct, size = 96, color = 'var(--brand)', track = '#EEF0F3') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
   return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${track}" stroke-width="10" fill="none"/>
   <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${color}" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><b>${pct}%</b></div>`; };
 const S = { token: localStorage.getItem('tok'), tenant: localStorage.getItem('tid'), me: null };
