@@ -76,6 +76,10 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'issue';
 -- reopen is a request: the provider who closed the ticket accepts (it reopens) or declines (it stays closed)
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS reopen_requested_at TEXT;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS reopen_request_note TEXT;
+CREATE TABLE IF NOT EXISTS ticket_reminders (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id), user_id TEXT NOT NULL REFERENCES users(id),
+  remind_at TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT, fired_at TEXT, done_at TEXT);
+CREATE INDEX IF NOT EXISTS ticket_reminders_due ON ticket_reminders (remind_at) WHERE fired_at IS NULL;
+CREATE INDEX IF NOT EXISTS ticket_reminders_user ON ticket_reminders (user_id) WHERE done_at IS NULL;
 -- escalation officers: any number per service (escalation_user_id stays the first, for older code paths)
 CREATE TABLE IF NOT EXISTS service_escalations (service_id TEXT NOT NULL REFERENCES services(id), user_id TEXT NOT NULL REFERENCES users(id), PRIMARY KEY (service_id, user_id));
 INSERT INTO service_escalations (service_id, user_id) SELECT id, escalation_user_id FROM services WHERE escalation_user_id IS NOT NULL ON CONFLICT DO NOTHING;

@@ -161,7 +161,7 @@ try {
   const svcs = await ok('list services', '/services', A);
   check('service list shows members, form type and escalation person', svcs.find(x => x.code === 'ELEC')?.members[0]?.name === 'Pavan Provider' && svcs.find(x => x.code === 'ELEC')?.form_schema.form_type === 'location' && svcs.find(x => x.code === 'ELEC')?.escalation_user?.name === 'Lata Lead');
   const pub = await ok('public campus page', '/public/alpha');
-  check('portal lists active services with provider first names', pub.services.length === 4 && pub.services.find(x => x.code === 'ELEC').providers[0] === 'Pavan');
+  check('portal lists active services without provider names (shown after raising)', pub.services.length === 4 && !('providers' in pub.services.find(x => x.code === 'ELEC')));
 
   sec('SLA and escalation rules');
   await fails('end before start is rejected', '/sla', { ...A, method: 'PUT', body: { work_start: '17:00', work_end: '09:00', work_days: [1], hold_reasons: [{ label: 'x', hours: 1 }] } }, 400);
@@ -362,7 +362,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('22 email steps listed, none connected yet', cfg0.events.length === 22 && !cfg0.url);
+  check('23 email steps listed, none connected yet', cfg0.events.length === 23 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -769,6 +769,32 @@ try {
   const pr_ = (await q('SELECT created_at, due_at FROM tickets WHERE ticket_no=? AND tenant_id=?', pt.data.ticket_no, A.tenant))[0];
   const { calendar, workingBetween } = await import('../sla.js'), tnr = (await q('SELECT * FROM tenants WHERE id=?', A.tenant))[0];
   check('a sub-team ticket uses its main team’s target (6 working hours, not the campus 8)', workingBetween(calendar(tnr), pr_.created_at, pr_.due_at) === 6 * 60, JSON.stringify(pr_));
+  }
+
+  sec('Remind me later (a provider’s reminder on a ticket)');
+  { const tk = (await q("SELECT id, status, due_at FROM tickets WHERE service_id=? AND status IN ('open','in_progress') ORDER BY created_at LIMIT 1", ids.elec))[0];
+  const r1 = await ok('a provider sets a reminder for a week', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'week', note: 'Check the new bulb still works' } });
+  check('it lands about 7 days ahead', Math.abs(new Date(r1.remind_at) - Date.now() - 7 * 864e5) < 120e3);
+  await fails('a reminder needs a note', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'day', note: ' ' } }, 400);
+  await fails('a reminder must be in the future', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { at: new Date(Date.now() - 3600e3).toISOString(), note: 'x' } }, 400);
+  await fails('and within a year', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { at: new Date(Date.now() + 400 * 864e5).toISOString(), note: 'x' } }, 400);
+  const at = new Date(Date.now() + 3 * 3600e3).toISOString();
+  const r2 = await ok('or for a picked date and time', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { at, note: 'Call the electrician' } });
+  const after = (await q('SELECT status, due_at FROM tickets WHERE id=?', tk.id))[0];
+  check('the ticket itself does not change', after.status === tk.status && after.due_at === tk.due_at);
+  const tv = (await api(`/tickets/${tk.id}`, { token: T.pavan })).data;
+  check('the ticket page lists my reminders, soonest first', tv.reminders.length === 2 && tv.reminders[0].id === r2.id);
+  check('the admin on the same ticket does not see them (they are mine)', (await api(`/tickets/${tk.id}`, { token: T.sa, tenant: (await q("SELECT tenant_id FROM tickets WHERE id=?", tk.id))[0].tenant_id })).data?.reminders?.length === 0);
+  await fails('someone without the ticket cannot set one', `/tickets/${tk.id}/reminders`, { token: T.bina, method: 'POST', body: { in: 'day', note: 'x' } }, 404);
+  await q("UPDATE ticket_reminders SET remind_at=? WHERE id=?", new Date(Date.now() - 60e3).toISOString(), r2.id);
+  await stop(); await start(); await new Promise(r => setTimeout(r, 6500)); // the worker runs 5 s after start
+  const mail = (await q("SELECT recipient, subject FROM notifications WHERE template_key='reminder' AND ticket_id=?", tk.id));
+  check('when it comes due the provider is emailed once', mail.length === 1 && /Reminder: Call the electrician/.test(mail[0].subject), JSON.stringify(mail));
+  const mine = (await api('/reminders', { token: T.pavan })).data;
+  check('it shows as due on Home; the week one is still upcoming', mine.due.length === 1 && mine.due[0].id === r2.id && mine.upcoming.some(m => m.id === r1.id));
+  await fails('only its owner can clear it', `/reminders/${r2.id}/done`, { token: T.lata, method: 'POST' }, 404);
+  await ok('marking it done', `/reminders/${r2.id}/done`, { token: T.pavan, method: 'POST' });
+  check('done reminders leave the list', (await api('/reminders', { token: T.pavan })).data.due.length === 0);
   }
 
   sec('Food: rate a meal (feedback) or report a problem (ticket)');

@@ -18,7 +18,7 @@ const priorityTag = (p, asPill = false) => `<span class="ptag pr-${p} ${asPill ?
 // Requester-type badge: Student is plain white; faculty, staff, parent and visitor each have their own colour, for a quick visual identity
 const rtBadge = t => t ? `<span class="rtb rt-${esc(t)}">${esc(cap(t))}</span>` : '';
 // CardHeading: 28px icon tile + title
-const TONE = { clock: 'amber', bell: 'amber', cpause: 'amber', star: 'amber', utensils: 'amber', user: 'blue', history: 'blue', file: 'blue', mail: 'blue', home: 'blue', chart: 'blue', ticket: 'blue',
+const TONE = { clock: 'amber', bell: 'amber', alarm: 'amber', cpause: 'amber', star: 'amber', utensils: 'amber', user: 'blue', history: 'blue', file: 'blue', mail: 'blue', home: 'blue', chart: 'blue', ticket: 'blue',
   users: 'violet', grid: 'violet', building: 'violet', settings: 'slate', download: 'green', pencil: 'green', ccheck: 'green', shield: 'green', check: 'green', flag: 'rose', calert: 'rose', alert: 'rose', swap: 'teal', eye: 'teal', copy: 'slate', plus: 'blue' };
 const tile = (icon, size = 16) => `<span class="tile t-${TONE[icon] || 'slate'}">${I(icon, size)}</span>`;
 const cardHeading = (icon, title) => `<div class="chead">${tile(icon)}<span>${title}</span></div>`;
@@ -33,7 +33,7 @@ const I = (n, s = 20) => `<svg aria-hidden="true" width="${s}" height="${s}" vie
   home: '<path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/>', tasks: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12l3 3 5-6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', chart: '<path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/>', grid: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
   users: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-5-6.7"/>', user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
-  bell: '<path d="M6 8a6 6 0 0 1 12 0v5l2 3H4l2-3zM10 20a2 2 0 0 0 4 0"/>', list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0v5l2 3H4l2-3zM10 20a2 2 0 0 0 4 0"/>', alarm: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M5 3 2 6M22 6l-3-3"/>', list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 6h2M13 6h2M9 10h2M13 10h2M9 14h2M13 14h2M10 22v-4h4v4"/>', chev: '<path d="M9 6l6 6-6 6"/>', back: '<path d="M15 6l-6 6 6 6"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3"/>', image: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 8"/>',
   check: '<path d="M5 12l5 5L20 7"/>', play: '<path d="M7 4.5v15l12-7.5z"/>', xmark: '<path d="M6 6l12 12M18 6L6 18"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>', pause: '<path d="M8 5v14M16 5v14"/>',
@@ -181,7 +181,7 @@ async function portal(slug, q, view, code) {
     app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(pick.name)}</h1></div>
       <p class="muted">Which team can help? Pick the closest one.</p>
       ${[...subs, { ...pick, name: `Other ${pick.name} problem`, description: 'Not in the list above', other: true }].map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}${s.other ? '?direct=1' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
-        <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span><br>${(s.providers || []).map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}</div>`;
+        <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}</div>`;
     if (!q.get('direct')) return;
   }
   if (pick && isFood(pick.form_schema)) return foodScreens(slug, tenant, pick, q.get('flow'));
@@ -201,8 +201,8 @@ async function portal(slug, q, view, code) {
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Raise a ticket</h1></div>
     <p class="muted">${services.length ? 'Pick the service you need.' : 'No services are open on this campus yet. Please check back soon.'}</p>
     ${services.filter(s => !s.parent_id || !services.some(x => x.id === s.parent_id)).map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
-      <span class="t"><b>${esc(s.name)}</b><span class="muted small">${isFood(s.form_schema) ? 'Rate meals or report a problem' : esc(s.description || '')}</span><br>
-      ${services.some(x => x.parent_id === s.id) ? `<span class="plate">${services.filter(x => x.parent_id === s.id).length} teams inside</span>` : s.providers.map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}
+      <span class="t"><b>${esc(s.name)}</b><span class="muted small">${isFood(s.form_schema) ? 'Rate meals or report a problem' : esc(s.description || '')}</span>
+      ${services.some(x => x.parent_id === s.id) ? `<br><span class="plate">${services.filter(x => x.parent_id === s.id).length} teams inside</span>` : ''}</span><span class="chev">${I('chev')}</span></a>`).join('')}
 </div>`;
 }
 
@@ -492,7 +492,8 @@ async function shell(active, render, title) {
 async function bellDot(admin) {
   const show = () => document.querySelectorAll('.ndot').forEach(d => d.hidden = !S.bell?.on);
   show(); if (!S.tenant || (S.bell && S.bell.for === S.tenant && Date.now() - S.bell.at < 60e3)) return;
-  try { const on = admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7')).counts || {});
+  try { const rem = (await api('/reminders').catch(() => ({ due: [] }))).due.length > 0;
+    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7')).counts || {}));
     S.bell = { on, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
 }
 // Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
@@ -555,7 +556,7 @@ async function queue(main) {
   const draw = async () => {
     const keep = document.activeElement?.id === 'fq' ? [$('#fq').selectionStart, true] : null, more = $('.mt-more')?.classList.contains('open');
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
-    const [rows, rep, pts] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/points')]);
+    const [rows, rep, pts, rem] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/points'), api('/reminders').catch(() => ({ due: [], upcoming: [] }))]);
     const c = rep.counts || {};
     const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
     const now = new Date(), h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now)), greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -573,6 +574,9 @@ async function queue(main) {
       <div class="ovr"><div class="card wk"><span class="d-only">${ringSvg(pct, 88, 8)}</span><span class="m-only">${ringSvg(pct, 64, 7)}</span><div><div class="eyebrow up">This week</div><div class="wk-l">${done} of ${total} tickets closed</div><div class="wk-s d-only">${total - done} still open this week</div></div></div>
         <div class="card stcard">${cell('open', 'Open', c.open, 'Awaiting action')}${cell('in_progress', 'In progress', c.in_progress, 'Being worked on')}${cell('hold', 'On hold', c.hold, 'Paused, clock stopped')}${cell('closed', 'Closed', c.closed_period, 'Last 7 days')}${cell('overdue', 'Overdue', c.overdue, 'Past SLA due time')}
           <a class="stcell viewrep m-only" href="#/c/reports">View reports ${I('chev', 16)}</a></div></div>
+      ${rem.due.length ? `<section class="card rembox" aria-labelledby="remT"><div class="chead" id="remT">${tile('alarm')}<span>Reminders due</span><span class="cnt">${rem.due.length}</span><span class="sp"></span>${rem.upcoming.length ? `<span class="muted small">${rem.upcoming.length} later</span>` : ''}</div>
+        ${rem.due.map(m => `<div class="remrow due"><a href="#/c/t/${m.ticket_id}"><span class="mono">#${m.ticket_no}</span> <b>${esc(m.note)}</b><span class="psub">${esc(m.subject)} · ${shortDate(m.remind_at)}</span></a>
+          <button type="button" class="btn" data-remdone="${m.id}">${I('check', 16)}Done</button></div>`).join('')}</section>` : ''}
       ${c.reopen_requests ? `<button type="button" class="queuebar reobar" data-s="reopen">${I('history', 20)}<span><b>${c.reopen_requests} reopen request${c.reopen_requests === 1 ? '' : 's'} waiting for you</b><span class="small">A requester says it is not fixed. Open the ticket to accept or decline; you can reply with a note first.</span></span>${I('chev', 18)}</button>` : ''}
       ${c.queued ? `<button type="button" class="queuebar" data-s="queued">${I('clock', 20)}<span><b>${c.queued} ticket${c.queued === 1 ? '' : 's'} waiting in the queue</b><span class="small">Your team's tickets for today are full. These reach you on the next working days, a day's worth at a time.</span></span>${I('chev', 18)}</button>` : ''}
       <div class="card mt"><div class="mt-h"><div class="mt-t"><h2>My tickets</h2><span class="mt-n">${rows.length} ticket${rows.length === 1 ? '' : 's'}</span>
@@ -585,6 +589,7 @@ async function queue(main) {
     main.querySelectorAll('.ttable tbody tr').forEach(tr => { tr.onclick = e => { if (!e.target.closest('a')) location.hash = '#/c/t/' + tr.dataset.id; }; });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
     main.querySelectorAll('[data-s]').forEach(b => b.onclick = () => set('status', b.dataset.s)); $('#fsv').onchange = e => set('service', e.target.value);
+    main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast('Reminder done'); draw(); bellDot(S.me.user.role !== 'provider'); } catch (er) { toast(er.message); } });
     $('#fq').onchange = e => set('q', e.target.value);
     $('#fsvb').onclick = () => { const on = $('.mt-more').classList.toggle('open'); $('#fsvb').setAttribute('aria-expanded', on); if (on) $('#fsv').focus(); };
     $('#csv').onclick = async e => { e.preventDefault(); const r = await api('/tickets.csv?' + qs, { raw: true }); const a = document.createElement('a');
@@ -595,6 +600,22 @@ async function queue(main) {
   clearInterval(pollT); pollT = setInterval(() => location.hash === '#/c' && !document.hidden && draw(), 30000);
 }
 
+// Remind me: when (a day, a week, a month, or a date) and what about. Only the ticket's reminder is saved; its status stays.
+const REMIND_OPTS = [['day', 'Tomorrow'], ['3days', 'In 3 days'], ['week', 'In a week'], ['month', 'In a month'], ['at', 'Pick a date']];
+function remindDlg(id, done) {
+  const d = dlg(`<h2>Remind me later</h2><p class="muted small">The ticket stays as it is. At that time you get an email and it shows on your Home.</p>
+    <label>When</label><div class="whochips remwhen" role="radiogroup" aria-label="When">${REMIND_OPTS.map(([k, l], i) => `<label><input type="radio" name="in" value="${k}" ${i === 2 ? 'checked' : ''}><span class="rtb">${l}</span></label>`).join('')}</div>
+    <div id="remat" hidden><label for="remdt">Date and time</label><input type="datetime-local" id="remdt" name="at"></div>
+    <label for="remnote">What should we remind you about?</label><textarea id="remnote" name="note" required maxlength="500" rows="3" placeholder="e.g. Check the new bulb is still working"></textarea>`,
+    async f => { const k = f.querySelector('[name=in]:checked')?.value;
+      if (k === 'at' && !f.at.value) throw new Error('Pick the date and time');
+      const r = await api(`/tickets/${id}/reminders`, { method: 'POST', body: { in: k === 'at' ? null : k, at: k === 'at' ? new Date(f.at.value).toISOString() : null, note: f.note.value } });
+      toast('Reminder set for ' + shortDate(r.remind_at)); done(); });
+  const pad = n => String(n).padStart(2, '0'), min = new Date(Date.now() + 5 * 60e3), dt = d.querySelector('#remdt');
+  dt.min = `${min.getFullYear()}-${pad(min.getMonth() + 1)}-${pad(min.getDate())}T${pad(min.getHours())}:${pad(min.getMinutes())}`;
+  d.querySelectorAll('[name=in]').forEach(r => r.onchange = () => { const on = r.value === 'at' && r.checked; if (r.checked) { d.querySelector('#remat').hidden = !on; dt.required = on; } });
+  d.querySelector('button[value=ok]').textContent = 'Set reminder';
+}
 function dlg(html, onSubmit) {
   const d = document.createElement('dialog'); d.innerHTML = `<form method="dialog" id="df">${html}<div class="err" id="derr"></div>
     <p class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="ok">Save</button></p></form>`;
@@ -642,6 +663,12 @@ async function workspace(main, id, { admin }) {
     ${ACTIVE.includes(t.status) && !sug ? `<div class="pbar" role="progressbar" aria-label="Share of the SLA window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><i style="width:${used}%;${t.sla_left_min < 0 ? 'background:var(--danger)' : ''}"></i></div>` : ''}
     ${t.escalated_name && live ? `<div class="sla-note danger">${I('calert', 15)}<span>Escalated to ${esc(t.escalated_name)} · ${shortDate(t.escalated_at)}</span></div>` : ''}
     ${sug ? '' : `<div class="sla-foot"><span>Time on hold: ${t.held_minutes ? fmtLeft(t.held_minutes) : '0m'}</span>${admin && live ? '<button type="button" class="linkbtn" id="ext">Extend due time</button>' : ''}</div>`}</div>`;
+  // my reminders on this ticket: only I see them; the ticket's status does not change
+  const rems = t.reminders || [];
+  const remCard = `<div class="card side rem">${cardHeading('alarm', 'My reminders')}
+    ${rems.map(m => `<div class="remrow ${m.fired_at ? 'due' : ''}"><div><b>${esc(m.note)}</b><div class="psub">${m.fired_at ? 'Due since' : 'On'} ${shortDate(m.remind_at)}</div></div>
+      <button type="button" class="linkbtn" data-remdone="${m.id}">${m.fired_at ? 'Done' : 'Remove'}</button></div>`).join('') || '<div class="psub">Need to check on this later? Set a reminder. The ticket stays as it is.</div>'}
+    <button type="button" class="btn remadd" data-remadd>${I('alarm', 16)}Remind me</button></div>`;
   const prev = t.requestor_history || [];
   const people = `<div class="card side">${cardHeading('user', 'Requester')}
       <div class="person">${avatar(r.name, 40, 'accent')}<div><b>${esc(r.name)}</b> ${rtBadge(r.requestor_type || 'student')}<div class="psub">${esc([r.department, r.identifier].filter(Boolean).join(' · '))}</div></div></div>
@@ -689,7 +716,7 @@ async function workspace(main, id, { admin }) {
         : `<div class="psub">Waiting for ${esc(t.reopen_request.deciders.join(' or ') || 'the provider who closed it')} to accept or decline.</div>`}</section>` : ''}
       <div class="tk-main"><section class="card sec-details">${details}</section>
         <section class="card sec-activity"><div class="act-h">${cardHeading('history', 'Activity')}<span class="act-n">${evs.length} event${evs.length === 1 ? '' : 's'}<span class="m-only"> · Newest first</span></span></div>${timeline}${updateForm}</section></div>
-      <aside class="tk-side">${slaCard}<div class="sec-people">${people}</div></aside></div>
+      <aside class="tk-side">${slaCard}${remCard}<div class="sec-people">${people}</div></aside></div>
     <div class="tk-bar m-only">${live ? `<button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen">${I('pencil', 16)}Update ticket</button></div>
     <div class="msheet-back upd-back" hidden></div></div>`;
   wireFiles('act');
@@ -724,12 +751,15 @@ async function workspace(main, id, { admin }) {
   const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
   main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
+  const remind = () => remindDlg(id, reload);
+  main.querySelectorAll('[data-remadd]').forEach(b => b.onclick = remind);
+  main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); } catch (er) { toast(er.message); } });
   main.querySelectorAll('[data-reo]').forEach(b => b.onclick = () => { const acc = b.dataset.reo === 'accept';
     dlg(`<h2>${acc ? 'Accept and reopen' : 'Decline the reopen request'}</h2><p class="muted">${acc ? 'The ticket opens again with a fresh target. The requester is emailed.' : 'The ticket stays closed. The requester is emailed your note.'}</p>
       <label>Note to the requester</label><textarea name="note" required placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea>`,
       async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
   // phones: the three-dots menu holds the secondary actions
-  $('#tkmore').onclick = () => actionSheet('More actions', [live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
+  $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
     ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
   document.onkeydown = e => { if (!location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
     const m = { h: 'hold', c: 'closed', r: 'rejected' }[e.key];

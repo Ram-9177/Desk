@@ -377,6 +377,16 @@ async function releaseQueued() {
     await notifyRequestors(t, 'queue_landed', v);
   }
 }
+// due reminders: email the provider once; they stay on Home until marked done
+async function fireReminders() {
+  for (const m of await all('SELECT m.*, u.email, u.name, u.is_active FROM ticket_reminders m JOIN users u ON u.id=m.user_id WHERE m.fired_at IS NULL AND m.done_at IS NULL AND m.remind_at<=? ORDER BY m.remind_at LIMIT 500', now())) {
+    if (!(await run('UPDATE ticket_reminders SET fired_at=? WHERE id=? AND fired_at IS NULL', now(), m.id)).changes) continue;
+    const t = await one('SELECT * FROM tickets WHERE id=?', m.ticket_id); if (!t || !m.is_active) continue;
+    await notify(t, [m.email], 'reminder', await ticketVars(t, { note: m.note, actor_name: m.name }));
+  }
+}
+const reminders = () => fireReminders().catch(e => console.error('reminders', e.message));
+setInterval(reminders, 60e3); setTimeout(reminders, 5000);
 const releases = () => releaseQueued().catch(e => console.error('queue', e.message));
 setInterval(releases, 60e3); setTimeout(releases, 4000);
 
@@ -556,7 +566,7 @@ P.get('/:slug', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug);
   return { tenant: { name: tn.name, code: tn.code, slug: tn.slug },
     services: await Promise.all((await all('SELECT id,code,name,description,form_schema,parent_id FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order,name', tn.id))
-      .map(async s => ({ ...s, form_schema: JSON.parse(s.form_schema), providers: (await providersFor(tn.id, s.id)).map(p => p.name.split(' ')[0]) }))) };
+      .map(async s => ({ ...s, form_schema: JSON.parse(s.form_schema) }))) }; // provider names show only after a ticket is raised
 }));
 P.post('/:slug/tickets', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), b = req.body;
@@ -1044,6 +1054,7 @@ S.get('/tickets/:id', wrap(async req => {
     requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),
+    reminders: await all('SELECT id, remind_at, note, fired_at FROM ticket_reminders WHERE ticket_id=? AND user_id=? AND done_at IS NULL ORDER BY remind_at', t.id, req.user.id),
     tracking_url: await trackUrl(t), queue: t.status === 'open' ? await queueInfo(t) : null,
     reopen_request: t.reopen_requested_at && t.status === 'closed' ? await (async () => { const d = await reopenDeciders(t);
       return { at: t.reopen_requested_at, note: t.reopen_request_note, deciders: d.map(x => x.name), can_decide: isAdmin(req.user) || d.some(x => x.id === req.user.id) }; })() : null };
@@ -1129,6 +1140,29 @@ S.post('/tickets/:id/reopen-request', wrap(async req => {
     await addEvent(t, actorOf(req), 'reopen_declined', { body: note }); });
   await notifyRequestors(t, 'reopen_declined', await ticketVars(t, { note, actor_name: req.user.name }));
   return { ok: true, status: 'closed' };
+}));
+// ---------- reminders: a provider asks to be reminded about a ticket later; the ticket itself does not change ----------
+const REMIND_IN = { day: 1, '3days': 3, week: 7, month: 30 };
+S.post('/tickets/:id/reminders', wrap(async req => {
+  const t = await loadTicket(req), note = req_(req.body.note, 'Write what to remind you about').slice(0, 500), b = req.body;
+  let at = REMIND_IN[b.in] ? new Date(Date.now() + REMIND_IN[b.in] * 864e5) : new Date(b.at || '');
+  if (isNaN(at)) throw bad('Pick when to remind you');
+  if (at.getTime() < Date.now() + 60e3) throw bad('Pick a time in the future');
+  if (at.getTime() > Date.now() + 366 * 864e5) throw bad('Pick a time within a year');
+  if ((await one('SELECT count(*)::int n FROM ticket_reminders WHERE user_id=? AND done_at IS NULL', req.user.id)).n >= 200) throw bad('You have too many reminders. Clear some first.');
+  const id = uid();
+  await insert('ticket_reminders', { id, tenant_id: t.tenant_id, ticket_id: t.id, user_id: req.user.id, remind_at: at.toISOString(), note, created_at: now() });
+  return { ok: true, id, remind_at: at.toISOString() };
+}));
+const REM_SQL = `SELECT m.id, m.ticket_id, m.remind_at, m.note, m.fired_at, t.ticket_no, t.subject, t.status FROM ticket_reminders m JOIN tickets t ON t.id=m.ticket_id`;
+S.get('/reminders', wrap(async req => {
+  const rows = await all(`${REM_SQL} WHERE m.user_id=? AND m.tenant_id=? AND m.done_at IS NULL ORDER BY m.remind_at LIMIT 200`, req.user.id, req.tenantId);
+  const n = now();
+  return { due: rows.filter(r => r.remind_at <= n), upcoming: rows.filter(r => r.remind_at > n) };
+}));
+S.post('/reminders/:id/done', wrap(async req => {
+  if (!(await run('UPDATE ticket_reminders SET done_at=? WHERE id=? AND user_id=? AND done_at IS NULL', now(), req.params.id, req.user.id)).changes) throw notFound();
+  return { ok: true };
 }));
 S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
