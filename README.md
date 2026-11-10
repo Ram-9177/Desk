@@ -98,13 +98,14 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 
 ### Add a super admin, or reset a forgotten super admin password
 
-On the server, in the app folder (the password goes in quotes; it is never stored in the repo):
+On the server, put the account in `.env` (never in the repo, which is public) and restart:
 
 ```bash
-SUPER_ADMIN_EMAIL=you@example.com SUPER_ADMIN_PASSWORD='YourPassword' SUPER_ADMIN_NAME='Your Name' npm run add-super-admin
+cd ~/one-desk && nano .env      # add:  SUPER_ADMIN_EMAIL=you@example.com   and   SUPER_ADMIN_PASSWORD=YourPassword
+pm2 restart one-desk && pm2 logs one-desk --lines 5 --nostream    # expect "Super admin you@example.com created" or "password set"
 ```
 
-A new email becomes another super admin; an existing one becomes a super admin with this password. Nobody else is changed. Sign in, then change the password under Profile.
+While both lines are there, every start makes sure that account is a super admin with that password; nobody else is changed. Sign in, then remove the two lines. (`npm run add-super-admin` with the same two variables does it without a restart.)
 
 ## Add a new campus (tenant)
 

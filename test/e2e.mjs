@@ -793,6 +793,15 @@ try {
   ids.foodTicket = c1.ticket_no;
   }
 
+  sec('Super admin from .env on a live database');
+  await stop(); let s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
+  check('a new email in SUPER_ADMIN_* becomes another super admin', /second@example.com created/.test(s2.out()) && !!(await login('second@example.com', 'SecondAdmin#2026')) && !!(await login(SUPER.email, SUPER.password)));
+  await stop(); s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'Forgotten#Reset1' });
+  check('a changed SUPER_ADMIN_PASSWORD resets that account’s password; others keep theirs', /password set/.test(s2.out()) && !!(await login('second@example.com', 'Forgotten#Reset1')) && !(await login('second@example.com', 'SecondAdmin#2026')) && !!(await login(SUPER.email, SUPER.password)));
+  await stop(); s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'Forgotten#Reset1' });
+  check('the same lines on the next start change nothing', !/password set|created from/.test(s2.out()));
+  await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {
