@@ -875,8 +875,8 @@ async function uiSmoke(tok, id) {
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');
     await visit('admin people', '/c/users', tok.asha, '.trow .uact');
     await visit('admin SLA & points', '/c/sla', tok.asha, '#sf [name=esc_days]');
-    await visit('admin attention', '/c/attention', tok.asha, '#main h2');
-    await visit('admin reports', '/c/reports', tok.asha, '.kpi');
+    await visit('admin attention', '/c/attention', tok.asha, '#main .attp .att');
+    await visit('admin reports', '/c/reports', tok.asha, '.kpi2');
     await visit('admin audit', '/c/audit', tok.asha, '#main table');
     await visit('super admin email page', '/c/email', tok.sa, '#cf [name=url]');
     await visit('super admin tenants', '/c/tenants', tok.sa, '#main table');

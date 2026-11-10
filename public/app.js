@@ -16,7 +16,10 @@ const statusIcon = (s, size = 18) => `<span class="sicon" style="color:${ST_VAR[
 // PriorityTag: flag + label in the priority colour; the pill variant adds the soft background
 const priorityTag = (p, asPill = false) => `<span class="ptag pr-${p} ${asPill ? 'pv' : ''}">${I('flag', 12)}${cap(p)}</span>`;
 // CardHeading: 28px icon tile + title
-const cardHeading = (icon, title) => `<div class="chead"><span class="tile">${I(icon, 16)}</span><span>${title}</span></div>`;
+const TONE = { clock: 'amber', bell: 'amber', cpause: 'amber', star: 'amber', utensils: 'amber', user: 'blue', history: 'blue', file: 'blue', mail: 'blue', home: 'blue', chart: 'blue', ticket: 'blue',
+  users: 'violet', grid: 'violet', building: 'violet', settings: 'slate', download: 'green', pencil: 'green', ccheck: 'green', shield: 'green', check: 'green', flag: 'rose', calert: 'rose', alert: 'rose', swap: 'teal', eye: 'teal', copy: 'slate', plus: 'blue' };
+const tile = (icon, size = 16) => `<span class="tile t-${TONE[icon] || 'slate'}">${I(icon, size)}</span>`;
+const cardHeading = (icon, title) => `<div class="chead">${tile(icon)}<span>${title}</span></div>`;
 // Avatar: initials in a circle; sizes 24/28/32/36/40/44; variants neutral, dark, accent
 const initialsOf = n => String(n || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
 const avatar = (name, size = 36, variant = 'neutral') => `<span class="av av-${size} ${variant === 'neutral' ? '' : 'av-' + variant}" aria-hidden="true">${esc(initialsOf(name))}</span>`;
@@ -53,7 +56,7 @@ const BLOCK_FIELDS = ['progress', 'ticket_details', 'timeline', 'guide'];
 const ACT_ICON = { hold: 'pause', open: 'play', in_progress: 'play', closed: 'check', rejected: 'xmark' };
 const fmtLeft = m => { m = Math.abs(Math.round(m)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60 ? (m % 60) + 'm' : ''}`.trim() : `${m}m`; };
 const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small">Points for closing within SLA, this campus</div>${rows.length ? rows.map((u, i) => `<div class="brow">
-  <span class="rank">${i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
+  <span class="rank r${i + 1}">${['🥇', '🥈', '🥉'][i] || i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
   <b class="mono" style="color:${u.points < 0 ? 'var(--warn)' : 'var(--brand)'}">${u.points} pts</b></div>`).join('') : '<p class="muted">No providers yet.</p>'}`;
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
 const ring = (pct, size = 96, color = 'var(--brand)', track = '#EEF0F3') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
@@ -479,7 +482,7 @@ async function bellDot(admin) {
 // Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
 function moreSheet(items) {
   document.querySelector('.msheet-back')?.remove(); document.querySelector('.msheet')?.remove();
-  const row = (tag, attrs, ic, label) => `<${tag} class="mrow ${attrs.cls || ''}" ${attrs.a}><span class="tile">${I(ic, 18)}</span><span class="l">${label}</span><span class="chv">${I('chev', 18)}</span></${tag}>`;
+  const row = (tag, attrs, ic, label) => `<${tag} class="mrow ${attrs.cls || ''}" ${attrs.a}>${tile(ic, 18)}<span class="l">${label}</span><span class="chv">${I('chev', 18)}</span></${tag}>`;
   document.body.insertAdjacentHTML('beforeend', `<div class="msheet-back"></div><div class="msheet" role="dialog" aria-modal="true" aria-labelledby="mshT"><div class="grab"></div>
     <div class="msheet-h"><h2 id="mshT">More</h2><button type="button" class="msheet-x" aria-label="Close">${I('x', 20)}</button></div>
     ${items.map(([h, l, ic]) => row('a', { a: `href="#/${h}"` }, ic, l)).join('')}${row('a', { a: 'href="#/settings"' }, 'settings', 'Settings')}
@@ -498,10 +501,11 @@ const shortDate = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone:
 // what the last column / card foot says: [label, date, icon, isClosedLike]
 function ticketWhen(r) {
   const now = new Date().toISOString(), holdOver = r.status === 'hold' && r.hold_due_at && r.hold_due_at < now;
-  return r.queued ? ['Reaches the team', r.lands_at, 'clock', false] : ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock', false]
+  return r.queued ? ['Reaches the team', r.lands_at, 'clock', false] : ACTIVE.includes(r.status) ? [isOverdue(r) ? 'Overdue since' : 'Due', r.due_at, 'clock', false]
     : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause', false] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark', true];
 }
-const ticketStatus = r => r.overdue ? 'overdue' : r.status; // an open ticket past its due time shows as Overdue
+const isOverdue = r => r.overdue ?? (ACTIVE.includes(r.status) && !!r.due_at && r.due_at < new Date().toISOString()); // lists that come without the flag
+const ticketStatus = r => isOverdue(r) ? 'overdue' : r.status; // an open ticket past its due time shows as Overdue
 const ticketFlags = r => `${r.escalated_at && [...ACTIVE, 'hold'].includes(r.status) ? `<span class="pill" title="Escalated to ${esc(r.escalated_name || '')}">Escalated</span>` : ''}${r.queued ? '<span class="pill">In queue</span>' : ''}${r.is_internal ? '<span class="pill">Internal</span>' : ''}`;
 const ticketPeople = r => `${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}`;
 // One ticket as a card: one link to the ticket (phones, and the short lists on other screens)
@@ -544,7 +548,7 @@ async function queue(main) {
     const tabs = [['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['queued', 'In queue']];
     main.innerHTML = `<div class="home">
       <div class="greet"><div><div class="eyebrow"><span class="d-only">${day({ weekday: 'long', day: 'numeric', month: 'long' })} · ${esc(tn?.name || '')}</span><span class="m-only">${day({ weekday: 'short', day: 'numeric', month: 'short' })} · ${esc(tn?.code || '')}</span></div>
-        <h1>${greet}, ${esc(S.me.user.name.split(' ')[0])}</h1></div>
+        <h1>${greet}, ${esc(S.me.user.name.split(' ')[0])} <span class="wave" aria-hidden="true">👋</span></h1></div>
         <div class="greet-r"><a href="#/c/me" class="ptschip" aria-label="${pts.me} points. Open my points">${I('star', 16)}<span>${pts.me} pts</span></a>
           <a href="#/c/new" class="btn primary d-only">${I('plus', 16)}New ticket</a></div></div>
       <div class="ovr"><div class="card wk"><span class="d-only">${ringSvg(pct, 88, 8)}</span><span class="m-only">${ringSvg(pct, 64, 7)}</span><div><div class="eyebrow up">This week</div><div class="wk-l">${done} of ${total} tickets closed</div><div class="wk-s d-only">${total - done} still open this week</div></div></div>
@@ -612,7 +616,7 @@ async function workspace(main, id, { admin }) {
   const slaBig = t.queue ? `Queue no. ${t.queue.queue_no}` : ACTIVE.includes(t.status) ? fmtLeft(t.sla_left_min) + (t.sla_left_min < 0 ? ' late' : '') : t.status === 'hold' ? 'On hold' : stName(t.status);
   const slaSub = t.queue ? `of ${t.queue.waiting} waiting · reaches the team on ${esc(t.queue.lands_on)}` : ACTIVE.includes(t.status) ? `${t.sla_left_min < 0 ? 'Past the SLA' : 'Working time left'} · due ${shortDate(t.due_at)}`
     : t.status === 'hold' ? `${esc(t.hold_label || '')} · ${t.hold_over ? 'hold limit passed' : 'resume by'} ${shortDate(t.hold_due_at)} · SLA clock paused` : t.closed_at ? shortDate(t.closed_at) : '';
-  const slaCard = `<div class="card side sla">${`<div class="chead"><span class="tile">${I('clock', 16)}</span><span>SLA</span><span class="sp"></span>${slaTag}</div>`}
+  const slaCard = `<div class="card side sla">${`<div class="chead">${tile('clock')}<span>SLA</span><span class="sp"></span>${slaTag}</div>`}
     <div class="sla-row"><span class="sla-tile m-only">${I('clock', 20)}</span><div><div class="sla-big">${slaBig}</div><div class="sla-sub">${slaSub}</div></div></div>
     ${ACTIVE.includes(t.status) ? `<div class="pbar" role="progressbar" aria-label="Share of the SLA window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><i style="width:${used}%;${t.sla_left_min < 0 ? 'background:var(--danger)' : ''}"></i></div>` : ''}
     ${t.escalated_name && live ? `<div class="sla-note danger">${I('calert', 15)}<span>Escalated to ${esc(t.escalated_name)} · ${shortDate(t.escalated_at)}</span></div>` : ''}
@@ -631,11 +635,11 @@ async function workspace(main, id, { admin }) {
   const timeline = `<ol class="tl">${evs.map((e, i) => `<li class="${i === last ? 'latest' : ''}"><span class="rail"><i style="background:${evDot(e)}"></i></span>
     <div class="tlc"><div class="tlt"><b>${evLabel(e)}</b>${e.is_internal ? '<span class="tag">Internal</span>' : ''}</div><div class="tlm">${shortDate(e.created_at)} · ${esc(e.actor_name || e.actor_type || '')}</div>
       ${e.body ? `<div class="bubble">${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div></li>`).join('')}</ol>`;
-  const details = `<div class="issue"><div class="eyebrow up ic"><span class="tile">${I('file', 14)}</span>Issue</div><p>${esc(t.description || t.subject)}</p></div>
+  const details = `<div class="issue"><div class="eyebrow up ic">${tile('file', 14)}Issue</div><p>${esc(t.description || t.subject)}</p></div>
     ${t.location ? `<div class="locrow m-only">${I('pin', 16)}<div><dt>Location</dt><dd>${esc(t.location)}</dd></div></div>` : ''}
     <dl class="dlist">${t.location ? `<div class="dli dli-loc"><dt>Location</dt><dd>${esc(t.location)}</dd></div>` : ''}${dl([...fd, ['Created', fmt(t.created_at)], ['Channel', cap(String(t.channel).replace('_', ' '))], ...(t.is_internal ? [['Kind', 'Internal request']] : [])])}</dl>`;
   const updateForm = `<form id="act" class="upd" aria-labelledby="updT">
-      <div class="upd-h"><div class="chead" id="updT"><span class="tile">${I('pencil', 16)}</span><span>Update this ticket</span></div><button type="button" class="msheet-x m-only" id="updX" aria-label="Close">${I('x', 20)}</button></div>
+      <div class="upd-h"><div class="chead" id="updT">${tile('pencil')}<span>Update this ticket</span></div><button type="button" class="msheet-x m-only" id="updX" aria-label="Close">${I('x', 20)}</button></div>
       <label for="to">Status<span class="m-only"> · now ${stName(t.status)}</span></label><select name="to" id="to">${STATUSES.map(s2 => `<option value="${s2}" ${s2 === t.status ? 'selected' : ''} ${s2 !== t.status && !targets.includes(s2) ? 'disabled' : ''}>${STATUS_INFO[s2][0]}${s2 === t.status ? ' (current)' : ''}</option>`).join('')}</select>
       <div class="helper" id="tohint"></div>
       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(x => `<option value="${x.key}">${esc(x.label)} — ${x.hours}h limit</option>`).join('')}</select></div>
@@ -707,7 +711,7 @@ function actionSheet(title, rows) {
   document.querySelector('.asheet-back')?.remove(); document.querySelector('.asheet')?.remove();
   document.body.insertAdjacentHTML('beforeend', `<div class="msheet-back asheet-back"></div><div class="msheet asheet" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="grab"></div>
     <div class="msheet-h"><h2>${esc(title)}</h2><button type="button" class="msheet-x" aria-label="Close">${I('x', 20)}</button></div>
-    ${rows.map(([ic, l], i) => `<button type="button" class="mrow" data-i="${i}"><span class="tile">${I(ic, 18)}</span><span class="l">${esc(l)}</span><span class="chv">${I('chev', 18)}</span></button>`).join('')}</div>`);
+    ${rows.map(([ic, l], i) => `<button type="button" class="mrow" data-i="${i}">${tile(ic, 18)}<span class="l">${esc(l)}</span><span class="chv">${I('chev', 18)}</span></button>`).join('')}</div>`);
   const sh = document.querySelector('.asheet'), close = () => { document.querySelector('.asheet-back')?.remove(); sh.remove(); };
   document.querySelector('.asheet-back').onclick = close; sh.querySelector('.msheet-x').onclick = close;
   sh.querySelectorAll('.mrow').forEach(b => b.onclick = () => { close(); rows[b.dataset.i][2](); });
@@ -742,11 +746,15 @@ async function newTicket(main) {
 
 async function attention(main) {
   const a = await api('/attention');
-  const list = (rows) => rows.length ? `<table>${rows.map(r => `<tr class="click" data-id="${r.id}"><td class="mono">${r.ticket_no}</td><td>${esc(r.service)}</td><td>${esc(r.subject)}</td><td>${fmt(r.due_at)}</td></tr>`).join('')}</table>` : '<p class="muted">Clear.</p>';
-  main.innerHTML = `<h2>Services with no provider</h2>${a.no_provider.length ? a.no_provider.map(s => `<div class="card">${esc(s.name)} — ${s.open_count} active ticket(s). <a href="#/c/services">Map a provider</a></div>`).join('') : '<p class="muted">Clear.</p>'}
-    <h2>Escalated</h2>${list(a.escalated)}<h2>Overdue</h2>${list(a.overdue)}<h2>Hold past its hold SLA</h2>${list(a.stuck_hold)}
-    <h2>Failed mail</h2>${a.failed_mail.length ? `<table>${a.failed_mail.map(n => `<tr><td>${esc(n.recipient)}</td><td>${esc(n.subject)}</td><td class="err">${esc(n.last_error)}</td><td><button class="btn" data-n="${n.id}">Resend</button></td></tr>`).join('')}</table>` : '<p class="muted">Clear.</p>'}`;
-  main.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id);
+  const sec = (icon, title, n, body, hint) => `<section class="card att"><div class="att-h">${cardHeading(icon, title)}<span class="tab-cnt ${n ? 'hot' : ''}">${n}</span></div>${n ? body : emptyState('All clear', hint)}</section>`;
+  const tix = rows => `${ticketTable(rows)}<div class="tcards">${rows.map(ticketCard).join('')}</div>`;
+  main.innerHTML = `<div class="attp">
+    ${sec('calert', 'Overdue', a.overdue.length, tix(a.overdue), 'No ticket is past its due time.')}
+    ${sec('bell', 'Escalated', a.escalated.length, tix(a.escalated), 'No open ticket is escalated.')}
+    ${sec('cpause', 'On hold past the hold limit', a.stuck_hold.length, tix(a.stuck_hold), 'No hold has run past its limit.')}
+    ${sec('users', 'Services with no provider', a.no_provider.length, `<div class="att-list">${a.no_provider.map(s => `<a class="att-row" href="#/c/services"><span><b>${esc(s.name)}</b><span class="psub">${s.open_count} active ticket${s.open_count === 1 ? '' : 's'}</span></span><span class="linkbtn">Map a provider</span></a>`).join('')}</div>`, 'Every service has a provider.')}
+    ${sec('mail', 'Emails that failed to send', a.failed_mail.length, `<div class="att-list">${a.failed_mail.map(n => `<div class="att-row"><span><b>${esc(n.subject)}</b><span class="psub">${esc(n.recipient)} · ${esc(n.last_error || '')}</span></span><button class="btn" data-n="${n.id}">Resend</button></div>`).join('')}</div>`, 'Every email went out.')}</div>`;
+  main.querySelectorAll('.ttable tbody tr').forEach(tr => { tr.onclick = e => { if (!e.target.closest('a')) location.hash = '#/c/t/' + tr.dataset.id; }; });
   main.querySelectorAll('[data-n]').forEach(b => b.onclick = async () => { await api(`/notifications/${b.dataset.n}/resend`, { method: 'POST' }); toast('Queued'); attention(main); });
 }
 
@@ -940,31 +948,46 @@ function setOwnPassword() {
 }
 
 async function reports(main, { sa }) {
-  const rd = sessionStorage.getItem('rd') || '30', custom = rd === 'custom', today = new Date().toLocaleDateString('en-CA');
+  const rd = sessionStorage.getItem('rd') || '30', custom = rd === 'custom', today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
   const rf = sessionStorage.getItem('rfrom') || today, rt = sessionStorage.getItem('rto') || today;
   const [r, g] = await Promise.all([api('/reports?' + (custom ? `from=${rf}&to=${rt}` : 'days=' + rd)), sa ? api('/group/report') : null]);
-  const day = iso => new Date(iso).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium' });
-  const c = r.counts || {}, max = Math.max(1, ...r.daily.map(d => d.c));
-  const bars = (rows) => rows.map(x => `<div class="brow"><span style="flex:0 0 70px;text-transform:capitalize">${esc(x.k)}</span><div style="flex:1"><div class="bartrack"><div class="bar" style="width:${100 * x.c / Math.max(1, ...rows.map(y => y.c))}%"></div></div></div><span style="flex:0 0 40px" class="mono">${x.c}</span></div>`).join('') || '<p class="muted">No data</p>';
-  main.innerHTML = `<div class="filters rfil"><select id="rd">${[7, 30, 90, 365].map(d => `<option value="${d}" ${String(d) === rd ? 'selected' : ''}>Last ${d} days</option>`).join('')}<option value="custom" ${custom ? 'selected' : ''}>Custom dates…</option></select>
+  const c = r.counts || {}, x = r.extra || {}, dlabel = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  // every day in the range (weeks when the range is long), with tickets raised and closed
+  const days = []; for (let d = new Date(r.days.from + 'T00:00:00Z'), e = new Date(r.days.to + 'T00:00:00Z'); d <= e && days.length < 400; d.setUTCDate(d.getUTCDate() + 1)) days.push(d.toISOString().slice(0, 10));
+  const rm = Object.fromEntries(r.daily.map(v => [v.d, v.c])), cm = Object.fromEntries((r.daily_closed || []).map(v => [v.d, v.c])), step = days.length > 45 ? 7 : 1;
+  const pts = []; for (let i = 0; i < days.length; i += step) { const sl = days.slice(i, i + step); pts.push({ label: dlabel(sl[0]), raised: sl.reduce((a, d) => a + (rm[d] || 0), 0), closed: sl.reduce((a, d) => a + (cm[d] || 0), 0) }); }
+  const chart = () => { const W = 720, H = 220, pl = 30, pb = 26, pt = 10, max = Math.max(1, ...pts.flatMap(p => [p.raised, p.closed])), gw = (W - pl - 8) / Math.max(1, pts.length), bw = Math.max(2, Math.min(18, gw * 0.36)), Y = v => pt + (H - pt - pb) * (1 - v / max);
+    const every = Math.ceil(pts.length / 10), ticks = [...new Set([0, Math.ceil(max / 2), max])];
+    return `<svg viewBox="0 0 ${W} ${H}" class="rchart" role="img" aria-label="Tickets raised and closed per ${step === 7 ? 'week' : 'day'}">${ticks.map(v => `<line x1="${pl}" x2="${W - 8}" y1="${Y(v)}" y2="${Y(v)}" class="g"/><text x="${pl - 6}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join('')}
+      ${pts.map((p, i) => { const cx = pl + gw * i + gw / 2; return `${p.raised ? `<rect x="${cx - bw - 1}" y="${Y(p.raised)}" width="${bw}" height="${H - pb - Y(p.raised)}" rx="2" fill="var(--accent)"><title>${p.label}: ${p.raised} raised</title></rect>` : ''}${p.closed ? `<rect x="${cx + 1}" y="${Y(p.closed)}" width="${bw}" height="${H - pb - Y(p.closed)}" rx="2" fill="var(--st-closed)"><title>${p.label}: ${p.closed} closed</title></rect>` : ''}${i % every === 0 ? `<text x="${cx}" y="${H - 8}" text-anchor="middle">${p.label}</text>` : ''}`; }).join('')}</svg>
+      <div class="flegend"><span><i style="background:var(--accent)"></i>Raised</span><span><i style="background:var(--st-closed)"></i>Closed</span>${step === 7 ? '<span class="muted">per week</span>' : ''}</div>`; };
+  const hb = (rows, color) => { const max = Math.max(1, ...rows.map(v => v[1])); return rows.some(v => v[1]) ? rows.map(([l, v, col]) => `<div class="hbar"><span>${l}</span><div><i style="width:${(100 * v) / max}%;background:${col || color}"></i></div><b>${v}</b></div>`).join('') : '<p class="muted small">No tickets in this period.</p>'; };
+  const pr = Object.fromEntries(r.by_priority.map(v => [v.k, v.c])), ag = Object.fromEntries(r.aging.map(v => [v.k, v.c]));
+  const kpi = (label, val, sub = '', hot = false, ic = 'ticket') => `<div class="kpi2"><span class="kl">${tile(ic, 14)}${label}</span><b class="${hot ? 'hot' : ''}">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  const pct = v => v == null ? '—' : v + '%';
+  main.innerHTML = `<div class="repp">
+    <div class="rep-h"><div class="filters rfil" style="margin:0"><select id="rd" aria-label="Period">${[7, 30, 90, 365].map(d => `<option value="${d}" ${String(d) === rd ? 'selected' : ''}>Last ${d} days</option>`).join('')}<option value="custom" ${custom ? 'selected' : ''}>Custom dates…</option></select>
       ${custom ? `<label class="dfield">From<input type="date" id="rfrom" value="${rf}" max="${today}"></label><label class="dfield">To<input type="date" id="rto" value="${rt}" max="${today}"></label><button class="btn primary" id="rgo">Show</button>` : ''}</div>
-    <div class="muted small" style="margin:-4px 0 10px">Showing tickets raised from <b>${day(r.range.from)}</b> to <b>${day(new Date(new Date(r.range.to).getTime() - 1).toISOString())}</b> · status counts and overdue are as of now</div>
-    <div class="kpis"><div class="kpi"><span class="muted">Raised</span><b>${c.created_period || 0}</b></div><div class="kpi"><span class="muted">Closed</span><b>${c.closed_period || 0}</b></div>
-    <div class="kpi"><span class="muted">Students affected</span><b>${r.affected ?? 0}</b></div><div class="kpi"><span class="muted">Avg hours to close</span><b>${c.avg_hours ?? '—'}</b></div>
-    <div class="kpi warn"><span class="muted">Overdue now</span><b>${c.overdue || 0}</b></div></div>
-    <div class="two"><div class="card progress" style="margin:0">${ring(c.on_time_pct ?? 0, 110)}<div><b>On-time score</b><div class="muted small">Tickets closed before their due time</div></div></div>
-    <div class="card" style="margin:0"><b>Raised per day</b><svg viewBox="0 0 ${Math.max(1, r.daily.length) * 20} 100" style="width:100%;height:110px" preserveAspectRatio="none">
-      <polygon fill="var(--brand-2)" points="10,100 ${r.daily.map((d, i) => `${i * 20 + 10},${95 - 90 * d.c / max}`).join(' ')} ${(r.daily.length - 1) * 20 + 10},100"/>
-      <polyline fill="none" stroke="var(--brand)" stroke-width="2.5" vector-effect="non-scaling-stroke" points="${r.daily.map((d, i) => `${i * 20 + 10},${95 - 90 * d.c / max}`).join(' ')}"/>${r.daily.map((d, i) => `<circle cx="${i * 20 + 10}" cy="${95 - 90 * d.c / max}" r="3" fill="var(--brand)"/>`).join("")}</svg></div></div>
-    <div class="two" style="margin-top:14px"><div class="card"><b>By priority</b>${bars(r.by_priority)}</div><div class="card"><b>Aging of active tickets</b>${bars(r.aging)}</div></div>
+      <button class="btn" id="rcsv">${I('download', 16)}Export CSV</button></div>
+    <div class="muted small">Tickets raised from <b>${dlabel(r.days.from)}</b> to <b>${dlabel(r.days.to)}</b>. Open, on hold and overdue are as of now.</div>
+    <div class="card kpis2">${kpi('Raised', c.created_period || 0, `${r.affected ?? 0} people affected`, false, 'ticket')}${kpi('Closed', c.closed_period || 0, c.created_period ? `${Math.round(100 * (c.closed_period || 0) / c.created_period)}% of raised` : '', false, 'ccheck')}
+      ${kpi('Closed on time', pct(c.closed_period ? c.on_time_pct : null), 'before the due time', false, 'shield')}${kpi('Avg time to close', c.avg_hours == null ? '—' : c.avg_hours + ' h', 'hold time not counted', false, 'clock')}
+      ${kpi('Overdue now', c.overdue || 0, 'past the SLA due time', c.overdue > 0, 'calert')}${kpi('Reopened', x.reopened || 0, 'by the requester or staff', false, 'history')}${kpi('Escalated', x.escalated || 0, 'missed their target', false, 'bell')}${kpi('In queue', c.queued || 0, 'waiting for their day', false, 'users')}</div>
+    <div class="card"><b>Raised and closed</b>${pts.some(p => p.raised || p.closed) ? chart() : '<p class="muted small">No tickets in this period.</p>'}</div>
+    <div class="two"><div class="card"><b>By priority</b>${hb(['critical', 'high', 'medium', 'low'].map(k => [cap(k), pr[k] || 0, `var(--pr-${k})`]))}</div>
+      <div class="card"><b>Age of open tickets</b><div class="muted small">Open, in progress and on hold, by how long ago they were raised</div>${hb([['Under 1 day', ag['<1d'] || 0], ['1 to 3 days', ag['1-3d'] || 0], ['3 to 7 days', ag['3-7d'] || 0, 'var(--st-hold)'], ['Over 7 days', ag['7d+'] || 0, 'var(--st-overdue)']], 'var(--accent)')}</div></div>
+    <div class="card"><b>By service</b><div class="muted small">Tickets raised in this period, and where they stand now</div><div class="tblbox"><table class="rtable"><thead><tr><th>Service</th><th>Raised</th><th>Open</th><th>In progress</th><th>On hold</th><th>Closed</th><th>Rejected</th><th>Overdue</th><th>On time</th><th>Avg hours</th></tr></thead><tbody>
+      ${r.by_service.map(s2 => `<tr><td><b>${esc(s2.name)}</b></td><td>${s2.raised ?? ''}</td><td>${s2.open}</td><td>${s2.in_progress || 0}</td><td>${s2.hold}</td><td>${s2.closed}</td><td>${s2.rejected}</td><td class="${s2.overdue > 0 ? 'hot' : ''}">${s2.overdue}</td><td>${pct(s2.on_time_pct)}</td><td>${s2.avg_hours ?? '—'}</td></tr>`).join('') || '<tr><td colspan="10" class="muted">No tickets in this period.</td></tr>'}</tbody></table></div></div>
     <div class="card" id="lb"></div>
-    <div class="card"><b>By service</b><table><tr><th>Service</th><th>Open</th><th>In progress</th><th>Hold</th><th>Closed</th><th>Rejected</th><th>Overdue</th></tr>
-      ${r.by_service.map(s => `<tr><td>${esc(s.name)}</td><td>${s.open}</td><td>${s.in_progress || 0}</td><td>${s.hold}</td><td>${s.closed}</td><td>${s.rejected}</td><td>${s.overdue}</td></tr>`).join('')}</table></div>
-    ${r.by_location?.length ? `<div class="card"><b>Students affected by place</b><div class="muted small">Every requestor of every ticket raised in this period, per service and location</div><div class="tblwrap"><table><tr><th>Service</th><th>Location</th><th>Tickets</th><th>Students affected</th></tr>
-      ${r.by_location.map(x => `<tr><td>${esc(x.service)}</td><td>${esc(x.location)}</td><td>${x.tickets}</td><td><b>${x.affected}</b></td></tr>`).join('')}</table></div></div>` : ''}
-    ${g ? `<div class="card"><b>Group-wide</b><table><tr><th>Tenant</th><th>Open</th><th>Hold</th><th>Closed</th><th>Overdue</th></tr>${g.map(t => `<tr><td>${esc(t.name)}</td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td>${t.overdue || 0}</td></tr>`).join('')}</table></div>` : ''}`;
-  api('/points').then(p => $('#lb').innerHTML = leaderboard(p.leaderboard));
+    ${r.by_location?.length ? `<div class="card"><b>People affected by place</b><div class="muted small">Everyone who reported a ticket raised in this period, per service and location</div><div class="tblbox"><table class="rtable"><thead><tr><th>Service</th><th>Location</th><th>Tickets</th><th>People affected</th></tr></thead><tbody>
+      ${r.by_location.map(v => `<tr><td>${esc(v.service)}</td><td>${esc(v.location)}</td><td>${v.tickets}</td><td><b>${v.affected}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    ${g ? `<div class="card"><b>All campuses</b><div class="muted small">As of now</div><div class="tblbox"><table class="rtable"><thead><tr><th>Campus</th><th>Open</th><th>On hold</th><th>Closed</th><th>Overdue</th></tr></thead><tbody>${g.map(t => `<tr><td><b>${esc(t.name)}</b></td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td class="${t.overdue > 0 ? 'hot' : ''}">${t.overdue || 0}</td></tr>`).join('')}</tbody></table></div></div>` : ''}</div>`;
+  api('/points').then(p => { if ($('#lb')) $('#lb').innerHTML = leaderboard(p.leaderboard); });
   $('#rd').onchange = e => { sessionStorage.setItem('rd', e.target.value); reports(main, { sa }); };
+  $('#rcsv').onclick = () => { const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`, cols = ['name', 'raised', 'open', 'in_progress', 'hold', 'closed', 'rejected', 'overdue', 'on_time_pct', 'avg_hours'];
+    const csv = [`"Report","${r.days.from} to ${r.days.to}"`, '', ['Service', 'Raised', 'Open', 'In progress', 'On hold', 'Closed', 'Rejected', 'Overdue', 'On time %', 'Avg hours to close'].map(cell).join(','), ...r.by_service.map(s2 => cols.map(k => cell(s2[k])).join(',')),
+      '', ['Day', 'Raised', 'Closed'].map(cell).join(','), ...days.map(d => [d, rm[d] || 0, cm[d] || 0].map(cell).join(','))].join('\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `report-${r.days.from}-to-${r.days.to}.csv`; a.click(); };
   if (custom) $('#rgo').onclick = () => { const f = $('#rfrom').value, t = $('#rto').value;
     if (!f || !t) return toast('Pick both dates'); if (f > t) return toast('From must be on or before To');
     sessionStorage.setItem('rfrom', f); sessionStorage.setItem('rto', t); reports(main, { sa }); };
@@ -1000,7 +1023,7 @@ async function slaPage(main) {
   main.innerHTML = `<div class="two"><form id="sf" class="card" style="margin:0" novalidate>
     <b>Working hours</b><div class="muted small">The SLA clock only runs inside this window. Evenings, nights and days off don't count.</div>
     <div class="row"><div><label>Starts</label><input type="time" name="work_start" value="${c.work_start}"></div><div><label>Ends</label><input type="time" name="work_end" value="${c.work_end}"></div></div>
-    <label>Working days</label><div class="tabs" style="flex-wrap:wrap;overflow:visible">${DAYS.map((d, i) => `<label class="tab ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
+    <label>Working days</label><div class="daypick">${DAYS.map((d, i) => `<label class="daychip ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
     <b style="display:block;margin-top:18px">Time to close, by priority</b><div class="muted small">In working hours. Requestor tickets start as Medium; providers can change the priority.</div>
     <div class="prow">${['critical', 'high', 'medium', 'low'].map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" name="t_${p}" value="${c.targets[p] || ''}"><div class="muted small" data-d="${p}"></div></div>`).join('')}</div>
     <b style="display:block;margin-top:18px">Escalation</b><div class="muted small">A ticket goes to the service's providers first. If it misses its target by this many working days, it moves to the service's escalation person and the requestor is told.</div>
@@ -1257,13 +1280,13 @@ async function profile(main) {
   const mine = u.role === 'provider' ? svcs.filter(s => s.members.some(m => m.id === u.id)) : svcs;
   main.innerHTML = `<div style="max-width:560px;margin:0 auto"><div class="profile"><div class="avatar">${u.name.split(' ').map(w => w[0]).slice(0, 2).join('')}</div>
     <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
-    <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b>⭐ ${pts.me}</b><span>Points</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
+    <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b><span class="gold">${I('star', 18)}</span> ${pts.me}</b><span>Points</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
     ${pts.history.length ? `<div class="card"><b>Recent points</b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}" class="mono">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
-    <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
-      <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a>
-      <a href="#/settings">${I('settings')}Settings<span class="chev">${I('chev', 18)}</span></a>
-      ${canInstall() ? `<a href="#" class="install" onclick="return false">${I('download')}Install app<span class="chev">${I('chev', 18)}</span></a>` : ''}</div>
+    <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${tile(ic, 18)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
+      <a href="#" id="pw">${tile('shield', 18)}Change password<span class="chev">${I('chev', 18)}</span></a>
+      <a href="#/settings">${tile('settings', 18)}Settings<span class="chev">${I('chev', 18)}</span></a>
+      ${canInstall() ? `<a href="#" class="install" onclick="return false">${tile('download', 18)}Install app<span class="chev">${I('chev', 18)}</span></a>` : ''}</div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
   $('#lo').onclick = logout;
   $('#pw').onclick = e => { e.preventDefault(); dlg(`<h2>Change password</h2><label>Current password</label><input name="current" type="password" required autocomplete="current-password">

@@ -582,3 +582,47 @@ body.on-ticket .cwrap>.head{display:none}
 /* review fixes: tap targets on phones; the header keeps one row at 1024px */
 @media (max-width:767px){.brandlink{min-height:44px}.btn,.uact .btn{min-height:44px}}
 @media (min-width:768px) and (max-width:1279px){.top-in{gap:12px;padding:0 20px}.top nav a{padding:8px 8px;gap:6px}.top .who,.top .vdiv{display:none}.cwrap{padding-left:20px;padding-right:20px}}
+
+/* ============ UI pass: header order, Reports, Attention, tables on phones ============ */
+.top-in{flex-wrap:nowrap}.brandlink{order:1}.top nav{order:2;flex:1 1 0}.top-r{order:3}
+/* a soft fade where the nav scrolls */
+.top nav{mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);padding-right:24px}
+.tab-cnt{display:inline-block;min-width:24px;text-align:center;padding:2px 8px;border-radius:var(--radius-pill);font-size:12px;font-weight:600;background:#F2F4F7;color:var(--text-3)}.tab-cnt.hot{background:var(--danger-soft);color:var(--danger)}
+.attp,.repp{display:flex;flex-direction:column;gap:16px}.attp .card,.repp .card{margin:0}.repp .two{margin:0}
+.att{padding:0;overflow:hidden}.att-h{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--divider)}
+.att .empty{padding:22px 16px}.att-list{display:flex;flex-direction:column}
+.att-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 20px;border-top:1px solid var(--divider-soft);color:var(--text);min-height:56px}.att-row:first-child{border-top:0}
+.att-row>span:first-child{display:flex;flex-direction:column;min-width:0}.att-row b{font-weight:600}a.att-row:hover{background:var(--row-hover)}
+.rep-h{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.kpis2{padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));overflow:hidden}
+.kpi2{display:flex;flex-direction:column;gap:6px;padding:18px 20px;border-left:1px solid var(--divider);border-top:1px solid var(--divider);margin:-1px 0 0 -1px;min-width:0}
+.kpi2 span{font-size:13px;font-weight:500;color:var(--text-3)}.kpi2 b{font-size:26px;font-weight:700;line-height:1;letter-spacing:-.02em}.kpi2 b.hot,.rtable td.hot{color:var(--danger);font-weight:600}.kpi2 small{font-size:12px;color:var(--text-meta)}
+.rchart{width:100%;height:auto;margin-top:12px}.rchart .g{stroke:#EEF0F3}.rchart text{font-size:11px;fill:var(--text-meta)}
+.rtable{width:100%;min-width:560px;border-collapse:collapse;font-size:14px;margin-top:10px}
+.rtable th{text-transform:none;letter-spacing:0;background:#F9FAFB;font-size:12px;font-weight:600;color:var(--text-3);text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
+.rtable td{padding:11px 12px;border-bottom:1px solid var(--divider);white-space:nowrap}.rtable tbody tr:last-child td{border-bottom:0}.rtable td:first-child{white-space:normal;min-width:160px}
+.hbar{grid-template-columns:110px 1fr 34px}.hbar>div{background:#EEF0F3}
+/* working-day chips (on / off), not tabs */
+.daypick{display:flex;flex-wrap:wrap;gap:8px}.daychip{display:inline-flex;align-items:center;justify-content:center;min-width:52px;min-height:36px;padding:0 12px;border-radius:var(--radius-pill);border:1px solid var(--border);background:var(--surface);color:var(--text-2);font-size:13px;font-weight:500;cursor:pointer}
+.daychip.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}.daychip:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:767px){
+  .att .tblbox{display:none}.att .tcards{display:flex;flex-direction:column;gap:10px;padding:12px}.att .tcard{border-radius:12px}
+  .att-row{padding:12px 16px}.att-h{padding:14px 16px}
+  .kpis2{grid-template-columns:1fr 1fr}.kpi2{padding:14px 16px}.kpi2 b{font-size:22px}
+  .repp .tblbox{display:block}.rep-h .btn{width:100%}.daychip{min-height:44px}
+  /* any other table scrolls inside its own box instead of pushing the page sideways */
+  #main table:not(.ttable):not(.rtable){display:block;overflow-x:auto;max-width:100%}
+}
+.linkbtn{white-space:nowrap}
+/* small colourful touches: soft icon tiles, the gold star, medals */
+.tile{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none;background:#F2F4F7;color:var(--text-2)}
+.tile.t-blue{background:#EFF8FF;color:#1570EF}.tile.t-green{background:#ECFDF3;color:#079455}.tile.t-amber{background:#FFFAEB;color:#DC6803}.tile.t-violet{background:#F4F3FF;color:#6938EF}
+.tile.t-rose{background:#FEF3F2;color:#D92D20}.tile.t-teal{background:#F0FDF9;color:#0E9384}.tile.t-slate{background:#F2F4F7;color:#475467}
+.mrow .tile{width:36px;height:36px;border-radius:10px}.eyebrow.ic .tile{width:24px;height:24px;border-radius:7px}
+.menu a .tile{width:32px;height:32px;border-radius:9px;margin-right:2px}
+.ptschip svg,.gold svg{color:#F79009;fill:#FEC84B}.gold{display:inline-flex;vertical-align:-3px}
+.wave{display:inline-block;font-size:.9em}
+.rank.r1,.rank.r2,.rank.r3{background:none;font-size:20px}
+.kl{display:flex;align-items:center;gap:8px}.kl .tile{width:24px;height:24px;border-radius:7px}
+.stl .sicon{width:26px;height:26px;border-radius:8px;background:#F9FAFB}
+.menu a .tile svg,.mrow .tile svg,.chead .tile svg,.kl .tile svg{color:inherit}

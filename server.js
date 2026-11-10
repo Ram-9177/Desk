@@ -7,11 +7,11 @@ import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { createSuperAdmin } from './bootstrap.js';
-import { food } from './food.js';
+import { food, foodService, feedbackIn, summarize } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
 import { PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral } from './public/shared.js';
+import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -603,11 +603,15 @@ async function publicBot(tn, q) {
     if (!t || t.is_internal) return { text: `I couldn't find ticket ${normNo(no)}. Check the number in your email, it looks like 0042.`, chips: ['Track my ticket', 'How to raise a ticket'] };
     const svc = await one('SELECT name FROM services WHERE id=?', t.service_id), up = await lastUpdate(t), names = (await providersFor(tn.id, t.service_id)).map(p => p.name.split(' ')[0]).join(', ');
     const qi = t.status === 'open' ? await queueInfo(t) : null;
-    const when = qi ? `It is in the ${svc.name} queue: number ${qi.queue_no}, reaching the team on ${qi.lands_on}. Target: ${fmtIST(t.due_at)}.` : [...ACTIVE, 'hold'].includes(t.status) ? `Target: ${fmtIST(t.due_at)}.` : t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}. Not fixed? You can reopen it within ${tn.reopen_window_days} days.` : 'This ticket was not accepted. You can raise a new one.';
+    const when = qi ? `It is in the ${svc.name} queue: number ${qi.queue_no}, reaching the team on ${qi.lands_on}. Target: ${fmtIST(t.due_at)}.` : ACTIVE.includes(t.status) && t.due_at < now() ? `It is taking longer than planned (the target was ${fmtIST(t.due_at)})${t.escalated_at ? ' and has been escalated for faster help' : ''}. We are sorry for the wait.`
+      : t.status === 'hold' ? `It is on hold${t.hold_due_at ? `, expected to resume by ${fmtIST(t.hold_due_at)}` : ''}.` : ACTIVE.includes(t.status) ? `Target: ${fmtIST(t.due_at)}.` : t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}. Not fixed? You can reopen it within ${tn.reopen_window_days} days.` : 'This ticket was not accepted. You can raise a new one.';
     return { text: `Ticket ${t.ticket_no} is ${BOT_ST[t.status]}.\n${svc.name}${t.location ? ' · ' + t.location : ''}\n${when}${names ? `\nHandled by ${names}.` : ''}`
       + `${t.affected_count > 1 ? `\nKnown issue: ${t.affected_count} people reported this.` : ''}${up ? `\nLatest update (${fmtIST(up.created_at)}): ${up.body}` : ''}`,
       items: [{ title: `Open ticket ${t.ticket_no}`, href: `#/d/${tn.slug}/t/${t.ticket_no}` }], chips: ['Reopen a ticket', 'How long will it take?'] };
   }
+  if (said(q, /\b(food|meal|mess|canteen|breakfast|lunch|snacks|dinner|rate|rating)/)) { const fs = await foodService(tn.id);
+    if (fs) return { text: 'For food you can do two things:\n• Rate your meal: stars and a quick note. It goes to the kitchen team\'s report tonight; no ticket.\n• Report a serious problem (insect, spoiled food, hygiene, billing, staff behaviour): this raises a ticket and needs a photo.',
+      items: [{ title: 'Rate your meal', href: `#/d/${tn.slug}/raise/${fs.code}?flow=rate` }, { title: 'Report a serious problem', href: `#/d/${tn.slug}/raise/${fs.code}?flow=report` }] }; }
   if (said(q, /\b(track|status|where|find|check|my ticket)/)) return { text: 'Type your ticket number, for example 0042. You find it on the screen after raising and in every email.' };
   if (said(q, /\b(raise|new|complain|report|problem|broken|not working|issue)/)) return { text: 'To raise a ticket:\n1. Pick the team that can help.\n2. Fill in your details, where the problem is and what happened.\n3. Add up to 4 photos if you like, then tap Raise ticket.\nYou get a ticket number straight away, and an email at every step. No login needed.', items: [raiseLink, { title: 'Step-by-step guide (2 min, with voice)', href: 'guide/requestor.html' }] };
   if (said(q, /\b(team|service|which|who can|department)/)) {
@@ -880,11 +884,12 @@ S.put('/sla', role('super_admin', 'tenant_admin'), wrap(async req => {
 
 // provider points: my total + history, and the campus leaderboard
 // ONE Desk Bot for staff: the same data the desk shows them. Providers: their services and tickets escalated to them.
-const STAFF_CHIPS = ['My open tickets', 'Overdue', 'Due today', 'On hold', 'Escalated', 'My points', "Today's summary"];
+const STAFF_CHIPS = ['My open tickets', 'Overdue', 'Due today', 'On hold', 'Escalated', 'In the queue', 'My points', "Today's summary"];
 const ADMIN_CHIPS = [...STAFF_CHIPS, 'Services with no provider', 'Most affected places', 'Provider workload'];
 async function staffBot(req, q) {
   const u = req.user, admin = isAdmin(u), tid = req.tenantId, sids = await myServiceIds(u, tid), n = now(), tn = await tenantRow(tid);
-  const scope = `t.tenant_id=? AND t.is_internal IN (0,1) AND (${sids.length ? `t.service_id IN (${sids.map(() => '?').join()}) OR ` : ''}t.escalated_to=?)`, sa = [tid, ...sids, u.id];
+  const scope = `t.tenant_id=? AND (${sids.length ? `t.service_id IN (${sids.map(() => '?').join()}) OR ` : ''}t.escalated_to=? OR (t.escalated_at IS NOT NULL AND EXISTS
+    (SELECT 1 FROM service_escalations e JOIN services sv ON sv.id=t.service_id WHERE e.user_id=? AND e.service_id IN (sv.id, sv.parent_id))))`, sa = [tid, ...sids, u.id, u.id]; // the same tickets Home lists
   const list = async (where, args, order = 't.due_at') => all(`SELECT t.id, t.ticket_no, t.subject, t.status, t.priority, t.due_at, t.hold_due_at, t.location, t.affected_count, s.name service
     FROM tickets t JOIN services s ON s.id=t.service_id WHERE ${scope} AND t.queued=0 AND ${where} ORDER BY ${order} LIMIT 8`, ...sa, ...args);
   const count = async (where, args = []) => (await one(`SELECT count(*)::int c FROM tickets t WHERE ${scope} AND t.queued=0 AND ${where}`, ...sa, ...args)).c;
@@ -894,8 +899,11 @@ async function staffBot(req, q) {
   if (no) {
     const t = await one(`SELECT t.*, s.name service, r.name requestor FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id WHERE ${scope} AND t.ticket_no=?`, ...sa, normNo(no));
     if (!t) return { text: `Ticket ${normNo(no)} is not in your services (or does not exist).` };
-    const up = await lastUpdate(t), late = ACTIVE.includes(t.status) && t.due_at < n;
-    return { text: `#${t.ticket_no} · ${t.subject}\n${BOT_ST[t.status]} · ${t.priority} priority${late ? ' · OVERDUE' : ''}\n${t.service}${t.location ? ' · ' + t.location : ''}${t.problem_label ? ' · ' + t.problem_label : ''}`
+    const up = await lastUpdate(t), late = ACTIVE.includes(t.status) && t.due_at < n, qi = t.status === 'open' ? await queueInfo(t) : null;
+    const state = [qi ? `In the daily queue: number ${qi.queue_no} of ${qi.waiting}, reaches the team on ${qi.lands_on}` : '',
+      t.status === 'hold' ? `On hold: ${holdReasons(tn).find(x => x.key === t.hold_reason)?.label || 'no reason given'}, resume by ${fmtIST(t.hold_due_at)}` : '',
+      t.escalated_at && [...ACTIVE, 'hold'].includes(t.status) ? `Escalated on ${fmtIST(t.escalated_at)}` : '', t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}` : ''].filter(Boolean).join('\n');
+    return { text: `#${t.ticket_no} · ${t.subject}\n${BOT_ST[t.status]} · ${t.priority} priority${late ? ' · OVERDUE' : ''}${state ? '\n' + state : ''}\n${t.service}${t.location ? ' · ' + t.location : ''}${t.problem_label ? ' · ' + t.problem_label : ''}`
       + `\nRaised by ${t.requestor}${t.affected_count > 1 ? ` and ${t.affected_count - 1} more` : ''} on ${fmtIST(t.created_at)}${[...ACTIVE, 'hold'].includes(t.status) ? `\nDue ${fmtIST(t.due_at)}` : ''}${up ? `\nLatest: ${up.body}` : ''}`,
       items: [{ title: `Open #${t.ticket_no}`, href: `#/c/t/${t.id}` }] };
   }
@@ -903,6 +911,20 @@ async function staffBot(req, q) {
     return { text: c ? `${c} ticket${c === 1 ? ' is' : 's are'} overdue. Do these first:` : 'Nothing is overdue. Well done!', items: items(await list(`t.status IN (${act}) AND t.due_at<?`, [...ACTIVE, n])) }; }
   if (said(q, /due today|today.*due|due soon/)) { const end = localDay(tn.timezone || 'Asia/Kolkata').next, c = await count(`t.status IN (${act}) AND t.due_at>=? AND t.due_at<?`, [...ACTIVE, n, end]);
     return { text: c ? `${c} ticket${c === 1 ? ' is' : 's are'} due before midnight:` : 'Nothing else is due today.', items: items(await list(`t.status IN (${act}) AND t.due_at>=? AND t.due_at<?`, [...ACTIVE, n, end])) }; }
+  if (said(q, /queue|queued|daily limit|tickets a day/)) {
+    const rows = await all(`SELECT s.name, s.daily_cap, count(t.id)::int waiting, min(t.lands_at) next FROM services s LEFT JOIN tickets t ON t.service_id=s.id AND t.queued=1
+      WHERE s.tenant_id=? AND s.is_active=1 ${sids.length ? `AND s.id IN (${sids.map(() => '?').join()})` : 'AND false'} AND s.daily_cap>0 GROUP BY s.name, s.daily_cap ORDER BY waiting DESC, s.name`, tid, ...sids);
+    const total = rows.reduce((a, r) => a + r.waiting, 0);
+    return { text: !rows.length ? 'None of your teams has a daily ticket limit, so nothing waits in a queue.' : total ? `${total} ticket${total === 1 ? ' is' : 's are'} waiting in the daily queue:` : 'Nothing is waiting in the daily queue.',
+      items: rows.map(r => ({ title: r.name, sub: `Takes ${r.daily_cap} a day · ${r.waiting} waiting${r.next ? ` · next reach the team ${fmtIST(r.next)}` : ''}`, href: '#/c' })) }; }
+  if (said(q, /food|meal|rating|kitchen|mess|canteen|breakfast|lunch|snacks|dinner/)) {
+    const fs = await foodService(tid);
+    if (!fs || !sids.includes(fs.id)) return { text: 'Food scores are for the food team and admins.', chips };
+    const day = dayIn(tn.timezone || 'Asia/Kolkata', n), sum = summarize(await feedbackIn(tid, day, day), day, day);
+    const open = (await one(`SELECT count(*)::int c FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, fs.id)).c;
+    return { text: sum.total ? `Food today: ${sum.avg ?? '—'} ★ from ${sum.rated} rating${sum.rated === 1 ? '' : 's'}.\n${MEALS.map(m => `${MEAL_NAMES[m]}: ${sum.per_meal[m].avg == null ? 'no ratings' : sum.per_meal[m].avg + ' ★ (' + sum.per_meal[m].count + ')'}`).join('\n')}`
+        + `${sum.chips.length ? `\nTop issues: ${sum.chips.slice(0, 3).map(c => `${c.chip} ${c.count}`).join(', ')}` : ''}\nOpen complaints: ${open}.` : `No meal ratings yet today. Open complaints: ${open}.`,
+      items: [{ title: 'Open Food scores', href: '#/c/food' }] }; }
   if (said(q, /hold|paused|waiting/)) { const rows = await list("t.status='hold'", [], 't.hold_due_at');
     return { text: rows.length ? `${await count("t.status='hold'")} on hold. Resume these when you can:` : 'Nothing is on hold.', items: items(rows).map((x, i) => ({ ...x, sub: `${x.sub}${rows[i].hold_due_at ? ` · resume by ${fmtIST(rows[i].hold_due_at)}` : ''}` })) }; }
   if (said(q, /escalat/)) { const w = `t.escalated_at IS NOT NULL AND t.status IN (${act},'hold')`;
@@ -920,13 +942,13 @@ async function staffBot(req, q) {
     return { text: rows.length ? 'Most affected places in the last 7 days:' : 'No tickets with a place in the last 7 days.', items: rows.map(r => ({ title: r.location, sub: `${r.service} · ${r.affected} students · ${r.tickets} ticket${r.tickets === 1 ? '' : 's'}`, href: '#/c/reports' })) }; }
   if (said(q, /workload|load|provider|who has|busy/)) { if (!admin) return { text: 'That one is for admins.', chips };
     const rows = await all(`SELECT u.name, count(t.id)::int open, count(t.id) FILTER (WHERE t.due_at<?)::int late FROM users u JOIN service_members m ON m.user_id=u.id
-      LEFT JOIN tickets t ON t.service_id=m.service_id AND t.status IN (${act}) WHERE u.tenant_id=? AND u.is_active=1 GROUP BY u.name ORDER BY open DESC`, n, ...ACTIVE, tid);
+      LEFT JOIN tickets t ON t.queued=0 AND t.status IN (${act}) AND (t.service_id=m.service_id OR t.service_id IN (SELECT id FROM services WHERE parent_id=m.service_id)) WHERE u.tenant_id=? AND u.is_active=1 GROUP BY u.name ORDER BY open DESC`, n, ...ACTIVE, tid);
     return { text: rows.length ? 'Open tickets in each provider\'s services:' : 'No providers yet.', items: rows.map(r => ({ title: r.name, sub: `${r.open} open${r.late ? ` · ${r.late} overdue` : ''}`, href: '#/c/users' })) }; }
   if (said(q, /summary|today|report|stat|how are we/)) { const day = localDay(tn.timezone || 'Asia/Kolkata');
     const c = await one(`SELECT count(*) FILTER (WHERE t.created_at>=?)::int raised, count(*) FILTER (WHERE t.status='closed' AND t.closed_at>=?)::int closed,
-      count(*) FILTER (WHERE t.status IN (${act}))::int open, count(*) FILTER (WHERE t.status IN (${act}) AND t.due_at<?)::int overdue, count(*) FILTER (WHERE t.status='hold')::int hold,
+      count(*) FILTER (WHERE t.status IN (${act}) AND t.queued=0)::int open, count(*) FILTER (WHERE t.status IN (${act}) AND t.due_at<?)::int overdue, count(*) FILTER (WHERE t.status='hold')::int hold, count(*) FILTER (WHERE t.queued=1)::int queued,
       coalesce(sum(t.affected_count) FILTER (WHERE t.created_at>=?),0)::int affected FROM tickets t WHERE ${scope}`, day.start, day.start, ...ACTIVE, ...ACTIVE, n, day.start, ...sa);
-    return { text: `Today${admin ? ` at ${tn.name}` : ' in your services'}: ${c.raised} raised (${c.affected} students affected), ${c.closed} closed.\nRight now: ${c.open} open, ${c.hold} on hold, ${c.overdue} overdue.`, items: [{ title: 'Open Reports', href: '#/c/reports' }] }; }
+    return { text: `Today${admin ? ` at ${tn.name}` : ' in your services'}: ${c.raised} raised (${c.affected} people affected), ${c.closed} closed.\nRight now: ${c.open} open, ${c.hold} on hold, ${c.overdue} overdue${c.queued ? `, ${c.queued} waiting in the daily queue` : ''}.`, items: [{ title: 'Open Reports', href: '#/c/reports' }] }; }
   if (said(q, /open|pending|my|queue|ticket|work|new/)) { const c = await count(`t.status IN (${act})`, ACTIVE);
     return { text: c ? `${c} open ticket${c === 1 ? '' : 's'}${admin ? '' : ' in your services'}. Most urgent first:` : 'No open tickets. All clear!', items: items(await list(`t.status IN (${act})`, ACTIVE)) }; }
   if (said(q, /\b(hi|hello|hey|help|menu|start|namaste|namaskaram)\b/)) return { text: `Hi ${u.name.split(' ')[0]}! I'm the ONE Desk Bot. Ask me about ${admin ? 'your campus' : 'your tickets'}, or type a ticket number like 0042.`, chips };
@@ -1111,9 +1133,17 @@ S.get('/reports', wrap(async req => {
       round(avg(CASE WHEN status='closed' AND closed_at>=? AND closed_at<? THEN extract(epoch FROM closed_at::timestamptz - created_at::timestamptz)/3600 - held_minutes/60.0 END),1) avg_hours,
       round(100.0*count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<? AND closed_at<=due_at)/greatest(1,count(*) FILTER (WHERE status='closed' AND closed_at>=? AND closed_at<?)),0) on_time_pct
       FROM tickets WHERE tenant_id=? AND ${inS}`, n, from, to, from, to, from, to, from, to, from, to, ...base),
-    by_service: await all(`SELECT s.name, count(*) FILTER (WHERE t.status='open') open, count(*) FILTER (WHERE t.status='in_progress') in_progress, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status='rejected') rejected,
-      count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? AND t.created_at<? GROUP BY s.name`, n, ...base, from, to),
-    daily: await all(`SELECT substr(created_at,1,10) d, count(*) c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY d ORDER BY d`, ...base, from, to),
+    by_service: await all(`SELECT s.name, count(*)::int raised, count(*) FILTER (WHERE t.status='open') open, count(*) FILTER (WHERE t.status='in_progress') in_progress, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status='rejected') rejected,
+      count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue,
+      CASE WHEN count(*) FILTER (WHERE t.status='closed')>0 THEN round(100.0*count(*) FILTER (WHERE t.status='closed' AND t.closed_at<=t.due_at)/count(*) FILTER (WHERE t.status='closed'),0) END on_time_pct,
+      round(avg(CASE WHEN t.status='closed' THEN extract(epoch FROM t.closed_at::timestamptz - t.created_at::timestamptz)/3600 - t.held_minutes/60.0 END),1) avg_hours
+      FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND ${inS} AND t.created_at>=? AND t.created_at<? GROUP BY s.name ORDER BY raised DESC, s.name`, n, ...base, from, to),
+    // per campus-local day (not UTC): tickets raised, and tickets closed, on that day
+    daily: await all(`SELECT to_char((created_at::timestamptz AT TIME ZONE ?)::date, 'YYYY-MM-DD') d, count(*)::int c FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<? GROUP BY 1 ORDER BY 1`, tz, ...base, from, to),
+    daily_closed: await all(`SELECT to_char((closed_at::timestamptz AT TIME ZONE ?)::date, 'YYYY-MM-DD') d, count(*)::int c FROM tickets WHERE tenant_id=? AND ${inS} AND status='closed' AND closed_at>=? AND closed_at<? GROUP BY 1 ORDER BY 1`, tz, ...base, from, to),
+    days: { from: dayIn(tz, from), to: dayIn(tz, new Date(Math.min(Date.now(), new Date(to === '9999' ? n : to).getTime() - 1)).toISOString()) },
+    extra: await one(`SELECT count(*) FILTER (WHERE reopen_count>0)::int reopened, count(*) FILTER (WHERE escalated_at IS NOT NULL OR EXISTS (SELECT 1 FROM ticket_events e WHERE e.ticket_id=tickets.id AND e.event_type='escalated'))::int escalated,
+      count(*) FILTER (WHERE status='rejected')::int rejected FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<?`, ...base, from, to),
     // people affected: every requestor of every ticket raised in the range, per service and place
     affected: (await one(`SELECT coalesce(sum(affected_count),0)::int n FROM tickets WHERE tenant_id=? AND ${inS} AND created_at>=? AND created_at<?`, ...base, from, to)).n,
     by_location: await all(`SELECT s.name service, t.location, count(*)::int tickets, sum(t.affected_count)::int affected FROM tickets t JOIN services s ON s.id=t.service_id
