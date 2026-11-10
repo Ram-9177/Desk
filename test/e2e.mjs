@@ -726,6 +726,73 @@ try {
   check('only the escalation officer is emailed, not the team’s providers', em.length === 1 && em[0] === 'asha@example.com', JSON.stringify(em));
   }
 
+  sec('Food: rate a meal (feedback) or report a problem (ticket)');
+  { // its own block
+  await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
+  const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id }, aid = A.tenant;
+  const { mealAt, DEFAULT_MEAL_WINDOWS: W } = await import('../public/shared.js');
+  check('default meal by time: being served, else the one just finished, else breakfast', mealAt(W, '07:00') === 'breakfast' && mealAt(W, '10:45') === 'breakfast' && mealAt(W, '12:00') === 'lunch'
+    && mealAt(W, '16:00') === 'snacks' && mealAt(W, '20:00') === 'dinner' && mealAt(W, '23:40') === 'dinner' && mealAt(W, '05:00') === 'breakfast');
+  const pavanId = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id;
+  const fsvc = await ok('a Food service (form type Food)', '/services', { ...A, method: 'POST', body: { code: 'FOODX', name: 'Food & Catering', form_schema: { form_type: 'food', fields: [] } } });
+  await ok('the kitchen provider', `/services/${fsvc.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavanId] } });
+  await fails('meal times must be HH:MM, start before end', '/food/settings', { ...A, method: 'PUT', body: { windows: { lunch: ['15:00', '12:00'] } } }, 400);
+  await ok('admin adds messes and meal times', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ name: 'Boys mess' }, { name: 'Girls mess' }], windows: { snacks: ['15:30', '18:00'] } } });
+  await fails('a provider cannot change them', '/food/settings', { token: T.pavan, method: 'PUT', body: { locations: [] } }, 403);
+  const fi = await ok('the food screens’ data', '/public/alpha/food');
+  check('locations, meal times, chips and categories for the forms', fi.locations.length === 2 && fi.windows.snacks[1] === '18:00' && fi.chips.includes('Cold food') && fi.categories.length === 7 && fi.meals.includes(fi.meal_now));
+  const L1 = fi.locations[0].id, L2 = fi.locations[1].id, fb = (b, dk = 'dev-' + Math.random().toString(36).slice(2, 12)) => api('/public/alpha/food/feedback', { method: 'POST', body: { device_key: dk, ...b } });
+  let r = await fb({ location_id: L1, meal: 'lunch' });
+  check('a rating needs stars', r.status === 400 && /stars/.test(r.error.message));
+  r = await fb({ location_id: L1, meal: 'lunch', rating: 2, chips: ['Cold food', 'Taste'], comment: 'Rice was cold' }, 'dev-once-0001');
+  check('feedback saved, anonymous, no ticket', r.status === 200 && /Executive Chef tonight/.test(r.data.message) && (await q("SELECT count(*)::int n FROM tickets WHERE service_id=?", fsvc.id))[0].n === 0);
+  r = await fb({ location_id: L1, meal: 'lunch', rating: 4 }, 'dev-once-0001');
+  check('one rating per meal per device a day', r.status === 409 && /already rated lunch/.test(r.error.message));
+  check('unknown chips are refused', (await fb({ location_id: L1, meal: 'lunch', rating: 3, chips: ['Bad vibes'] })).status === 400);
+  for (const [rt, meal, loc, chips] of [[5, 'lunch', L2, ['Good food 👍']], [4, 'breakfast', L1, []], [1, 'dinner', L1, ['Cold food', 'Quantity']]]) await fb({ location_id: loc, meal, rating: rt, chips, name: 'Roll 23BPT01' });
+  const PNGF = [{ name: 'p.png', type: 'image/png', source: 'camera', data: PNG }];
+  const cb = (who, extra = {}) => ({ location_id: L1, meal: 'lunch', category: 'insect', description: 'Insect in the dal', name: who, email: `${who.toLowerCase()}@food.example.com`, phone: '9000044444', ...extra });
+  r = await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa') });
+  check('a complaint needs a photo', r.status === 400 && /photo/.test(r.error.message));
+  r = await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { files: [{ name: 'a.pdf', type: 'application/pdf', data: 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4 x').toString('base64') }] }) });
+  check('photos only (no PDFs)', r.status === 400);
+  const c1 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { files: PNGF }) })).data, c2 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fb', { files: PNGF }) })).data;
+  const ct = (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, c1?.ticket_no))[0];
+  check('a complaint is a normal ticket for the food service, with location, meal and category', ct?.service_id === fsvc.id && ct.meal === 'lunch' && ct.food_category === 'insect' && ct.food_location_id === L1 && ct.subject.includes('Insect'), JSON.stringify(c1));
+  check('the same problem at the same mess today joins that ticket', c2?.ticket_no === c1.ticket_no && c2.merged && c2.affected_count === 2);
+  const c3 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fc', { category: 'other', files: PNGF }) })).data, c4 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fd', { category: 'other', files: PNGF }) })).data;
+  check('"Something else" complaints never merge', c3.ticket_no !== c4.ticket_no && !c4.merged);
+  check('the requestor gets the usual acknowledgement email', (await q("SELECT 1 FROM notifications WHERE template_key='created' AND ticket_id=? AND recipient='fa@food.example.com'", ct.id)).length === 1);
+  r = await fb({ location_id: L2, meal: 'lunch', converted_from_complaint: true, chips: ['Hygiene look'], comment: 'Tables dirty', name: 'Fe' }, null);
+  const conv = (await q("SELECT * FROM food_feedback WHERE tenant_id=? AND converted_from_complaint", aid))[0];
+  check('"No, send as feedback": saved as feedback, no stars needed, comment and chip kept, no ticket', r.status === 200 && conv?.rating === null && conv.comment === 'Tables dirty' && conv.chips[0] === 'Hygiene look');
+  const dash = await ok('the kitchen provider’s dashboard', '/food/dashboard', { token: T.pavan });
+  check('today per meal: average, count and top chips', dash.today.per_meal.lunch.count === 2 && dash.today.per_meal.lunch.avg === 3.5 && dash.today.per_meal.dinner.chips[0].chip === 'Cold food' && dash.today.total === 5 && dash.complaints === 3, JSON.stringify(dash.today.per_meal.lunch));
+  check('location filter', (await api(`/food/dashboard?location=${L2}`, { token: T.pavan })).data.today.total === 2);
+  await fails('only the food team and admins see food scores', '/food/dashboard', { token: T.lata }, 403);
+  check('CSV export', /meal_date,meal,location,rating/.test(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()));
+  // reports
+  const rep = (per, qs = '', key = 'food-report-key-0123456789') => fetch(`${API}/reports/food/${per}?tenant=alpha&format=json${qs}`, { headers: { 'x-report-key': key } });
+  check('report endpoints need the report key', (await rep('daily', '', 'wrong-key-wrong-key-wrong-k')).status === 401);
+  const daily = (await (await rep('daily')).json()).data;
+  check('daily report: score per meal, ratings chart, top issues, comments, link, sent to the food providers', !daily.empty && daily.to.includes('pavan@example.com') && /Score per meal/.test(daily.html)
+    && /\/api\/food-chart\/[^"]+\.png/.test(daily.html) && /Top 3 issues/.test(daily.html) && /Rice was cold/.test(daily.html) && /View full report/.test(daily.html), daily.subject);
+  const png = await fetch(APP + daily.html.match(/\/api\/food-chart\/[^"]+\.png/)[0]);
+  check('charts are real PNG images (for Outlook)', png.status === 200 && png.headers.get('content-type') === 'image/png' && (await png.arrayBuffer()).byteLength > 200);
+  check('a tampered chart link is refused', (await fetch(APP + daily.html.match(/\/api\/food-chart\/[^"]+\.png/)[0].replace(/\.[^.]+\.png$/, '.AAAAAAAAAAAAAAAAAAAAAA.png'))).status === 404);
+  // yesterday and last month, to see trends
+  const day = (n) => { const d = new Date(daily.from + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  await run("INSERT INTO food_feedback (id, tenant_id, location_id, meal, rating, chips, meal_date, created_at) VALUES (gen_random_uuid()::text, ?, ?, 'lunch', 1, '{Taste}', ?, ?)", aid, L1, day(-2), new Date().toISOString());
+  await run("INSERT INTO food_feedback (id, tenant_id, location_id, meal, rating, chips, meal_date, created_at) VALUES (gen_random_uuid()::text, ?, ?, 'lunch', 2, '{}', ?, ?)", aid, L1, day(-40), new Date().toISOString());
+  const weekly = (await (await rep('weekly')).json()).data, monthly = (await (await rep('monthly')).json()).data;
+  check('weekly report: 7 days, daily line chart per meal, best and worst meal, recurring issues', weekly.from === day(-6) && weekly.until === daily.from && /Daily score per meal/.test(weekly.html) && /Best: <b>/.test(weekly.html) && /Recurring issues/.test(weekly.html));
+  check('monthly report: weekly trend, this vs last month with ▲/▼, improved/declined, repeated issues', monthly.from.endsWith('-01') && /Weekly trend per meal/.test(monthly.html) && /Last month/.test(monthly.html) && /Most repeated issues/.test(monthly.html));
+  const empty = (await (await rep('daily', '&date=2020-01-01')).json()).data;
+  check('no feedback in a period: still a short "No feedback received" report', empty.empty && /No feedback received/.test(empty.html));
+  check('the HTML itself (for Power Automate) is served as a page', (await (await fetch(`${API}/reports/food/daily?tenant=alpha&key=food-report-key-0123456789`)).text()).startsWith('<!doctype html>'));
+  ids.foodTicket = c1.ticket_no;
+  }
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {
@@ -891,6 +958,39 @@ async function uiSmoke(tok, id) {
     const bigW = 3000, bigH = 2250, pix = Buffer.alloc(bigW * bigH * 4);
     for (let i = 0; i < pix.length; i += 4) { const n = (i * 2654435761) >>> 24; pix[i] = n; pix[i + 1] = (n * 7) & 255; pix[i + 2] = (n * 13) & 255; pix[i + 3] = 255; }
     const bigFile = path.join(TMP, 'phone-photo.jpg'); fs.writeFileSync(bigFile, jpeg.encode({ data: pix, width: bigW, height: bigH }, 92).data);
+    // food screens
+    await visit('food: the service list says "Rate meals or report a problem"', '/d/alpha/raise', null, 'a.svc[href*="FOODX"]');
+    check('food card subtitle', await js(`return /Rate meals or report a problem/.test(document.querySelector('a.svc[href*="FOODX"]').textContent)`));
+    await visit('food: "How can we help with food?" (Screen 2)', '/d/alpha/raise/FOODX', null, '.foodpick.primary');
+    check('Screen 2: "Rate your meal" is the big first card, "Report a serious problem" the smaller second', await js(`const c = [...document.querySelectorAll('.foodpick')];
+      return c.length === 2 && c[0].classList.contains('primary') && /Rate your meal/.test(c[0].textContent) && /Report a serious problem/.test(c[1].textContent) && c[0].offsetHeight > c[1].offsetHeight && /photo required/.test(c[1].textContent)`));
+    await visit('food: rate your meal', '/d/alpha/raise/FOODX?flow=rate', null, '.stars');
+    check('the meal defaults to the one by the time of day', await js(`const m = await import('/shared.js'); const f = await (await fetch('/api/public/alpha/food')).json();
+      const hm = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
+      return document.querySelector('[name=meal]').value === m.mealAt(f.data.windows, hm)`));
+    await visit('food: report a serious problem', '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
+    check('"Something else" shows the rate-instead hint with Switch to rating, carrying the text', await js(`const f = document.querySelector('#f'); const hidden = document.querySelector('#else').hidden;
+      f.querySelector('[name=category][value=other]').click(); f.description.value = 'Too salty today';
+      const shown = !document.querySelector('#else').hidden; document.querySelector('#toRate').click(); await new Promise(r => setTimeout(r, 1200));
+      return hidden && shown && /Rate your meal/.test(document.querySelector('h1').textContent) && document.querySelector('[name=comment]').value === 'Too salty today'`));
+    const foodPng = path.join(TMP, 'food.png'); fs.writeFileSync(foodPng, Buffer.from(PNG.split(',')[1], 'base64'));
+    for (const [choice, want] of [['feedback', 'Sent as feedback'], ['ticket', 'Ticket raised']]) {
+      await visit(`food: report form (${choice} path)`, '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
+      const { root: r0 } = await send('DOM.getDocument'), { nodeId: n0 } = await send('DOM.querySelector', { nodeId: r0.nodeId, selector: 'input.f-food[data-source="gallery"]' });
+      await send('DOM.setFileInputFiles', { nodeId: n0, files: [foodPng] });
+      check(`confirm sheet "Does this need action right now?" → ${choice === 'ticket' ? 'Yes, raise ticket' : 'No, send as feedback'}`, await js(`const f = document.querySelector('#f');
+        f.location_id.value = f.location_id.options[1].value; f.querySelector('[name=category][value=spoiled]').click(); f.description.value = 'Curd smelled bad ${choice}';
+        f.name.value = 'Ui ${choice}'; f.email.value = 'ui-${choice}@food.example.com'; f.phone.value = '9000055555';
+        f.querySelector('button.primary').click(); await new Promise(r => setTimeout(r, 400));
+        const sheet = document.querySelector('dialog.sheet'); if (!sheet || !/Does this need action right now/.test(sheet.textContent)) return 'no sheet';
+        sheet.querySelector('[data-c=${choice}]').click(); await new Promise(r => setTimeout(r, 2000));
+        return document.querySelector('h1').textContent === '${want}' || document.querySelector('h1').textContent;`) === true);
+    }
+    check('the ticket path made a ticket; the feedback path only feedback', (await q("SELECT count(*)::int n FROM tickets WHERE description LIKE 'Curd smelled bad%'"))[0].n === 1
+      && (await q("SELECT count(*)::int n FROM food_feedback WHERE converted_from_complaint AND comment='Curd smelled bad feedback'"))[0].n === 1);
+    await visit('kitchen dashboard: Feedback & Scores', '/c/food', tok.pavan, '.fscores .fscore');
+    check('dashboard: today per meal, line chart, bars, comments, and the Complaints tab', await js(`const ok = document.querySelectorAll('.fscore').length === 4 && !!document.querySelector('svg.fchart polyline') && document.querySelectorAll('.hbar').length >= 4;
+      document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && document.querySelectorAll('.tcard').length >= 1`));
     await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
     const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });
     await send('DOM.setFileInputFiles', { nodeId, files: [bigFile, HEIC_FILE] });

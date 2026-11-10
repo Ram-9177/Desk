@@ -49,7 +49,28 @@ export const STATUS_INFO = { open: ['Open', 'not started yet'], in_progress: ['I
   hold: ['On hold', 'waiting on something'], closed: ['Closed', 'work done'], rejected: ['Rejected', 'can’t be accepted'] };
 
 // Service form types, picked by the admin per service. Each adds a fixed set of questions to the raise form.
-export const FORM_TYPES = { general: 'General', location: 'Location', student: 'Student', both: 'Location & Student' };
+export const FORM_TYPES = { general: 'General', location: 'Location', student: 'Student', both: 'Location & Student', food: 'Food (rate or report)' };
+export const isFood = s => s?.form_type === 'food';
+
+// ---------- Food & catering: rate a meal (feedback, no ticket) or report a serious problem (a ticket) ----------
+export const MEALS = ['breakfast', 'lunch', 'snacks', 'dinner'];
+export const MEAL_NAMES = { breakfast: 'Breakfast', lunch: 'Lunch', snacks: 'Snacks', dinner: 'Dinner' };
+export const MEAL_COLORS = { breakfast: '#f29a1f', lunch: '#1e4b8f', snacks: '#e0559b', dinner: '#1a9a56' };
+export const FOOD_CHIPS = ['Taste', 'Quantity', 'Cold food', 'Oily/Spicy', 'Hygiene look', 'Less variety', 'Menu not followed', 'Good food 👍'];
+export const FOOD_CATEGORIES = [['insect', 'Insect or foreign object'], ['spoiled', 'Spoiled or stale food'], ['hygiene', 'Hygiene issue'],
+  ['water', 'Water / utensils'], ['billing', 'Billing error'], ['staff', 'Staff behaviour'], ['other', 'Something else']];
+export const foodCategory = k => FOOD_CATEGORIES.find(c => c[0] === k)?.[1] || k;
+// a complaint sent as feedback instead keeps its category as a chip where one fits
+export const CATEGORY_CHIPS = { insect: ['Hygiene look'], spoiled: ['Taste'], hygiene: ['Hygiene look'], water: ['Hygiene look'] };
+export const DEFAULT_MEAL_WINDOWS = { breakfast: ['06:30', '10:30'], lunch: ['11:30', '15:00'], snacks: ['15:30', '18:30'], dinner: ['19:00', '22:30'] };
+// The meal to rate at a campus-local time 'HH:MM': the one being served, else the one that ended last (people rate after eating),
+// else (early morning, before any meal ends) breakfast.
+export function mealAt(windows = DEFAULT_MEAL_WINDOWS, hhmm = '12:00') {
+  const w = MEALS.map(m => [m, ...(windows[m] || DEFAULT_MEAL_WINDOWS[m])]);
+  const on = w.find(([, a, b]) => hhmm >= a && hhmm < b); if (on) return on[0];
+  const ended = w.filter(([, , b]) => b <= hhmm).sort((x, y) => (x[2] < y[2] ? 1 : -1))[0];
+  return ended ? ended[0] : 'breakfast';
+}
 export const DEFAULT_LISTS = { block: [], floor: ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floor'], branch: [] };
 const pick = (key, label, list, placeholder) => list.length
   ? { key, label, type: 'select', options: list, required: true, builtin: true }

@@ -87,6 +87,24 @@ CREATE TABLE IF NOT EXISTS ticket_requestors (id TEXT PRIMARY KEY, ticket_id TEX
 INSERT INTO ticket_requestors (id, ticket_id, requestor_id, name, contact, raised_at, is_first)
   SELECT md5(t.id || ':first'), t.id, r.id, r.name, coalesce(lower(r.email), r.phone), t.created_at, 1 FROM tickets t JOIN requestors r ON r.id = t.requestor_id
   WHERE NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
+-- Food & catering: rate a meal (feedback, never a ticket) or report a serious problem (a normal ticket)
+CREATE TABLE IF NOT EXISTS food_locations (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL,
+  active INT DEFAULT 1, sort_order INT DEFAULT 0, UNIQUE (tenant_id, name));
+CREATE TABLE IF NOT EXISTS meal_windows (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  meal TEXT NOT NULL CHECK (meal IN ('breakfast','lunch','snacks','dinner')), start_time TEXT NOT NULL, end_time TEXT NOT NULL, UNIQUE (tenant_id, meal));
+CREATE TABLE IF NOT EXISTS food_feedback (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), location_id TEXT REFERENCES food_locations(id),
+  meal TEXT NOT NULL CHECK (meal IN ('breakfast','lunch','snacks','dinner')), rating INT CHECK (rating BETWEEN 1 AND 5),
+  chips TEXT[] DEFAULT '{}', comment TEXT CHECK (length(comment) <= 300), requester_name TEXT, device_key TEXT, meal_date DATE NOT NULL,
+  converted_from_complaint BOOLEAN DEFAULT false, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ff_time ON food_feedback(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS ff_loc ON food_feedback(tenant_id, location_id, meal);
+CREATE INDEX IF NOT EXISTS ff_day ON food_feedback(tenant_id, meal_date);
+-- one rating per meal per device per day (the device key is a random code the phone keeps)
+CREATE UNIQUE INDEX IF NOT EXISTS ff_once ON food_feedback(tenant_id, device_key, meal_date, meal) WHERE device_key IS NOT NULL;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS food_location_id TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS meal TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS food_category TEXT;
+CREATE INDEX IF NOT EXISTS t_food ON tickets(tenant_id, food_location_id, meal) WHERE meal IS NOT NULL;
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;

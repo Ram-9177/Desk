@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { createSuperAdmin } from './bootstrap.js';
+import { food } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
 import { PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
@@ -402,7 +403,7 @@ async function createTicket(tenant, b, opts) {
   // public form: the requestor's own details are required; the service's questions follow their Required setting
   if (portal) {
     if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('Please enter a valid phone number (7–15 digits)');
-    if (!asStudent) { req_(b.identifier, 'Please fill in your ID (student ID, faculty ID, staff ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
+    if (!asStudent && !opts.food) { req_(b.identifier, 'Please fill in your ID (student ID, faculty ID, staff ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
   }
   buildFormCheck(schema, fd, f => f.key.startsWith('stu_') && !asStudent);
   // the form type's answers fill the ticket's location and the requestor's ID / department
@@ -1216,6 +1217,10 @@ app.get('/api/group/report', auth, role('super_admin'), wrap(async () =>
   await all(`SELECT tn.name, tn.code, count(*) FILTER (WHERE t.status IN ('open','in_progress')) open, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue
     FROM tenants tn LEFT JOIN tickets t ON t.tenant_id=tn.id GROUP BY tn.id ORDER BY tn.name`, now())));
 
+// Food & catering: rate a meal (feedback) or report a problem (ticket); kitchen dashboard; scheduled reports (food.js)
+food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicket, tenantRow, base, SECRET, getSettings, setSetting, providersFor,
+  sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
+    await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 app.use('/api', S);
 
 app.use('/api', (_q, _r, next) => next(notFound()));

@@ -24,6 +24,8 @@ export function locationKey(schema, fd, location) {
 // The problem: the answer to the service's first dropdown (e.g. Fan, Light, AC). "Other: …" keeps its typed words, matched by
 // similarity. A service with no dropdown has no problem picker, so its reports are never merged.
 export function problemOf(schema, fd) {
+  // food complaints: the category is the problem ("Something else" is never merged); the place is the mess / canteen
+  if (schema?.form_type === 'food') return fd.food_category && fd.food_category !== 'other' ? { key: 'food:' + fd.food_category, label: fd.food_category_label || fd.food_category } : null;
   const f = fieldsOf(schema).find(x => x.type === 'select' && !/^(loc|stu)_/.test(x.key));
   const v = f && fd[f.key];
   if (!v) return null;

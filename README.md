@@ -120,6 +120,14 @@ Super admin → **Tenants → Add**: code (e.g. `VJA`), name, slug (e.g. `vijaya
 6. **Email → Connection**: paste the Power Automate flow URL and secret key, set the public address to `https://stmarys-desk.supercxo.ai`, Save, Send test. The **Setup guide** tab has the flow steps and the SPF / DKIM / DMARC records.
 7. Put up QR codes: `https://stmarys-desk.supercxo.ai/#/d/<campus-slug>` (or `…?service=CODE` for one service).
 
+## Food & catering: feedback or complaint
+
+Set a service's **form type to Food** (Services → Edit). Students then choose **Rate your meal** (feedback: stars, quick chips, a comment; no ticket, one rating per meal per device a day) or **Report a serious problem** (a normal ticket with a required photo; the same category at the same mess on the same day joins one ticket). Before a complaint is sent the form asks "Does this need action right now?"; "No" saves it as feedback instead.
+
+- **Food scores** (staff menu; the food team and admins): today's score per meal, trends, top issues, comments, CSV export, the complaints queue, and for admins the messes / canteens and meal times.
+- **Reports** (feedback only) go to the food service's providers at 10:00 PM campus time: daily, weekly on Sunday, monthly on the last day. Charts are PNG images so Outlook shows them. ONE Desk sends them itself through the email connection; set `FOOD_REPORT_AUTOSEND=0` to send them from Power Automate instead.
+- **Report endpoints** for Power Automate: `GET /api/reports/food/daily|weekly|monthly?tenant=<slug>&format=json` with the header `X-Report-Key: <FOOD_REPORT_KEY>` return `{ to, subject, html }` (without `format=json`: the HTML itself). Set `FOOD_REPORT_KEY` (a long random value) in `.env`; without it the endpoints answer 503.
+
 ## Tests
 
 ```bash
