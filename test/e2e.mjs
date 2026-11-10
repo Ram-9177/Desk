@@ -904,7 +904,7 @@ async function uiSmoke(tok, id) {
     check('Gmail click: "View your ticket" opens the requestor\'s ticket', !!tk && await open(tk, '.stamps li'), tk);
     check('Gmail click: "Raise a new ticket" opens the campus page', !!pt && await open(pt, 'a.svc[href*="raise"]'), pt);
     check('Gmail click: the guide button opens the guide', !!gd && await open(gd, '.card[data-id="start"]'), gd);
-    check('Gmail click: "Sign in" opens sign-in, or the desk when already signed in', !!lg && await open(lg, '#f [name=password]') && await open(lg, '.hello', tok.pavan), lg);
+    check('Gmail click: "Sign in" opens sign-in, or the desk when already signed in', !!lg && await open(lg, '#f [name=password]') && await open(lg, '.home .greet', tok.pavan), lg);
     check('Gmail click: "Open the ticket" opens it for a signed-in provider', !!mine && await open(mine, '#act #to', tok.pavan), mine);
     const via = !!mine && await open(mine, '#f [name=password]') && await js(`const f = document.querySelector('#f'); f.email.value = 'pavan@example.com'; f.password.value = 'Pavan2026ok'; f.requestSubmit();
       for (let i = 0; i < 40 && !document.querySelector('#act #to'); i++) await new Promise(r => setTimeout(r, 150));

@@ -24,7 +24,7 @@ const avatar = (name, size = 36, variant = 'neutral') => `<span class="av av-${s
 const emptyState = (title, line = '') => `<div class="empty"><span class="et">${title}</span>${line ? `<span>${line}</span>` : ''}</div>`;
 const cap = s => String(s).charAt(0).toUpperCase() + String(s).slice(1);
 const ppill = p => priorityTag(p, true);
-const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${{
+const I = (n, s = 20) => `<svg aria-hidden="true" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${{
   home: '<path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/>', tasks: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12l3 3 5-6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', chart: '<path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/>', grid: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
   users: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-5-6.7"/>', user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
@@ -36,6 +36,11 @@ const I = (n, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fi
   logout: '<path d="M10 17l-5-5 5-5M5 12h11M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>', settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.5a7 7 0 0 0-1.7 1l-2.3-1-2 3.5 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.3-1a7 7 0 0 0 1.7 1l.4 2.5h5l.4-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.5-2-1.5c.1-.3.1-.7.1-1z"/>',
   tool: '<path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 8-8zM3 21l6-6"/><path d="M7 3l4 4-2 2-4-4z"/>', drop: '<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/>',
   book: '<path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-5a2 2 0 0 0-2 2"/><path d="M20 4v14h-7"/>', cash: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 10v4M18 10v4"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>', eyeoff: '<path d="M9.9 4.2A10 10 0 0 1 12 4c6.500 0 10 8 10 8a13 13 0 0 1-1.700 2.700M6.600 6.600A13 13 0 0 0 2 12s3.500 8 10 8a10 10 0 0 0 5.400-1.600M2 2l20 20M9.900 9.900a3 3 0 1 0 4.200 4.200"/>',
+  swap: '<path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4"/>', file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6M16 13H8M16 17H8M10 9H8"/>',
+  history: '<path d="M3 12a9 9 0 1 0 9-9 9.700 9.700 0 0 0-6.700 2.700L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>', pencil: '<path d="M17 3a2.800 2.800 0 1 1 4 4L7.500 20.500 2 22l1.500-5.500Z"/><path d="m15 5 4 4"/>',
+  pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>', phone: '<path d="M22 16.900v3a2 2 0 0 1-2.200 2 19.800 19.800 0 0 1-8.600-3.100 19.500 19.500 0 0 1-6-6A19.800 19.800 0 0 1 2.100 4.200 2 2 0 0 1 4.100 2h3a2 2 0 0 1 2 1.700c.1 1 .4 1.900.7 2.800a2 2 0 0 1-.500 2.100L8.100 9.900a16 16 0 0 0 6 6l1.300-1.300a2 2 0 0 1 2.100-.400c.9.300 1.800.6 2.800.7a2 2 0 0 1 1.700 2Z"/>',
+  star: '<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1z"/>', filter: '<path d="M22 3H2l8 9.5V19l4 2v-8.500z"/>',
   ticket: '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2M13 17v2M13 11v2"/>', flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7"/>',
   cdot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/>', cplay: '<circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4z"/>', cpause: '<circle cx="12" cy="12" r="10"/><path d="M10 15V9M14 15V9"/>',
   ccheck: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>', calert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>', cx: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
@@ -48,7 +53,7 @@ const BLOCK_FIELDS = ['progress', 'ticket_details', 'timeline', 'guide'];
 const ACT_ICON = { hold: 'pause', open: 'play', in_progress: 'play', closed: 'check', rejected: 'xmark' };
 const fmtLeft = m => { m = Math.abs(Math.round(m)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60 ? (m % 60) + 'm' : ''}`.trim() : `${m}m`; };
 const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small">Points for closing within SLA, this campus</div>${rows.length ? rows.map((u, i) => `<div class="brow">
-  <span class="rank">${['🥇', '🥈', '🥉'][i] || i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
+  <span class="rank">${i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
   <b class="mono" style="color:${u.points < 0 ? 'var(--warn)' : 'var(--brand)'}">${u.points} pts</b></div>`).join('') : '<p class="muted">No providers yet.</p>'}`;
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
 const ring = (pct, size = 96, color = 'var(--brand)', track = '#fff') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
@@ -102,10 +107,10 @@ const wireFiles = id => document.querySelectorAll('.f-' + id).forEach(i => i.onc
 // Photos show as pictures. Other files (PDF, or a picture type browsers can't show) are a named link; so is a picture
 // that fails to load, never a broken image.
 const thumbs = files => files?.length ? `<div class="thumbs">${files.map(f => /^image\/(jpeg|png|gif|webp)$/.test(f.mime_type || '')
-  ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}" loading="lazy"></a>${f.stamped_at ? `<div class="muted" style="font-size:11px">📷 ${fmt(f.stamped_at)}</div>` : ''}`
-  : `<a class="fchip" href="/api/files/${f.storage_key}" target="_blank">${f.mime_type === 'application/pdf' ? '📄' : '📎'} ${esc(f.file_name)}</a>`).join('')}</div>` : '';
+  ? `<a href="/api/files/${f.storage_key}" target="_blank"><img src="/api/files/${f.storage_key}" alt="${esc(f.file_name)}" loading="lazy"></a>${f.stamped_at ? `<div class="tstamp">${I('camera', 12)}${fmt(f.stamped_at)}</div>` : ''}`
+  : `<a class="fchip" href="/api/files/${f.storage_key}" target="_blank">${I('file', 14)} ${esc(f.file_name)}</a>`).join('')}</div>` : '';
 document.addEventListener('error', e => { const img = e.target; if (img.tagName !== 'IMG' || !img.closest?.('.thumbs')) return;
-  const a = img.closest('a'); a.className = 'fchip'; a.textContent = '📎 ' + img.alt; }, true);
+  const a = img.closest('a'); a.className = 'fchip'; a.textContent = img.alt; }, true);
 const formVals = form => Object.fromEntries(new FormData(form));
 // Get the app (install.js): Android / Chrome install in one tap, iPhone gets the Add to Home Screen steps
 const installBtn = () => ''; // the sticky Install button (install.js) is on every screen, so no second one in the page
@@ -167,7 +172,7 @@ async function portal(slug, q, view, code) {
   // a team with sub-teams (Maintenance → Electrical, Plumbing …): pick the sub-team first
   const subs = pick ? services.filter(x => x.parent_id === pick.id) : [];
   if (pick && subs.length) {
-    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise">${I('back')}</a><h1>${esc(pick.name)}</h1></div>
+    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(pick.name)}</h1></div>
       <p class="muted">Which team can help? Pick the closest one.</p>
       ${[...subs, { ...pick, name: `Other ${pick.name} problem`, description: 'Not in the list above', other: true }].map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}${s.other ? '?direct=1' : ''}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
         <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span><br>${(s.providers || []).map(p => `<span class="plate">${esc(p)}</span>`).join('')}</span><span class="chev">${I('chev')}</span></a>`).join('')}</div>`;
@@ -187,7 +192,7 @@ async function portal(slug, q, view, code) {
     wireGuide('guide-seen', route);
     return;
   }
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Raise a ticket</h1></div>
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Raise a ticket</h1></div>
     <p class="muted">${services.length ? 'Pick the service you need.' : 'No services are open on this campus yet. Please check back soon.'}</p>
     ${services.filter(s => !s.parent_id || !services.some(x => x.id === s.parent_id)).map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)}</b><span class="muted small">${isFood(s.form_schema) ? 'Rate meals or report a problem' : esc(s.description || '')}</span><br>
@@ -201,7 +206,7 @@ const foodCarry = (v) => { try { if (v === undefined) { const x = JSON.parse(ses
 const nowHM = () => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
 async function foodScreens(slug, tenant, svc, flow) {
   const f = await api(`/public/${slug}/food`), base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`;
-  const head = (title, back) => `<div class="head"><a class="iconbtn" href="${back}">${I('back')}</a><h1>${title}</h1></div>`;
+  const head = (title, back) => `<div class="head"><a class="iconbtn" href="${back}" aria-label="Back">${I('back')}</a><h1>${title}</h1></div>`;
   const where = (sel = {}) => `<div class="row">${f.locations.length ? `<div><label>Mess / canteen</label><select name="location_id" required><option value="">Choose…</option>${f.locations.map(l => `<option value="${l.id}" ${l.id === sel.location_id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>` : ''}
     <div><label>Meal</label><select name="meal" required>${MEALS.map(m => `<option value="${m}" ${m === (sel.meal || mealAt(f.windows, nowHM())) ? 'selected' : ''}>${MEAL_NAMES[m]}</option>`).join('')}</select></div></div>`;
   document.title = `${svc.name} · ONE Desk`;
@@ -294,7 +299,7 @@ const foodConfirm = () => new Promise(res => {
 
 function raiseForm(slug, tenant, svc, related) {
   const idem = crypto.randomUUID();
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise">${I('back')}</a>
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a>
     <h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
@@ -334,7 +339,7 @@ function raiseForm(slug, tenant, svc, related) {
       catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; // confirm mode: the person says whether it is the same issue
         r = await api(`/public/${slug}/tickets`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
       const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
-      app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Ticket raised</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
+      app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Ticket raised</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
         <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
         <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
         ${r.merged ? knownIssue(r.affected_count) : ''}${queueBox(r.queue)}
@@ -353,7 +358,7 @@ function raiseForm(slug, tenant, svc, related) {
 
 async function track(slug) {
   document.body.className = '';
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>Track a ticket</h1></div><form id="f" class="card">
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Track a ticket</h1></div><form id="f" class="card">
     <label>Ticket number</label><input name="no" required placeholder="0001" inputmode="numeric" class="mono">
     <div class="err" id="err"></div><p><button class="btn primary big">${I('search')} Find my ticket</button></p></form></div>`;
   $('#f').onsubmit = async e => { e.preventDefault(); const v = formVals(e.target);
@@ -386,7 +391,7 @@ async function ticketPage(slug, no, q) {
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && new Date(t.reopen_until) > new Date();
   const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}">${I('back')}</a><h1>My Ticket</h1>${pill(t.status)}</div>
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>My Ticket</h1>${pill(t.status)}</div>
     <div class="stub left"><div class="mono muted small">${t.ticket_no}</div><h2 style="margin:4px 0 2px;font-size:20px">${esc(t.subject)}</h2>
     <div class="muted small">${esc(t.service)} · ${esc(t.location || '')}</div>${knownIssue(t.affected_count)}${queueBox(t.queue)}
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
@@ -488,51 +493,79 @@ function moreSheet(items) {
 const tenantObj = () => S.me.tenants.find(t => t.id === S.tenant);
 
 // One ticket as a card: state strip, number + labels, subject, service, requestor, location, due / resume time.
-function ticketCard(r, services) {
+// ---------- tickets as a table (desktop) and as cards (phones) ----------
+const shortDate = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '—';
+// what the last column / card foot says: [label, date, icon, isClosedLike]
+function ticketWhen(r) {
   const now = new Date().toISOString(), holdOver = r.status === 'hold' && r.hold_due_at && r.hold_due_at < now;
-  const esc_on = r.escalated_at && [...ACTIVE, 'hold'].includes(r.status);
-  const state = r.overdue || holdOver ? 'over' : r.status, svc = services.find(s => s.code === r.service_code) || { code: r.service_code };
-  const foot = r.queued ? ['Reaches the team', r.lands_at, 'clock'] : ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock']
-    : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause'] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark'];
-  return `<div class="tcard st-${state} ${r.status === 'rejected' ? 'dim' : ''}" data-id="${r.id}" tabindex="0">
-    <div class="tc-top"><span class="mono tc-no">#${r.ticket_no}</span><span class="sp"></span>${esc_on ? '<span class="pill p-esc">Escalated</span>' : ''}${r.is_internal ? '<span class="pill p-int">internal</span>' : ''}${r.affected_count > 1 ? `<span class="pill p-many">${r.affected_count} students</span>` : ''}${r.queued ? '<span class="pill p-queue">In queue</span>' : ''}${pill(r.status)}${ppill(r.priority)}</div>
-    <b class="tc-title">${esc(r.subject)}</b>
-    <div class="tc-svc"><span class="chip c0">${I(svcIcon(svc), 16)}</span>${esc(r.service)}</div>
-    <div class="tc-row">${I('user', 15)}<span>${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}</span></div>
-    ${r.location ? `<div class="tc-row">${I('building', 15)}<span>${esc(r.location)}${r.problem_label ? ' · ' + esc(r.problem_label) : ''}</span></div>` : ''}
-    ${esc_on ? `<div class="tc-row esc">${I('alert', 15)}<span>Escalated to ${esc(r.escalated_name || '')}</span></div>` : ''}
-    <div class="tc-foot">${I(foot[2], 15)}<span>${foot[0]} <b>${fmt(foot[1])}</b></span></div></div>`;
+  return r.queued ? ['Reaches the team', r.lands_at, 'clock', false] : ACTIVE.includes(r.status) ? [r.overdue ? 'Overdue since' : 'Due', r.due_at, 'clock', false]
+    : r.status === 'hold' ? [holdOver ? 'Hold overdue since' : 'Resume by', r.hold_due_at, 'pause', false] : [r.status === 'closed' ? 'Closed' : 'Rejected', r.closed_at, r.status === 'closed' ? 'check' : 'xmark', true];
 }
+const ticketStatus = r => r.overdue ? 'overdue' : r.status; // an open ticket past its due time shows as Overdue
+const ticketFlags = r => `${r.escalated_at && [...ACTIVE, 'hold'].includes(r.status) ? `<span class="pill" title="Escalated to ${esc(r.escalated_name || '')}">Escalated</span>` : ''}${r.queued ? '<span class="pill">In queue</span>' : ''}${r.is_internal ? '<span class="pill">Internal</span>' : ''}`;
+const ticketPeople = r => `${esc(r.requestor)}${r.affected_count > 1 ? ` + ${r.affected_count - 1} more` : ''}`;
+// One ticket as a card: one link to the ticket (phones, and the short lists on other screens)
+function ticketCard(r) {
+  const w = ticketWhen(r);
+  return `<a class="tcard ${r.status === 'rejected' ? 'dim' : ''}" href="#/c/t/${r.id}" data-id="${r.id}">
+    <span class="tc-r1"><span class="mono tc-no">#${r.ticket_no}</span>${priorityTag(r.priority)}<span class="sp"></span>${ticketFlags(r)}${pill(ticketStatus(r))}</span>
+    <span class="tc-r2"><b class="tc-title">${esc(r.subject)}</b><span class="tc-loc">${esc([r.service, r.location, r.problem_label].filter(Boolean).join(' · '))}</span></span>
+    <span class="tc-r3">${avatar(r.requestor, 24)}<span class="tc-who">${ticketPeople(r)}</span><span class="tc-when ${w[3] ? 'done' : ''}">${I(w[2] === 'xmark' ? 'x' : w[2], 14)}${w[0]} ${shortDate(w[1])}</span></span></a>`;
+}
+function ticketTable(rows) {
+  return `<div class="tblbox"><table class="ttable"><thead><tr><th>Ticket</th><th>Requester</th><th>Location</th><th>Priority</th><th>Status</th><th>Due / closed</th></tr></thead><tbody>
+    ${rows.map(r => { const w = ticketWhen(r); return `<tr data-id="${r.id}" class="${r.status === 'rejected' ? 'dim' : ''}">
+      <td><a href="#/c/t/${r.id}" class="tt-main"><span class="mono tt-no">#${r.ticket_no}</span><b>${esc(r.subject)}</b><span class="tt-svc">${esc(r.service)}</span></a></td>
+      <td><span class="tt-req">${avatar(r.requestor, 28)}<span>${ticketPeople(r)}</span></span></td>
+      <td class="tt-loc">${esc([r.location, r.problem_label].filter(Boolean).join(' · ')) || '—'}</td>
+      <td>${priorityTag(r.priority)}</td><td><span class="tt-st">${pill(ticketStatus(r))}${ticketFlags(r)}</span></td>
+      <td><span class="tt-when ${w[3] ? 'done' : ''}"><small>${w[0]}</small>${shortDate(w[1])}</span></td></tr>`; }).join('')}</tbody></table></div>`;
+}
+// progress ring: starts at 12 o'clock, round caps
+const ringSvg = (pct, size, stroke) => { const r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  return `<span class="pring" style="width:${size}px;height:${size}px" role="img" aria-label="${pct}% of this week's tickets closed"><svg width="${size}" height="${size}" aria-hidden="true"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="#EEF0F3" stroke-width="${stroke}" fill="none"/>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="var(--accent)" stroke-width="${stroke}" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><b>${pct}%</b></span>`; };
 
 let pollT;
 async function queue(main) {
   const services = await api('/services');
   const st = JSON.parse(sessionStorage.getItem('qf') || '{"status":"open"}');
   const draw = async () => {
+    const keep = document.activeElement?.id === 'fq' ? [$('#fq').selectionStart, true] : null, more = $('.mt-more')?.classList.contains('open');
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
     const [rows, rep, pts] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/points')]);
     const c = rep.counts || {};
     const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
-    const h = new Date().getHours(), greet = h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : 'Good Evening';
-    const tile = (k, label, n, ic, cls) => `<div class="stat k${cls} ${st.status === k ? 'on' : ''} ${k === 'overdue' && n ? 'hot' : ''}" data-s="${k}"><span class="chip ${cls}">${I(ic, 18)}</span><div><span>${label}</span><b>${n || 0}</b></div></div>`;
-    main.innerHTML = `<div class="hello"><div><div class="muted">${greet},</div><h1>${esc(S.me.user.name.split(' ')[0])} 👋</h1><div class="muted small">Here's what's happening at ${esc(tenantObj()?.code || '')} today.</div></div>
-      <div style="display:flex;gap:8px;align-items:center"><a href="#/c/me" class="ptsbadge">⭐ ${pts.me} pts</a>
-      ${S.me.user.role !== 'provider' ? `<a class="iconbtn" href="#/c/attention">${I('bell')}</a>` : ''}</div></div>
-      <div class="dash"><div class="card progress week">${ring(pct, 96, 'var(--amber)', 'rgba(255,255,255,.16)')}<div><b>Weekly progress</b><div class="small">${done} of ${total} tickets closed</div>
-        <div class="small soft">${pct >= 70 ? "You're doing great!" : 'Keep going!'}</div></div></div>
-      <div class="stats">${tile('open', 'Open', c.open, 'list', 'c4')}${tile('in_progress', 'In progress', c.in_progress, 'play', 'c0')}${tile('hold', 'On hold', c.hold, 'pause', 'c1')}${tile('closed', 'Closed (7d)', c.closed_period, 'check', 'c2')}${tile('overdue', 'Overdue', c.overdue, 'alert', 'c5')}</div></div>
-      <div class="sechead"><h2>My Tickets</h2><a href="/api/tickets.csv?${qs}" id="csv">Export CSV</a></div>
-      <div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="fq" placeholder="Search tickets…" value="${esc(st.q || '')}"></label>
-      <select id="fsv"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
-      ${c.queued ? `<div class="queuebar" data-s="queued">${I('clock', 20)}<div><b>${c.queued} ticket${c.queued === 1 ? '' : 's'} waiting in the queue</b><div class="small">Your team's tickets for today are full. These reach you on the next working days, a day's worth at a time.</div></div><span class="chev">${I('chev')}</span></div>` : ''}
-      <div class="tabs">${[['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['queued', `In queue${c.queued ? ` (${c.queued})` : ''}`]].map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
-      <div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || `<div class="empty card" style="grid-column:1/-1"><span class="chip c2 big">${I('check', 30)}</span><p><b>Nothing here — all clear.</b><br><span class="small">New tickets for your services will show up here.</span></p></div>`}</div>`;
-    main.querySelectorAll('.tcard').forEach(tr => { tr.onclick = () => location.hash = '#/c/t/' + tr.dataset.id; tr.onkeydown = e => e.key === 'Enter' && tr.click(); });
+    const now = new Date(), h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now)), greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    const day = o => now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', ...o }), tn = tenantObj();
+    const cell = (k, label, n, cap_) => `<button type="button" class="stcell ${st.status === k ? 'on' : ''}" data-s="${k}" aria-pressed="${st.status === k}"><span class="stl">${statusIcon(k)}${label}</span>
+      <b class="${k === 'overdue' && n > 0 ? 'hot' : ''}">${n || 0}</b><span class="stc">${cap_}</span></button>`;
+    const counts = { open: c.open, in_progress: c.in_progress, hold: c.hold, overdue: c.overdue, queued: c.queued };
+    const tabs = [['all', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['hold', 'On hold'], ['overdue', 'Overdue'], ['escalated', 'Escalated'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['queued', 'In queue']];
+    main.innerHTML = `<div class="home">
+      <div class="greet"><div><div class="eyebrow"><span class="d-only">${day({ weekday: 'long', day: 'numeric', month: 'long' })} · ${esc(tn?.name || '')}</span><span class="m-only">${day({ weekday: 'short', day: 'numeric', month: 'short' })} · ${esc(tn?.code || '')}</span></div>
+        <h1>${greet}, ${esc(S.me.user.name.split(' ')[0])}</h1></div>
+        <div class="greet-r"><a href="#/c/me" class="ptschip" aria-label="${pts.me} points. Open my points">${I('star', 16)}<span>${pts.me} pts</span></a>
+          <a href="#/c/new" class="btn primary d-only">${I('plus', 16)}New ticket</a></div></div>
+      <div class="ovr"><div class="card wk"><span class="d-only">${ringSvg(pct, 88, 8)}</span><span class="m-only">${ringSvg(pct, 64, 7)}</span><div><div class="eyebrow up">This week</div><div class="wk-l">${done} of ${total} tickets closed</div><div class="wk-s d-only">${total - done} still open this week</div></div></div>
+        <div class="card stcard">${cell('open', 'Open', c.open, 'Awaiting action')}${cell('in_progress', 'In progress', c.in_progress, 'Being worked on')}${cell('hold', 'On hold', c.hold, 'Paused, clock stopped')}${cell('closed', 'Closed', c.closed_period, 'Last 7 days')}${cell('overdue', 'Overdue', c.overdue, 'Past SLA due time')}
+          <a class="stcell viewrep m-only" href="#/c/reports">View reports ${I('chev', 16)}</a></div></div>
+      ${c.queued ? `<button type="button" class="queuebar" data-s="queued">${I('clock', 20)}<span><b>${c.queued} ticket${c.queued === 1 ? '' : 's'} waiting in the queue</b><span class="small">Your team's tickets for today are full. These reach you on the next working days, a day's worth at a time.</span></span>${I('chev', 18)}</button>` : ''}
+      <div class="card mt"><div class="mt-h"><div class="mt-t"><h2>My tickets</h2><span class="mt-n">${rows.length} ticket${rows.length === 1 ? '' : 's'}</span>
+          <button type="button" class="iconbtn m-only" id="fsvb" aria-label="Filter by service" aria-expanded="${!!more}">${I('filter', 20)}</button></div>
+        <div class="mt-tools"><label class="search">${I('search', 18)}<input id="fq" type="search" aria-label="Search tickets" placeholder="Search by ID, subject or person" value="${esc(st.q || '')}"></label>
+          <div class="mt-more ${more ? 'open' : ''}"><select id="fsv" aria-label="Service"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+          <a href="/api/tickets.csv?${qs}" id="csv" class="btn">${I('download', 16)}Export CSV</a></div></div></div>
+        <div class="tabs mt-tabs">${tabs.map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}"><span>${l}</span>${counts[k] ? `<span class="cnt">${counts[k]}</span>` : ''}</button>`).join('')}</div>
+        ${rows.length ? `${ticketTable(rows)}<div class="tcards">${rows.map(ticketCard).join('')}</div>` : `<div class="mt-empty">${emptyState('No tickets here', 'Nothing matches this filter. Try another status or clear the search.')}</div>`}</div></div>`;
+    main.querySelectorAll('.ttable tbody tr').forEach(tr => { tr.onclick = e => { if (!e.target.closest('a')) location.hash = '#/c/t/' + tr.dataset.id; }; });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
     main.querySelectorAll('[data-s]').forEach(b => b.onclick = () => set('status', b.dataset.s)); $('#fsv').onchange = e => set('service', e.target.value);
     $('#fq').onchange = e => set('q', e.target.value);
+    $('#fsvb').onclick = () => { const on = $('.mt-more').classList.toggle('open'); $('#fsvb').setAttribute('aria-expanded', on); if (on) $('#fsv').focus(); };
     $('#csv').onclick = async e => { e.preventDefault(); const r = await api('/tickets.csv?' + qs, { raw: true }); const a = document.createElement('a');
       a.href = URL.createObjectURL(await r.blob()); a.download = 'tickets.csv'; a.click(); };
+    if (keep) { $('#fq').focus(); $('#fq').setSelectionRange(keep[0], keep[0]); }
   };
   await draw();
   clearInterval(pollT); pollT = setInterval(() => location.hash === '#/c' && !document.hidden && draw(), 30000);
@@ -549,59 +582,101 @@ function dlg(html, onSubmit) {
 
 async function workspace(main, id, { admin }) {
   const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]);
+  document.body.classList.add('on-ticket'); // phones: this page has its own app bar and bottom action bar
+  const meta = e => { try { return JSON.parse(e.meta || '{}'); } catch { return {}; } };
+  const stName = v => (STATUS_INFO[v] || [v])[0];
   const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
-    status_changed: (m => `${(STATUS_INFO[e.from_value] || [e.from_value])[0]} → ${(STATUS_INFO[e.to_value] || [e.to_value])[0]}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(JSON.parse(e.meta || '{}')), priority_changed: `Priority ${e.from_value} → ${e.to_value}`, note: 'Note',
-    reopened: 'Reopened', landed: `Reached the team from the daily queue`, due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
-    priority_changed: `Priority ${esc(e.from_value)} → ${esc(e.to_value)}${JSON.parse(e.meta || '{}').reason ? ' · ' + esc(JSON.parse(e.meta).reason) : ''}` })[e.event_type] || e.event_type;
+    status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
+    reopened: 'Reopened', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
+    priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
+  // timeline dot: a status change takes the new status's colour; reopened = Open; priority = red; created = accent; the rest grey
+  const evDot = e => e.event_type === 'status_changed' ? `var(--st-${ST_VAR[e.to_value] || 'neutral'})` : e.event_type === 'reopened' ? 'var(--st-open)'
+    : e.event_type === 'priority_changed' ? 'var(--st-overdue)' : e.event_type === 'created' ? 'var(--accent)' : 'var(--st-neutral)';
   const targets = allowedTargets(t.status);
-  // the one button changes with the status picked in the dropdown
-  const BTN = { open: ['Reopen ticket', 'act-reopen'], in_progress: [t.status === 'hold' ? 'Resume work' : 'Start work', 'act-open'], hold: ['Put on hold', 'act-hold'], closed: ['Close ticket', 'act-closed'], rejected: ['Reject ticket', 'act-rejected'] };
-  const HINT = { same: 'Keeps the status and adds a note. Untick “Internal” to email it to the requestor.',
+  const HINT = { same: 'Keeps the status and adds a note.',
     open: 'Reopens the ticket with a fresh target; the service providers are emailed.',
-    in_progress: t.status === 'hold' ? 'Resumes work. The target moves forward by the time spent on hold; the requestor is emailed.' : 'Tells the requestor that work has started.',
+    in_progress: t.status === 'hold' ? 'Resumes work. The target moves forward by the time spent on hold.' : 'Tells the requester that work has started.',
     hold: 'Pauses the target clock. Pick a reason below; each has its own time limit, and going past it costs points.',
-    closed: `Emails the requestor, who can reopen within ${tenantObj()?.reopen_window_days ?? 7} days. Add a proof photo if you can.`,
-    rejected: 'Write the reason. The requestor is told and can raise a new ticket.' };
-  const fd = Object.entries(t.form_data || {}).filter(([, v]) => v !== '' && v != null);
-  const head = (icon, c, title) => `<div class="cardh"><span class="chip ${c}">${I(icon, 17)}</span><b>${title}</b></div>`;
-  const ini = n => esc(String(n || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase());
-  main.innerHTML = `<div class="ws">
-   <div><div class="card tk"><div class="tk-head"><div class="tk-top"><span class="mono">#${t.ticket_no}</span><span>${pill(t.status)} ${ppill(t.priority)} ${t.is_internal ? '<span class="pill s-hold">internal</span>' : ''}</span></div>
-     <h2>${esc(t.subject)}</h2><div class="tk-svc">${esc(t.service.name)} · ${t.channel}</div></div>
-     ${t.description ? `<p class="tk-desc">${esc(t.description)}</p>` : ''}
-     <div class="tk-fields">${t.location ? `<div><span>Location</span><b>${esc(t.location)}</b></div>` : ''}
-     ${fd.map(([k, v]) => `<div><span>${esc((t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)).find(f => f.key === k)?.label : k) || k)}</span><b>${esc(Array.isArray(v) ? v.join(', ') : v)}</b></div>`).join('')}
-     <div><span>Created</span><b>${fmt(t.created_at)}</b></div></div>
-     ${t.queue ? `<div class="slabox hold">${I('clock', 20)}<div><b>In the daily queue · number ${t.queue.queue_no} of ${t.queue.waiting}</b><div class="small">Reaches the team on ${esc(t.queue.lands_on)}. Changing its status takes it now.</div></div></div>` : ''}
-     ${ACTIVE.includes(t.status) ? `<div class="slabox ${t.sla_left_min < 0 ? 'late' : ''}">${I('clock', 20)}<div><b>${t.sla_left_min >= 0 ? fmtLeft(t.sla_left_min) + ' working time left' : fmtLeft(t.sla_left_min) + ' past SLA'}</b><div class="small">Due ${fmt(t.due_at)}</div></div></div>` : ''}
-     ${t.status === 'hold' ? `<div class="slabox hold ${t.hold_over ? 'late' : ''}">${I('pause', 20)}<div><b>On hold · ${esc(t.hold_label || '')}</b><div class="small">${t.hold_over ? 'Hold SLA passed at' : 'Resume by'} ${fmt(t.hold_due_at)} · main SLA paused</div></div></div>` : ''}
-     ${t.escalated_name && [...ACTIVE, 'hold'].includes(t.status) ? `<div class="slabox late" style="margin-top:8px">${I('alert', 20)}<div><b>Escalated to ${esc(t.escalated_name)}</b><div class="small">${fmt(t.escalated_at)} · it missed its target</div></div></div>` : ''}
-     ${t.held_minutes ? `<div class="muted small" style="margin-top:6px">Total time on hold: ${fmtLeft(t.held_minutes)} (working)</div>` : ''}
-     <p><a href="${t.tracking_url}" target="_blank" style="font-size:13px">Requestor's view ↗</a></p></div></div>
-   <div><div class="card k-blue">${head('clock', 'c4', 'Timeline')}<div style="margin-top:12px">${t.events.map(e => `<div class="ev ${e.is_internal ? 'int' : ''}"><b>${evLabel(e)}</b>${e.is_internal ? ' <span class="muted">(internal)</span>' : ''}
-      <div class="meta">${fmt(e.created_at)} · ${esc(e.actor_name || e.actor_type)}</div>${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div>`).join('')}</div></div>
-     <form id="act" class="card k-brand">${head('tool', 'c0', 'Act on this ticket')}
-       <label>Ticket status</label><select name="to" id="to">${STATUSES.map(s => `<option value="${s}" ${s === t.status ? 'selected' : ''} ${s !== t.status && !targets.includes(s) ? 'disabled' : ''}>${STATUS_INFO[s][0]}${s === t.status ? ' (current)' : ' — ' + STATUS_INFO[s][1]}</option>`).join('')}</select>
-       <div class="muted small" id="tohint" style="margin-top:6px"></div>
-       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(r => `<option value="${r.key}">${esc(r.label)} — ${r.hours}h limit</option>`).join('')}</select></div>
-       <label>Note</label><textarea name="note" required placeholder="What did you do, or why this change?"></textarea>
-       ${fileButtons('act')}<label style="font-weight:400"><input type="checkbox" name="is_internal" style="width:auto;min-height:0"> Internal — hide from requestor</label>
-       ${t.location_key && t.problem_key ? `<label id="earlyrow" hidden style="font-weight:400"><input type="checkbox" name="close_earlier" style="width:auto;min-height:0"> Also close earlier open tickets for the same problem and location</label>` : ''}
-       <div class="actbar"><button class="btn act act-note" id="go">${I('plus', 18)}Add note</button></div></form></div>
-   <div><div class="card k-green">${head('user', 'c2', 'Requestor')}<div class="tk-person"><span class="avatar">${ini(t.requestor.name)}</span><div><b>${esc(t.requestor.name)}</b> <span class="pill s-open">${esc(t.requestor.requestor_type || '')}</span></div></div>
-     <div class="muted" style="font-size:13px;margin-top:10px;line-height:1.6">${esc(t.requestor.email || '')}<br>${esc(t.requestor.phone || '')}<br>${esc(t.requestor.identifier || '')} ${esc(t.requestor.department || '')}</div>
-     ${t.requestor_history.length ? `<p style="font-size:13px;margin-bottom:0"><b>Last tickets</b><br>${t.requestor_history.map(h => `<a href="#/c/t/${h.id}">${h.ticket_no}</a> ${pill(h.status)}`).join('<br>')}</p>` : ''}</div>
-     ${t.requestors?.length > 1 ? `<div class="card k-orange">${head('users', 'c1', `Requestors (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="pill s-open">first</span>' : ''}
-       <div class="muted small">${esc(q.contact)} · ${fmt(q.raised_at)}</div>${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}</div>`).join('')}</div>` : ''}
-    <div class="card k-orange">${head('users', 'c1', 'Providers')}${t.providers.map(p => `<div class="tk-person" style="margin-top:10px"><span class="avatar sm">${ini(p.name)}</span><div><b>${esc(p.name)}</b><div class="muted small">${esc(p.phone || '')}</div></div></div>`).join('') || '<div class="tk-empty">No provider mapped to this service</div>'}</div>
-    ${[...ACTIVE, 'hold'].includes(t.status) ? `<div class="card k-pink">${head('alert', 'c3', 'Priority')}<div class="muted small" style="margin:6px 0">Set by your team. The requestor never sees it.</div><select id="pri">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
-      <p><button class="btn" id="tr" style="width:100%">Transfer (t)</button></p>${admin ? '<p><button class="btn" id="ext" style="width:100%">Extend due time</button></p>' : ''}</div>` : ''}</div></div>`;
+    closed: `The requester can reopen within ${tenantObj()?.reopen_window_days ?? 7} days. Add a proof photo if you can.`,
+    rejected: 'Write the reason. The requester is told and can raise a new ticket.' };
+  const schema = t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)) : [];
+  const fdRaw = t.form_data || {};
+  const fd = Object.entries(fdRaw).filter(([k, v]) => v !== '' && v != null && !/_label$/.test(k) && k !== 'food_location').map(([k, v]) => [schema.find(f => f.key === k)?.label || cap(k.replace(/^(loc|stu|food)_/, '').replace(/_/g, ' ')),
+    k === 'food_category' ? fdRaw.food_category_label || v : k === 'meal' ? MEAL_NAMES[v] || v : Array.isArray(v) ? v.join(', ') : v]);
+  const live = [...ACTIVE, 'hold'].includes(t.status), r = t.requestor, shown = ticketStatus(t);
+  const dl = rows => rows.map(([k, v]) => `<div class="dli"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
+  // SLA: the tag, the big value, and how much of the window is used (by the clock, from when the ticket reached the team)
+  const start = new Date(t.lands_at || t.created_at).getTime(), due = new Date(t.due_at).getTime(), used = Math.max(0, Math.min(100, Math.round(100 * (Date.now() - start) / Math.max(1, due - start))));
+  const dayOf = d => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d), dd = Math.round((new Date(dayOf(new Date(due))) - new Date(dayOf(new Date()))) / 864e5);
+  const slaTag = !ACTIVE.includes(t.status) ? '' : t.sla_left_min < 0 ? '<span class="tag danger">Overdue</span>' : t.sla_left_min <= 24 * 60 ? `<span class="tag warn">${dd <= 0 ? 'Due today' : dd === 1 ? 'Due tomorrow' : 'Due soon'}</span>` : '';
+  const slaBig = t.queue ? `Queue no. ${t.queue.queue_no}` : ACTIVE.includes(t.status) ? fmtLeft(t.sla_left_min) + (t.sla_left_min < 0 ? ' late' : '') : t.status === 'hold' ? 'On hold' : stName(t.status);
+  const slaSub = t.queue ? `of ${t.queue.waiting} waiting · reaches the team on ${esc(t.queue.lands_on)}` : ACTIVE.includes(t.status) ? `${t.sla_left_min < 0 ? 'Past the SLA' : 'Working time left'} · due ${shortDate(t.due_at)}`
+    : t.status === 'hold' ? `${esc(t.hold_label || '')} · ${t.hold_over ? 'hold limit passed' : 'resume by'} ${shortDate(t.hold_due_at)} · SLA clock paused` : t.closed_at ? shortDate(t.closed_at) : '';
+  const slaCard = `<div class="card side sla">${`<div class="chead"><span class="tile">${I('clock', 16)}</span><span>SLA</span><span class="sp"></span>${slaTag}</div>`}
+    <div class="sla-row"><span class="sla-tile m-only">${I('clock', 20)}</span><div><div class="sla-big">${slaBig}</div><div class="sla-sub">${slaSub}</div></div></div>
+    ${ACTIVE.includes(t.status) ? `<div class="pbar" role="progressbar" aria-label="Share of the SLA window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><i style="width:${used}%;${t.sla_left_min < 0 ? 'background:var(--danger)' : ''}"></i></div>` : ''}
+    ${t.escalated_name && live ? `<div class="sla-note danger">${I('calert', 15)}<span>Escalated to ${esc(t.escalated_name)} · ${shortDate(t.escalated_at)}</span></div>` : ''}
+    <div class="sla-foot"><span>Time on hold: ${t.held_minutes ? fmtLeft(t.held_minutes) : '0m'}</span>${admin && live ? '<button type="button" class="linkbtn" id="ext">Extend due time</button>' : ''}</div></div>`;
+  const prev = t.requestor_history || [];
+  const people = `<div class="card side">${cardHeading('user', 'Requester')}
+      <div class="person">${avatar(r.name, 40, 'accent')}<div><b>${esc(r.name)}</b><div class="psub">${esc([cap(r.requestor_type || ''), r.department, r.identifier].filter(Boolean).join(' · '))}</div></div></div>
+      ${r.email ? `<a class="crow" href="mailto:${esc(r.email)}">${I('mail', 15)}<span>${esc(r.email)}</span></a>` : ''}${r.phone ? `<a class="crow" href="tel:${esc(r.phone)}">${I('phone', 15)}<span>${esc(r.phone)}</span></a>` : ''}
+      ${prev.length ? `<div class="sdiv"></div><div class="slabel">Previous tickets</div>${prev.map(h => `<a class="prow" href="#/c/t/${h.id}"><span class="mono">#${h.ticket_no}</span>${pill(h.status)}</a>`).join('')}` : ''}</div>
+    ${t.requestors?.length > 1 ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}
+      <div class="psub">${esc(q.contact)} · ${shortDate(q.raised_at)}</div>${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}</div>`).join('')}</div>` : ''}
+    <div class="card side">${cardHeading('users', 'Assigned to')}${t.providers.map(p => `<div class="person">${avatar(p.name, 40, 'dark')}<div><b>${esc(p.name)}</b><div class="psub">Provider${p.phone ? ' · ' + esc(p.phone) : ''}</div></div></div>`).join('') || '<div class="psub">No provider is mapped to this service.</div>'}</div>
+    ${live ? `<div class="card side">${cardHeading('flag', 'Priority')}<select id="pri" aria-label="Priority">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
+      <div class="helper">${I('eyeoff', 14)}<span>Set by your team. The requester never sees it.</span></div></div>` : ''}`;
+  const evs = t.events, last = evs.length - 1;
+  const timeline = `<ol class="tl">${evs.map((e, i) => `<li class="${i === last ? 'latest' : ''}"><span class="rail"><i style="background:${evDot(e)}"></i></span>
+    <div class="tlc"><div class="tlt"><b>${evLabel(e)}</b>${e.is_internal ? '<span class="tag">Internal</span>' : ''}</div><div class="tlm">${shortDate(e.created_at)} · ${esc(e.actor_name || e.actor_type || '')}</div>
+      ${e.body ? `<div class="bubble">${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div></li>`).join('')}</ol>`;
+  const details = `<div class="issue"><div class="eyebrow up ic"><span class="tile">${I('file', 14)}</span>Issue</div><p>${esc(t.description || t.subject)}</p></div>
+    ${t.location ? `<div class="locrow m-only">${I('pin', 16)}<div><dt>Location</dt><dd>${esc(t.location)}</dd></div></div>` : ''}
+    <dl class="dlist">${t.location ? `<div class="dli dli-loc"><dt>Location</dt><dd>${esc(t.location)}</dd></div>` : ''}${dl([...fd, ['Created', fmt(t.created_at)], ['Channel', cap(String(t.channel).replace('_', ' '))], ...(t.is_internal ? [['Kind', 'Internal request']] : [])])}</dl>`;
+  const updateForm = `<form id="act" class="upd" aria-labelledby="updT">
+      <div class="upd-h"><div class="chead" id="updT"><span class="tile">${I('pencil', 16)}</span><span>Update this ticket</span></div><button type="button" class="msheet-x m-only" id="updX" aria-label="Close">${I('x', 20)}</button></div>
+      <label for="to">Status<span class="m-only"> · now ${stName(t.status)}</span></label><select name="to" id="to">${STATUSES.map(s2 => `<option value="${s2}" ${s2 === t.status ? 'selected' : ''} ${s2 !== t.status && !targets.includes(s2) ? 'disabled' : ''}>${STATUS_INFO[s2][0]}${s2 === t.status ? ' (current)' : ''}</option>`).join('')}</select>
+      <div class="helper" id="tohint"></div>
+      <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(x => `<option value="${x.key}">${esc(x.label)} — ${x.hours}h limit</option>`).join('')}</select></div>
+      <label for="unote">Note</label><textarea name="note" id="unote" required rows="4" placeholder="What did you do, or why this change?"></textarea>
+      ${t.location_key && t.problem_key ? `<label id="earlyrow" class="chk" hidden><input type="checkbox" name="close_earlier"> Also close earlier open tickets for the same problem and location</label>` : ''}
+      <div class="upd-row"><label class="iconbtn" aria-label="Attach a photo from camera">${I('camera', 18)}<input hidden type="file" accept="image/*" capture="environment" multiple data-source="camera" class="f-act"></label>
+        <label class="iconbtn" aria-label="Attach from gallery">${I('image', 18)}<input hidden type="file" accept="image/*,application/pdf" multiple data-source="gallery" class="f-act"></label>
+        <label class="chk"><input type="checkbox" name="is_internal"> Internal — hide from requester</label><span class="sp"></span>
+        <button class="btn primary" id="go">${I('check', 16)}<span class="d-only">Update ticket</span><span class="m-only">Save update</span></button></div>
+      <div class="muted f-act-n" style="font-size:12px"></div><div class="helper" id="mailhint"></div></form>`;
+  const flags = `${t.is_internal ? '<span class="pill">Internal</span>' : ''}${t.escalated_name && live ? '<span class="pill">Escalated</span>' : ''}${t.queue ? '<span class="pill">In queue</span>' : ''}`;
+  const seg = sessionStorage.getItem('tkseg') || 'activity';
+  main.innerHTML = `<div class="tkp" data-seg="${seg}">
+    <div class="tk-appbar m-only"><button type="button" class="ibtn" data-back aria-label="Back to my tickets">${I('back', 22)}</button><div class="tk-abt"><b>Ticket</b><span class="mono">#${t.ticket_no}</span></div>
+      <a class="ibtn" href="${t.tracking_url}" target="_blank" rel="noopener" aria-label="Requester's view">${I('eye', 20)}</a><button type="button" class="ibtn" id="tkmore" aria-label="More actions" aria-haspopup="dialog">${I('more', 20)}</button></div>
+    <a href="#/c" class="backlink d-only" data-back>${I('back', 16)}Back to my tickets</a>
+    <div class="tk-title"><div><div class="tk-ids"><span class="mono d-only">#${t.ticket_no}</span>${pill(shown)}${priorityTag(t.priority, true)}${flags}</div>
+        <h1>${esc(t.subject)}</h1><div class="tk-sub"><span>${esc(t.service.name)}</span><span class="d-only"> · Raised via ${esc(String(t.channel).replace('_', ' '))} by</span><span class="m-only"> ·</span> <span>${esc(r.name)}</span></div></div>
+      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+    <div class="tk-cols">
+      <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
+      <div class="tk-main"><section class="card sec-details">${details}</section>
+        <section class="card sec-activity"><div class="act-h">${cardHeading('history', 'Activity')}<span class="act-n">${evs.length} event${evs.length === 1 ? '' : 's'}<span class="m-only"> · Newest first</span></span></div>${timeline}${updateForm}</section></div>
+      <aside class="tk-side">${slaCard}<div class="sec-people">${people}</div></aside></div>
+    <div class="tk-bar m-only">${live ? `<button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen">${I('pencil', 16)}Update ticket</button></div>
+    <div class="msheet-back upd-back" hidden></div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
-  const sel = $('#to'), go = $('#go'), sync = () => { const to = sel.value, same = to === t.status;
+  const back = e => { e.preventDefault(); history.length > 1 ? history.back() : location.hash = '#/c'; };
+  main.querySelectorAll('[data-back]').forEach(b => b.onclick = back);
+  // phones: the three sections, and the update form as a bottom sheet
+  const tkp = main.querySelector('.tkp');
+  main.querySelectorAll('.segs [data-seg]').forEach(b => b.onclick = () => { tkp.dataset.seg = b.dataset.seg; sessionStorage.setItem('tkseg', b.dataset.seg);
+    main.querySelectorAll('.segs [data-seg]').forEach(x => x.setAttribute('aria-selected', x === b)); });
+  const sheet = on => { $('#act').classList.toggle('open', on); main.querySelector('.upd-back').hidden = !on; if (on) $('#to').focus(); else $('#updOpen')?.focus(); };
+  $('#updOpen').onclick = () => { tkp.dataset.seg = 'activity'; sessionStorage.setItem('tkseg', 'activity'); sheet(true); };
+  $('#updX').onclick = () => sheet(false); main.querySelector('.upd-back').onclick = () => sheet(false);
+  const sel = $('#to'), sync = () => { const to = sel.value, same = to === t.status;
     $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to]; if ($('#earlyrow')) $('#earlyrow').hidden = to !== 'closed';
-    const [label, cls] = same ? ['Add note', 'act-note'] : BTN[to]; go.className = 'btn act ' + cls; go.innerHTML = I(same ? 'plus' : ACT_ICON[to] || 'check', 18) + label; };
-  sel.onchange = sync; sync();
+    $('#mailhint').textContent = $('#act').is_internal.checked ? 'Saved as an internal note. The requester will not be emailed.' : 'The requester will get this note by email.'; };
+  sel.onchange = sync; $('#act').is_internal.onchange = sync; sync();
   $('#act').onsubmit = async e => {
     e.preventDefault(); const f = e.target, to = f.to.value, note = f.note.value.trim();
     if (!note) return toast('Write a note first');
@@ -610,19 +685,33 @@ async function workspace(main, id, { admin }) {
       if (to === t.status) { await api(`/tickets/${id}/notes`, { method: 'POST', body }); toast('Note added'); }
       else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value, close_earlier: !!f.close_earlier?.checked } });
         toast((res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : `Status: ${STATUS_INFO[to][0]}`) + (res.closed_earlier ? ` · ${res.closed_earlier} earlier closed too` : '')); }
-      reload();
+      sessionStorage.setItem('tkseg', 'activity'); reload();
     } catch (er) { toast(er.message); if (er.status === 409) reload(); }
   };
-  if ($('#pri')) $('#pri').onchange = async e => { try { await api(`/tickets/${id}/priority`, { method: 'POST', body: { priority: e.target.value } }); reload(); } catch (er) { toast(er.message); } };
-  const transfer = () => dlg(`<h2>Transfer ticket</h2><label>To service</label><select name="service_id">${services.filter(s => s.id !== t.service_id && s.is_active).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
+  main.querySelectorAll('#pri').forEach(p => p.onchange = async e => { try { await api(`/tickets/${id}/priority`, { method: 'POST', body: { priority: e.target.value } }); reload(); } catch (er) { toast(er.message); } });
+  const transfer = () => dlg(`<h2>Transfer ticket</h2><label>To service</label><select name="service_id">${services.filter(s2 => s2.id !== t.service_id && s2.is_active).map(s2 => `<option value="${s2.id}">${esc(s2.name)}</option>`).join('')}</select>
     <label>Note</label><textarea name="note" required></textarea>`, async f => { await api(`/tickets/${id}/transfer`, { method: 'POST', body: formVals(f) }); toast('Transferred'); location.hash = '#/c'; });
-  if ($('#tr')) $('#tr').onclick = transfer;
-  if ($('#ext')) $('#ext').onclick = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
+  const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
+  main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
+  // phones: the three-dots menu holds the secondary actions
+  $('#tkmore').onclick = () => actionSheet('More actions', [live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
+    ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
   document.onkeydown = e => { if (!location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
     const m = { h: 'hold', c: 'closed', r: 'rejected' }[e.key];
     if (m && targets.includes(m)) { sel.value = m; sync(); $('#act').note.focus(); }
-    if (e.key === 't' && $('#tr')) transfer(); };
+    if (e.key === 't' && live) transfer(); };
+}
+// A small bottom sheet of actions (phones): rows of [icon, label, action]
+function actionSheet(title, rows) {
+  document.querySelector('.asheet-back')?.remove(); document.querySelector('.asheet')?.remove();
+  document.body.insertAdjacentHTML('beforeend', `<div class="msheet-back asheet-back"></div><div class="msheet asheet" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="grab"></div>
+    <div class="msheet-h"><h2>${esc(title)}</h2><button type="button" class="msheet-x" aria-label="Close">${I('x', 20)}</button></div>
+    ${rows.map(([ic, l], i) => `<button type="button" class="mrow" data-i="${i}"><span class="tile">${I(ic, 18)}</span><span class="l">${esc(l)}</span><span class="chv">${I('chev', 18)}</span></button>`).join('')}</div>`);
+  const sh = document.querySelector('.asheet'), close = () => { document.querySelector('.asheet-back')?.remove(); sh.remove(); };
+  document.querySelector('.asheet-back').onclick = close; sh.querySelector('.msheet-x').onclick = close;
+  sh.querySelectorAll('.mrow').forEach(b => b.onclick = () => { close(); rows[b.dataset.i][2](); });
+  sh.querySelector('.msheet-x').focus();
 }
 
 async function newTicket(main) {
@@ -1141,7 +1230,7 @@ async function foodPage(main, { admin }) {
         try { await api('/food/settings', { method: 'PUT', body: { locations: [...f.querySelectorAll('.locrow')].map(r => ({ id: r.dataset.id || undefined, name: r.querySelector('[name=lname]').value, active: r.querySelector('[name=lact]').checked })),
           windows: Object.fromEntries(MEALS.map(m => [m, [f['s_' + m].value, f['e_' + m].value]])) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
     } else {
-      const card = m => { const x = t.per_meal[m]; return `<div class="card fscore" style="border-top:4px solid ${MEAL_COLORS[m]}"><span class="muted small">${MEAL_NAMES[m]} · today</span>
+      const card = m => { const x = t.per_meal[m]; return `<div class="card fscore"><span class="muted small"><i class="sdot" style="display:inline-block;margin-right:6px;background:${MEAL_COLORS[m]}"></i>${MEAL_NAMES[m]} · today</span>
         <b>${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b><span class="muted small">${x.count} rating${x.count === 1 ? '' : 's'}</span>
         <div>${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No issues tagged</span>'}</div></div>`; };
       main.innerHTML = `${tabs}<div class="fscores">${MEALS.map(card).join('')}</div>
@@ -1170,7 +1259,7 @@ async function profile(main) {
     <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
     <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b>⭐ ${pts.me}</b><span>Points</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
     ${pts.history.length ? `<div class="card"><b>Recent points</b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
-      <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
+      <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}" class="mono">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${I(ic)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
       <a href="#" id="pw">${I('settings')}Change password<span class="chev">${I('chev', 18)}</span></a>
       <a href="#/settings">${I('settings')}Settings<span class="chev">${I('chev', 18)}</span></a>
