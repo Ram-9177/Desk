@@ -11,8 +11,8 @@ if (!/^\S+@\S+\.\S+$/.test(email)) await done('Set SUPER_ADMIN_EMAIL to the emai
 if (pw.length < 10) await done('Set SUPER_ADMIN_PASSWORD (at least 10 characters).', false);
 const u = await one('SELECT id FROM users WHERE lower(email)=lower(?)', email);
 if (u) {
-  await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=0 WHERE id=?", hashPw(pw), u.id);
-  await done(`${email} is a super admin now, with the new password. Sign in at /#/login.`);
+  await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
+  await done(`${email} is a super admin now, with this temporary password. Sign in at /#/login and choose a new one.`);
 }
-await insert('users', { id: uid(), tenant_id: null, name, email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1 });
-await done(`Super admin ${email} created. Sign in at /#/login.`);
+await insert('users', { id: uid(), tenant_id: null, name, email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+await done(`Super admin ${email} created. Sign in at /#/login and choose a new password.`);

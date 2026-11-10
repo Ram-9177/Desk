@@ -794,12 +794,18 @@ try {
   }
 
   sec('Super admin from .env on a live database');
+  const mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
   await stop(); let s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
-  check('a new email in SUPER_ADMIN_* becomes another super admin', /second@example.com created/.test(s2.out()) && !!(await login('second@example.com', 'SecondAdmin#2026')) && !!(await login(SUPER.email, SUPER.password)));
+  let t2 = await login('second@example.com', 'SecondAdmin#2026');
+  check('a new email in SUPER_ADMIN_* becomes another super admin, with a temporary password', /second@example.com: created/.test(s2.out()) && !!t2 && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));
+  check('their sign-in details are emailed: welcome with the temporary password', (await q("SELECT body FROM notifications WHERE template_key='invite' AND recipient='second@example.com'"))[0]?.body.includes('SecondAdmin#2026'));
+  check('the app says they must choose a new password', (await api('/me', { token: t2 })).data.user.must_change_pw === 1);
+  await ok('first sign-in: they choose their own password', '/me/password', { token: t2, method: 'POST', body: { current: 'SecondAdmin#2026', password: 'MyOwnChoice2026' } });
+  await stop(); s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
+  check('the same lines on later starts never undo the chosen password', !/SUPER_ADMIN_\*/.test(s2.out()) && !!(await login('second@example.com', 'MyOwnChoice2026')) && !(await login('second@example.com', 'SecondAdmin#2026')) && await mustChange('second@example.com') === 0);
   await stop(); s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'Forgotten#Reset1' });
-  check('a changed SUPER_ADMIN_PASSWORD resets that account’s password; others keep theirs', /password set/.test(s2.out()) && !!(await login('second@example.com', 'Forgotten#Reset1')) && !(await login('second@example.com', 'SecondAdmin#2026')) && !!(await login(SUPER.email, SUPER.password)));
-  await stop(); s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'Forgotten#Reset1' });
-  check('the same lines on the next start change nothing', !/password set|created from/.test(s2.out()));
+  check('a reset is emailed too, with the new temporary password', (await q("SELECT body FROM notifications WHERE template_key='password_reset' AND recipient='second@example.com'"))[0]?.body.includes('Forgotten#Reset1'));
+  check('a changed SUPER_ADMIN_PASSWORD is a reset: temporary again, others untouched', /temporary password set/.test(s2.out()) && !!(await login('second@example.com', 'Forgotten#Reset1')) && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));
   await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
 
   // ======================= H. UI smoke test =======================

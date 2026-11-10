@@ -1237,15 +1237,22 @@ if (!await one('SELECT 1 FROM users LIMIT 1')) {
   const r = await createSuperAdmin(process.env.SUPER_ADMIN_EMAIL, process.env.SUPER_ADMIN_PASSWORD);
   console.log(r.created ? r.message : `No users yet. ${r.message} Then restart.`);
 }
-// Later starts: while both lines are in .env, that account is a super admin with that password (a new super admin, or the
-// way back in after a forgotten password). Nobody else is touched. Remove the lines once signed in.
+// Later starts: SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD in .env make that account a super admin with that password as a
+// TEMPORARY one: the first sign-in must choose a new password. Each email + password pair is applied once (a fingerprint
+// is remembered), so the chosen password survives restarts; changing the line applies it again (forgotten password).
 else if (/^\S+@\S+\.\S+$/.test(String(process.env.SUPER_ADMIN_EMAIL || '').trim()) && String(process.env.SUPER_ADMIN_PASSWORD || '').length >= 10) {
-  const email = process.env.SUPER_ADMIN_EMAIL.trim(), pw = process.env.SUPER_ADMIN_PASSWORD, u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
-  if (!u) { await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1 });
-    console.log(`Super admin ${email} created from SUPER_ADMIN_* in .env. Remove those lines after signing in.`); }
-  else if (u.role !== 'super_admin' || !u.is_active || !checkPw(pw, u.password_hash)) {
-    await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=0 WHERE id=?", hashPw(pw), u.id);
-    console.log(`Super admin ${email}: password set from SUPER_ADMIN_* in .env. Remove those lines after signing in.`); }
+  const email = process.env.SUPER_ADMIN_EMAIL.trim(), pw = process.env.SUPER_ADMIN_PASSWORD;
+  const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${pw}`).digest('hex');
+  if (getSettings().super_admin_env !== mark) {
+    const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
+    if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+    else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
+    await setSetting('super_admin_env', mark);
+    // their sign-in details by email (welcome for a new account, "password reset" for an existing one)
+    const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
+    await notify({ tenant_id: null }, [acct.email], u ? 'password_reset' : 'invite', await staffVars(acct, pw)).catch(e => console.error('super admin email', e.message));
+    console.log(`Super admin ${email}: ${u ? 'temporary password set' : 'created'} from SUPER_ADMIN_* in .env. They must choose a new password at first sign-in.`);
+  }
 }
 // ---------- start-up provisioning ----------
 // provision/*.json (committed: campuses and services) and provision/*.private.json (git-ignored: staff and who serves what)

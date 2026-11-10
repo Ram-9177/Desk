@@ -105,7 +105,7 @@ cd ~/one-desk && nano .env      # add:  SUPER_ADMIN_EMAIL=you@example.com   and 
 pm2 restart one-desk && pm2 logs one-desk --lines 5 --nostream    # expect "Super admin you@example.com created" or "password set"
 ```
 
-While both lines are there, every start makes sure that account is a super admin with that password; nobody else is changed. Sign in, then remove the two lines. (`npm run add-super-admin` with the same two variables does it without a restart.)
+That account becomes a super admin with that password as a **temporary** one: the sign-in details are emailed to it, and the first sign-in must choose a new password (which is emailed too). Nobody else is changed. Each email + password pair is applied once, so later restarts keep the chosen password; change the line to reset it again. (`npm run add-super-admin` with the same two variables does it without a restart.)
 
 ## Add a new campus (tenant)
 
