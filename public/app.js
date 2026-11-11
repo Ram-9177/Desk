@@ -462,13 +462,17 @@ async function shell(active, render, title) {
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
+  // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
+  const MAIN = ['c', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
   const cur = h => active === h ? 'class="on" aria-current="page"' : '';
   // the bell: admins open Attention; providers their overdue tickets (they have no Attention page)
   const bellHref = admin ? '#/c/attention' : '#/c', bellAttr = admin ? '' : 'data-overdue';
   const bn = (h, l, ic, extra = '') => `<a href="#/${h}" ${cur(h)} ${extra}>${I(ic, 22)}<span>${l}</span></a>`;
   app.innerHTML = `<header class="top"><div class="top-in">
     <a class="brandlink" href="#/c" aria-label="ONE Desk home"><span class="logo-tile">${I('ticket', 18)}</span>ONE Desk</a>
-    <nav aria-label="Main">${nav.map(([h, l, ic]) => `<a href="#/${h}" ${cur(h)}>${I(ic, 17)}${l}</a>`).join('')}</nav>
+    <nav aria-label="Main">${navMain.map(([h, l, ic]) => `<a href="#/${h}" ${cur(h)}>${I(ic, 17)}${l}</a>`).join('')}</nav>
+    ${navMore.length ? `<div class="navmore"><button type="button" id="navmb" class="${navMore.some(n => n[0] === active) ? 'on' : ''}" aria-haspopup="menu" aria-expanded="false">${I('more', 17)}More</button>
+      <div class="navmenu" id="navmm" role="menu" hidden>${navMore.map(([h, l, ic]) => `<a href="#/${h}" role="menuitem" ${cur(h)}>${tile(ic, 16)}${l}</a>`).join('')}</div></div>` : ''}
     <div class="top-r">${sa ? `<select id="tsw" aria-label="Campus">${S.me.tenants.map(t => `<option value="${t.id}" ${t.id === S.tenant ? 'selected' : ''}>${esc(t.code)}</option>`).join('')}</select>` : ''}
       <a class="ibtn bell" href="${bellHref}" ${bellAttr} aria-label="Notifications">${I('bell', 20)}<i class="ndot" hidden></i></a>
       <a class="ibtn gear" href="#/settings" aria-label="Settings">${I('settings', 20)}</a><span class="vdiv"></span>
@@ -479,6 +483,10 @@ async function shell(active, render, title) {
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
       ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
   app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
+  if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
+    mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
+    mm.onkeydown = e => { if (e.key === 'Escape') { shut(); mb.focus(); } }; mm.querySelectorAll('a').forEach(x => x.onclick = shut);
+    if (!S.navDoc) { S.navDoc = true; document.addEventListener('click', e => { const m = document.getElementById('navmm'); if (m && !e.target.closest('.navmore')) { m.hidden = true; document.getElementById('navmb')?.setAttribute('aria-expanded', 'false'); } }); } }
   $('#moreb').onclick = () => moreSheet(all.filter(n => !['c', 'c/new', 'c/attention', 'c/reports'].includes(n[0])));
   bellDot(admin);
   if ($('#tsw')) $('#tsw').onchange = e => { S.tenant = e.target.value; localStorage.setItem('tid', S.tenant); route(); };

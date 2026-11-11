@@ -658,3 +658,51 @@ body.on-ticket .cwrap>.head{display:none}
 .remrow>a{flex:1;min-width:0;color:inherit;text-decoration:none;display:flex;flex-wrap:wrap;gap:2px 6px;align-items:baseline}.remrow>a .psub{flex-basis:100%}
 .rem .remadd{width:100%;justify-content:center;margin-top:10px}
 .rembox{border-color:#FEDF89;background:#FFFCF5;padding:14px 18px;margin:0 0 12px}.rembox .chead .cnt{margin-left:6px}
+
+/* ============ Pastel accents, header More menu, spacing fixes ============ */
+:root{
+  --pa-blue:#EEF4FF; --pa-blue-b:#D6E4FF; --pa-lav:#F4F2FF; --pa-lav-b:#E2DCFF; --pa-peach:#FFF5EB; --pa-peach-b:#FDE3C7;
+  --pa-mint:#EDFBF3; --pa-mint-b:#CDEFDB; --pa-rose:#FFF1F2; --pa-rose-b:#FBD5DA; --pa-sun:#FFFBEB; --pa-sun-b:#FBEAB5; --pa-sky:#EEF9FF; --pa-sky-b:#CBEAFB;
+}
+/* desktop header: More menu for the set-up screens */
+.navmore{position:relative;order:2;flex:none}
+.navmore>button{display:flex;align-items:center;gap:7px;padding:8px 10px;border:0;background:none;border-radius:var(--radius-nav);font-size:14px;font-weight:500;color:var(--text-3);cursor:pointer;white-space:nowrap}
+.navmore>button:hover{background:var(--hover);color:var(--text)}.navmore>button.on{color:var(--accent);background:var(--accent-soft);font-weight:600}
+.navmenu{position:absolute;top:calc(100% + 8px);left:0;z-index:60;min-width:220px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 12px 32px rgba(16,24,40,.12);padding:6px}
+.navmenu a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;color:var(--text-2);font-weight:500;font-size:14px}
+.navmenu a:hover,.navmenu a:focus-visible{background:var(--hover)}.navmenu a.on{background:var(--accent-soft);color:var(--accent)}
+.top nav{mask-image:none;-webkit-mask-image:none;padding-right:2px}
+@media (max-width:767px){.navmore{display:none}}
+
+/* Home: each status a soft colour of its own */
+.stcard{gap:0}
+.stcell[data-s=open]{background:var(--pa-blue)}.stcell[data-s=in_progress]{background:var(--pa-lav)}.stcell[data-s=hold]{background:var(--pa-peach)}
+.stcell[data-s=closed]{background:var(--pa-mint)}.stcell[data-s=overdue]{background:var(--pa-rose)}
+.stcell{border-left-color:#fff}.stcell:hover{filter:brightness(.98)}
+.stcell.on{box-shadow:inset 0 -3px 0 var(--accent)}
+.wk{background:var(--pa-sky);border-color:var(--pa-sky-b)}
+/* Reports: KPI tiles take their icon's colour family */
+.kpi2:has(.t-blue){background:var(--pa-blue)}.kpi2:has(.t-green){background:var(--pa-mint)}.kpi2:has(.t-amber){background:var(--pa-peach)}
+.kpi2:has(.t-rose){background:var(--pa-rose)}.kpi2:has(.t-violet){background:var(--pa-lav)}.kpi2:has(.t-slate){background:#F6F7F9}
+.kpi2{border-color:#fff}
+/* Attention: a soft header strip per list */
+.att-h:has(.t-rose){background:var(--pa-rose)}.att-h:has(.t-amber){background:var(--pa-peach)}.att-h:has(.t-blue){background:var(--pa-blue)}
+.att-h:has(.t-violet){background:var(--pa-lav)}.att-h:has(.t-green){background:var(--pa-mint)}
+/* Ticket page: the issue box and SLA card */
+.issue{background:var(--pa-blue);border-radius:12px;padding:14px 16px}
+.card.side.sla{background:var(--pa-sun);border-color:var(--pa-sun-b)}
+/* Profile stats and points */
+.pstats>div:nth-child(1){background:var(--pa-sun)}.pstats>div:nth-child(2){background:var(--pa-blue)}.pstats>div:nth-child(3){background:var(--pa-mint)}.pstats>div:nth-child(4){background:var(--pa-lav)}
+.pstats{gap:8px;padding:12px;margin-left:0;margin-right:0}.pstats>div{border-radius:12px;padding:12px 4px}
+.ptschip{background:var(--pa-sun);border-color:var(--pa-sun-b)}
+/* Public pages: soft colour wash behind the content */
+body:not(.console){background:radial-gradient(900px 420px at 0 0,#EAF2FF 0,transparent 70%),radial-gradient(700px 380px at 100% 0,#EFFBF4 0,transparent 70%),var(--bg);background-attachment:fixed}
+/* People: actions on one row on phones */
+@media (max-width:760px){.uact{padding-left:0;flex-wrap:nowrap;gap:6px;margin-top:4px}.uact .btn{flex:1 1 auto;padding:6px 8px;font-size:13px;white-space:nowrap}}
+/* phones: the campus picker fits its name */
+@media (max-width:767px){.top select{max-width:132px}}
+.kpi2:has(.t-teal){background:var(--pa-sky)}.att-h:has(.t-teal){background:var(--pa-sky)}
+.kpi2 .tile,.att-h .tile,.rembox .tile{background:#fff}
+@media (min-width:768px){.top nav{flex:0 1 auto}.navmore{margin-right:auto}.top-r{margin-left:auto}}
+@media (min-width:768px) and (max-width:1279px){.wk{flex-basis:100%;padding:18px 24px}.stcard{grid-template-columns:repeat(5,minmax(0,1fr))}.stcell{padding:18px 16px}}
+@media (min-width:768px) and (max-width:1279px){.top nav a svg,.navmore>button svg{display:none}.top nav a,.navmore>button{padding:8px 9px}}
