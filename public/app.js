@@ -251,9 +251,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       try { const r = await api(`/public/${slug}/food/feedback`, { method: 'POST', body: v });
         app.innerHTML = `<div class="wrap">${head('Thank you', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
           <h2 style="margin:6px 0">${esc(r.message)}</h2><p class="muted">${'★'.repeat(v.rating)}${'☆'.repeat(5 - v.rating)} · ${esc(mName(v.meal))} · ${dayName(v.meal_date)}</p>
-          ${v.rating <= 2 ? `<p><a href="${base}?flow=report" id="serious" class="soft-link">Needs action now? Report a complaint →</a></p>` : ''}
           <p><a class="btn" href="#/d/${slug}">Done</a></p></div></div>`;
-        if ($('#serious')) $('#serious').onclick = () => foodCarry({ location_id: v.location_id, meal: v.meal, description: v.comment });
       } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
     return;
   }
