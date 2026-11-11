@@ -1358,6 +1358,7 @@ async function mealView(main, tabs, st, rng, back, onTab) {
   };
   await fetchPage(0); paint();
 }
+const tagChip = c => `<span class="tagc" data-tag="${esc(c)}"><button type="button" class="tg-mv" data-l aria-label="Move ${esc(c)} left">‹</button><b>${esc(c)}</b><button type="button" class="tg-mv" data-r aria-label="Move ${esc(c)} right">›</button><button type="button" class="tg-x" data-x aria-label="Remove ${esc(c)}">${I('x', 14)}</button></span>`;
 async function foodPage(main, { admin }) {
   const st = JSON.parse(sessionStorage.getItem('foodf') || '{"tab":"scores","range":"week"}'), q = new URLSearchParams(location.hash.split('?')[1] || '');
   if (q.get('from')) Object.assign(st, { range: 'custom', from: q.get('from'), to: q.get('to') || q.get('from'), tab: 'scores' });
@@ -1380,19 +1381,31 @@ async function foodPage(main, { admin }) {
       main.innerHTML = `${tabs}<form id="fset" class="card" style="max-width:720px"><b>Meals</b><div class="muted small">The meals students pick when they share feedback or report a problem, with their serving times (campus time). The form starts on the meal being served, or the one just finished. Untick or remove a meal to hide it; its old ratings stay in the reports.</div>
         <div class="mealhd muted small"><span>Name</span><span>From</span><span>To</span><span></span><span></span></div><div id="meals">${fs.meals.map(mealRow).join('')}</div>
         <p><button type="button" class="btn soft" id="addmeal">${I('plus', 16)} Add meal</button></p>
-        <b style="display:block;margin-top:18px">Feedback tags</b><div class="muted small">The “What stood out?” choices on the feedback form. One per line, up to 20.</div>
-        <textarea name="chips" rows="6">${esc(fs.chips.join('\n'))}</textarea>
+        <b style="display:block;margin-top:18px">Feedback tags</b><div class="muted small">The “What stood out?” choices students tap on the feedback form. Add your own, remove the ones you don't want, and use ‹ › to set the order. Up to 20.</div>
+        <div class="tagedit" id="tags">${fs.chips.map(c => tagChip(c)).join('')}</div>
+        <div class="tagadd"><input id="tagnew" maxlength="30" placeholder="New tag, e.g. Too spicy" aria-label="New tag"><button type="button" class="btn soft" id="tagaddb">${I('plus', 16)} Add tag</button></div>
+        <div class="muted small" id="tagn"></div>
         <b style="display:block;margin-top:18px">Messes and canteens</b><div class="muted small">Students pick one when they share feedback or report. Untick to hide one without losing its history.</div>
         <div id="locs">${fs.locations.map(l => `<div class="row locrow" data-id="${l.id}"><div><input name="lname" value="${esc(l.name)}" required></div><div style="flex:0 0 auto;align-self:center"><label style="margin:0;font-weight:400"><input type="checkbox" name="lact" ${l.active ? 'checked' : ''}> Shown</label></div></div>`).join('')}</div>
         <p><button type="button" class="btn soft" id="addloc">${I('plus', 16)} Add mess / canteen</button></p>
         <div class="err" id="ferr"></div><p><button class="btn primary">Save</button></p></form>`;
+      // feedback tags: add (button or Enter), remove (×), move left/right; at most 20, 30 characters each
+      const tagsSync = () => { const n = main.querySelectorAll('#tags .tagc').length; $('#tagn').textContent = `${n} of 20 tags · shown on the form in this order`; $('#tagaddb').disabled = n >= 20;
+        main.querySelectorAll('#tags .tagc').forEach(t => { t.querySelector('[data-x]').onclick = () => { t.remove(); tagsSync(); };
+          t.querySelector('[data-l]').onclick = () => { if (t.previousElementSibling) t.parentNode.insertBefore(t, t.previousElementSibling); tagsSync(); };
+          t.querySelector('[data-r]').onclick = () => { if (t.nextElementSibling) t.parentNode.insertBefore(t.nextElementSibling, t); tagsSync(); }; }); };
+      const addTag = () => { const v = $('#tagnew').value.trim().replace(/\s+/g, ' ');
+        if (!v) return; if ([...main.querySelectorAll('#tags .tagc')].some(x => x.dataset.tag.toLowerCase() === v.toLowerCase())) return toast('That tag is already there');
+        if (main.querySelectorAll('#tags .tagc').length >= 20) return toast('At most 20 tags');
+        $('#tags').insertAdjacentHTML('beforeend', tagChip(v)); $('#tagnew').value = ''; $('#tagnew').focus(); tagsSync(); };
+      $('#tagaddb').onclick = addTag; $('#tagnew').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }; tagsSync();
       const wireDel = () => main.querySelectorAll('.mdel').forEach(b => b.onclick = () => b.closest('.mealrow').remove());
       wireDel(); $('#addmeal').onclick = () => { $('#meals').insertAdjacentHTML('beforeend', mealRow()); wireDel(); $('#meals').lastElementChild.querySelector('input').focus(); };
       $('#addloc').onclick = () => $('#locs').insertAdjacentHTML('beforeend', `<div class="row locrow"><div><input name="lname" placeholder="e.g. Boys mess" required></div><div style="flex:0 0 auto;align-self:center"><label style="margin:0;font-weight:400"><input type="checkbox" name="lact" checked> Shown</label></div></div>`);
       $('#fset').onsubmit = async e => { e.preventDefault(); const f = e.target;
         try { await api('/food/settings', { method: 'PUT', body: { locations: [...f.querySelectorAll('.locrow')].map(r => ({ id: r.dataset.id || undefined, name: r.querySelector('[name=lname]').value, active: r.querySelector('[name=lact]').checked })),
           meals: [...f.querySelectorAll('.mealrow')].map(r => ({ key: r.dataset.key || undefined, name: r.querySelector('[name=mname]').value, start: r.querySelector('[name=mstart]').value, end: r.querySelector('[name=mend]').value, active: r.querySelector('[name=mact]').checked })),
-          chips: f.chips.value.split('\n').map(x => x.trim()).filter(Boolean) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
+          chips: [...f.querySelectorAll('#tags .tagc')].map(x => x.dataset.tag) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
     } else if (st.meal) { await mealView(main, tabs, st, { from, to, location: st.location }, () => { delete st.meal; save(); draw(); }, t => { st.tab = t; delete st.meal; save(); draw(); }); return;
     } else {
       // the split: overall feedback, each meal on its own, then complaints (tickets) apart

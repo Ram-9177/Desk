@@ -767,3 +767,9 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 /* Food: feedback card first (yellow star), complaint second (red) */
 .kindsw.foodkind label:nth-child(1) .ks-ic{background:var(--pa-sun);color:#DC6803}.kindsw.foodkind label:nth-child(2) .ks-ic{background:var(--pa-rose);color:#D92D20}
 .kindsw.foodkind+form.card{margin-top:4px}
+/* Food settings: feedback tag editor */
+.tagedit{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;padding:12px;border:1px dashed var(--border);border-radius:12px;min-height:56px}
+.tagc{display:inline-flex;align-items:center;gap:2px;padding:2px 4px 2px 6px;border-radius:999px;background:var(--surface);border:1px solid var(--input-border)}
+.tagc b{font-weight:500;padding:4px 4px}.tagc button{border:0;background:none;cursor:pointer;color:var(--icon-muted);width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:16px;line-height:1}
+.tagc button:hover{background:var(--hover);color:var(--text)}.tagc .tg-x:hover{background:var(--pa-rose);color:var(--danger)}
+.tagadd{display:flex;gap:8px;margin-top:10px}.tagadd input{flex:1;margin:0}.tagadd .btn{flex:none}

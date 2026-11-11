@@ -1154,6 +1154,17 @@ async function uiSmoke(tok, id) {
       document.querySelector('.fmeal[data-meal]').click(); await new Promise(r => setTimeout(r, 1500)); const mv = !!document.querySelector('.mv-h') && !!document.querySelector('.mv-sum .sdist') && document.querySelectorAll('.mv-row').length >= 1;
       document.querySelector('#mvb').click(); await new Promise(r => setTimeout(r, 1500)); const backOk = !!document.querySelector('.fsplit');
       document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && mv && backOk && document.querySelectorAll('.tcard').length >= 1`));
+    await visit('admin: food settings', '/c/food', tok.asha, '.fsplit');
+    check('admin edits the feedback tags: add, remove, reorder, save; the form shows them', await js(`document.querySelector('[data-t=settings]').click(); await new Promise(r => setTimeout(r, 1500));
+      const before = [...document.querySelectorAll('#tags .tagc')].map(x => x.dataset.tag);
+      document.querySelector('#tagnew').value = 'Too spicy'; document.querySelector('#tagaddb').click();
+      document.querySelector('#tags .tagc [data-x]').click(); // remove the first
+      const last = [...document.querySelectorAll('#tags .tagc')].at(-1); last.querySelector('[data-l]').click(); // Too spicy one step left
+      const want = [...document.querySelectorAll('#tags .tagc')].map(x => x.dataset.tag);
+      document.querySelector('#fset button.primary').click(); await new Promise(r => setTimeout(r, 1500));
+      const got = (await (await fetch('/api/public/alpha/food')).json()).data.chips;
+      await fetch('/api/food/settings', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + localStorage.getItem('tok') }, body: JSON.stringify({ chips: before }) });
+      return before.length > 2 && want.includes('Too spicy') && !want.includes(before[0]) && want.at(-2) === 'Too spicy' && JSON.stringify(got) === JSON.stringify(want)`));
     await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
     const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });
     await send('DOM.setFileInputFiles', { nodeId, files: [bigFile, HEIC_FILE] });
