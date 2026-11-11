@@ -1365,7 +1365,8 @@ async function foodPage(main, { admin }) {
       const mealCard = m => { const x = pr.per_meal[m.key], d = pr.rating_counts[m.key] || [0, 0, 0, 0, 0];
         return `<div class="card fmeal" style="--mc:${m.color}"><div class="fm-h"><span><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</span><span class="muted small">${x.count} feedback · ${pct(x.count, pr.rated)}%</span></div>
           <b class="fm-avg ${x.avg != null && x.avg < 3 ? 'hot' : ''}">${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b>${distBars(d)}
-          <div class="fm-tags">${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No tags yet</span>'}</div></div>`; };
+          <div class="fm-tags">${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No tags yet</span>'}</div>
+          ${x.keywords?.length ? `<div class="fm-kw"><span class="muted small">In reviews:</span> ${x.keywords.slice(0, 3).map(k => `<b>“${esc(k.word)}”</b> ${k.count}`).join(' · ')}</div>` : ''}</div>`; };
       const cs = d.complaint_split;
       main.innerHTML = `${tabs}
         <div class="filters" style="margin-top:4px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -1376,6 +1377,9 @@ async function foodPage(main, { admin }) {
         <div class="fsplit"><div class="card fov"><span class="muted small">Overall</span><b class="fm-avg">${pr.avg == null ? '—' : pr.avg.toFixed(1) + ' ★'}</b>
           <div class="fov-n"><span><b>${pr.rated}</b> feedback</span><span><b>${happy == null ? '—' : happy + '%'}</b> happy (4–5 ★)</span></div>${distBars(dist)}</div>
           ${ML.filter(m => m.active !== false || pr.per_meal[m.key].count).map(mealCard).join('')}</div>${tip}
+        <div class="card fkw"><div class="chead">${tile('idea')}<span>What students are saying</span><span class="sp"></span><span class="muted small">most used words in ${pr.reviews} written review${pr.reviews === 1 ? '' : 's'}</span></div>
+          ${pr.keywords.length ? `<div class="kwcloud">${pr.keywords.map((k, i) => `<button type="button" class="kw" data-kw="${i}" style="--w:${Math.round(13 + 9 * k.count / pr.keywords[0].count)}px">${esc(k.word)} <span>${k.count}</span></button>`).join('')}</div>
+          <div class="kwex muted small" id="kwex">Tap a word to read what students wrote.</div>` : '<p class="muted small" style="margin:6px 0 0">No written reviews in this period.</p>'}</div>
         <div class="fsec-h"><h2>Complaints</h2><span class="muted small">Problems reported as tickets · handled one by one in the Complaints tab</span></div>
         <div class="card fcomp"><div class="fc-n"><div><b>${cs.total}</b><span>raised</span></div><div><b class="${cs.open ? 'hot' : ''}">${cs.open}</b><span>still open</span></div><div><b>${cs.closed}</b><span>closed</span></div>
           <button type="button" class="btn soft" data-t="complaints">Open complaints ${I('chev', 16)}</button></div>
@@ -1394,6 +1398,9 @@ async function foodPage(main, { admin }) {
       $('#fcsv').onclick = async () => { const r = await api('/food/feedback.csv?' + qs, { raw: true }), a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = `food-feedback-${from}-to-${to}.csv`; a.click(); };
     }
     main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; save(); draw(); });
+    main.querySelectorAll('[data-kw]').forEach(b => b.onclick = () => { const k = pr.keywords[b.dataset.kw];
+      main.querySelectorAll('[data-kw]').forEach(x => x.classList.toggle('on', x === b));
+      $('#kwex').innerHTML = `<b>“${esc(k.word)}”</b> in ${k.count} review${k.count === 1 ? '' : 's'}${k.examples.map(e => `<div class="brow"><div>“${esc(e.comment)}”<div class="muted small">${esc(mName(e.meal))}${e.rating ? ' · ' + e.rating + ' ★' : ''}</div></div></div>`).join('')}`; });
   };
   try { await draw(); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }

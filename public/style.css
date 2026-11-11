@@ -747,3 +747,9 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 .fcomp{margin:0}.fc-n{display:flex;gap:24px;align-items:center;flex-wrap:wrap}.fc-n>div{display:flex;flex-direction:column}.fc-n b{font-size:26px;font-weight:600}.fc-n b.hot{color:var(--danger)}.fc-n span{font-size:12.5px;color:var(--text-3)}
 .fc-n .btn{margin-left:auto}.fcomp .two{margin-top:14px;gap:20px}
 @media (max-width:767px){.fc-n{gap:16px}.fc-n .btn{margin-left:0;width:100%}}
+/* Food scores: keywords from written reviews */
+.fkw{margin-top:12px}.kwcloud{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.kw{border:1px solid var(--pa-lav-b);background:var(--pa-lav);color:#4A1FB8;border-radius:999px;padding:4px 12px;font:inherit;font-size:var(--w,14px);font-weight:600;cursor:pointer;line-height:1.4}
+.kw span{font-size:12px;font-weight:500;color:var(--text-3);margin-left:2px}.kw:hover{filter:brightness(.97)}.kw.on{background:var(--accent);border-color:var(--accent);color:#fff}.kw.on span{color:#dbe4ff}
+.kwex{margin-top:12px}.kwex .brow{padding:8px 0;border-top:1px solid var(--divider)}
+.fm-kw{margin-top:8px;font-size:13px;color:var(--text-2)}

@@ -40,12 +40,32 @@ export async function feedbackIn(tid, from, to, location) {
 }
 const topChips = (rows, n = 3) => Object.entries(rows.flatMap(r => r.chips || []).reduce((m, c) => (m[c] = (m[c] || 0) + 1, m), {}))
   .sort((a, b) => b[1] - a[1]).slice(0, n).map(([chip, count]) => ({ chip, count }));
+// The words students use most in their reviews: phrases like "too salty" or "cold rice" and single words, with a few example reviews each
+const STOP = new Set(('a an and are as at be been but by can could did do does for from had has have he her him his i if in into is it its just me my of on or our '
+  + 'so than that the their them then there these they this to too us was we were what when which while who will with would you your am also any all some '
+  + 'food today meal served item items one got get very really please thank thanks ok okay much more less make made dont didnt cant isnt wasnt again still always every').split(' '));
+const LEAD = new Set(['not', 'no', 'too', 'very', 'less', 'more', 'over', 'under', 'half', 'un']); // kept as the first word of a phrase
+export function keywords(rows, n = 12) {
+  const words = new Map(), phrases = new Map(), seen = (m, k, r) => { const e = m.get(k) || { count: 0, rows: [] }; e.count++; if (e.rows.length < 3) e.rows.push(r); m.set(k, e); };
+  for (const r of rows) { if (!r.comment) continue;
+    const t = r.comment.toLowerCase().replace(/[’']/g, '').match(/[a-z]+/g) || [], once = new Set();
+    t.forEach((w, i) => {
+      if (w.length >= 3 && !STOP.has(w) && !LEAD.has(w) && !once.has(w)) { once.add(w); seen(words, w, r); }
+      const nx = t[i + 1]; if (!nx || nx.length < 3 || STOP.has(nx) || LEAD.has(nx)) return;
+      if (LEAD.has(w) || (w.length >= 3 && !STOP.has(w))) { const ph = w + ' ' + nx; if (!once.has(ph)) { once.add(ph); seen(phrases, ph, r); } } });
+  }
+  const list = [...[...phrases].filter(([, e]) => e.count >= 2), ...words].map(([word, e]) => ({ word, count: e.count, phrase: word.includes(' '), rows: e.rows }));
+  // a word that only ever appears inside one of the kept phrases adds nothing
+  const kept = list.filter(k => k.phrase || !list.some(p => p.phrase && p.count >= k.count && p.word.split(' ').includes(k.word)));
+  return kept.sort((a, b) => b.count - a.count || b.phrase - a.phrase).slice(0, n)
+    .map(({ word, count, rows: ex }) => ({ word, count, examples: ex.map(r => ({ comment: r.comment, rating: r.rating, meal: r.meal })) }));
+}
 export function summarize(rows, from, to, meals = MEALS.map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m] }))) {
   const KEYS = meals.map(m => m.key);
   const rated = rows.filter(r => r.rating != null), days = [];
   for (let d = from; d <= to && days.length < 400; d = addDays(d, 1)) days.push(d);
   const perMeal = Object.fromEntries(KEYS.map(m => { const r = rated.filter(x => x.meal === m);
-    return [m, { avg: avg(r.map(x => x.rating)), count: r.length, chips: topChips(rows.filter(x => x.meal === m)) }]; }));
+    return [m, { avg: avg(r.map(x => x.rating)), count: r.length, chips: topChips(rows.filter(x => x.meal === m)), keywords: keywords(rows.filter(x => x.meal === m), 5) }]; }));
   return {
     from, to, total: rows.length, rated: rated.length, avg: avg(rated.map(r => r.rating)), per_meal: perMeal, days,
     meals: meals.map(({ key, name, color }) => ({ key, name, color })), keys: KEYS,
@@ -54,6 +74,7 @@ export function summarize(rows, from, to, meals = MEALS.map(m => ({ key: m, name
     series: Object.fromEntries(KEYS.map(m => [m, days.map(d => avg(rated.filter(r => r.meal === m && r.meal_date === d).map(r => r.rating)))])),
     rating_counts: Object.fromEntries(KEYS.map(m => [m, [1, 2, 3, 4, 5].map(s => rated.filter(r => r.meal === m && r.rating === s).length)])),
     chips: topChips(rows, 30),
+    keywords: keywords(rows, 15), reviews: rows.filter(r => r.comment).length,
     comments: rows.filter(r => r.comment).slice(0, 30).map(r => ({ at: r.created_at, meal: r.meal, meal_name: meals.find(m => m.key === r.meal)?.name || MEAL_NAMES[r.meal] || r.meal, meal_date: r.meal_date, rating: r.rating, location: r.location, comment: r.comment, name: r.requester_name, converted: r.converted_from_complaint })),
   };
 }
@@ -214,6 +235,7 @@ export function food(d) {
     ${s.keys.map((m, i) => `<tr><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color[m]};margin-right:8px"></span><b>${s.name[m]}</b></td>
       <td style="padding:9px 14px;font-size:16px;font-weight:700;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${stars(s.per_meal[m].avg)}</td>
       <td style="padding:9px 14px;color:#8b8fa8;font-size:13px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${s.per_meal[m].count} rating${s.per_meal[m].count === 1 ? '' : 's'}${s.per_meal[m].chips.length ? ' · ' + esc(s.per_meal[m].chips.map(c => c.chip).join(', ')) : ''}</td></tr>`).join('')}</table>`;
+  const said = (s, n) => s.keywords?.length ? `<p style="margin:0;font-size:14px;line-height:1.8">${s.keywords.slice(0, n).map(k => `<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 10px;border-radius:99px;background:#f4f2ff;color:#4a1fb8">${esc(k.word)} <span style="color:#8b8fa8">${k.count}</span></span>`).join('')}</p>` : '<p style="color:#8b8fa8;font-size:14px">No written reviews.</p>';
   const issues = (list, n) => list.length ? `<ol style="margin:0;padding-left:20px;font-size:14px;line-height:1.7">${list.slice(0, n).map(c => `<li>${esc(c.chip)} <span style="color:#8b8fa8">(${c.count})</span></li>`).join('')}</ol>` : '<p style="color:#8b8fa8;font-size:14px">No issues tagged.</p>';
   const comments = (list, n) => list.length ? list.slice(0, n).map(c => `<p style="margin:0 0 8px;padding:10px 12px;background:#f6f7fb;border-radius:10px;font-size:14px;line-height:1.5">“${esc(c.comment)}”
     <br><span style="color:#8b8fa8;font-size:12px">${esc(c.meal_name)}${c.rating ? ` · ${c.rating} ★` : ''}${c.location ? ` · ${esc(c.location)}` : ''}${c.converted ? ' · sent as feedback instead of a complaint' : ''}</span></p>`).join('') : '<p style="color:#8b8fa8;font-size:14px">No comments.</p>';
@@ -232,13 +254,13 @@ export function food(d) {
       ${h2('Score per meal')}${mealTable(s)}
       ${h2('Number of ratings per meal')}${chartImg({ type: 'bar', labels: s.keys, colors: s.keys.map(m => s.color[m]), series: [{ color: '#1e4b8f', values: s.keys.map(m => s.per_meal[m].count) }] }, 'Number of ratings per meal')}
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;margin-bottom:14px"><tr>${s.keys.map(m => `<td align="center" width="25%" style="font-size:12px;color:#5b5f73"><b style="color:${s.color[m]}">${s.name[m]}</b><br>${s.per_meal[m].count} · ${stars(s.per_meal[m].avg)}</td>`).join('')}</tr></table>
-      ${h2('Top 3 issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 3)}${h2('Comments')}${comments(s.comments, 15)}`;
+      ${h2('Top 3 issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 3)}${h2('Words used most in reviews')}${said(s, 10)}${h2('Comments')}${comments(s.comments, 15)}`;
     else if (period === 'weekly') {
       const ranked = s.keys.filter(m => s.per_meal[m].avg != null).sort((a, b) => s.per_meal[b].avg - s.per_meal[a].avg);
       body = `<p style="font-size:15px">This week: <b>${stars(s.avg)}</b> from ${s.rated} ratings.${ranked.length ? ` Best: <b>${s.name[ranked[0]]}</b> (${stars(s.per_meal[ranked[0]].avg)}). Needs work: <b>${s.name[ranked.at(-1)]}</b> (${stars(s.per_meal[ranked.at(-1)].avg)}).` : ''}</p>
       ${h2('Daily score per meal')}${chartImg({ type: 'line', labels: s.days, max: 5, series: s.keys.map(m => ({ color: s.color[m], values: s.series[m] })) }, 'Daily score per meal')}
       <p style="margin:0;font-size:12px;color:#8b8fa8">${fmtDay(from)} → ${fmtDay(to)} · scale 0 to 5 ★</p>${legend(s.keys, s)}
-      ${h2('Score per meal')}${mealTable(s)}${h2('Recurring issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 5)}${h2('Comments')}${comments(s.comments, 10)}`;
+      ${h2('Score per meal')}${mealTable(s)}${h2('Recurring issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 5)}${h2('Words used most in reviews')}${said(s, 10)}${h2('Comments')}${comments(s.comments, 10)}`;
     } else {
       const prev = addDays(from, -1), pf = prev.slice(0, 8) + '01', p = summarize(await feedbackIn(tn.id, pf, prev), pf, prev, meals);
       const weeks = []; for (let w = from; w <= to; w = addDays(w, 7)) weeks.push([w, addDays(w, 6) > to ? to : addDays(w, 6)]);

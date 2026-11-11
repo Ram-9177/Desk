@@ -867,8 +867,12 @@ try {
   check('the form now offers Brunch and not Dinner, with the new tags', pf2.meals.includes('brunch') && !pf2.meals.includes('dinner') && pf2.meal_list.find(m => m.key === 'brunch').name === 'Brunch' && pf2.chips.join() === 'Tasty,Too oily,Small portion');
   check('a switched-off meal can’t be rated', (await fb({ location_id: L1, meal: 'dinner', rating: 4 })).status === 400);
   check('old tags are refused, new ones accepted', (await fb({ location_id: L1, meal: 'brunch', rating: 3, chips: ['Cold food'] })).status === 400 && (await fb({ location_id: L1, meal: 'brunch', rating: 3, chips: ['Tasty'] })).status === 200);
+  for (const [i, c] of ['Dal was too salty', 'too salty and cold rice', 'Cold rice, too salty again'].entries()) await fb({ location_id: L1, meal: 'brunch', rating: 2, comment: c }, 'dev-kw-' + i);
   const dsh = (await api('/food/dashboard', { token: T.pavan })).data;
-  check('the kitchen dashboard shows Brunch, per day and meal', dsh.meals.some(m => m.key === 'brunch') && dsh.today.per_meal.brunch.count === 1 && Array.isArray(dsh.period.counts.brunch));
+  check('the kitchen dashboard shows Brunch, per day and meal', dsh.meals.some(m => m.key === 'brunch') && dsh.today.per_meal.brunch.count === 4 && Array.isArray(dsh.period.counts.brunch));
+  const kw = dsh.period.keywords, salty = kw.find(k => k.word === 'too salty');
+  check('major keywords from written reviews: “too salty” 3 times, with example reviews', salty?.count === 3 && salty.examples.length === 3 && kw.some(k => k.word === 'cold rice' && k.count === 2), JSON.stringify(kw.slice(0, 5).map(k => [k.word, k.count])));
+  check('…and per meal', dsh.period.per_meal.brunch.keywords[0]?.word === 'too salty' && dsh.period.reviews >= 3);
   await ok('admin puts the defaults back', '/food/settings', { ...A, method: 'PUT', body: { meals: before.meals.map(m => ({ ...m, active: true })), chips: before.default_chips } });
   check('back to three meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,dinner');
   const cs = dsh.complaint_split;
