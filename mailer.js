@@ -109,6 +109,9 @@ export const MAIL_EVENTS = [
     subject: '[ONE Desk] Your password was changed',
     body: 'Hi {{staff_name}},\nYour ONE Desk password was changed just now. Here are your sign-in details for your records.\nEmail: {{staff_email}}\nPassword: {{password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
       + 'If you did not make this change, tell your admin straight away so they can reset it. Keep this email private, or delete it once your password is saved somewhere safe.' },
+  { key: 'password_forgot', label: 'Forgot password', who: 'Staff member', when: 'They tap Forgot password? on the sign-in page', vars: STAFF,
+    subject: '[ONE Desk] Your temporary password',
+    body: 'Hi {{staff_name}},\nSomeone (hopefully you) asked for a new ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nIt works for 1 hour. Sign in with it and you will be asked to choose a new password.\nDidn’t ask for this? Ignore this email: your current password still works.\n[[Sign in to ONE Desk|{{login_link}}]]' },
   { key: 'password_reset', label: 'Password reset', who: 'Staff member', when: 'An admin resets their password', vars: STAFF,
     subject: '[ONE Desk] Your password was reset',
     body: 'Hi {{staff_name}},\nAn admin reset your ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose a new password when you sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },

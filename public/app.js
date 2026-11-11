@@ -4,7 +4,7 @@ import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } fr
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '—';
-const toast = m => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3500); };
+const toast = (m, ms = 3500) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms); };
 // ---------- shared components (design system) ----------
 // StatusPill: white pill with a 7px dot in the status colour (statuses without their own colour use the neutral grey)
 const ST_VAR = { open: 'open', in_progress: 'progress', hold: 'hold', closed: 'closed', overdue: 'overdue' };
@@ -451,7 +451,13 @@ function login() {
   app.innerHTML = `<div class="wrap hero" style="max-width:440px"><a class="iconbtn" href="#/" id="bk" style="margin-bottom:20px">${I('back')}</a><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Your Desk,<br><span>Organized</span> in One Place</h1><p class="muted">Sign in to see your service queue, act on tickets and track your progress.</p>
     <form id="f" class="card"><label style="margin-top:0">Email</label><input name="email" type="email" required autofocus><label>Password</label><input name="password" type="password" required>
-    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p></form>${installBtn()}</div>`;
+    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Get started ${I('chev', 18)}</button></p>
+    <p style="text-align:center;margin:14px 0 0"><button type="button" class="linkbtn" id="forgot">Forgot password?</button></p></form>${installBtn()}</div>`;
+  $('#forgot').onclick = () => { const em = $('#f').email.value.trim();
+    const d = dlg(`<h2>Forgot password?</h2><p class="muted">Enter your email. We'll send you a temporary password that works for 1 hour; sign in with it and choose a new one. Your current password keeps working until then.</p>
+      <label for="fgem">Email</label><input id="fgem" name="email" type="email" required autocomplete="email" value="${esc(em)}">`, async f => {
+        const r = await api('/auth/forgot', { method: 'POST', body: { email: f.email.value.trim() } }); toast(r.message, 6000); });
+    d.querySelector('button[value=ok]').textContent = 'Email me a temporary password'; d.querySelector('#fgem').focus(); };
   $('#bk').onclick = e => { if (history.length > 1) { e.preventDefault(); history.back(); } };
   $('#f').onsubmit = async e => { e.preventDefault();
     try { const r = await api('/auth/login', { method: 'POST', body: formVals(e.target) }); S.token = r.token; localStorage.setItem('tok', r.token);

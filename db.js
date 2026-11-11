@@ -120,6 +120,9 @@ ALTER TABLE meal_windows DROP CONSTRAINT IF EXISTS meal_windows_meal_check;
 CREATE TABLE IF NOT EXISTS food_meals (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, name TEXT NOT NULL,
   color TEXT, start_time TEXT NOT NULL, end_time TEXT NOT NULL, sort_order INT DEFAULT 0, active INT DEFAULT 1, UNIQUE (tenant_id, key));
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS food_chips TEXT;
+-- Forgot password: a temporary password emailed to the person, good for an hour, next to their own (so nobody is locked out)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;

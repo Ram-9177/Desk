@@ -101,11 +101,11 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 On the server, put the account in `.env` (never in the repo, which is public) and restart:
 
 ```bash
-cd ~/one-desk && nano .env      # add:  SUPER_ADMIN_EMAIL=you@example.com   and   SUPER_ADMIN_PASSWORD=YourPassword
-pm2 restart one-desk && pm2 logs one-desk --lines 5 --nostream    # expect "Super admin you@example.com created" or "password set"
+cd ~/one-desk && nano .env      # add:  SUPER_ADMIN_EMAIL=you@example.com   (SUPER_ADMIN_PASSWORD is optional)
+pm2 restart one-desk && pm2 logs one-desk --lines 5 --nostream    # expect "Super admin you@example.com: created; the sign-in details were emailed"
 ```
 
-That account becomes a super admin with that password as a **temporary** one: the sign-in details are emailed to it, and the first sign-in must choose a new password (which is emailed too). Nobody else is changed. Each email + password pair is applied once, so later restarts keep the chosen password; change the line to reset it again. (`npm run add-super-admin` with the same two variables does it without a restart.)
+With only the email, a temporary password is generated and emailed (once; later restarts say "already set up"). Forgot it later? Use **Forgot password?** on the sign-in page: a temporary password, valid 1 hour, is emailed (this works for every staff account). With `SUPER_ADMIN_PASSWORD` too, that account becomes a super admin with that password as a **temporary** one: the sign-in details are emailed to it, and the first sign-in must choose a new password (which is emailed too). Nobody else is changed. Each email + password pair is applied once, so later restarts keep the chosen password; change the line to reset it again. (`npm run add-super-admin` with the same two variables does it without a restart.)
 
 ## Add a new campus (tenant)
 

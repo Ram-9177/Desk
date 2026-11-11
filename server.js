@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
-import { createSuperAdmin } from './bootstrap.js';
 import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
 import { PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
@@ -701,9 +700,29 @@ app.get('/api/version', (_q, r) => {
 app.post('/api/auth/login', wrap(async req => {
   limit('login:' + req.ip, 30, 900e3);
   const u = await one('SELECT * FROM users WHERE lower(email)=lower(?) AND is_active=1', req.body.email || '');
-  if (!u || !checkPw(req.body.password || '', u.password_hash)) throw new HttpErr(401, 'UNAUTHORIZED', 'Wrong email or password');
+  const own = u && checkPw(req.body.password || '', u.password_hash);
+  const temp = u && !own && u.temp_pw_hash && u.temp_pw_expires > now() && checkPw(req.body.password || '', u.temp_pw_hash);
+  if (!own && !temp) throw new HttpErr(401, 'UNAUTHORIZED', 'Wrong email or password');
+  // signed in with the emailed temporary password: they must choose a new one now
+  if (temp) await run('UPDATE users SET must_change_pw=1 WHERE id=?', u.id);
   await run('UPDATE users SET last_login_at=? WHERE id=?', now(), u.id);
   return { token: sign({ sub: u.id, role: u.role, tid: u.tenant_id }) };
+}));
+
+// Forgot password: email a temporary password (valid 1 hour) to that address if it is a ONE Desk account. Their own password
+// keeps working until they sign in with the temporary one, so a stranger typing their email can't lock them out.
+// The answer is the same either way, so it doesn't reveal who has an account.
+app.post('/api/auth/forgot', wrap(async req => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  limit('forgot:' + req.ip, 10, 900e3);
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw bad('Enter your email');
+  const msg = { ok: true, message: 'If this email has a ONE Desk account, a temporary password is on its way. It works for 1 hour. Check your spam folder too.' };
+  const u = await one('SELECT * FROM users WHERE lower(email)=? AND is_active=1', email); if (!u) return msg;
+  try { limit('forgot-u:' + u.id, 3, 3600e3); } catch { return msg; } // at most 3 emails an hour per account
+  const pw = tempPw(), exp = new Date(Date.now() + 3600e3).toISOString();
+  await run('UPDATE users SET temp_pw_hash=?, temp_pw_expires=? WHERE id=?', hashPw(pw), exp, u.id);
+  await notify({ tenant_id: u.tenant_id }, [u.email], 'password_forgot', await staffVars(u, pw));
+  return msg;
 }));
 
 const S = express.Router();
@@ -715,10 +734,11 @@ S.get('/me', wrap(async req => {
 S.post('/me/password', wrap(async req => {
   const pw = String(req.body.password || '');
   // the current password is always required: the temporary one from the email on first sign-in, the own one afterwards
-  if (!checkPw(String(req.body.current || ''), req.user.password_hash)) throw bad(req.user.must_change_pw ? 'Temporary password is wrong' : 'Current password is wrong');
+  const cur = String(req.body.current || ''), viaTemp = req.user.temp_pw_hash && req.user.temp_pw_expires > now() && checkPw(cur, req.user.temp_pw_hash);
+  if (!checkPw(cur, req.user.password_hash) && !viaTemp) throw bad(req.user.must_change_pw ? 'Temporary password is wrong' : 'Current password is wrong');
   if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) throw bad('Use at least 8 characters with letters and numbers');
   if (checkPw(pw, req.user.password_hash)) throw bad('Pick a password different from the current one');
-  await run('UPDATE users SET password_hash=?, must_change_pw=0 WHERE id=?', hashPw(pw), req.user.id);
+  await run('UPDATE users SET password_hash=?, must_change_pw=0, temp_pw_hash=NULL, temp_pw_expires=NULL WHERE id=?', hashPw(pw), req.user.id);
   await notify({ tenant_id: req.user.tenant_id }, [req.user.email], 'password_changed', { ...await staffVars(req.user, pw), password: pw });
   await audit(req, 'user.password_changed', 'user', req.user.id, {});
   return { ok: true };
@@ -1357,26 +1377,31 @@ app.use((e, _req, res, _next) => {
 
 app.use('/desk', express.static(path.join(ROOT, 'public')));
 app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the root, e.g. https://stmarys-desk.supercxo.ai
-// First start on an empty database: create the super admin from SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD.
-if (!await one('SELECT 1 FROM users LIMIT 1')) {
-  const r = await createSuperAdmin(process.env.SUPER_ADMIN_EMAIL, process.env.SUPER_ADMIN_PASSWORD);
-  console.log(r.created ? r.message : `No users yet. ${r.message} Then restart.`);
-}
-// Later starts: SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD in .env make that account a super admin with that password as a
-// TEMPORARY one: the first sign-in must choose a new password. Each email + password pair is applied once (a fingerprint
-// is remembered), so the chosen password survives restarts; changing the line applies it again (forgotten password).
-else if (/^\S+@\S+\.\S+$/.test(String(process.env.SUPER_ADMIN_EMAIL || '').trim()) && String(process.env.SUPER_ADMIN_PASSWORD || '').length >= 10) {
-  const email = process.env.SUPER_ADMIN_EMAIL.trim(), pw = process.env.SUPER_ADMIN_PASSWORD;
-  const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${pw}`).digest('hex');
-  if (getSettings().super_admin_env !== mark) {
-    const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
-    if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
-    else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
-    await setSetting('super_admin_env', mark);
-    // their sign-in details by email (welcome for a new account, "password reset" for an existing one)
-    const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
-    await notify({ tenant_id: null }, [acct.email], u ? 'password_reset' : 'invite', await staffVars(acct, pw)).catch(e => console.error('super admin email', e.message));
-    console.log(`Super admin ${email}: ${u ? 'temporary password set' : 'created'} from SUPER_ADMIN_* in .env. They must choose a new password at first sign-in.`);
+// The super admin from .env, on every start (deploy):
+//   SUPER_ADMIN_EMAIL alone: if that account is not yet an active super admin, it is created (or made one) with a generated
+//     temporary password that is EMAILED to it; the first sign-in must choose a new password. Done once per email.
+//   SUPER_ADMIN_EMAIL + SUPER_ADMIN_PASSWORD: that password becomes the temporary one (applied once per email + password pair).
+// Either way the email carries the sign-in details; nothing is ever written to the repo.
+{
+  const email = String(process.env.SUPER_ADMIN_EMAIL || '').trim(), envPw = String(process.env.SUPER_ADMIN_PASSWORD || '');
+  if (!email) { if (!await one('SELECT 1 FROM users LIMIT 1')) console.log('No users yet. Set SUPER_ADMIN_EMAIL in .env and restart: the super admin is created and their temporary password emailed.'); }
+  else if (!/^\S+@\S+\.\S+$/.test(email)) console.log(`SUPER_ADMIN_EMAIL "${email}" is not an email address; no super admin set up.`);
+  else if (envPw && envPw.length < 10) console.log('SUPER_ADMIN_PASSWORD is shorter than 10 characters; leave it out to have a temporary password generated and emailed.');
+  else {
+    const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email), isSa = u?.role === 'super_admin' && u.is_active;
+    const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${envPw}`).digest('hex');
+    // with a password: apply each email + password pair once; email only: only when the account is not already an active super admin
+    const due = envPw ? getSettings().super_admin_env !== mark : !isSa;
+    if (!due) console.log(`Super admin ${email}: already set up${envPw ? ' with this SUPER_ADMIN_PASSWORD' : ''}. Forgot the password? Use “Forgot password?” on the sign-in page.`);
+    else {
+      const pw = envPw || tempPw();
+      if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+      else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
+      if (envPw) await setSetting('super_admin_env', mark);
+      const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
+      await notify({ tenant_id: null }, [acct.email], u ? 'password_reset' : 'invite', await staffVars(acct, pw)).catch(e => console.error('super admin email', e.message));
+      console.log(`Super admin ${email}: ${u ? 'temporary password set' : 'created'}; the sign-in details were emailed (see Email → Delivery log). They choose their own password at first sign-in.`);
+    }
   }
 }
 // ---------- start-up provisioning ----------

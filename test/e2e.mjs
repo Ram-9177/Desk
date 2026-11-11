@@ -100,6 +100,9 @@ try {
   check('public campus list is empty', (await api('/public')).data?.length === 0);
   await stop(); s = await start({ SUPER_ADMIN_EMAIL: SUPER.email, SUPER_ADMIN_PASSWORD: SUPER.password });
   check('super admin created from SUPER_ADMIN_* on first start', /created/.test(s.out()));
+  const saRow = (await q('SELECT must_change_pw m FROM users WHERE email=?', SUPER.email))[0], saMail = await q("SELECT 1 FROM notifications WHERE template_key='invite' AND recipient=?", SUPER.email);
+  check('…as a temporary password: sign-in details emailed, new password asked at first sign-in', saRow?.m === 1 && saMail.length === 1);
+  await q('UPDATE users SET must_change_pw=0 WHERE email=?', SUPER.email); // (the rest of the run uses this password as the own one)
   T.sa = await login(SUPER.email, SUPER.password); check('super admin can sign in', !!T.sa);
   const ver = await (await fetch(API + '/version')).json(), head = execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
   check('/api/version: running commit = checked-out commit, no restart needed', ver.commit === head && ver.on_disk === head && ver.restart_needed === false && !!ver.started_at, JSON.stringify(ver));
@@ -127,7 +130,7 @@ try {
   const bina = await mkUser(Bt, 'Bina Admin', 'bina@example.com', 'tenant_admin');
   check('temporary passwords are issued', [asha, pavan, lata, bina].every(u => u.temp?.length >= 8));
   await fails('duplicate staff email is 409', '/users', { ...A, method: 'POST', body: { name: 'Dup', email: 'pavan@example.com', role: 'provider' } }, 409);
-  check('invite emails were queued', (await q("SELECT count(*) n FROM notifications WHERE template_key='invite'"))[0].n === 4);
+  check('invite emails were queued', (await q("SELECT count(*) n FROM notifications WHERE template_key='invite' AND recipient<>?", SUPER.email))[0].n === 4);
   const welcome = (await q("SELECT subject, body FROM notifications WHERE template_key='invite' AND recipient='pavan@example.com'"))[0];
   check('welcome email has role, services, sign-in link and password', /Welcome/.test(welcome.subject) && welcome.body.includes('Service provider') && welcome.body.includes('Not assigned yet')
     && welcome.body.includes('pavan@example.com') && welcome.body.includes(pavan.temp) && welcome.body.includes('/#/login'));
@@ -362,7 +365,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('23 email steps listed, none connected yet', cfg0.events.length === 23 && !cfg0.url);
+  check('24 email steps listed, none connected yet', cfg0.events.length === 24 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -781,6 +784,26 @@ try {
   check('it is gone, with its providers list', !(await api('/services', A)).data.some(x => x.id === tmp.id) && !(await q('SELECT 1 FROM service_members WHERE service_id=?', tmp.id)).length);
   }
 
+  sec('Forgot password: a temporary password by email');
+  { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
+  const r1 = await api('/auth/forgot', { method: 'POST', body: { email: 'nobody-here@example.com' } }), r2 = await api('/auth/forgot', { method: 'POST', body: { email: pav.toUpperCase() } });
+  check('the same answer for a known and an unknown email', r1.status === 200 && r2.status === 200 && r1.data.message === r2.data.message);
+  const fm = (await q("SELECT recipient, body FROM notifications WHERE template_key='password_forgot' ORDER BY created_at DESC"));
+  const tpw = fm[0]?.body.match(/Temporary password: (\S+)/)?.[1];
+  check('only the real account gets the email, with a temporary password', fm.length === 1 && fm[0].recipient === pav && !!tpw);
+  const lt = await api('/auth/login', { method: 'POST', body: { email: pav, password: tpw } });
+  check('the temporary password signs in and asks for a new password', lt.status === 200 && await mustChange(pav) === 1);
+  await ok('choosing a new password with the temporary one', '/me/password', { token: lt.data.token, method: 'POST', body: { current: tpw, password: 'Pavan#New2026' } });
+  check('after that the temporary one stops working and the new one works', !(await login(pav, tpw)) && !!(await login(pav, 'Pavan#New2026')) && await mustChange(pav) === 0);
+  await api('/auth/forgot', { method: 'POST', body: { email: pav } }); await api('/auth/forgot', { method: 'POST', body: { email: pav } });
+  await api('/auth/forgot', { method: 'POST', body: { email: pav } });
+  check('at most 3 emails an hour per account', (await q("SELECT count(*)::int n FROM notifications WHERE template_key='password_forgot' AND recipient=?", pav))[0].n === 3);
+  check('the own password keeps working while a temporary one is out (no lock-out)', !!(await login(pav, 'Pavan#New2026')));
+  await q("UPDATE users SET temp_pw_expires=? WHERE email=?", new Date(Date.now() - 1000).toISOString(), pav);
+  const last = (await q("SELECT body FROM notifications WHERE template_key='password_forgot' AND recipient=? ORDER BY created_at DESC LIMIT 1", pav))[0].body.match(/Temporary password: (\S+)/)[1];
+  check('an expired temporary password is refused', !(await login(pav, last)));
+  const tk2 = await login(pav, 'Pavan#New2026'); await ok('(back to the usual test password)', '/me/password', { token: tk2, method: 'POST', body: { current: 'Pavan#New2026', password: 'Pavan2026ok' } }); }
+
   sec('Remind me later (a provider’s reminder on a ticket)');
   { const tk = (await q("SELECT id, status, due_at FROM tickets WHERE service_id=? AND status IN ('open','in_progress') ORDER BY created_at LIMIT 1", ids.elec))[0];
   const r1 = await ok('a provider sets a reminder for a week', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'week', note: 'Check the new bulb still works' } });
@@ -906,6 +929,14 @@ try {
 
   sec('Super admin from .env on a live database');
   const mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
+  // email only (no password in .env): created with a generated temporary password, emailed; once
+  { const mc = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
+    await stop(); const s3 = await start({ SUPER_ADMIN_EMAIL: 'boss@example.com' });
+    const inv = (await q("SELECT body FROM notifications WHERE recipient='boss@example.com' AND template_key='invite'"));
+    const pw3 = inv[0]?.body.match(/Temporary password: (\S+)/)?.[1];
+    check('SUPER_ADMIN_EMAIL alone: super admin created and the temporary password emailed', /boss@example.com: created/.test(s3.out()) && inv.length === 1 && !!pw3 && !!(await login('boss@example.com', pw3)) && await mc('boss@example.com') === 1, s3.out().slice(-400));
+    await stop(); const s4 = await start({ SUPER_ADMIN_EMAIL: 'boss@example.com' });
+    check('…and not again on the next deploy', /already set up/.test(s4.out()) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='boss@example.com'"))[0].n === 1 && !!(await login('boss@example.com', pw3))); }
   await stop(); let s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
   let t2 = await login('second@example.com', 'SecondAdmin#2026');
   check('a new email in SUPER_ADMIN_* becomes another super admin, with a temporary password', /second@example.com: created/.test(s2.out()) && !!t2 && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));
