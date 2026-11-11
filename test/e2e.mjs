@@ -818,10 +818,10 @@ try {
   const fsvc = await ok('a Food service (form type Food)', '/services', { ...A, method: 'POST', body: { code: 'FOODX', name: 'Food & Catering', form_schema: { form_type: 'food', fields: [] } } });
   await ok('the kitchen provider', `/services/${fsvc.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavanId] } });
   await fails('meal times must be HH:MM, start before end', '/food/settings', { ...A, method: 'PUT', body: { windows: { lunch: ['15:00', '12:00'] } } }, 400);
-  await ok('admin adds messes and meal times', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ name: 'Boys mess' }, { name: 'Girls mess' }], windows: { snacks: ['15:30', '18:00'] } } });
+  await ok('admin adds messes and meal times', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ name: 'Boys mess' }, { name: 'Girls mess' }], windows: { dinner: ['19:00', '22:00'] } } });
   await fails('a provider cannot change them', '/food/settings', { token: T.pavan, method: 'PUT', body: { locations: [] } }, 403);
   const fi = await ok('the food screens’ data', '/public/alpha/food');
-  check('locations, meal times, chips and categories for the forms', fi.locations.length === 2 && fi.windows.snacks[1] === '18:00' && fi.chips.includes('Cold food') && fi.categories.length === 7 && fi.meals.includes(fi.meal_now));
+  check('locations, meal times, chips and categories for the forms', fi.locations.length === 2 && fi.windows.dinner[1] === '22:00' && fi.meals.join() === 'breakfast,lunch,dinner' && fi.chips.includes('Cold food') && fi.categories.length === 7 && fi.meals.includes(fi.meal_now));
   const L1 = fi.locations[0].id, L2 = fi.locations[1].id, fb = (b, dk = 'dev-' + Math.random().toString(36).slice(2, 12)) => api('/public/alpha/food/feedback', { method: 'POST', body: { device_key: dk, ...b } });
   let r = await fb({ location_id: L1, meal: 'lunch' });
   check('a rating needs stars', r.status === 400 && /stars/.test(r.error.message));
@@ -859,18 +859,20 @@ try {
   check('not a future day', (await fb({ location_id: L1, meal: 'lunch', meal_date: dback(-1), rating: 4 })).status === 400);
   check('not more than 6 days back', (await fb({ location_id: L1, meal: 'lunch', meal_date: dback(7), rating: 4 })).status === 400);
   const before = (await api('/food/settings', A)).data;
-  check('settings list the four default meals and tags', before.meals.length === 4 && before.chips.includes('Cold food'));
+  check('settings list the three default meals (Breakfast, Lunch, Dinner) and tags', before.meals.length === 3 && before.chips.includes('Cold food'));
   await fails('a meal needs a name', '/food/settings', { ...A, method: 'PUT', body: { meals: [{ name: '', start: '08:00', end: '09:00' }] } }, 400);
-  await ok('admin adds Brunch, switches off Snacks and sets their own tags', '/food/settings', { ...A, method: 'PUT', body: {
-    meals: [...before.meals.map(m => ({ ...m, active: m.key !== 'snacks' })), { name: 'Brunch', start: '10:30', end: '11:30' }], chips: ['Tasty', 'Too oily', 'Small portion'] } });
+  await ok('admin adds Brunch, switches off Dinner and sets their own tags', '/food/settings', { ...A, method: 'PUT', body: {
+    meals: [...before.meals.map(m => ({ ...m, active: m.key !== 'dinner' })), { name: 'Brunch', start: '10:30', end: '11:30' }], chips: ['Tasty', 'Too oily', 'Small portion'] } });
   const pf2 = (await api('/public/alpha/food')).data;
-  check('the form now offers Brunch and not Snacks, with the new tags', pf2.meals.includes('brunch') && !pf2.meals.includes('snacks') && pf2.meal_list.find(m => m.key === 'brunch').name === 'Brunch' && pf2.chips.join() === 'Tasty,Too oily,Small portion');
-  check('a switched-off meal can’t be rated', (await fb({ location_id: L1, meal: 'snacks', rating: 4 })).status === 400);
+  check('the form now offers Brunch and not Dinner, with the new tags', pf2.meals.includes('brunch') && !pf2.meals.includes('dinner') && pf2.meal_list.find(m => m.key === 'brunch').name === 'Brunch' && pf2.chips.join() === 'Tasty,Too oily,Small portion');
+  check('a switched-off meal can’t be rated', (await fb({ location_id: L1, meal: 'dinner', rating: 4 })).status === 400);
   check('old tags are refused, new ones accepted', (await fb({ location_id: L1, meal: 'brunch', rating: 3, chips: ['Cold food'] })).status === 400 && (await fb({ location_id: L1, meal: 'brunch', rating: 3, chips: ['Tasty'] })).status === 200);
   const dsh = (await api('/food/dashboard', { token: T.pavan })).data;
   check('the kitchen dashboard shows Brunch, per day and meal', dsh.meals.some(m => m.key === 'brunch') && dsh.today.per_meal.brunch.count === 1 && Array.isArray(dsh.period.counts.brunch));
   await ok('admin puts the defaults back', '/food/settings', { ...A, method: 'PUT', body: { meals: before.meals.map(m => ({ ...m, active: true })), chips: before.default_chips } });
-  check('back to four meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,snacks,dinner'); }
+  check('back to three meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,dinner');
+  const cs = dsh.complaint_split;
+  check('the kitchen sees complaints apart from feedback: total, open, by problem and by meal', cs.total >= 1 && cs.open >= 1 && cs.by_category.length >= 1 && cs.by_meal.reduce((x, y) => x + y.count, 0) === cs.total, JSON.stringify(cs)); }
   check('CSV export', /meal_date,meal,location,rating/.test(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()));
   // reports
   const rep = (per, qs = '', key = 'food-report-key-0123456789') => fetch(`${API}/reports/food/${per}?tenant=alpha&format=json${qs}`, { headers: { 'x-report-key': key } });
@@ -1104,8 +1106,8 @@ async function uiSmoke(tok, id) {
     }
     check('the ticket path made a ticket; the feedback path only feedback', (await q("SELECT count(*)::int n FROM tickets WHERE description LIKE 'Curd smelled bad%'"))[0].n === 1
       && (await q("SELECT count(*)::int n FROM food_feedback WHERE converted_from_complaint AND comment='Curd smelled bad feedback'"))[0].n === 1);
-    await visit('kitchen dashboard: Feedback & Scores', '/c/food', tok.pavan, '.fscores .fscore');
-    check('dashboard: today per meal, line chart, bars, comments, and the Complaints tab', await js(`const ok = document.querySelectorAll('.fscore').length === 4 && !!document.querySelector('svg.fchart polyline') && document.querySelectorAll('.hbar').length >= 4;
+    await visit('kitchen dashboard: Feedback & Scores', '/c/food', tok.pavan, '.fsplit .fov');
+    check('dashboard: overall + one card per meal, complaints apart, line chart, bars, and the Complaints tab', await js(`const ok = document.querySelectorAll('.fsplit .fmeal').length >= 3 && !!document.querySelector('.fcomp .fc-n') && !!document.querySelector('svg.fchart polyline') && document.querySelectorAll('.hbar').length >= 4;
       document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && document.querySelectorAll('.tcard').length >= 1`));
     await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
     const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });

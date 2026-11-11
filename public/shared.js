@@ -53,7 +53,8 @@ export const FORM_TYPES = { general: 'General', location: 'Location', student: '
 export const isFood = s => s?.form_type === 'food';
 
 // ---------- Food & catering: rate a meal (feedback, no ticket) or report a serious problem (a ticket) ----------
-export const MEALS = ['breakfast', 'lunch', 'snacks', 'dinner'];
+export const MEALS = ['breakfast', 'lunch', 'snacks', 'dinner']; // every meal ONE Desk knows a name and colour for
+export const DEFAULT_MEALS = ['breakfast', 'lunch', 'dinner']; // a campus's meals until its admin sets their own
 export const MEAL_NAMES = { breakfast: 'Breakfast', lunch: 'Lunch', snacks: 'Snacks', dinner: 'Dinner' };
 export const MEAL_COLORS = { breakfast: '#f29a1f', lunch: '#1e4b8f', snacks: '#e0559b', dinner: '#1a9a56' };
 export const FOOD_CHIPS = ['Taste', 'Quantity', 'Cold food', 'Oily/Spicy', 'Hygiene look', 'Less variety', 'Menu not followed', 'Good food 👍'];

@@ -229,7 +229,7 @@ async function foodScreens(slug, tenant, svc, flow) {
         <label><input type="radio" name="dayk" value="${dayBack(1)}"><span class="rtb">Yesterday<small>${dayName(dayBack(1))}</small></span></label>
         <label><input type="radio" name="dayk" value="pick"><span class="rtb">Earlier<small>Pick a date</small></span></label></div>
       <div id="dpick" hidden><label for="pday">Date</label><input type="date" id="pday" name="pday" min="${dayBack(f.back_days ?? 6)}" max="${dayBack(2)}"></div>
-      <label>Which meal?</label><div class="whochips fpick meals" role="radiogroup" aria-label="Which meal?">${ML.map(m => `<label><input type="radio" name="meal" value="${m.key}" ${m.key === mnow ? 'checked' : ''} required><span class="rtb"><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}<small>${m.start}–${m.end}</small></span></label>`).join('')}</div>
+      <label for="fmeal">Which meal?</label><select id="fmeal" name="meal" required>${ML.map(m => `<option value="${m.key}" ${m.key === mnow ? 'selected' : ''}>${esc(m.name)} (${m.start}–${m.end})</option>`).join('')}</select>
       ${locOnly(c)}
       <label>How was it?</label><div class="stars" role="radiogroup" aria-label="Rating">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" required><span aria-label="${n} star${n > 1 ? 's' : ''}">★</span></label>`).join('')}</div>
       <label>What stood out? <small>(tap all that apply)</small></label><div class="fchips">${f.chips.map(ch => `<label><input type="checkbox" name="chips" value="${esc(ch)}" ${(c.chips || []).includes(ch) ? 'checked' : ''}><span>${esc(ch)}</span></label>`).join('')}</div>
@@ -1356,14 +1356,31 @@ async function foodPage(main, { admin }) {
           meals: [...f.querySelectorAll('.mealrow')].map(r => ({ key: r.dataset.key || undefined, name: r.querySelector('[name=mname]').value, start: r.querySelector('[name=mstart]').value, end: r.querySelector('[name=mend]').value, active: r.querySelector('[name=mact]').checked })),
           chips: f.chips.value.split('\n').map(x => x.trim()).filter(Boolean) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
     } else {
-      const card = ({ key: m, name, color }) => { const x = t.per_meal[m]; return `<div class="card fscore"><span class="muted small"><i class="sdot" style="display:inline-block;margin-right:6px;background:${color}"></i>${esc(name)} · today</span>
-        <b>${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b><span class="muted small">${x.count} rating${x.count === 1 ? '' : 's'}</span>
-        <div>${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No issues tagged</span>'}</div></div>`; };
-      main.innerHTML = `${tabs}<div class="fscores">${ML.filter(m => m.active !== false).map(card).join('')}</div>
-        <div class="filters" style="margin-top:14px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      // the split: overall feedback, each meal on its own, then complaints (tickets) apart
+      const sum = a => a.reduce((x, y) => x + y, 0), dist = ML.reduce((acc, m) => acc.map((v, i) => v + (pr.rating_counts[m.key]?.[i] || 0)), [0, 0, 0, 0, 0]);
+      const happy = pr.rated ? Math.round(100 * (dist[3] + dist[4]) / pr.rated) : null, pct = (n, t) => t ? Math.round(100 * n / t) : 0;
+      const distBars = d => { const t = sum(d); return `<div class="sdist">${[4, 3, 2, 1, 0].map(i => `<div><span>${i + 1}★</span><i><b style="width:${pct(d[i], t)}%;background:${['#D92D20', '#F79009', '#FDB022', '#66C61C', '#17B26A'][i]}"></b></i><em>${d[i]}</em></div>`).join('')}</div>`; };
+      const rated = ML.filter(m => pr.per_meal[m.key].count), worst = rated.slice().sort((x, y) => pr.per_meal[x.key].avg - pr.per_meal[y.key].avg)[0];
+      const tip = worst && pr.per_meal[worst.key].avg < 3.5 ? `<div class="ftip">${I('alert', 16)}<span><b>Needs attention: ${esc(worst.name)}</b> · ${pr.per_meal[worst.key].avg.toFixed(1)} ★${pr.per_meal[worst.key].chips.filter(c => !/^Good/.test(c.chip))[0] ? `, mostly “${esc(pr.per_meal[worst.key].chips.filter(c => !/^Good/.test(c.chip))[0].chip)}”` : ''}</span></div>` : '';
+      const mealCard = m => { const x = pr.per_meal[m.key], d = pr.rating_counts[m.key] || [0, 0, 0, 0, 0];
+        return `<div class="card fmeal" style="--mc:${m.color}"><div class="fm-h"><span><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</span><span class="muted small">${x.count} feedback · ${pct(x.count, pr.rated)}%</span></div>
+          <b class="fm-avg ${x.avg != null && x.avg < 3 ? 'hot' : ''}">${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b>${distBars(d)}
+          <div class="fm-tags">${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No tags yet</span>'}</div></div>`; };
+      const cs = d.complaint_split;
+      main.innerHTML = `${tabs}
+        <div class="filters" style="margin-top:4px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
           ${st.range === 'custom' ? `<input type="date" id="ffrom" value="${from}"><input type="date" id="fto" value="${to}">` : ''}
           <select id="floc"><option value="">All messes / canteens</option>${d.locations.map(l => `<option value="${l.id}" ${st.location === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
           <button class="btn" id="fcsv">${I('copy', 16)} Export CSV</button></div>
+        <div class="fsec-h"><h2>Feedback</h2><span class="muted small">Ratings and reviews from students · not tickets · ${pr.days[0] === pr.days.at(-1) ? pr.days[0] : `${pr.days[0]} → ${pr.days.at(-1)}`}</span></div>
+        <div class="fsplit"><div class="card fov"><span class="muted small">Overall</span><b class="fm-avg">${pr.avg == null ? '—' : pr.avg.toFixed(1) + ' ★'}</b>
+          <div class="fov-n"><span><b>${pr.rated}</b> feedback</span><span><b>${happy == null ? '—' : happy + '%'}</b> happy (4–5 ★)</span></div>${distBars(dist)}</div>
+          ${ML.filter(m => m.active !== false || pr.per_meal[m.key].count).map(mealCard).join('')}</div>${tip}
+        <div class="fsec-h"><h2>Complaints</h2><span class="muted small">Problems reported as tickets · handled one by one in the Complaints tab</span></div>
+        <div class="card fcomp"><div class="fc-n"><div><b>${cs.total}</b><span>raised</span></div><div><b class="${cs.open ? 'hot' : ''}">${cs.open}</b><span>still open</span></div><div><b>${cs.closed}</b><span>closed</span></div>
+          <button type="button" class="btn soft" data-t="complaints">Open complaints ${I('chev', 16)}</button></div>
+          ${cs.total ? `<div class="two"><div><div class="slabel">By problem</div>${hbars(cs.by_category.map(c => [c.label, c.count]), () => 'var(--danger)')}</div><div><div class="slabel">By meal</div>${hbars(cs.by_meal.map(c => [c.label, c.count]), l => ML.find(m => m.name === l)?.color || 'var(--st-neutral)')}</div></div>` : '<p class="muted small" style="margin:8px 0 0">No complaints in this period.</p>'}</div>
+        <div class="fsec-h"><h2>Trends and comments</h2></div>
         <div class="card"><b>Average score per meal</b> <span class="muted small">${pr.days[0]} → ${pr.days.at(-1)} · ${pr.rated} ratings · overall ${pr.avg == null ? '—' : pr.avg.toFixed(1) + ' ★'}</span>${svgLine(pr.days, pr.series, ML)}${legendHtml(ML)}</div>
         <div class="card"><b>By day and meal</b> <span class="muted small">average stars (number of ratings), newest day first</span><div class="tblbox"><table class="rtable dmgrid"><thead><tr><th>Day</th>${ML.map(m => `<th><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</th>`).join('')}</tr></thead>
           <tbody>${pr.days.slice().reverse().slice(0, 31).map(dy => { const i = pr.days.indexOf(dy); return `<tr><td>${new Date(dy + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</td>${ML.map(m => { const v = pr.series[m.key][i], n = pr.counts[m.key][i];

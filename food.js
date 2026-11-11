@@ -6,7 +6,7 @@ import { one, all, run, insert, uid, now } from './db.js';
 import { dayIn } from './merge.js';
 import { kindOf } from './images.js';
 import { chartPng } from './chart.js';
-import { MEALS, MEAL_NAMES, MEAL_COLORS, MEAL_PALETTE, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, DEFAULT_MEAL_WINDOWS, mealAt, foodCategory } from './public/shared.js';
+import { MEALS, DEFAULT_MEALS, MEAL_NAMES, MEAL_COLORS, MEAL_PALETTE, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, DEFAULT_MEAL_WINDOWS, mealAt, foodCategory } from './public/shared.js';
 
 const BACK_DAYS = 6; // ratings for meals up to 6 days back (a week including today)
 const HM = /^([01]\d|2[0-3]):[0-5]\d$/, YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -22,12 +22,12 @@ export const mealWindows = async tid => ({ ...DEFAULT_MEAL_WINDOWS,
 // (with any older meal_windows times). all: include switched-off meals (old ratings keep their name).
 export async function mealsOf(tid, all_ = false) {
   let rows = await all('SELECT key, name, color, start_time, end_time, active FROM food_meals WHERE tenant_id=? ORDER BY sort_order, start_time', tid);
-  if (!rows.length) { const w = await mealWindows(tid); rows = MEALS.map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m], start_time: w[m][0], end_time: w[m][1], active: 1 })); }
+  if (!rows.length) { const w = await mealWindows(tid); rows = DEFAULT_MEALS.map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m], start_time: w[m][0], end_time: w[m][1], active: 1 })); }
   return rows.filter(r => all_ || r.active).map((r, i) => ({ key: r.key, name: r.name, color: r.color || MEAL_PALETTE[i % MEAL_PALETTE.length], start: r.start_time, end: r.end_time, active: !!r.active }));
 }
 // The meals a summary shows: the active ones, plus any switched-off meal that still has feedback in it
 export async function mealsFor(tid, rows) { const list = await mealsOf(tid, true), had = new Set(rows.map(r => r.meal));
-  return [...list.filter(m => m.active || had.has(m.key)), ...[...had].filter(k => !list.some(m => m.key === k)).map((k, i) => ({ key: k, name: MEAL_NAMES[k] || k, color: MEAL_PALETTE[(list.length + i) % MEAL_PALETTE.length], active: false }))]; }
+  return [...list.filter(m => m.active || had.has(m.key)), ...[...had].filter(k => !list.some(m => m.key === k)).map((k, i) => ({ key: k, name: MEAL_NAMES[k] || k, color: MEAL_COLORS[k] || MEAL_PALETTE[(list.length + i) % MEAL_PALETTE.length], active: false }))]; }
 export const windowsOf = meals => Object.fromEntries(meals.map(m => [m.key, [m.start, m.end]]));
 // "What stood out?" tags on the rating form, set by the admin
 export const chipsOf = tn => { try { const c = JSON.parse(tn.food_chips || 'null'); if (Array.isArray(c) && c.length) return c; } catch { /* default */ } return FOOD_CHIPS; };
@@ -134,13 +134,22 @@ export function food(d) {
     if (from > to) throw bad('From must be on or before To');
     return { from, to, today };
   };
+  // Complaints (tickets, not feedback) raised in the period: how many, still open, by problem and by meal
+  const complaintSplit = async (svc, from, to, loc, meals) => {
+    const rows = await all(`SELECT status, meal, food_category FROM tickets WHERE service_id=? AND created_date>=? AND created_date<=? ${loc ? 'AND food_location_id=?' : ''}`, svc.id, from, to, ...(loc ? [loc] : []));
+    const by = f => Object.entries(rows.reduce((m, r) => { const k = f(r) || 'other'; m[k] = (m[k] || 0) + 1; return m; }, {})).sort((a, b) => b[1] - a[1]);
+    return { total: rows.length, open: rows.filter(r => ['open', 'in_progress', 'hold'].includes(r.status)).length, closed: rows.filter(r => r.status === 'closed').length,
+      by_category: by(r => r.food_category).map(([k, n]) => ({ key: k, label: foodCategory(k), count: n })),
+      by_meal: by(r => r.meal).map(([k, n]) => ({ key: k, label: meals.find(m => m.key === k)?.name || MEAL_NAMES[k] || (k === 'other' ? 'Not given' : k), count: n })) };
+  };
   S.get('/food/access', wrap(async req => { try { const s = await foodAccess(req); return { ok: true, service: { id: s.id, name: s.name } }; } catch { return { ok: false }; } }));
   S.get('/food/dashboard', wrap(async req => {
     const svc = await foodAccess(req), tn = await tenantRow(req.tenantId), { from, to, today } = range(req, tn), loc = req.query.location || null;
     const tr = await feedbackIn(tn.id, today, today, loc), pr = await feedbackIn(tn.id, from, to, loc), meals = await mealsFor(tn.id, [...tr, ...pr]);
     return { service: { id: svc.id, name: svc.name }, meals, today: summarize(tr, today, today, meals), period: summarize(pr, from, to, meals),
       locations: await all('SELECT id, name, active FROM food_locations WHERE tenant_id=? ORDER BY sort_order, name', tn.id),
-      complaints: (await one(`SELECT count(*)::int n FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, svc.id)).n };
+      complaints: (await one(`SELECT count(*)::int n FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, svc.id)).n,
+      complaint_split: await complaintSplit(svc, from, to, loc, meals) };
   }));
   S.get('/food/feedback.csv', async (req, res, next) => { try {
     await foodAccess(req); const tn = await tenantRow(req.tenantId), { from, to } = range(req, tn);
