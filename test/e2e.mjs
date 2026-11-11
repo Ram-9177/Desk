@@ -873,6 +873,10 @@ try {
   const kw = dsh.period.keywords, salty = kw.find(k => k.word === 'too salty');
   check('major keywords from written reviews: “too salty” 3 times, with example reviews', salty?.count === 3 && salty.examples.length === 3 && kw.some(k => k.word === 'cold rice' && k.count === 2), JSON.stringify(kw.slice(0, 5).map(k => [k.word, k.count])));
   check('…and per meal', dsh.period.per_meal.brunch.keywords[0]?.word === 'too salty' && dsh.period.reviews >= 3);
+  const mv = (await api('/food/meal?meal=brunch', { token: T.pavan })).data;
+  check('one meal’s page: every entry with its cumulative summary', mv.total === 4 && mv.rows.length === 4 && mv.summary.per_meal.brunch.count === 4 && mv.summary.keywords[0]?.word === 'too salty', JSON.stringify({ t: mv.total }));
+  check('…filter by stars and by written reviews', (await api('/food/meal?meal=brunch&stars=3', { token: T.pavan })).data.total === 1 && (await api('/food/meal?meal=brunch&written=1', { token: T.pavan })).data.total === 3);
+  await fails('only the food team sees it', '/food/meal?meal=brunch', { token: T.lata }, 403);
   await ok('admin puts the defaults back', '/food/settings', { ...A, method: 'PUT', body: { meals: before.meals.map(m => ({ ...m, active: true })), chips: before.default_chips } });
   check('back to three meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,dinner');
   const cs = dsh.complaint_split;
@@ -1112,7 +1116,9 @@ async function uiSmoke(tok, id) {
       && (await q("SELECT count(*)::int n FROM food_feedback WHERE converted_from_complaint AND comment='Curd smelled bad feedback'"))[0].n === 1);
     await visit('kitchen dashboard: Feedback & Scores', '/c/food', tok.pavan, '.fsplit .fov');
     check('dashboard: overall + one card per meal, complaints apart, line chart, bars, and the Complaints tab', await js(`const ok = document.querySelectorAll('.fsplit .fmeal').length >= 3 && !!document.querySelector('.fcomp .fc-n') && !!document.querySelector('svg.fchart polyline') && document.querySelectorAll('.hbar').length >= 4;
-      document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && document.querySelectorAll('.tcard').length >= 1`));
+      document.querySelector('.fmeal[data-meal]').click(); await new Promise(r => setTimeout(r, 1500)); const mv = !!document.querySelector('.mv-h') && !!document.querySelector('.mv-sum .sdist') && document.querySelectorAll('.mv-row').length >= 1;
+      document.querySelector('#mvb').click(); await new Promise(r => setTimeout(r, 1500)); const backOk = !!document.querySelector('.fsplit');
+      document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && mv && backOk && document.querySelectorAll('.tcard').length >= 1`));
     await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
     const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });
     await send('DOM.setFileInputFiles', { nodeId, files: [bigFile, HEIC_FILE] });

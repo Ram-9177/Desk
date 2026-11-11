@@ -172,6 +172,16 @@ export function food(d) {
       complaints: (await one(`SELECT count(*)::int n FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, svc.id)).n,
       complaint_split: await complaintSplit(svc, from, to, loc, meals) };
   }));
+  // One meal's feedback for the period: its cumulative summary and every entry (newest first, 50 a page; filter by stars or written reviews)
+  S.get('/food/meal', wrap(async req => {
+    await foodAccess(req); const tn = await tenantRow(req.tenantId), { from, to } = range(req, tn), q = req.query;
+    const all_ = (await feedbackIn(tn.id, from, to, q.location || null)).filter(r => r.meal === q.meal), meals = await mealsFor(tn.id, all_);
+    const meal = meals.find(m => m.key === q.meal) || (await mealsOf(tn.id, true)).find(m => m.key === q.meal); if (!meal) throw notFound();
+    const stars = Number(q.stars) || 0, written = q.written === '1', off = Math.max(0, Number(q.offset) || 0);
+    const list = all_.filter(r => (!stars || r.rating === stars) && (!written || r.comment));
+    return { meal: { key: meal.key, name: meal.name, color: meal.color }, from, to, summary: summarize(all_, from, to, [meal]), total: list.length, offset: off,
+      rows: list.slice(off, off + 50).map(r => ({ id: r.id, at: r.created_at, day: r.meal_date, rating: r.rating, chips: r.chips || [], comment: r.comment, name: r.requester_name, location: r.location, converted: r.converted_from_complaint })) };
+  }));
   S.get('/food/feedback.csv', async (req, res, next) => { try {
     await foodAccess(req); const tn = await tenantRow(req.tenantId), { from, to } = range(req, tn);
     const rows = await feedbackIn(tn.id, from, to, req.query.location || null), cols = ['meal_date', 'meal', 'location', 'rating', 'chips', 'comment', 'requester_name', 'converted_from_complaint', 'created_at'];

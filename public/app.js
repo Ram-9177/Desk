@@ -1320,6 +1320,35 @@ const svgLine = (days, series, meals, h = 200) => { const w = 640, p = 28, n = d
     ${days.length <= 14 ? days.map((d, i) => `<text x="${X(i)}" y="${h - 6}" text-anchor="middle">${d.slice(8)}/${d.slice(5, 7)}</text>`).join('') : `<text x="${p}" y="${h - 6}">${days[0]}</text><text x="${w - p}" y="${h - 6}" text-anchor="end">${days.at(-1)}</text>`}</svg>`; };
 const hbars = (rows, colorOf) => { const max = Math.max(1, ...rows.map(r => r[1])); return rows.length ? rows.map(([l, v]) => `<div class="hbar"><span>${esc(l)}</span><div><i style="width:${(100 * v) / max}%;background:${colorOf(l)}"></i></div><b>${v}</b></div>`).join('') : '<p class="muted small">Nothing yet.</p>'; };
 const legendHtml = meals => `<div class="flegend">${meals.map(m => `<span><i style="background:${m.color}"></i>${esc(m.name)}</span>`).join('')}</div>`;
+// One meal: its cumulative numbers for the period and every feedback entry, filterable by stars or written reviews
+async function mealView(main, tabs, st, rng, back, onTab) {
+  const f = { stars: 0, written: false }, rows = [];
+  let d;
+  const fetchPage = async off => { const qs = new URLSearchParams({ meal: st.meal, from: rng.from, to: rng.to, offset: off, ...(rng.location ? { location: rng.location } : {}), ...(f.stars ? { stars: f.stars } : {}), ...(f.written ? { written: 1 } : {}) });
+    d = await api('/food/meal?' + qs); if (!off) rows.length = 0; rows.push(...d.rows); };
+  const day = ymd => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const paint = () => { const s = d.summary, x = s.per_meal[d.meal.key], dist = s.rating_counts[d.meal.key], happy = x.count ? Math.round(100 * (dist[3] + dist[4]) / x.count) : null;
+    main.innerHTML = `${tabs}<button type="button" class="linkbtn mv-back" id="mvb">${I('back', 16)} All meals</button>
+      <div class="mv-h" style="--mc:${d.meal.color}"><h2><i class="mdot" style="background:${d.meal.color}"></i>${esc(d.meal.name)} · all feedback</h2><span class="muted small">${d.from === d.to ? day(d.from) : `${day(d.from)} → ${day(d.to)}`}</span></div>
+      <div class="mv-sum"><div class="card"><span class="muted small">Average</span><b class="fm-avg ${x.avg != null && x.avg < 3 ? 'hot' : ''}">${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b>
+          <div class="fov-n"><span><b>${x.count}</b> rating${x.count === 1 ? '' : 's'}</span><span><b>${happy == null ? '—' : happy + '%'}</b> happy</span><span><b>${s.reviews}</b> written</span>${s.total > s.rated ? `<span><b>${s.total - s.rated}</b> from complaints</span>` : ''}</div></div>
+        <div class="card"><span class="muted small">Stars</span><div class="sdist" style="margin-top:8px">${[4, 3, 2, 1, 0].map(i => `<div><span>${i + 1}★</span><i><b style="width:${x.count ? Math.round(100 * dist[i] / x.count) : 0}%;background:${['#D92D20', '#F79009', '#FDB022', '#66C61C', '#17B26A'][i]}"></b></i><em>${dist[i]}</em></div>`).join('')}</div></div>
+        <div class="card"><span class="muted small">Tags picked</span><div class="fm-tags">${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">None</span>'}</div>
+          <span class="muted small" style="display:block;margin-top:10px">Words in reviews</span><div class="kwcloud" style="margin-top:6px">${s.keywords.slice(0, 10).map(k => `<span class="kw" style="--w:13px;cursor:default">${esc(k.word)} <span>${k.count}</span></span>`).join('') || '<span class="muted small">No written reviews</span>'}</div></div></div>
+      <div class="card mv-list"><div class="mv-f"><div class="tabs">${[[0, 'All'], [5, '5★'], [4, '4★'], [3, '3★'], [2, '2★'], [1, '1★']].map(([k, l]) => `<button type="button" class="tab ${f.stars === k ? 'on' : ''}" data-st="${k}">${l}${k ? ` <span class="cnt">${dist[k - 1]}</span>` : ''}</button>`).join('')}</div>
+          <label class="chk"><input type="checkbox" id="mvw" ${f.written ? 'checked' : ''}> Only with a written review</label></div>
+        <div class="muted small" style="margin:10px 0 4px">${d.total} entr${d.total === 1 ? 'y' : 'ies'}, newest first</div>
+        ${rows.map(r => `<div class="mv-row"><div class="mv-st">${r.rating ? `<b class="${r.rating <= 2 ? 'hot' : ''}">${'★'.repeat(r.rating)}<span>${'★'.repeat(5 - r.rating)}</span></b>` : '<span class="tag">From a complaint</span>'}<span class="muted small">${day(r.day)}${r.location ? ' · ' + esc(r.location) : ''}${r.name ? ' · ' + esc(r.name) : ''}</span></div>
+          ${r.comment ? `<div class="mv-c">“${esc(r.comment)}”</div>` : ''}${r.chips.length ? `<div class="fm-tags">${r.chips.map(c => `<span class="plate">${esc(c)}</span>`).join('')}</div>` : ''}</div>`).join('') || emptyState('Nothing here', 'No feedback matches this filter.')}
+        ${rows.length < d.total ? `<p style="text-align:center"><button type="button" class="btn" id="mvmore">Show more (${d.total - rows.length} left)</button></p>` : ''}</div>`;
+    $('#mvb').onclick = back;
+    main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => onTab(b.dataset.t));
+    main.querySelectorAll('[data-st]').forEach(b => b.onclick = async () => { f.stars = Number(b.dataset.st); await fetchPage(0); paint(); });
+    $('#mvw').onchange = async e => { f.written = e.target.checked; await fetchPage(0); paint(); };
+    if ($('#mvmore')) $('#mvmore').onclick = async () => { await fetchPage(rows.length); paint(); };
+  };
+  await fetchPage(0); paint();
+}
 async function foodPage(main, { admin }) {
   const st = JSON.parse(sessionStorage.getItem('foodf') || '{"tab":"scores","range":"week"}'), q = new URLSearchParams(location.hash.split('?')[1] || '');
   if (q.get('from')) Object.assign(st, { range: 'custom', from: q.get('from'), to: q.get('to') || q.get('from'), tab: 'scores' });
@@ -1355,6 +1384,7 @@ async function foodPage(main, { admin }) {
         try { await api('/food/settings', { method: 'PUT', body: { locations: [...f.querySelectorAll('.locrow')].map(r => ({ id: r.dataset.id || undefined, name: r.querySelector('[name=lname]').value, active: r.querySelector('[name=lact]').checked })),
           meals: [...f.querySelectorAll('.mealrow')].map(r => ({ key: r.dataset.key || undefined, name: r.querySelector('[name=mname]').value, start: r.querySelector('[name=mstart]').value, end: r.querySelector('[name=mend]').value, active: r.querySelector('[name=mact]').checked })),
           chips: f.chips.value.split('\n').map(x => x.trim()).filter(Boolean) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
+    } else if (st.meal) { await mealView(main, tabs, st, { from, to, location: st.location }, () => { delete st.meal; save(); draw(); }, t => { st.tab = t; delete st.meal; save(); draw(); }); return;
     } else {
       // the split: overall feedback, each meal on its own, then complaints (tickets) apart
       const sum = a => a.reduce((x, y) => x + y, 0), dist = ML.reduce((acc, m) => acc.map((v, i) => v + (pr.rating_counts[m.key]?.[i] || 0)), [0, 0, 0, 0, 0]);
@@ -1363,10 +1393,11 @@ async function foodPage(main, { admin }) {
       const rated = ML.filter(m => pr.per_meal[m.key].count), worst = rated.slice().sort((x, y) => pr.per_meal[x.key].avg - pr.per_meal[y.key].avg)[0];
       const tip = worst && pr.per_meal[worst.key].avg < 3.5 ? `<div class="ftip">${I('alert', 16)}<span><b>Needs attention: ${esc(worst.name)}</b> · ${pr.per_meal[worst.key].avg.toFixed(1)} ★${pr.per_meal[worst.key].chips.filter(c => !/^Good/.test(c.chip))[0] ? `, mostly “${esc(pr.per_meal[worst.key].chips.filter(c => !/^Good/.test(c.chip))[0].chip)}”` : ''}</span></div>` : '';
       const mealCard = m => { const x = pr.per_meal[m.key], d = pr.rating_counts[m.key] || [0, 0, 0, 0, 0];
-        return `<div class="card fmeal" style="--mc:${m.color}"><div class="fm-h"><span><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</span><span class="muted small">${x.count} feedback · ${pct(x.count, pr.rated)}%</span></div>
+        return `<div class="card fmeal" style="--mc:${m.color}" data-meal="${esc(m.key)}" role="button" tabindex="0" aria-label="See all ${esc(m.name)} feedback"><div class="fm-h"><span><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</span><span class="muted small">${x.count} feedback · ${pct(x.count, pr.rated)}%</span></div>
           <b class="fm-avg ${x.avg != null && x.avg < 3 ? 'hot' : ''}">${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b>${distBars(d)}
           <div class="fm-tags">${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No tags yet</span>'}</div>
-          ${x.keywords?.length ? `<div class="fm-kw"><span class="muted small">In reviews:</span> ${x.keywords.slice(0, 3).map(k => `<b>“${esc(k.word)}”</b> ${k.count}`).join(' · ')}</div>` : ''}</div>`; };
+          ${x.keywords?.length ? `<div class="fm-kw"><span class="muted small">In reviews:</span> ${x.keywords.slice(0, 3).map(k => `<b>“${esc(k.word)}”</b> ${k.count}`).join(' · ')}</div>` : ''}
+          <div class="fm-more">See all ${x.count} feedback ${I('chev', 14)}</div></div>`; };
       const cs = d.complaint_split;
       main.innerHTML = `${tabs}
         <div class="filters" style="margin-top:4px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -1398,6 +1429,7 @@ async function foodPage(main, { admin }) {
       $('#fcsv').onclick = async () => { const r = await api('/food/feedback.csv?' + qs, { raw: true }), a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = `food-feedback-${from}-to-${to}.csv`; a.click(); };
     }
     main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; save(); draw(); });
+    main.querySelectorAll('[data-meal]').forEach(c => { c.onclick = () => { st.meal = c.dataset.meal; save(); draw(); window.scrollTo(0, 0); }; c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.click(); } }; });
     main.querySelectorAll('[data-kw]').forEach(b => b.onclick = () => { const k = pr.keywords[b.dataset.kw];
       main.querySelectorAll('[data-kw]').forEach(x => x.classList.toggle('on', x === b));
       $('#kwex').innerHTML = `<b>“${esc(k.word)}”</b> in ${k.count} review${k.count === 1 ? '' : 's'}${k.examples.map(e => `<div class="brow"><div>“${esc(e.comment)}”<div class="muted small">${esc(mName(e.meal))}${e.rating ? ' · ' + e.rating + ' ★' : ''}</div></div></div>`).join('')}`; });
