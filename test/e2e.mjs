@@ -1004,14 +1004,9 @@ async function uiSmoke(tok, id) {
     await visit('campus picker', '/', null, 'a.svc');
     await visit('campus intro, with the first-visit guide card', '/d/alpha', null, '.guidecard a[href="guide/requestor.html"]');
     await visit('service list', '/d/alpha/raise', null, 'a.svc[href*="ELEC"]');
-    await visit('a service first asks what you want to do: two cards', '/d/alpha/raise/ELEC', null, '.kindcard.prob');
-    check('Report a problem and Share a suggestion each open their own form', await js(`const c = [...document.querySelectorAll('.kindcard')];
-      return c.length === 2 && /kind=issue$/.test(c[0].getAttribute('href')) && /kind=suggestion$/.test(c[1].getAttribute('href'))`));
-    await visit('suggestion form', '/d/alpha/raise/ELEC?kind=suggestion', null, '#f [name=subject]');
-    check('the suggestion form: its own title, no location, Send suggestion', await js(`return /Share a suggestion/.test(document.querySelector('h1').textContent) && document.querySelector('#f [name=kind]:checked').value === 'suggestion'
-      && [...document.querySelectorAll('#f .prob-only')].every(x => x.hidden) && /Send suggestion/.test(document.querySelector('#raiseBtn').textContent)`));
-    await visit('raise form (location type)', '/d/alpha/raise/ELEC?kind=issue', null, '#f [name=fd_loc_block]');
-    await visit('raise form (student type)', '/d/alpha/raise/EXAM?kind=issue', null, '#f [name=fd_stu_id]');
+    await visit('raise form (location type)', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
+    check('other teams open straight into the problem form: no suggestion choice (that is Food only)', await js(`return !document.querySelector('.kindcard') && !document.querySelector('.kindsw:not([hidden])') && !/suggestion/i.test(document.querySelector('.wrap').innerText.replace(/\\s+/g, ' ').split('Your name')[0]) && /Raise ticket/.test(document.querySelector('#raiseBtn').textContent)`));
+    await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
     await visit('staff login', '/login', null, '#f [name=password]');
@@ -1124,9 +1119,12 @@ async function uiSmoke(tok, id) {
     // food screens
     await visit('food: the service list says "Rate meals or report a problem"', '/d/alpha/raise', null, 'a.svc[href*="FOODX"]');
     check('food card subtitle', await js(`return /Rate meals or report a problem/.test(document.querySelector('a.svc[href*="FOODX"]').textContent)`));
-    await visit('food: "How can we help with food?" (Screen 2)', '/d/alpha/raise/FOODX', null, '.foodpick.primary');
-    check('Screen 2: "Share feedback" is the first card, "Report a problem" (a complaint) below it, stacked', await js(`const c = [...document.querySelectorAll('.foodpick')];
-      return c.length === 2 && c[0].classList.contains('primary') && /Share feedback/.test(c[0].textContent) && /Report a problem/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1 && /photo required/.test(c[1].textContent)`));
+    await visit('food: one screen with two stacked cards', '/d/alpha/raise/FOODX', null, '.foodkind');
+    check('"Share a suggestion or feedback" first and open (its form below), "Report a problem" stacked under it', await js(`const c = [...document.querySelectorAll('.foodkind label')];
+      return c.length === 2 && /Share a suggestion or feedback/.test(c[0].textContent) && /Report a problem/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1
+        && document.querySelector('[name=fkind]:checked').value === 'rate' && !!document.querySelector('#f .stars')`));
+    check('tapping Report a problem opens the complaint form on the same screen', await js(`document.querySelector('[name=fkind][value=report]').click(); await new Promise(r => setTimeout(r, 1500));
+      return !!document.querySelector('#f .fcats') && document.querySelector('[name=fkind]:checked').value === 'report' && /photo/i.test(document.querySelector('.foodkind').textContent)`));
     await visit('food: rate your meal', '/d/alpha/raise/FOODX?flow=rate', null, '.stars');
     check('the meal defaults to the one by the time of day', await js(`const m = await import('/shared.js'); const f = await (await fetch('/api/public/alpha/food')).json();
       const hm = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
@@ -1135,7 +1133,7 @@ async function uiSmoke(tok, id) {
     check('"Something else" shows the feedback-instead hint with Switch to feedback, carrying the text', await js(`const f = document.querySelector('#f'); const hidden = document.querySelector('#else').hidden;
       f.querySelector('[name=category][value=other]').click(); f.description.value = 'Too salty today';
       const shown = !document.querySelector('#else').hidden; document.querySelector('#toRate').click(); await new Promise(r => setTimeout(r, 1200));
-      return hidden && shown && /Share feedback/.test(document.querySelector('h1').textContent) && document.querySelector('[name=comment]').value === 'Too salty today'`));
+      return hidden && shown && document.querySelector('[name=fkind]:checked')?.value === 'rate' && !!document.querySelector('#f .stars') && document.querySelector('[name=comment]').value === 'Too salty today'`));
     const foodPng = path.join(TMP, 'food.png'); fs.writeFileSync(foodPng, Buffer.from(PNG.split(',')[1], 'base64'));
     for (const [choice, want] of [['feedback', 'Sent as feedback'], ['ticket', 'Ticket raised']]) {
       await visit(`food: report form (${choice} path)`, '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
@@ -1156,7 +1154,7 @@ async function uiSmoke(tok, id) {
       document.querySelector('.fmeal[data-meal]').click(); await new Promise(r => setTimeout(r, 1500)); const mv = !!document.querySelector('.mv-h') && !!document.querySelector('.mv-sum .sdist') && document.querySelectorAll('.mv-row').length >= 1;
       document.querySelector('#mvb').click(); await new Promise(r => setTimeout(r, 1500)); const backOk = !!document.querySelector('.fsplit');
       document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && mv && backOk && document.querySelectorAll('.tcard').length >= 1`));
-    await visit('raise form for photo upload', '/d/alpha/raise/ELEC?kind=issue', null, '#f [name=fd_loc_block]');
+    await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
     const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });
     await send('DOM.setFileInputFiles', { nodeId, files: [bigFile, HEIC_FILE] });
     await js(`const f = document.querySelector('#f');

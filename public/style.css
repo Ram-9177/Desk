@@ -763,10 +763,7 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 .mv-row{padding:12px 0;border-top:1px solid var(--divider)}.mv-st{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .mv-st b{color:#F79009;letter-spacing:1px}.mv-st b.hot{color:#D92D20}.mv-st b span{color:#E4E7EC}.mv-c{margin-top:6px;font-size:15px;color:var(--text)}
 @media (max-width:860px){.mv-sum{grid-template-columns:1fr}}
-/* service step 1: two option cards, each opens its own form */
-.kindcard{display:flex;align-items:center;gap:14px;padding:18px;margin:12px 0;border-radius:16px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none}
-.kindcard:hover{border-color:var(--accent);box-shadow:0 6px 18px rgba(16,24,40,.07)}.kindcard:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.kindcard .t{flex:1;display:flex;flex-direction:column;gap:4px}.kindcard b{font-size:16px;font-weight:600}.kindcard .t span{font-size:13.5px;color:var(--text-3);line-height:1.45}
-.kindcard .ks-ic{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;flex:none}
-.kindcard.prob .ks-ic{background:var(--pa-rose);color:#D92D20}.kindcard.sugg .ks-ic{background:var(--pa-sun);color:#DC6803}.kindcard .chev{color:var(--chevron)}
 .kindsw[hidden]{display:none}
+/* Food: feedback card first (yellow star), complaint second (red) */
+.kindsw.foodkind label:nth-child(1) .ks-ic{background:var(--pa-sun);color:#DC6803}.kindsw.foodkind label:nth-child(2) .ks-ic{background:var(--pa-rose);color:#D92D20}
+.kindsw.foodkind+form.card{margin-top:4px}

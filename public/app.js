@@ -185,7 +185,7 @@ async function portal(slug, q, view, code) {
     if (!q.get('direct')) return;
   }
   if (pick && isFood(pick.form_schema)) return foodScreens(slug, tenant, pick, q.get('flow'));
-  if (pick) { const k = q.get('kind'); return k === 'issue' || k === 'suggestion' ? raiseForm(slug, tenant, pick, null, k) : kindChoice(slug, pick, q); }
+  if (pick) return raiseForm(slug, tenant, pick, null, 'issue'); // other teams: straight to the problem form (feedback and suggestions are a Food thing)
   if (view !== 'raise') {
     const opt = (href, ic, cls, title, sub) => `<a class="svc" href="${href}"><span class="chip ${cls}">${I(ic, 22)}</span><span class="t"><b>${title}</b><span class="muted small">${sub}</span></span><span class="chev">${I('chev')}</span></a>`;
     const seen = guideSeen('guide-seen');
@@ -219,10 +219,17 @@ async function foodScreens(slug, tenant, svc, flow) {
   const dayName = ymd => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
   const dayBack = n => { const d = new Date(f.today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
   document.title = `${svc.name} · ONE Desk`;
+  // One screen: two stacked cards (feedback first); the picked one's form opens right below them
+  if (flow !== 'report') flow = 'rate';
+  const kindCards = cur => `<div class="kindsw foodkind" role="radiogroup" aria-label="What would you like to do?">
+      <label><input type="radio" name="fkind" value="rate" ${cur === 'rate' ? 'checked' : ''}><span><i class="ks-ic">${I('star', 18)}</i><b>Share a suggestion or feedback<small>Pick the day and meal, give stars and a short review. Goes to the kitchen team's report.</small></b></span></label>
+      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>A complaint that needs action now: insect, spoiled food, hygiene, billing, staff. Creates a ticket; a photo is needed.</small></b></span></label></div>`;
+  const wireKind = () => document.querySelectorAll('[name=fkind]').forEach(r => r.onchange = () => {
+    const fm = $('#f'); foodCarry({ location_id: fm?.location_id?.value, meal: fm?.meal?.value }); location.replace(`${base}?flow=${r.value}`); });
   if (flow === 'rate') { // ---------- Flow A: Rate your meal ----------
     const c = foodCarry();
     const mnow = c.meal || mealAt(f.windows, nowHM());
-    app.innerHTML = `<div class="wrap">${head('Share feedback', base)}<form id="f" class="card food-form">
+    app.innerHTML = `<div class="wrap">${head(esc(svc.name), `#/d/${slug}/raise`)}${kindCards('rate')}<form id="f" class="card food-form">
       <input class="hp" name="website" tabindex="-1" autocomplete="off">
       <label>Which day?</label><div class="whochips fpick" role="radiogroup" aria-label="Which day?">
         <label><input type="radio" name="dayk" value="${f.today}" checked><span class="rtb">Today<small>${dayName(f.today)}</small></span></label>
@@ -236,7 +243,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <label>Your review</label><textarea name="comment" maxlength="300" placeholder="Anything the kitchen team should know (you can skip this)">${esc(c.comment || '')}</textarea><div class="muted small" id="cc"></div>
       <label>Your name or roll no. <small>(leave empty to stay anonymous)</small></label><input name="name" maxlength="80" autocomplete="name">
       <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Send feedback</button></p></form></div>`;
-    const ta = $('#f').comment, cc = () => { $('#cc').textContent = `${ta.value.length} / 300`; }; ta.oninput = cc; cc();
+    const ta = $('#f').comment, cc = () => { $('#cc').textContent = `${ta.value.length} / 300`; }; ta.oninput = cc; cc(); wireKind();
     $('#f').querySelectorAll('[name=dayk]').forEach(r => r.onchange = () => { const on = $('#f').dayk.value === 'pick'; $('#dpick').hidden = !on; $('#pday').required = on; if (on) $('#pday').focus(); });
     $('#f').onsubmit = async e => { e.preventDefault(); const fm = e.target, btn = fm.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
       const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, meal_date: fm.dayk.value === 'pick' ? fm.pday.value : fm.dayk.value, rating: Number(fm.rating.value), chips: [...fm.querySelectorAll('[name=chips]:checked')].map(x => x.value),
@@ -252,7 +259,7 @@ async function foodScreens(slug, tenant, svc, flow) {
   }
   if (flow === 'report') { // ---------- Flow B: Report a serious problem ----------
     const c = foodCarry(), idem = crypto.randomUUID();
-    app.innerHTML = `<div class="wrap">${head('Report a problem', base)}<form id="f" class="card food-form">
+    app.innerHTML = `<div class="wrap">${head(esc(svc.name), `#/d/${slug}/raise`)}${kindCards('report').replace('value="rate" checked', 'value="rate"').replace('value="report">', 'value="report" checked>')}<form id="f" class="card food-form">
       <input class="hp" name="website" tabindex="-1" autocomplete="off">
       ${where(c)}
       <label>What is the problem?</label><div class="fcats">${FOOD_CATEGORIES.map(([k, l]) => `<label><input type="radio" name="category" value="${k}" required><span>${esc(l)}</span></label>`).join('')}</div>
@@ -264,7 +271,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
         <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
       <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Continue</button></p></form></div>`;
-    wireFiles('food');
+    wireFiles('food'); wireKind();
     const fm = $('#f'), sync = () => { $('#else').hidden = fm.category.value !== 'other'; };
     fm.querySelectorAll('[name=category]').forEach(r => r.onchange = sync);
     $('#toRate').onclick = () => { foodCarry({ location_id: fm.location_id?.value, meal: fm.meal.value, comment: fm.description.value.trim().slice(0, 300) }); location.hash = `${base}?flow=rate`; };
@@ -296,12 +303,6 @@ async function foodScreens(slug, tenant, svc, flow) {
       } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
     return;
   }
-  // ---------- Screen 2: choose ----------
-  app.innerHTML = `<div class="wrap">${head(esc(svc.name), `#/d/${slug}/raise`)}<p class="muted">How was the food? Most things are best as feedback; report a problem only when it needs action now.</p>
-    <a class="foodpick primary" href="${base}?flow=rate"><span class="fp-ic">★</span><span class="t"><b>Share feedback</b><span>Pick the day and meal, give stars and a short review: taste, quantity, cold food, menu, variety</span>
-      <small>Goes to the kitchen team's daily report</small></span><span class="chev">${I('chev')}</span></a>
-    <a class="foodpick secondary" href="${base}?flow=report"><span class="fp-ic">${I('alert', 20)}</span><span class="t"><b>Report a problem</b><span>A complaint that needs action: insect or foreign object, spoiled food, hygiene, billing error, staff behaviour</span>
-      <small>Creates a ticket · photo required</small></span><span class="chev">${I('chev')}</span></a></div>`;
 }
 // "Does this need action right now?" → 'ticket' | 'feedback' | null (closed)
 const foodConfirm = () => new Promise(res => {
@@ -314,21 +315,12 @@ const foodConfirm = () => new Promise(res => {
   d.onclose = () => { d.remove(); res(v); };
 });
 
-// Step 1 for a service: what would you like to do? Each card opens its own form.
-function kindChoice(slug, svc, q) {
-  const base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}?${q.get('direct') ? 'direct=1&' : ''}kind=`;
-  document.title = `${svc.name} · ONE Desk`;
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
-    <p class="muted">What would you like to do?</p>
-    <a class="kindcard prob" href="${base}issue"><span class="ks-ic">${I('alert', 22)}</span><span class="t"><b>Report a problem</b><span>Something is broken or not working. You get a ticket number and the team acts on it within its target time.</span></span><span class="chev">${I('chev')}</span></a>
-    <a class="kindcard sugg" href="${base}suggestion"><span class="ks-ic">${I('idea', 22)}</span><span class="t"><b>Share a suggestion or feedback</b><span>An idea or feedback for the ${esc(svc.name)} team. No deadline; they read it and reply when they can.</span></span><span class="chev">${I('chev')}</span></a></div>`;
-}
 function raiseForm(slug, tenant, svc, related, kind = 'issue') {
-  const sugK = kind === 'suggestion', dq = /[?&]direct=1/.test(location.hash) ? 'direct=1&' : '', base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`, back = base + (dq ? '?direct=1' : '');
+  const sugK = kind === 'suggestion', dq = /[?&]direct=1/.test(location.hash) ? 'direct=1&' : '', base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`, back = `#/d/${slug}/raise`;
   const idem = crypto.randomUUID();
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="${back}" aria-label="Back">${I('back')}</a>
-    <h1>${sugK ? 'Share a suggestion' : 'Report a problem'}</h1>${sugK ? `<span class="chip" style="background:var(--pa-sun);color:#DC6803">${I('idea', 22)}</span>` : `<span class="chip c0">${I(svcIcon(svc), 22)}</span>`}</div>
-  <p class="muted" style="margin-top:-4px">${esc(svc.name)} · <a href="${base}?${dq}kind=${sugK ? 'issue' : 'suggestion'}">${sugK ? 'Report a problem instead' : 'Share a suggestion instead'}</a></p>
+    <h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
+  <p class="muted" style="margin-top:-4px">Report a problem: you get a ticket number, and the team acts on it within its target time.</p>
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
     <div class="kindsw" role="radiogroup" aria-label="What would you like to do?" hidden>
