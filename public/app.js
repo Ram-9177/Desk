@@ -860,7 +860,7 @@ async function services(main) {
       ${Object.keys(s.sla || {}).length ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Own SLA: ${PRIORITIES.slice().reverse().filter(p => s.sla[p]).map(p => `${cap(p)} ${s.sla[p]}h`).join(' · ')}</span>` : ''}
       ${s.parent_id ? `<span class="muted small" style="display:block;margin-top:4px">${I('grid', 13)} Sub-team of ${esc(svcs.find(x => x.id === s.parent_id)?.name || '')}</span>` : ''}
       ${s.daily_cap ? `<span class="muted small" style="display:block;margin-top:4px">${I('clock', 13)} Takes ${s.daily_cap} tickets a day${s.queue?.waiting ? ` · <strong>${s.queue.waiting} waiting in the queue</strong>` : ''}</span>` : ''}</span>
-      <button class="btn soft" data-e="${s.id}">Edit</button></div>`).join('')}
+      <div class="svcacts"><button class="btn soft" data-e="${s.id}">Edit</button><button class="btn" data-act="${s.id}">${s.is_active ? 'Deactivate' : 'Activate'}</button><button class="btn danger" data-del="${s.id}">Delete</button></div></div>`).join('')}
     <p class="muted small">Working hours, default targets and hold reasons are under <a href="#/c/sla">SLA &amp; points</a>.</p>
     <p class="muted small">QR link for one service: ${location.origin}${location.pathname}#/d/${tenantObj().slug}?service=CODE</p>`;
   const qHead = `<b style="display:block;margin-top:20px">Questions on the form</b><div class="muted small">Extra questions for this service. Requestors always give their own details, the location and a subject first. Tick Required for questions people must answer. A dropdown option called Other lets people type their own answer.</div><div id="fb"></div>`;
@@ -874,6 +874,14 @@ async function services(main) {
     cd.oninput = () => { typed = true; cd.value = cd.value.replace(/[^A-Za-z0-9-]/g, '').toUpperCase(); };
     nm.addEventListener('input', () => { if (typed) return; const w = nm.value.split(/[^A-Za-z0-9]+/).filter(x => x && !/^(and|of|the|for|other)$/i.test(x));
       cd.value = (w.length > 1 ? w.map(x => x[0]).join('') : (w[0] || '').slice(0, 6)).toUpperCase().slice(0, 12); }); };
+  main.querySelectorAll('[data-act]').forEach(b => b.onclick = () => { const s = svcs.find(x => x.id === b.dataset.act), off = !!s.is_active;
+    dlg(`<h2>${off ? 'Deactivate' : 'Activate'} ${esc(s.name)}?</h2><p class="muted">${off ? 'It leaves the portal, so no new tickets can be raised for it. Its open tickets stay with the team, and you can activate it again any time.' : 'It shows on the portal again and takes new tickets.'}</p>`,
+      async () => { await api('/services/' + s.id, { method: 'PATCH', body: { is_active: off ? 0 : 1 } }); toast(off ? 'Service deactivated' : 'Service activated'); services(main); })
+      .querySelector('button[value=ok]').textContent = off ? 'Deactivate' : 'Activate'; });
+  main.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const s = svcs.find(x => x.id === b.dataset.del);
+    const d = dlg(`<h2>Delete ${esc(s.name)}?</h2><p class="muted">This removes the service, its providers list, escalation officers and SLA for good. Only a service that never had a ticket can be deleted; otherwise deactivate it.</p>`,
+      async () => { await api('/services/' + s.id, { method: 'DELETE' }); toast('Service deleted'); services(main); });
+    const ok = d.querySelector('button[value=ok]'); ok.textContent = 'Delete'; ok.classList.add('danger-solid'); });
   main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => {
     const s = svcs.find(x => x.id === b.dataset.e), { icon, ...schema } = s.form_schema;
     let fb; const d = dlg(`<h2>Edit ${esc(s.name)}</h2>${fields(s)}${qHead}

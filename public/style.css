@@ -712,3 +712,7 @@ b,strong{font-weight:600}
 h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 .stcell b,.kpi2 b{font-weight:600}
 .tt-req,.tt-loc{font-weight:400}
+/* Services: Edit, Deactivate, Delete on each team card */
+.svcacts{display:flex;flex-direction:column;gap:6px;flex:none;align-items:stretch}.svcacts .btn{min-height:36px;padding:6px 14px;font-size:13px}
+.btn.danger-solid{background:var(--danger);border-color:var(--danger);color:#fff;box-shadow:none}.btn.danger-solid:hover{background:#912018}
+@media (max-width:767px){.svc:has(.svcacts){flex-wrap:wrap}.svcacts{flex-direction:row;width:100%;padding-left:58px}.svcacts .btn{flex:1;min-height:40px}}

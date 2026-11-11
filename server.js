@@ -871,6 +871,19 @@ S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => 
   }
   await audit(req, 'service.update', 'service', s.id, b); return { ok: true };
 }));
+// Delete a team for good: only when it never had a ticket and has no sub-teams (otherwise deactivate it, which keeps its history)
+S.delete('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+  const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
+  const { n } = await one('SELECT count(*)::int n FROM tickets WHERE service_id=?', s.id);
+  if (n) throw new HttpErr(409, 'IN_USE', `${s.name} has ${n} ticket${n === 1 ? '' : 's'}, so it can't be deleted. Deactivate it instead: it leaves the portal and its tickets stay.`);
+  const subs = await all('SELECT name FROM services WHERE parent_id=?', s.id);
+  if (subs.length) throw new HttpErr(409, 'IN_USE', `${s.name} has sub-teams (${subs.map(x => x.name).join(', ')}). Move or delete them first.`);
+  await tx(async () => {
+    for (const t of ['service_members', 'service_escalations', 'sla_policies']) await run(`DELETE FROM ${t} WHERE service_id=?`, s.id);
+    await run('DELETE FROM services WHERE id=?', s.id);
+  });
+  await audit(req, 'service.delete', 'service', s.id, { code: s.code, name: s.name }); return { ok: true };
+}));
 S.put('/services/:id/members', role('super_admin', 'tenant_admin'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const ids = [...new Set(req.body.user_ids || [])];

@@ -769,6 +769,16 @@ try {
   const pr_ = (await q('SELECT created_at, due_at FROM tickets WHERE ticket_no=? AND tenant_id=?', pt.data.ticket_no, A.tenant))[0];
   const { calendar, workingBetween } = await import('../sla.js'), tnr = (await q('SELECT * FROM tenants WHERE id=?', A.tenant))[0];
   check('a sub-team ticket uses its main team’s target (6 working hours, not the campus 8)', workingBetween(calendar(tnr), pr_.created_at, pr_.due_at) === 6 * 60, JSON.stringify(pr_));
+  // deactivate and delete a service
+  await fails('a team with tickets cannot be deleted', `/services/${ids.elec}`, { ...A, method: 'DELETE' }, 409, 'deactivate it instead');
+  await fails('a main team with sub-teams cannot be deleted', `/services/${main.id}`, { ...A, method: 'DELETE' }, 409, 'sub-teams');
+  const tmp = await ok('a new unused service', '/services', { ...A, method: 'POST', body: { code: 'TMPX', name: 'Temp service', form_schema: { form_type: 'general', fields: [] } } });
+  await ok('…with a provider', `/services/${tmp.id}/members`, { ...A, method: 'PUT', body: { user_ids: [(await q("SELECT id FROM users WHERE email LIKE 'pavan%'"))[0].id] } });
+  await ok('deactivate it', `/services/${tmp.id}`, { ...A, method: 'PATCH', body: { is_active: 0 } });
+  check('a deactivated service leaves the portal', !(await api('/public/alpha')).data.services.some(x => x.id === tmp.id));
+  await fails('a provider cannot delete a service', `/services/${tmp.id}`, { token: T.pavan, method: 'DELETE' }, 403);
+  await ok('an admin deletes the unused service', `/services/${tmp.id}`, { ...A, method: 'DELETE' });
+  check('it is gone, with its providers list', !(await api('/services', A)).data.some(x => x.id === tmp.id) && !(await q('SELECT 1 FROM service_members WHERE service_id=?', tmp.id)).length);
   }
 
   sec('Remind me later (a provider’s reminder on a ticket)');
