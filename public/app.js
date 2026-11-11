@@ -222,8 +222,8 @@ async function foodScreens(slug, tenant, svc, flow) {
   // One screen: two stacked cards (feedback first); the picked one's form opens right below them
   if (flow !== 'report') flow = 'rate';
   const kindCards = cur => `<div class="kindsw foodkind" role="radiogroup" aria-label="What would you like to do?">
-      <label><input type="radio" name="fkind" value="rate" ${cur === 'rate' ? 'checked' : ''}><span><i class="ks-ic">${I('star', 18)}</i><b>Share a suggestion or feedback<small>Pick the day and meal, give stars and a short review. Goes to the kitchen team's report.</small></b></span></label>
-      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>A complaint that needs action now: insect, spoiled food, hygiene, billing, staff. Creates a ticket; a photo is needed.</small></b></span></label></div>`;
+      <label><input type="radio" name="fkind" value="rate" ${cur === 'rate' ? 'checked' : ''}><span><i class="ks-ic">${I('star', 18)}</i><b>Feedback / suggestion<small>Pick the day and meal, give stars and a short review or idea. Goes to the kitchen team's report; no ticket.</small></b></span></label>
+      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a complaint<small>Raises a ticket, like any other service: you get a ticket number, the team acts on it, and you can track it. A photo is needed.</small></b></span></label></div>`;
   const wireKind = () => document.querySelectorAll('[name=fkind]').forEach(r => r.onchange = () => {
     const fm = $('#f'); foodCarry({ location_id: fm?.location_id?.value, meal: fm?.meal?.value }); location.replace(`${base}?flow=${r.value}`); });
   if (flow === 'rate') { // ---------- Flow A: Rate your meal ----------
@@ -251,7 +251,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       try { const r = await api(`/public/${slug}/food/feedback`, { method: 'POST', body: v });
         app.innerHTML = `<div class="wrap">${head('Thank you', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
           <h2 style="margin:6px 0">${esc(r.message)}</h2><p class="muted">${'★'.repeat(v.rating)}${'☆'.repeat(5 - v.rating)} · ${esc(mName(v.meal))} · ${dayName(v.meal_date)}</p>
-          ${v.rating <= 2 ? `<p><a href="${base}?flow=report" id="serious" class="soft-link">Needs action now? Report a problem →</a></p>` : ''}
+          ${v.rating <= 2 ? `<p><a href="${base}?flow=report" id="serious" class="soft-link">Needs action now? Report a complaint →</a></p>` : ''}
           <p><a class="btn" href="#/d/${slug}">Done</a></p></div></div>`;
         if ($('#serious')) $('#serious').onclick = () => foodCarry({ location_id: v.location_id, meal: v.meal, description: v.comment });
       } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
@@ -270,7 +270,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div></div><label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''}><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
       <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
         <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
-      <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Continue</button></p></form></div>`;
+      <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Raise ticket</button></p></form></div>`;
     wireFiles('food'); wireKind();
     const fm = $('#f'), sync = () => { $('#else').hidden = fm.category.value !== 'other'; };
     fm.querySelectorAll('[name=category]').forEach(r => r.onchange = sync);
@@ -280,16 +280,8 @@ async function foodScreens(slug, tenant, svc, flow) {
       if (!n) { $('#err').textContent = 'Please add a photo of the problem (camera or gallery).'; return; }
       const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, category: fm.category.value, description: fm.description.value.trim(), name: fm.name.value.trim(),
         requestor_type: fm.requestor_type.value, email: fm.email.value.trim(), phone: fm.phone.value.trim(), website: fm.website.value, idempotency_key: idem };
-      const choice = await foodConfirm(); if (!choice) return;
       btn.disabled = true;
       try {
-        if (choice === 'feedback') { // converted: no ticket, the comment and a matching chip go to the kitchen's report
-          const r = await api(`/public/${slug}/food/feedback`, { method: 'POST', body: { location_id: v.location_id, meal: v.meal, converted_from_complaint: true,
-            chips: CATEGORY_CHIPS[v.category] || [], comment: v.description.slice(0, 300), name: v.name, device_key: null } });
-          app.innerHTML = `<div class="wrap">${head('Sent as feedback', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-            <h2 style="margin:6px 0">${esc(r.message)}</h2><p class="muted">No ticket was raised.</p><p><a class="btn" href="#/d/${slug}">Done</a></p></div></div>`;
-          return;
-        }
         const body = { ...v, files: await readFiles(document.querySelectorAll('.f-food')) };
         let r; try { r = await api(`/public/${slug}/food/complaint`, { method: 'POST', body }); }
         catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; r = await api(`/public/${slug}/food/complaint`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
@@ -304,16 +296,6 @@ async function foodScreens(slug, tenant, svc, flow) {
     return;
   }
 }
-// "Does this need action right now?" → 'ticket' | 'feedback' | null (closed)
-const foodConfirm = () => new Promise(res => {
-  const d = document.createElement('dialog'); d.className = 'sheet';
-  d.innerHTML = `<h2>Does this need action right now?</h2><p class="muted">A ticket goes to the Executive Chef to fix now. Feedback goes into tonight's kitchen report.</p>
-    <p><button type="button" class="btn primary big" data-c="ticket">Yes, raise ticket</button></p><p><button type="button" class="btn big" data-c="feedback">No, send as feedback</button></p>
-    <p style="text-align:center;margin:0"><button type="button" class="btn ghost" data-c="">Go back</button></p>`;
-  document.body.append(d); d.showModal(); let v = null;
-  d.onclick = e => { const b = e.target.closest('[data-c]'); if (b) { v = b.dataset.c || null; d.close(); } };
-  d.onclose = () => { d.remove(); res(v); };
-});
 
 function raiseForm(slug, tenant, svc, related, kind = 'issue') {
   const sugK = kind === 'suggestion', dq = /[?&]direct=1/.test(location.hash) ? 'direct=1&' : '', base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`, back = `#/d/${slug}/raise`;

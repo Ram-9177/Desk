@@ -1120,10 +1120,10 @@ async function uiSmoke(tok, id) {
     await visit('food: the service list says "Rate meals or report a problem"', '/d/alpha/raise', null, 'a.svc[href*="FOODX"]');
     check('food card subtitle', await js(`return /Rate meals or report a problem/.test(document.querySelector('a.svc[href*="FOODX"]').textContent)`));
     await visit('food: one screen with two stacked cards', '/d/alpha/raise/FOODX', null, '.foodkind');
-    check('"Share a suggestion or feedback" first and open (its form below), "Report a problem" stacked under it', await js(`const c = [...document.querySelectorAll('.foodkind label')];
-      return c.length === 2 && /Share a suggestion or feedback/.test(c[0].textContent) && /Report a problem/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1
+    check('"Feedback / suggestion" first and open (its form below), "Report a complaint" stacked under it', await js(`const c = [...document.querySelectorAll('.foodkind label')];
+      return c.length === 2 && /Feedback \\/ suggestion/.test(c[0].textContent) && /Report a complaint/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1
         && document.querySelector('[name=fkind]:checked').value === 'rate' && !!document.querySelector('#f .stars')`));
-    check('tapping Report a problem opens the complaint form on the same screen', await js(`document.querySelector('[name=fkind][value=report]').click(); await new Promise(r => setTimeout(r, 1500));
+    check('tapping Report a complaint opens the complaint form on the same screen', await js(`document.querySelector('[name=fkind][value=report]').click(); await new Promise(r => setTimeout(r, 1500));
       return !!document.querySelector('#f .fcats') && document.querySelector('[name=fkind]:checked').value === 'report' && /photo/i.test(document.querySelector('.foodkind').textContent)`));
     await visit('food: rate your meal', '/d/alpha/raise/FOODX?flow=rate', null, '.stars');
     check('the meal defaults to the one by the time of day', await js(`const m = await import('/shared.js'); const f = await (await fetch('/api/public/alpha/food')).json();
@@ -1135,20 +1135,15 @@ async function uiSmoke(tok, id) {
       const shown = !document.querySelector('#else').hidden; document.querySelector('#toRate').click(); await new Promise(r => setTimeout(r, 1200));
       return hidden && shown && document.querySelector('[name=fkind]:checked')?.value === 'rate' && !!document.querySelector('#f .stars') && document.querySelector('[name=comment]').value === 'Too salty today'`));
     const foodPng = path.join(TMP, 'food.png'); fs.writeFileSync(foodPng, Buffer.from(PNG.split(',')[1], 'base64'));
-    for (const [choice, want] of [['feedback', 'Sent as feedback'], ['ticket', 'Ticket raised']]) {
-      await visit(`food: report form (${choice} path)`, '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
-      const { root: r0 } = await send('DOM.getDocument'), { nodeId: n0 } = await send('DOM.querySelector', { nodeId: r0.nodeId, selector: 'input.f-food[data-source="gallery"]' });
-      await send('DOM.setFileInputFiles', { nodeId: n0, files: [foodPng] });
-      check(`confirm sheet "Does this need action right now?" → ${choice === 'ticket' ? 'Yes, raise ticket' : 'No, send as feedback'}`, await js(`const f = document.querySelector('#f');
-        f.location_id.value = f.location_id.options[1].value; f.querySelector('[name=category][value=spoiled]').click(); f.description.value = 'Curd smelled bad ${choice}';
-        f.name.value = 'Ui ${choice}'; f.email.value = 'ui-${choice}@food.example.com'; f.phone.value = '9000055555';
-        f.querySelector('button.primary').click(); await new Promise(r => setTimeout(r, 400));
-        const sheet = document.querySelector('dialog.sheet'); if (!sheet || !/Does this need action right now/.test(sheet.textContent)) return 'no sheet';
-        sheet.querySelector('[data-c=${choice}]').click(); await new Promise(r => setTimeout(r, 2000));
-        return document.querySelector('h1').textContent === '${want}' || document.querySelector('h1').textContent;`) === true);
-    }
-    check('the ticket path made a ticket; the feedback path only feedback', (await q("SELECT count(*)::int n FROM tickets WHERE description LIKE 'Curd smelled bad%'"))[0].n === 1
-      && (await q("SELECT count(*)::int n FROM food_feedback WHERE converted_from_complaint AND comment='Curd smelled bad feedback'"))[0].n === 1);
+    await visit('food: Report a complaint form', '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
+    { const { root: r0 } = await send('DOM.getDocument'), { nodeId: n0 } = await send('DOM.querySelector', { nodeId: r0.nodeId, selector: 'input.f-food[data-source="gallery"]' });
+      await send('DOM.setFileInputFiles', { nodeId: n0, files: [foodPng] }); }
+    check('Report a complaint raises a ticket straight away (same flow as other services, no "send as feedback" detour)', await js(`const f = document.querySelector('#f');
+      f.location_id.value = f.location_id.options[1].value; f.querySelector('[name=category][value=spoiled]').click(); f.description.value = 'Curd smelled bad ticket';
+      f.name.value = 'Ui ticket'; f.email.value = 'ui-ticket@food.example.com'; f.phone.value = '9000055555';
+      f.querySelector('button.primary').click(); await new Promise(r => setTimeout(r, 2500));
+      return !document.querySelector('dialog.sheet') && document.querySelector('h1').textContent === 'Ticket raised' && !!document.querySelector('.stub .no')`));
+    check('the complaint is a ticket', (await q("SELECT count(*)::int n FROM tickets WHERE description LIKE 'Curd smelled bad%'"))[0].n === 1);
     await visit('kitchen dashboard: Feedback & Scores', '/c/food', tok.pavan, '.fsplit .fov');
     check('dashboard: overall + one card per meal, complaints apart, line chart, bars, and the Complaints tab', await js(`const ok = document.querySelectorAll('.fsplit .fmeal').length >= 3 && !!document.querySelector('.fcomp .fc-n') && !!document.querySelector('svg.fchart polyline') && document.querySelectorAll('.hbar').length >= 4;
       document.querySelector('.fmeal[data-meal]').click(); await new Promise(r => setTimeout(r, 1500)); const mv = !!document.querySelector('.mv-h') && !!document.querySelector('.mv-sum .sdist') && document.querySelectorAll('.mv-row').length >= 1;
