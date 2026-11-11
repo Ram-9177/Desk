@@ -185,7 +185,7 @@ async function portal(slug, q, view, code) {
     if (!q.get('direct')) return;
   }
   if (pick && isFood(pick.form_schema)) return foodScreens(slug, tenant, pick, q.get('flow'));
-  if (pick) return raiseForm(slug, tenant, pick);
+  if (pick) { const k = q.get('kind'); return k === 'issue' || k === 'suggestion' ? raiseForm(slug, tenant, pick, null, k) : kindChoice(slug, pick, q); }
   if (view !== 'raise') {
     const opt = (href, ic, cls, title, sub) => `<a class="svc" href="${href}"><span class="chip ${cls}">${I(ic, 22)}</span><span class="t"><b>${title}</b><span class="muted small">${sub}</span></span><span class="chev">${I('chev')}</span></a>`;
     const seen = guideSeen('guide-seen');
@@ -314,15 +314,26 @@ const foodConfirm = () => new Promise(res => {
   d.onclose = () => { d.remove(); res(v); };
 });
 
-function raiseForm(slug, tenant, svc, related) {
+// Step 1 for a service: what would you like to do? Each card opens its own form.
+function kindChoice(slug, svc, q) {
+  const base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}?${q.get('direct') ? 'direct=1&' : ''}kind=`;
+  document.title = `${svc.name} · ONE Desk`;
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
+    <p class="muted">What would you like to do?</p>
+    <a class="kindcard prob" href="${base}issue"><span class="ks-ic">${I('alert', 22)}</span><span class="t"><b>Report a problem</b><span>Something is broken or not working. You get a ticket number and the team acts on it within its target time.</span></span><span class="chev">${I('chev')}</span></a>
+    <a class="kindcard sugg" href="${base}suggestion"><span class="ks-ic">${I('idea', 22)}</span><span class="t"><b>Share a suggestion or feedback</b><span>An idea or feedback for the ${esc(svc.name)} team. No deadline; they read it and reply when they can.</span></span><span class="chev">${I('chev')}</span></a></div>`;
+}
+function raiseForm(slug, tenant, svc, related, kind = 'issue') {
+  const sugK = kind === 'suggestion', dq = /[?&]direct=1/.test(location.hash) ? 'direct=1&' : '', base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`, back = base + (dq ? '?direct=1' : '');
   const idem = crypto.randomUUID();
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a>
-    <h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="${back}" aria-label="Back">${I('back')}</a>
+    <h1>${sugK ? 'Share a suggestion' : 'Report a problem'}</h1>${sugK ? `<span class="chip" style="background:var(--pa-sun);color:#DC6803">${I('idea', 22)}</span>` : `<span class="chip c0">${I(svcIcon(svc), 22)}</span>`}</div>
+  <p class="muted" style="margin-top:-4px">${esc(svc.name)} · <a href="${base}?${dq}kind=${sugK ? 'issue' : 'suggestion'}">${sugK ? 'Report a problem instead' : 'Share a suggestion instead'}</a></p>
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
-    <div class="kindsw" role="radiogroup" aria-label="What would you like to do?">
-      <label><input type="radio" name="kind" value="issue" checked><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>Something is broken or not working. The team acts on it within its target time.</small></b></span></label>
-      <label><input type="radio" name="kind" value="suggestion"><span><i class="ks-ic">${I('idea', 18)}</i><b>Share a suggestion or feedback<small>An idea or feedback for the team. No deadline; they reply when they can.</small></b></span></label></div>
+    <div class="kindsw" role="radiogroup" aria-label="What would you like to do?" hidden>
+      <label><input type="radio" name="kind" value="issue" ${sugK ? '' : 'checked'}><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>Something is broken or not working. The team acts on it within its target time.</small></b></span></label>
+      <label><input type="radio" name="kind" value="suggestion" ${sugK ? 'checked' : ''}><span><i class="ks-ic">${I('idea', 18)}</i><b>Share a suggestion or feedback<small>An idea or feedback for the team. No deadline; they reply when they can.</small></b></span></label></div>
     <div class="kindhint" id="kindhint" hidden>${I('idea', 16)}<span>A suggestion goes to the ${esc(svc.name)} team as an idea, not a complaint. It has no deadline; they reply when they can.</span></div>
     <label>Your name</label><input name="name" required autocomplete="name">
     <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>

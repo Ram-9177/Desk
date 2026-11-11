@@ -1004,8 +1004,14 @@ async function uiSmoke(tok, id) {
     await visit('campus picker', '/', null, 'a.svc');
     await visit('campus intro, with the first-visit guide card', '/d/alpha', null, '.guidecard a[href="guide/requestor.html"]');
     await visit('service list', '/d/alpha/raise', null, 'a.svc[href*="ELEC"]');
-    await visit('raise form (location type)', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
-    await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
+    await visit('a service first asks what you want to do: two cards', '/d/alpha/raise/ELEC', null, '.kindcard.prob');
+    check('Report a problem and Share a suggestion each open their own form', await js(`const c = [...document.querySelectorAll('.kindcard')];
+      return c.length === 2 && /kind=issue$/.test(c[0].getAttribute('href')) && /kind=suggestion$/.test(c[1].getAttribute('href'))`));
+    await visit('suggestion form', '/d/alpha/raise/ELEC?kind=suggestion', null, '#f [name=subject]');
+    check('the suggestion form: its own title, no location, Send suggestion', await js(`return /Share a suggestion/.test(document.querySelector('h1').textContent) && document.querySelector('#f [name=kind]:checked').value === 'suggestion'
+      && [...document.querySelectorAll('#f .prob-only')].every(x => x.hidden) && /Send suggestion/.test(document.querySelector('#raiseBtn').textContent)`));
+    await visit('raise form (location type)', '/d/alpha/raise/ELEC?kind=issue', null, '#f [name=fd_loc_block]');
+    await visit('raise form (student type)', '/d/alpha/raise/EXAM?kind=issue', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
     await visit('staff login', '/login', null, '#f [name=password]');
@@ -1150,7 +1156,7 @@ async function uiSmoke(tok, id) {
       document.querySelector('.fmeal[data-meal]').click(); await new Promise(r => setTimeout(r, 1500)); const mv = !!document.querySelector('.mv-h') && !!document.querySelector('.mv-sum .sdist') && document.querySelectorAll('.mv-row').length >= 1;
       document.querySelector('#mvb').click(); await new Promise(r => setTimeout(r, 1500)); const backOk = !!document.querySelector('.fsplit');
       document.querySelector('[data-t=complaints]').click(); await new Promise(r => setTimeout(r, 1500)); return ok && mv && backOk && document.querySelectorAll('.tcard').length >= 1`));
-    await visit('raise form for photo upload', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
+    await visit('raise form for photo upload', '/d/alpha/raise/ELEC?kind=issue', null, '#f [name=fd_loc_block]');
     const { root } = await send('DOM.getDocument'), { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input.f-raise[data-source="gallery"]' });
     await send('DOM.setFileInputFiles', { nodeId, files: [bigFile, HEIC_FILE] });
     await js(`const f = document.querySelector('#f');
