@@ -851,6 +851,26 @@ try {
   check('today per meal: average, count and top chips', dash.today.per_meal.lunch.count === 2 && dash.today.per_meal.lunch.avg === 3.5 && dash.today.per_meal.dinner.chips[0].chip === 'Cold food' && dash.today.total === 5 && dash.complaints === 3, JSON.stringify(dash.today.per_meal.lunch));
   check('location filter', (await api(`/food/dashboard?location=${L2}`, { token: T.pavan })).data.today.total === 2);
   await fails('only the food team and admins see food scores', '/food/dashboard', { token: T.lata }, 403);
+  // feedback for a chosen day; meals and tags set by the admin
+  { const pf = (await api('/public/alpha/food')).data, dback = n => { const d = new Date(pf.today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
+  const y = await fb({ location_id: L1, meal: 'lunch', meal_date: dback(1), rating: 4 }, 'dev-yday-1');
+  check('feedback for yesterday’s lunch is kept under yesterday', y.status === 200 && (await q("SELECT meal_date::text d FROM food_feedback WHERE device_key='dev-yday-1'"))[0]?.d === dback(1), JSON.stringify(y.error));
+  check('the same phone can’t rate that lunch twice; the message names the day', (r => r.status === 409 && / on /.test(r.error.message))(await fb({ location_id: L1, meal: 'lunch', meal_date: dback(1), rating: 2 }, 'dev-yday-1')));
+  check('not a future day', (await fb({ location_id: L1, meal: 'lunch', meal_date: dback(-1), rating: 4 })).status === 400);
+  check('not more than 6 days back', (await fb({ location_id: L1, meal: 'lunch', meal_date: dback(7), rating: 4 })).status === 400);
+  const before = (await api('/food/settings', A)).data;
+  check('settings list the four default meals and tags', before.meals.length === 4 && before.chips.includes('Cold food'));
+  await fails('a meal needs a name', '/food/settings', { ...A, method: 'PUT', body: { meals: [{ name: '', start: '08:00', end: '09:00' }] } }, 400);
+  await ok('admin adds Brunch, switches off Snacks and sets their own tags', '/food/settings', { ...A, method: 'PUT', body: {
+    meals: [...before.meals.map(m => ({ ...m, active: m.key !== 'snacks' })), { name: 'Brunch', start: '10:30', end: '11:30' }], chips: ['Tasty', 'Too oily', 'Small portion'] } });
+  const pf2 = (await api('/public/alpha/food')).data;
+  check('the form now offers Brunch and not Snacks, with the new tags', pf2.meals.includes('brunch') && !pf2.meals.includes('snacks') && pf2.meal_list.find(m => m.key === 'brunch').name === 'Brunch' && pf2.chips.join() === 'Tasty,Too oily,Small portion');
+  check('a switched-off meal can’t be rated', (await fb({ location_id: L1, meal: 'snacks', rating: 4 })).status === 400);
+  check('old tags are refused, new ones accepted', (await fb({ location_id: L1, meal: 'brunch', rating: 3, chips: ['Cold food'] })).status === 400 && (await fb({ location_id: L1, meal: 'brunch', rating: 3, chips: ['Tasty'] })).status === 200);
+  const dsh = (await api('/food/dashboard', { token: T.pavan })).data;
+  check('the kitchen dashboard shows Brunch, per day and meal', dsh.meals.some(m => m.key === 'brunch') && dsh.today.per_meal.brunch.count === 1 && Array.isArray(dsh.period.counts.brunch));
+  await ok('admin puts the defaults back', '/food/settings', { ...A, method: 'PUT', body: { meals: before.meals.map(m => ({ ...m, active: true })), chips: before.default_chips } });
+  check('back to four meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,snacks,dinner'); }
   check('CSV export', /meal_date,meal,location,rating/.test(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()));
   // reports
   const rep = (per, qs = '', key = 'food-report-key-0123456789') => fetch(`${API}/reports/food/${per}?tenant=alpha&format=json${qs}`, { headers: { 'x-report-key': key } });
@@ -1058,17 +1078,17 @@ async function uiSmoke(tok, id) {
     await visit('food: the service list says "Rate meals or report a problem"', '/d/alpha/raise', null, 'a.svc[href*="FOODX"]');
     check('food card subtitle', await js(`return /Rate meals or report a problem/.test(document.querySelector('a.svc[href*="FOODX"]').textContent)`));
     await visit('food: "How can we help with food?" (Screen 2)', '/d/alpha/raise/FOODX', null, '.foodpick.primary');
-    check('Screen 2: "Rate your meal" is the big first card, "Report a serious problem" the smaller second', await js(`const c = [...document.querySelectorAll('.foodpick')];
-      return c.length === 2 && c[0].classList.contains('primary') && /Rate your meal/.test(c[0].textContent) && /Report a serious problem/.test(c[1].textContent) && c[0].offsetHeight > c[1].offsetHeight && /photo required/.test(c[1].textContent)`));
+    check('Screen 2: "Share feedback" is the first card, "Report a problem" (a complaint) below it, stacked', await js(`const c = [...document.querySelectorAll('.foodpick')];
+      return c.length === 2 && c[0].classList.contains('primary') && /Share feedback/.test(c[0].textContent) && /Report a problem/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1 && /photo required/.test(c[1].textContent)`));
     await visit('food: rate your meal', '/d/alpha/raise/FOODX?flow=rate', null, '.stars');
     check('the meal defaults to the one by the time of day', await js(`const m = await import('/shared.js'); const f = await (await fetch('/api/public/alpha/food')).json();
       const hm = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
-      return document.querySelector('[name=meal]').value === m.mealAt(f.data.windows, hm)`));
+      return document.querySelector('[name=meal]:checked').value === m.mealAt(f.data.windows, hm) && document.querySelector('[name=dayk]:checked').value === f.data.today`));
     await visit('food: report a serious problem', '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
-    check('"Something else" shows the rate-instead hint with Switch to rating, carrying the text', await js(`const f = document.querySelector('#f'); const hidden = document.querySelector('#else').hidden;
+    check('"Something else" shows the feedback-instead hint with Switch to feedback, carrying the text', await js(`const f = document.querySelector('#f'); const hidden = document.querySelector('#else').hidden;
       f.querySelector('[name=category][value=other]').click(); f.description.value = 'Too salty today';
       const shown = !document.querySelector('#else').hidden; document.querySelector('#toRate').click(); await new Promise(r => setTimeout(r, 1200));
-      return hidden && shown && /Rate your meal/.test(document.querySelector('h1').textContent) && document.querySelector('[name=comment]').value === 'Too salty today'`));
+      return hidden && shown && /Share feedback/.test(document.querySelector('h1').textContent) && document.querySelector('[name=comment]').value === 'Too salty today'`));
     const foodPng = path.join(TMP, 'food.png'); fs.writeFileSync(foodPng, Buffer.from(PNG.split(',')[1], 'base64'));
     for (const [choice, want] of [['feedback', 'Sent as feedback'], ['ticket', 'Ticket raised']]) {
       await visit(`food: report form (${choice} path)`, '/d/alpha/raise/FOODX?flow=report', null, '.fcats');

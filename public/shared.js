@@ -62,14 +62,15 @@ export const FOOD_CATEGORIES = [['insect', 'Insect or foreign object'], ['spoile
 export const foodCategory = k => FOOD_CATEGORIES.find(c => c[0] === k)?.[1] || k;
 // a complaint sent as feedback instead keeps its category as a chip where one fits
 export const CATEGORY_CHIPS = { insect: ['Hygiene look'], spoiled: ['Taste'], hygiene: ['Hygiene look'], water: ['Hygiene look'] };
+export const MEAL_PALETTE = ['#f29a1f', '#1e4b8f', '#e0559b', '#1a9a56', '#7A5AF8', '#0E9384', '#B93815', '#475467'];
 export const DEFAULT_MEAL_WINDOWS = { breakfast: ['06:30', '10:30'], lunch: ['11:30', '15:00'], snacks: ['15:30', '18:30'], dinner: ['19:00', '22:30'] };
 // The meal to rate at a campus-local time 'HH:MM': the one being served, else the one that ended last (people rate after eating),
 // else (early morning, before any meal ends) breakfast.
-export function mealAt(windows = DEFAULT_MEAL_WINDOWS, hhmm = '12:00') {
-  const w = MEALS.map(m => [m, ...(windows[m] || DEFAULT_MEAL_WINDOWS[m])]);
+export function mealAt(windows = DEFAULT_MEAL_WINDOWS, hhmm = '12:00') { // windows: { key: [from, to] } for the campus's meals, in serving order
+  const w = Object.entries(windows).map(([m, x]) => [m, ...x]);
   const on = w.find(([, a, b]) => hhmm >= a && hhmm < b); if (on) return on[0];
   const ended = w.filter(([, , b]) => b <= hhmm).sort((x, y) => (x[2] < y[2] ? 1 : -1))[0];
-  return ended ? ended[0] : 'breakfast';
+  return ended ? ended[0] : w[0]?.[0] || 'breakfast';
 }
 export const DEFAULT_LISTS = { block: [], floor: ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floor'], branch: [] };
 const pick = (key, label, list, placeholder) => list.length

@@ -211,29 +211,40 @@ const foodDevice = () => { try { let k = localStorage.getItem('food-device'); if
 const foodCarry = (v) => { try { if (v === undefined) { const x = JSON.parse(sessionStorage.getItem('food-carry') || 'null'); sessionStorage.removeItem('food-carry'); return x || {}; } sessionStorage.setItem('food-carry', JSON.stringify(v)); } catch { return {}; } };
 const nowHM = () => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
 async function foodScreens(slug, tenant, svc, flow) {
-  const f = await api(`/public/${slug}/food`), base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`;
+  const f = await api(`/public/${slug}/food`), base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`, ML = f.meal_list || [], mName = k => ML.find(m => m.key === k)?.name || MEAL_NAMES[k] || k;
   const head = (title, back) => `<div class="head"><a class="iconbtn" href="${back}" aria-label="Back">${I('back')}</a><h1>${title}</h1></div>`;
   const where = (sel = {}) => `<div class="row">${f.locations.length ? `<div><label>Mess / canteen</label><select name="location_id" required><option value="">Choose…</option>${f.locations.map(l => `<option value="${l.id}" ${l.id === sel.location_id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>` : ''}
-    <div><label>Meal</label><select name="meal" required>${MEALS.map(m => `<option value="${m}" ${m === (sel.meal || mealAt(f.windows, nowHM())) ? 'selected' : ''}>${MEAL_NAMES[m]}</option>`).join('')}</select></div></div>`;
+    <div><label>Meal</label><select name="meal" required>${ML.map(m => `<option value="${m.key}" ${m.key === (sel.meal || mealAt(f.windows, nowHM())) ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div></div>`;
+  const locOnly = (sel = {}) => f.locations.length ? `<label>Mess / canteen</label><select name="location_id" required><option value="">Choose…</option>${f.locations.map(l => `<option value="${l.id}" ${l.id === sel.location_id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>` : '';
+  const dayName = ymd => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const dayBack = n => { const d = new Date(f.today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
   document.title = `${svc.name} · ONE Desk`;
   if (flow === 'rate') { // ---------- Flow A: Rate your meal ----------
     const c = foodCarry();
-    app.innerHTML = `<div class="wrap">${head('Rate your meal', base)}<form id="f" class="card food-form">
+    const mnow = c.meal || mealAt(f.windows, nowHM());
+    app.innerHTML = `<div class="wrap">${head('Share feedback', base)}<form id="f" class="card food-form">
       <input class="hp" name="website" tabindex="-1" autocomplete="off">
-      ${where(c)}
+      <label>Which day?</label><div class="whochips fpick" role="radiogroup" aria-label="Which day?">
+        <label><input type="radio" name="dayk" value="${f.today}" checked><span class="rtb">Today<small>${dayName(f.today)}</small></span></label>
+        <label><input type="radio" name="dayk" value="${dayBack(1)}"><span class="rtb">Yesterday<small>${dayName(dayBack(1))}</small></span></label>
+        <label><input type="radio" name="dayk" value="pick"><span class="rtb">Earlier<small>Pick a date</small></span></label></div>
+      <div id="dpick" hidden><label for="pday">Date</label><input type="date" id="pday" name="pday" min="${dayBack(f.back_days ?? 6)}" max="${dayBack(2)}"></div>
+      <label>Which meal?</label><div class="whochips fpick meals" role="radiogroup" aria-label="Which meal?">${ML.map(m => `<label><input type="radio" name="meal" value="${m.key}" ${m.key === mnow ? 'checked' : ''} required><span class="rtb"><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}<small>${m.start}–${m.end}</small></span></label>`).join('')}</div>
+      ${locOnly(c)}
       <label>How was it?</label><div class="stars" role="radiogroup" aria-label="Rating">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" required><span aria-label="${n} star${n > 1 ? 's' : ''}">★</span></label>`).join('')}</div>
-      <label>What stood out? <small>(tap all that apply)</small></label><div class="fchips">${FOOD_CHIPS.map(ch => `<label><input type="checkbox" name="chips" value="${esc(ch)}" ${(c.chips || []).includes(ch) ? 'checked' : ''}><span>${esc(ch)}</span></label>`).join('')}</div>
-      <label>Comment</label><textarea name="comment" maxlength="300" placeholder="Anything the chef should know (you can skip this)">${esc(c.comment || '')}</textarea><div class="muted small" id="cc"></div>
+      <label>What stood out? <small>(tap all that apply)</small></label><div class="fchips">${f.chips.map(ch => `<label><input type="checkbox" name="chips" value="${esc(ch)}" ${(c.chips || []).includes(ch) ? 'checked' : ''}><span>${esc(ch)}</span></label>`).join('')}</div>
+      <label>Your review</label><textarea name="comment" maxlength="300" placeholder="Anything the kitchen team should know (you can skip this)">${esc(c.comment || '')}</textarea><div class="muted small" id="cc"></div>
       <label>Your name or roll no. <small>(leave empty to stay anonymous)</small></label><input name="name" maxlength="80" autocomplete="name">
-      <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Send rating</button></p></form></div>`;
+      <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Send feedback</button></p></form></div>`;
     const ta = $('#f').comment, cc = () => { $('#cc').textContent = `${ta.value.length} / 300`; }; ta.oninput = cc; cc();
+    $('#f').querySelectorAll('[name=dayk]').forEach(r => r.onchange = () => { const on = $('#f').dayk.value === 'pick'; $('#dpick').hidden = !on; $('#pday').required = on; if (on) $('#pday').focus(); });
     $('#f').onsubmit = async e => { e.preventDefault(); const fm = e.target, btn = fm.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
-      const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, rating: Number(fm.rating.value), chips: [...fm.querySelectorAll('[name=chips]:checked')].map(x => x.value),
+      const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, meal_date: fm.dayk.value === 'pick' ? fm.pday.value : fm.dayk.value, rating: Number(fm.rating.value), chips: [...fm.querySelectorAll('[name=chips]:checked')].map(x => x.value),
         comment: fm.comment.value.trim(), name: fm.name.value.trim(), website: fm.website.value, device_key: foodDevice() };
       try { const r = await api(`/public/${slug}/food/feedback`, { method: 'POST', body: v });
         app.innerHTML = `<div class="wrap">${head('Thank you', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-          <h2 style="margin:6px 0">${esc(r.message)}</h2><p class="muted">${'★'.repeat(v.rating)}${'☆'.repeat(5 - v.rating)} · ${MEAL_NAMES[v.meal]}</p>
-          ${v.rating <= 2 ? `<p><a href="${base}?flow=report" id="serious" class="soft-link">Is this serious? Report a problem →</a></p>` : ''}
+          <h2 style="margin:6px 0">${esc(r.message)}</h2><p class="muted">${'★'.repeat(v.rating)}${'☆'.repeat(5 - v.rating)} · ${esc(mName(v.meal))} · ${dayName(v.meal_date)}</p>
+          ${v.rating <= 2 ? `<p><a href="${base}?flow=report" id="serious" class="soft-link">Needs action now? Report a problem →</a></p>` : ''}
           <p><a class="btn" href="#/d/${slug}">Done</a></p></div></div>`;
         if ($('#serious')) $('#serious').onclick = () => foodCarry({ location_id: v.location_id, meal: v.meal, description: v.comment });
       } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
@@ -241,12 +252,12 @@ async function foodScreens(slug, tenant, svc, flow) {
   }
   if (flow === 'report') { // ---------- Flow B: Report a serious problem ----------
     const c = foodCarry(), idem = crypto.randomUUID();
-    app.innerHTML = `<div class="wrap">${head('Report a serious problem', base)}<form id="f" class="card food-form">
+    app.innerHTML = `<div class="wrap">${head('Report a problem', base)}<form id="f" class="card food-form">
       <input class="hp" name="website" tabindex="-1" autocomplete="off">
       ${where(c)}
       <label>What is the problem?</label><div class="fcats">${FOOD_CATEGORIES.map(([k, l]) => `<label><input type="radio" name="category" value="${k}" required><span>${esc(l)}</span></label>`).join('')}</div>
-      <div class="limitbox" id="else" hidden>${I('alert', 22)}<div><b>Taste, quantity or cold food?</b><div>Rate the meal instead. The chef sees it tonight.</div>
-        <button type="button" class="btn soft" id="toRate" style="margin-top:8px">${I('play', 16)} Switch to rating</button></div></div>
+      <div class="limitbox" id="else" hidden>${I('alert', 22)}<div><b>Taste, quantity or cold food?</b><div>Share feedback instead. The kitchen team sees it tonight.</div>
+        <button type="button" class="btn soft" id="toRate" style="margin-top:8px">${I('star', 16)} Switch to feedback</button></div></div>
       <label>Describe what happened</label><textarea name="description" required maxlength="2000" placeholder="What, where and when">${esc(c.description || '')}</textarea>
       <label>Photo <span class="req" aria-hidden="true">*</span> <small>(camera or gallery)</small></label>${fileButtons('food')}
       <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div></div><label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''}><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
@@ -286,10 +297,10 @@ async function foodScreens(slug, tenant, svc, flow) {
     return;
   }
   // ---------- Screen 2: choose ----------
-  app.innerHTML = `<div class="wrap">${head('How can we help with food?', `#/d/${slug}/raise`)}
-    <a class="foodpick primary" href="${base}?flow=rate"><span class="fp-ic">★</span><span class="t"><b>Rate your meal</b><span>Taste, quantity, cold food, menu, variety</span>
-      <small>Goes to the kitchen team's report tonight</small></span><span class="chev">${I('chev')}</span></a>
-    <a class="foodpick secondary" href="${base}?flow=report"><span class="fp-ic">${I('alert', 20)}</span><span class="t"><b>Report a serious problem</b><span>Insect or foreign object, spoiled food, hygiene, billing error, staff behaviour</span>
+  app.innerHTML = `<div class="wrap">${head(esc(svc.name), `#/d/${slug}/raise`)}<p class="muted">How was the food? Most things are best as feedback; report a problem only when it needs action now.</p>
+    <a class="foodpick primary" href="${base}?flow=rate"><span class="fp-ic">★</span><span class="t"><b>Share feedback</b><span>Pick the day and meal, give stars and a short review: taste, quantity, cold food, menu, variety</span>
+      <small>Goes to the kitchen team's daily report</small></span><span class="chev">${I('chev')}</span></a>
+    <a class="foodpick secondary" href="${base}?flow=report"><span class="fp-ic">${I('alert', 20)}</span><span class="t"><b>Report a problem</b><span>A complaint that needs action: insect or foreign object, spoiled food, hygiene, billing error, staff behaviour</span>
       <small>Creates a ticket · photo required</small></span><span class="chev">${I('chev')}</span></a></div>`;
 }
 // "Does this need action right now?" → 'ticket' | 'feedback' | null (closed)
@@ -310,8 +321,8 @@ function raiseForm(slug, tenant, svc, related) {
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
     <div class="kindsw" role="radiogroup" aria-label="What would you like to do?">
-      <label><input type="radio" name="kind" value="issue" checked><span>${I('alert', 16)}Report a problem</span></label>
-      <label><input type="radio" name="kind" value="suggestion"><span>${I('idea', 16)}Share a suggestion</span></label></div>
+      <label><input type="radio" name="kind" value="issue" checked><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>Something is broken or not working. The team acts on it within its target time.</small></b></span></label>
+      <label><input type="radio" name="kind" value="suggestion"><span><i class="ks-ic">${I('idea', 18)}</i><b>Share a suggestion or feedback<small>An idea or feedback for the team. No deadline; they reply when they can.</small></b></span></label></div>
     <div class="kindhint" id="kindhint" hidden>${I('idea', 16)}<span>A suggestion goes to the ${esc(svc.name)} team as an idea, not a complaint. It has no deadline; they reply when they can.</span></div>
     <label>Your name</label><input name="name" required autocomplete="name">
     <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
@@ -655,7 +666,7 @@ async function workspace(main, id, { admin }) {
   const schema = t.service.form_schema ? fieldsOf(JSON.parse(t.service.form_schema)) : [];
   const fdRaw = t.form_data || {};
   const fd = Object.entries(fdRaw).filter(([k, v]) => v !== '' && v != null && !/_label$/.test(k) && k !== 'food_location').map(([k, v]) => [schema.find(f => f.key === k)?.label || cap(k.replace(/^(loc|stu|food)_/, '').replace(/_/g, ' ')),
-    k === 'food_category' ? fdRaw.food_category_label || v : k === 'meal' ? MEAL_NAMES[v] || v : Array.isArray(v) ? v.join(', ') : v]);
+    k === 'food_category' ? fdRaw.food_category_label || v : k === 'meal' ? fdRaw.meal_label || MEAL_NAMES[v] || v : Array.isArray(v) ? v.join(', ') : v]);
   const live = [...ACTIVE, 'hold'].includes(t.status), r = t.requestor, shown = ticketStatus(t);
   const dl = rows => rows.map(([k, v]) => `<div class="dli"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
   // SLA: the tag, the big value, and how much of the window is used (by the clock, from when the ticket reached the team)
@@ -1303,12 +1314,12 @@ function mailGuide(box) {
 }
 
 // ================= Kitchen dashboard: Complaints (the ticket queue) and Feedback & Scores =================
-const svgLine = (days, series, h = 200) => { const w = 640, p = 28, n = days.length, X = i => p + (n < 2 ? (w - 2 * p) / 2 : ((w - 2 * p) * i) / (n - 1)), Y = v => h - p - (v / 5) * (h - 2 * p);
+const svgLine = (days, series, meals, h = 200) => { const w = 640, p = 28, n = days.length, X = i => p + (n < 2 ? (w - 2 * p) / 2 : ((w - 2 * p) * i) / (n - 1)), Y = v => h - p - (v / 5) * (h - 2 * p);
   return `<svg viewBox="0 0 ${w} ${h}" class="fchart" role="img" aria-label="Average score per meal over time">${[1, 2, 3, 4, 5].map(v => `<line x1="${p}" x2="${w - p}" y1="${Y(v)}" y2="${Y(v)}" class="g"/><text x="4" y="${Y(v) + 4}">${v}★</text>`).join('')}
-    ${MEALS.map(m => { const pts = series[m].map((v, i) => v == null ? null : [X(i), Y(v)]); return `<polyline fill="none" stroke="${MEAL_COLORS[m]}" stroke-width="2.5" points="${pts.filter(Boolean).map(q => q.join(',')).join(' ')}"/>${pts.filter(Boolean).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="3.5" fill="${MEAL_COLORS[m]}"/>`).join('')}`; }).join('')}
+    ${meals.map(({ key: m, color }) => { const pts = series[m].map((v, i) => v == null ? null : [X(i), Y(v)]); return `<polyline fill="none" stroke="${color}" stroke-width="2.5" points="${pts.filter(Boolean).map(q => q.join(',')).join(' ')}"/>${pts.filter(Boolean).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="3.5" fill="${color}"/>`).join('')}`; }).join('')}
     ${days.length <= 14 ? days.map((d, i) => `<text x="${X(i)}" y="${h - 6}" text-anchor="middle">${d.slice(8)}/${d.slice(5, 7)}</text>`).join('') : `<text x="${p}" y="${h - 6}">${days[0]}</text><text x="${w - p}" y="${h - 6}" text-anchor="end">${days.at(-1)}</text>`}</svg>`; };
 const hbars = (rows, colorOf) => { const max = Math.max(1, ...rows.map(r => r[1])); return rows.length ? rows.map(([l, v]) => `<div class="hbar"><span>${esc(l)}</span><div><i style="width:${(100 * v) / max}%;background:${colorOf(l)}"></i></div><b>${v}</b></div>`).join('') : '<p class="muted small">Nothing yet.</p>'; };
-const legendHtml = () => `<div class="flegend">${MEALS.map(m => `<span><i style="background:${MEAL_COLORS[m]}"></i>${MEAL_NAMES[m]}</span>`).join('')}</div>`;
+const legendHtml = meals => `<div class="flegend">${meals.map(m => `<span><i style="background:${m.color}"></i>${esc(m.name)}</span>`).join('')}</div>`;
 async function foodPage(main, { admin }) {
   const st = JSON.parse(sessionStorage.getItem('foodf') || '{"tab":"scores","range":"week"}'), q = new URLSearchParams(location.hash.split('?')[1] || '');
   if (q.get('from')) Object.assign(st, { range: 'custom', from: q.get('from'), to: q.get('to') || q.get('from'), tab: 'scores' });
@@ -1317,37 +1328,49 @@ async function foodPage(main, { admin }) {
   const span = () => st.range === 'day' ? [today, today] : st.range === 'week' ? [back(6), today] : st.range === 'month' ? [back(29), today] : [st.from || back(6), st.to || today];
   const draw = async () => {
     const [from, to] = span(), qs = new URLSearchParams({ from, to, ...(st.location ? { location: st.location } : {}) }).toString();
-    const d = await api('/food/dashboard?' + qs), t = d.today, pr = d.period;
-    const tabs = `<div class="tabs">${[['scores', 'Feedback & Scores'], ['complaints', `Complaints${d.complaints ? ` (${d.complaints})` : ''}`], ...(admin ? [['settings', 'Locations & meal times']] : [])].map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
+    const d = await api('/food/dashboard?' + qs), t = d.today, pr = d.period, ML = d.meals, mName = k => ML.find(m => m.key === k)?.name || k;
+    const tabs = `<div class="tabs">${[['scores', 'Feedback & Scores'], ['complaints', `Complaints${d.complaints ? ` (${d.complaints})` : ''}`], ...(admin ? [['settings', 'Meals, places & tags']] : [])].map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
     if (st.tab === 'complaints') {
       const [rows, services] = await Promise.all([api(`/tickets?service=${d.service.id}&status=all`), api('/services')]);
       main.innerHTML = `${tabs}<p class="muted small">Serious problems students reported. Each is a normal ticket: open it to act on it.</p><div class="tgrid">${rows.map(r => ticketCard(r, services)).join('') || '<div class="empty card" style="grid-column:1/-1"><p><b>No complaints.</b></p></div>'}</div>`;
       main.querySelectorAll('.tcard').forEach(c => c.onclick = () => location.hash = '#/c/t/' + c.dataset.id);
     } else if (st.tab === 'settings') {
       const fs = await api('/food/settings');
-      main.innerHTML = `${tabs}<form id="fset" class="card" style="max-width:640px"><b>Messes and canteens</b><div class="muted small">Students pick one when they rate or report. Untick to hide one without losing its history.</div>
+      const mealRow = (m = {}) => `<div class="mealrow" data-key="${esc(m.key || '')}"><input name="mname" value="${esc(m.name || '')}" placeholder="e.g. Brunch" required aria-label="Meal name">
+          <input type="time" name="mstart" value="${m.start || '12:00'}" required aria-label="From"><input type="time" name="mend" value="${m.end || '13:00'}" required aria-label="To">
+          <label class="chk"><input type="checkbox" name="mact" ${m.active === false ? '' : 'checked'}> Shown</label><button type="button" class="iconbtn mdel" aria-label="Remove meal">${I('x', 16)}</button></div>`;
+      main.innerHTML = `${tabs}<form id="fset" class="card" style="max-width:720px"><b>Meals</b><div class="muted small">The meals students pick when they share feedback or report a problem, with their serving times (campus time). The form starts on the meal being served, or the one just finished. Untick or remove a meal to hide it; its old ratings stay in the reports.</div>
+        <div class="mealhd muted small"><span>Name</span><span>From</span><span>To</span><span></span><span></span></div><div id="meals">${fs.meals.map(mealRow).join('')}</div>
+        <p><button type="button" class="btn soft" id="addmeal">${I('plus', 16)} Add meal</button></p>
+        <b style="display:block;margin-top:18px">Feedback tags</b><div class="muted small">The “What stood out?” choices on the feedback form. One per line, up to 20.</div>
+        <textarea name="chips" rows="6">${esc(fs.chips.join('\n'))}</textarea>
+        <b style="display:block;margin-top:18px">Messes and canteens</b><div class="muted small">Students pick one when they share feedback or report. Untick to hide one without losing its history.</div>
         <div id="locs">${fs.locations.map(l => `<div class="row locrow" data-id="${l.id}"><div><input name="lname" value="${esc(l.name)}" required></div><div style="flex:0 0 auto;align-self:center"><label style="margin:0;font-weight:400"><input type="checkbox" name="lact" ${l.active ? 'checked' : ''}> Shown</label></div></div>`).join('')}</div>
         <p><button type="button" class="btn soft" id="addloc">${I('plus', 16)} Add mess / canteen</button></p>
-        <b style="display:block;margin-top:18px">Meal times</b><div class="muted small">Campus time. The form picks the meal being served (or the one just finished).</div>
-        ${MEALS.map(m => `<div class="row"><div><label>${MEAL_NAMES[m]} from</label><input type="time" name="s_${m}" value="${fs.windows[m][0]}" required></div><div><label>to</label><input type="time" name="e_${m}" value="${fs.windows[m][1]}" required></div></div>`).join('')}
         <div class="err" id="ferr"></div><p><button class="btn primary">Save</button></p></form>`;
+      const wireDel = () => main.querySelectorAll('.mdel').forEach(b => b.onclick = () => b.closest('.mealrow').remove());
+      wireDel(); $('#addmeal').onclick = () => { $('#meals').insertAdjacentHTML('beforeend', mealRow()); wireDel(); $('#meals').lastElementChild.querySelector('input').focus(); };
       $('#addloc').onclick = () => $('#locs').insertAdjacentHTML('beforeend', `<div class="row locrow"><div><input name="lname" placeholder="e.g. Boys mess" required></div><div style="flex:0 0 auto;align-self:center"><label style="margin:0;font-weight:400"><input type="checkbox" name="lact" checked> Shown</label></div></div>`);
       $('#fset').onsubmit = async e => { e.preventDefault(); const f = e.target;
         try { await api('/food/settings', { method: 'PUT', body: { locations: [...f.querySelectorAll('.locrow')].map(r => ({ id: r.dataset.id || undefined, name: r.querySelector('[name=lname]').value, active: r.querySelector('[name=lact]').checked })),
-          windows: Object.fromEntries(MEALS.map(m => [m, [f['s_' + m].value, f['e_' + m].value]])) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
+          meals: [...f.querySelectorAll('.mealrow')].map(r => ({ key: r.dataset.key || undefined, name: r.querySelector('[name=mname]').value, start: r.querySelector('[name=mstart]').value, end: r.querySelector('[name=mend]').value, active: r.querySelector('[name=mact]').checked })),
+          chips: f.chips.value.split('\n').map(x => x.trim()).filter(Boolean) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
     } else {
-      const card = m => { const x = t.per_meal[m]; return `<div class="card fscore"><span class="muted small"><i class="sdot" style="display:inline-block;margin-right:6px;background:${MEAL_COLORS[m]}"></i>${MEAL_NAMES[m]} · today</span>
+      const card = ({ key: m, name, color }) => { const x = t.per_meal[m]; return `<div class="card fscore"><span class="muted small"><i class="sdot" style="display:inline-block;margin-right:6px;background:${color}"></i>${esc(name)} · today</span>
         <b>${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b><span class="muted small">${x.count} rating${x.count === 1 ? '' : 's'}</span>
         <div>${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No issues tagged</span>'}</div></div>`; };
-      main.innerHTML = `${tabs}<div class="fscores">${MEALS.map(card).join('')}</div>
+      main.innerHTML = `${tabs}<div class="fscores">${ML.filter(m => m.active !== false).map(card).join('')}</div>
         <div class="filters" style="margin-top:14px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
           ${st.range === 'custom' ? `<input type="date" id="ffrom" value="${from}"><input type="date" id="fto" value="${to}">` : ''}
           <select id="floc"><option value="">All messes / canteens</option>${d.locations.map(l => `<option value="${l.id}" ${st.location === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
           <button class="btn" id="fcsv">${I('copy', 16)} Export CSV</button></div>
-        <div class="card"><b>Average score per meal</b> <span class="muted small">${pr.days[0]} → ${pr.days.at(-1)} · ${pr.rated} ratings · overall ${pr.avg == null ? '—' : pr.avg.toFixed(1) + ' ★'}</span>${svgLine(pr.days, pr.series)}${legendHtml()}</div>
-        <div class="two"><div class="card"><b>Ratings per meal</b>${hbars(MEALS.map(m => [MEAL_NAMES[m], pr.per_meal[m].count]), l => MEAL_COLORS[MEALS.find(m => MEAL_NAMES[m] === l)])}</div>
+        <div class="card"><b>Average score per meal</b> <span class="muted small">${pr.days[0]} → ${pr.days.at(-1)} · ${pr.rated} ratings · overall ${pr.avg == null ? '—' : pr.avg.toFixed(1) + ' ★'}</span>${svgLine(pr.days, pr.series, ML)}${legendHtml(ML)}</div>
+        <div class="card"><b>By day and meal</b> <span class="muted small">average stars (number of ratings), newest day first</span><div class="tblbox"><table class="rtable dmgrid"><thead><tr><th>Day</th>${ML.map(m => `<th><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</th>`).join('')}</tr></thead>
+          <tbody>${pr.days.slice().reverse().slice(0, 31).map(dy => { const i = pr.days.indexOf(dy); return `<tr><td>${new Date(dy + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</td>${ML.map(m => { const v = pr.series[m.key][i], n = pr.counts[m.key][i];
+            return `<td class="${v == null ? 'muted' : v < 3 ? 'hot' : ''}">${v == null ? '—' : `${v.toFixed(1)} ★ <span class="muted small">(${n})</span>`}</td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div></div>
+        <div class="two"><div class="card"><b>Ratings per meal</b>${hbars(ML.map(m => [m.name, pr.per_meal[m.key].count]), l => ML.find(m => m.name === l)?.color)}</div>
           <div class="card"><b>Top issues</b>${hbars(pr.chips.map(c => [c.chip, c.count]), l => l.startsWith('Good') ? 'var(--ok)' : 'var(--warn)')}</div></div>
-        <div class="card"><b>Latest comments</b>${pr.comments.map(c => `<div class="brow"><div><div>“${esc(c.comment)}”</div><div class="muted small">${fmt(c.at)} · ${MEAL_NAMES[c.meal]}${c.rating ? ' · ' + c.rating + ' ★' : ''}${c.location ? ' · ' + esc(c.location) : ''}${c.name ? ' · ' + esc(c.name) : ''}${c.converted ? ' · <i>sent as feedback instead of a complaint</i>' : ''}</div></div></div>`).join('') || '<p class="muted small">No comments in this period.</p>'}</div>`;
+        <div class="card"><b>Latest comments</b>${pr.comments.map(c => `<div class="brow"><div><div>“${esc(c.comment)}”</div><div class="muted small">${fmt(c.at)} · ${esc(c.meal_name || mName(c.meal))}${c.meal_date ? ' of ' + esc(c.meal_date) : ''}${c.rating ? ' · ' + c.rating + ' ★' : ''}${c.location ? ' · ' + esc(c.location) : ''}${c.name ? ' · ' + esc(c.name) : ''}${c.converted ? ' · <i>sent as feedback instead of a complaint</i>' : ''}</div></div></div>`).join('') || '<p class="muted small">No comments in this period.</p>'}</div>`;
       $('#frange').onchange = e => { st.range = e.target.value; save(); draw(); };
       if ($('#ffrom')) $('#ffrom').onchange = $('#fto').onchange = () => { st.from = $('#ffrom').value; st.to = $('#fto').value; save(); draw(); };
       $('#floc').onchange = e => { st.location = e.target.value; save(); draw(); };

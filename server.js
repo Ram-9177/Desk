@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { createSuperAdmin } from './bootstrap.js';
-import { food, foodService, feedbackIn, summarize } from './food.js';
+import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
 import { PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
@@ -966,9 +966,9 @@ async function staffBot(req, q) {
   if (said(q, /food|meal|rating|kitchen|mess|canteen|breakfast|lunch|snacks|dinner/)) {
     const fs = await foodService(tid);
     if (!fs || !sids.includes(fs.id)) return { text: 'Food scores are for the food team and admins.', chips };
-    const day = dayIn(tn.timezone || 'Asia/Kolkata', n), sum = summarize(await feedbackIn(tid, day, day), day, day);
+    const day = dayIn(tn.timezone || 'Asia/Kolkata', n), rows_ = await feedbackIn(tid, day, day), sum = summarize(rows_, day, day, await mealsFor(tid, rows_));
     const open = (await one(`SELECT count(*)::int c FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, fs.id)).c;
-    return { text: sum.total ? `Food today: ${sum.avg ?? '—'} ★ from ${sum.rated} rating${sum.rated === 1 ? '' : 's'}.\n${MEALS.map(m => `${MEAL_NAMES[m]}: ${sum.per_meal[m].avg == null ? 'no ratings' : sum.per_meal[m].avg + ' ★ (' + sum.per_meal[m].count + ')'}`).join('\n')}`
+    return { text: sum.total ? `Food today: ${sum.avg ?? '—'} ★ from ${sum.rated} rating${sum.rated === 1 ? '' : 's'}.\n${sum.keys.map(m => `${sum.name[m]}: ${sum.per_meal[m].avg == null ? 'no ratings' : sum.per_meal[m].avg + ' ★ (' + sum.per_meal[m].count + ')'}`).join('\n')}`
         + `${sum.chips.length ? `\nTop issues: ${sum.chips.slice(0, 3).map(c => `${c.chip} ${c.count}`).join(', ')}` : ''}\nOpen complaints: ${open}.` : `No meal ratings yet today. Open complaints: ${open}.`,
       items: [{ title: 'Open Food scores', href: '#/c/food' }] }; }
   if (said(q, /hold|paused|waiting/)) { const rows = await list("t.status='hold'", [], 't.hold_due_at');

@@ -6,8 +6,9 @@ import { one, all, run, insert, uid, now } from './db.js';
 import { dayIn } from './merge.js';
 import { kindOf } from './images.js';
 import { chartPng } from './chart.js';
-import { MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, DEFAULT_MEAL_WINDOWS, mealAt, foodCategory } from './public/shared.js';
+import { MEALS, MEAL_NAMES, MEAL_COLORS, MEAL_PALETTE, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, DEFAULT_MEAL_WINDOWS, mealAt, foodCategory } from './public/shared.js';
 
+const BACK_DAYS = 6; // ratings for meals up to 6 days back (a week including today)
 const HM = /^([01]\d|2[0-3]):[0-5]\d$/, YMD = /^\d{4}-\d{2}-\d{2}$/;
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
 const localHM = (tz, d = new Date()) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
@@ -17,6 +18,19 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 export const mealWindows = async tid => ({ ...DEFAULT_MEAL_WINDOWS,
   ...Object.fromEntries((await all('SELECT meal, start_time, end_time FROM meal_windows WHERE tenant_id=?', tid)).map(r => [r.meal, [r.start_time, r.end_time]])) });
+// The campus's meals, in serving order: [{ key, name, color, start, end, active }]. Until the admin saves their own, the four defaults
+// (with any older meal_windows times). all: include switched-off meals (old ratings keep their name).
+export async function mealsOf(tid, all_ = false) {
+  let rows = await all('SELECT key, name, color, start_time, end_time, active FROM food_meals WHERE tenant_id=? ORDER BY sort_order, start_time', tid);
+  if (!rows.length) { const w = await mealWindows(tid); rows = MEALS.map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m], start_time: w[m][0], end_time: w[m][1], active: 1 })); }
+  return rows.filter(r => all_ || r.active).map((r, i) => ({ key: r.key, name: r.name, color: r.color || MEAL_PALETTE[i % MEAL_PALETTE.length], start: r.start_time, end: r.end_time, active: !!r.active }));
+}
+// The meals a summary shows: the active ones, plus any switched-off meal that still has feedback in it
+export async function mealsFor(tid, rows) { const list = await mealsOf(tid, true), had = new Set(rows.map(r => r.meal));
+  return [...list.filter(m => m.active || had.has(m.key)), ...[...had].filter(k => !list.some(m => m.key === k)).map((k, i) => ({ key: k, name: MEAL_NAMES[k] || k, color: MEAL_PALETTE[(list.length + i) % MEAL_PALETTE.length], active: false }))]; }
+export const windowsOf = meals => Object.fromEntries(meals.map(m => [m.key, [m.start, m.end]]));
+// "What stood out?" tags on the rating form, set by the admin
+export const chipsOf = tn => { try { const c = JSON.parse(tn.food_chips || 'null'); if (Array.isArray(c) && c.length) return c; } catch { /* default */ } return FOOD_CHIPS; };
 export const foodService = tid => one(`SELECT * FROM services WHERE tenant_id=? AND is_active=1 AND form_schema::jsonb->>'form_type'='food' ORDER BY sort_order, name LIMIT 1`, tid);
 
 // ---------- aggregation (dashboard and reports share it) ----------
@@ -26,17 +40,21 @@ export async function feedbackIn(tid, from, to, location) {
 }
 const topChips = (rows, n = 3) => Object.entries(rows.flatMap(r => r.chips || []).reduce((m, c) => (m[c] = (m[c] || 0) + 1, m), {}))
   .sort((a, b) => b[1] - a[1]).slice(0, n).map(([chip, count]) => ({ chip, count }));
-export function summarize(rows, from, to) {
+export function summarize(rows, from, to, meals = MEALS.map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m] }))) {
+  const KEYS = meals.map(m => m.key);
   const rated = rows.filter(r => r.rating != null), days = [];
   for (let d = from; d <= to && days.length < 400; d = addDays(d, 1)) days.push(d);
-  const perMeal = Object.fromEntries(MEALS.map(m => { const r = rated.filter(x => x.meal === m);
+  const perMeal = Object.fromEntries(KEYS.map(m => { const r = rated.filter(x => x.meal === m);
     return [m, { avg: avg(r.map(x => x.rating)), count: r.length, chips: topChips(rows.filter(x => x.meal === m)) }]; }));
   return {
     from, to, total: rows.length, rated: rated.length, avg: avg(rated.map(r => r.rating)), per_meal: perMeal, days,
-    series: Object.fromEntries(MEALS.map(m => [m, days.map(d => avg(rated.filter(r => r.meal === m && r.meal_date === d).map(r => r.rating)))])),
-    rating_counts: Object.fromEntries(MEALS.map(m => [m, [1, 2, 3, 4, 5].map(s => rated.filter(r => r.meal === m && r.rating === s).length)])),
-    chips: topChips(rows, FOOD_CHIPS.length),
-    comments: rows.filter(r => r.comment).slice(0, 30).map(r => ({ at: r.created_at, meal: r.meal, rating: r.rating, location: r.location, comment: r.comment, name: r.requester_name, converted: r.converted_from_complaint })),
+    meals: meals.map(({ key, name, color }) => ({ key, name, color })), keys: KEYS,
+    name: Object.fromEntries(meals.map(m => [m.key, m.name])), color: Object.fromEntries(meals.map(m => [m.key, m.color])),
+    counts: Object.fromEntries(KEYS.map(m => [m, days.map(d => rated.filter(r => r.meal === m && r.meal_date === d).length)])),
+    series: Object.fromEntries(KEYS.map(m => [m, days.map(d => avg(rated.filter(r => r.meal === m && r.meal_date === d).map(r => r.rating)))])),
+    rating_counts: Object.fromEntries(KEYS.map(m => [m, [1, 2, 3, 4, 5].map(s => rated.filter(r => r.meal === m && r.rating === s).length)])),
+    chips: topChips(rows, 30),
+    comments: rows.filter(r => r.comment).slice(0, 30).map(r => ({ at: r.created_at, meal: r.meal, meal_name: meals.find(m => m.key === r.meal)?.name || MEAL_NAMES[r.meal] || r.meal, meal_date: r.meal_date, rating: r.rating, location: r.location, comment: r.comment, name: r.requester_name, converted: r.converted_from_complaint })),
   };
 }
 
@@ -46,35 +64,39 @@ export function food(d) {
 
   // ---------- public: what the food screens need ----------
   P.get('/:slug/food', wrap(async req => {
-    const tn = await tenantBySlug(req.params.slug), svc = await foodService(tn.id), w = await mealWindows(tn.id);
+    const tn = await tenantBySlug(req.params.slug), svc = await foodService(tn.id), list = await mealsOf(tn.id), w = windowsOf(list);
     return { service: svc ? { id: svc.id, code: svc.code, name: svc.name } : null, windows: w, meal_now: mealAt(w, localHM(tzOf(tn))),
       locations: await all('SELECT id, name FROM food_locations WHERE tenant_id=? AND active=1 ORDER BY sort_order, name', tn.id),
-      meals: MEALS, chips: FOOD_CHIPS, categories: FOOD_CATEGORIES };
+      meals: list.map(m => m.key), meal_list: list, chips: chipsOf(tn), categories: FOOD_CATEGORIES, today: dayIn(tzOf(tn), now()), back_days: BACK_DAYS };
   }));
   const checkLocation = async (tn, id) => {
     const any = await one('SELECT 1 AS x FROM food_locations WHERE tenant_id=? AND active=1 LIMIT 1', tn.id);
     if (!id) { if (any) throw bad('Please pick the mess / canteen'); return null; }
     const l = await one('SELECT id, name FROM food_locations WHERE id=? AND tenant_id=? AND active=1', id, tn.id); if (!l) throw bad('Please pick the mess / canteen'); return l;
   };
-  const checkMeal = m => { if (!MEALS.includes(m)) throw bad('Please pick the meal'); return m; };
+  const checkMeal = async (tn, m) => { const x = (await mealsOf(tn.id)).find(y => y.key === m); if (!x) throw bad('Please pick the meal'); return x; };
+  // the day the meal was served: today or up to BACK_DAYS before (people rate later), never ahead
+  const checkDay = (tn, d) => { const today = dayIn(tzOf(tn), now()); if (d == null || d === '') return today;
+    if (!YMD.test(d) || d > today || d < addDays(today, -BACK_DAYS)) throw bad(`Pick a day from the last ${BACK_DAYS + 1} days`); return d; };
 
   // Rate your meal: feedback only, never a ticket. One rating per meal per device a day.
   P.post('/:slug/food/feedback', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug), b = req.body || {};
     if (b.website) throw bad('Rejected'); // honeypot
     limit('ff:' + req.ip, 120);
-    const converted = b.converted_from_complaint === true, meal = checkMeal(b.meal), loc = await checkLocation(tn, b.location_id);
+    const converted = b.converted_from_complaint === true, ml = await checkMeal(tn, b.meal), meal = ml.key, day = checkDay(tn, b.meal_date), loc = await checkLocation(tn, b.location_id);
     const rating = b.rating == null || b.rating === '' ? null : Number(b.rating);
     if (rating == null ? !converted : !(Number.isInteger(rating) && rating >= 1 && rating <= 5)) throw bad('Please tap 1 to 5 stars');
     const chips = Array.isArray(b.chips) ? [...new Set(b.chips.map(String))] : [];
-    if (chips.some(c => !FOOD_CHIPS.includes(c))) throw bad('Pick from the listed choices');
+    const allowed = new Set([...chipsOf(tn), ...(converted ? Object.values(CATEGORY_CHIPS).flat() : [])]);
+    if (chips.some(c => !allowed.has(c))) throw bad('Pick from the listed choices');
     const comment = str(b.comment, 1000); if (comment.length > 300) throw bad('Comment: at most 300 characters');
     if (converted && !comment && !chips.length && rating == null) throw bad('Write what happened');
     const device = /^[A-Za-z0-9_-]{8,64}$/.test(b.device_key || '') ? b.device_key : null;
     try {
       await insert('food_feedback', { id: uid(), tenant_id: tn.id, location_id: loc?.id, meal, rating, chips, comment: comment || null, requester_name: str(b.name, 80) || null,
-        device_key: device, meal_date: dayIn(tzOf(tn), now()), converted_from_complaint: converted, created_at: now() });
-    } catch (e) { if (e.code === '23505') throw new HttpErr(409, 'ALREADY_RATED', `You already rated ${MEAL_NAMES[meal].toLowerCase()} today. Thank you!`); throw e; }
+        device_key: device, meal_date: day, converted_from_complaint: converted, created_at: now() });
+    } catch (e) { if (e.code === '23505') throw new HttpErr(409, 'ALREADY_RATED', `You already rated ${ml.name.toLowerCase()} ${day === dayIn(tzOf(tn), now()) ? 'today' : 'on ' + fmtDay(day)}. Thank you!`); throw e; }
     return { ok: true, message: 'Thanks! Your rating reaches the Executive Chef tonight.' };
   }));
 
@@ -84,7 +106,7 @@ export function food(d) {
     if (!svc) throw notFound();
     if (b.website) throw bad('Rejected');
     limit('ip:' + req.ip, 300); limit('c:' + (b.email || b.phone || ''), 12);
-    const meal = checkMeal(b.meal), loc = await checkLocation(tn, b.location_id);
+    const ml = await checkMeal(tn, b.meal), meal = ml.key, loc = await checkLocation(tn, b.location_id);
     if (!FOOD_CATEGORIES.some(c => c[0] === b.category)) throw bad('Please pick what the problem is');
     const description = str(b.description, 2000); if (!description) throw bad('Please describe the problem');
     const files = Array.isArray(b.files) ? b.files : [];
@@ -92,8 +114,8 @@ export function food(d) {
     for (const f of files) if (!['jpeg', 'png', 'gif', 'webp', 'heic'].includes(kindOf(Buffer.from(String(f.data || '').split(',').pop(), 'base64')))) throw bad('Only photos (no other files)');
     const t = await createTicket(tn, { service_id: svc.id, name: str(b.name, 80), email: b.email, phone: b.phone, requestor_type: b.requestor_type || 'student',
       identifier: str(b.identifier, 60) || null, department: str(b.department, 80) || null,
-      subject: `${foodCategory(b.category)} · ${MEAL_NAMES[meal]}${loc ? ' · ' + loc.name : ''}`, description, location: loc?.name || 'Food service',
-      form_data: { food_category: b.category, food_category_label: foodCategory(b.category), meal, food_location: loc?.name || '' },
+      subject: `${foodCategory(b.category)} · ${ml.name}${loc ? ' · ' + loc.name : ''}`, description, location: loc?.name || 'Food service',
+      form_data: { food_category: b.category, food_category_label: foodCategory(b.category), meal, meal_label: ml.name, food_location: loc?.name || '' },
       files, idempotency_key: b.idempotency_key, merge: b.merge }, { channel: 'portal', actor: { type: 'requestor', name: str(b.name, 80) }, food: true });
     await run('UPDATE tickets SET food_location_id=?, meal=?, food_category=? WHERE id=? AND meal IS NULL', loc?.id || null, meal, b.category, t.id);
     return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1 };
@@ -115,8 +137,8 @@ export function food(d) {
   S.get('/food/access', wrap(async req => { try { const s = await foodAccess(req); return { ok: true, service: { id: s.id, name: s.name } }; } catch { return { ok: false }; } }));
   S.get('/food/dashboard', wrap(async req => {
     const svc = await foodAccess(req), tn = await tenantRow(req.tenantId), { from, to, today } = range(req, tn), loc = req.query.location || null;
-    return { service: { id: svc.id, name: svc.name }, today: summarize(await feedbackIn(tn.id, today, today, loc), today, today),
-      period: summarize(await feedbackIn(tn.id, from, to, loc), from, to),
+    const tr = await feedbackIn(tn.id, today, today, loc), pr = await feedbackIn(tn.id, from, to, loc), meals = await mealsFor(tn.id, [...tr, ...pr]);
+    return { service: { id: svc.id, name: svc.name }, meals, today: summarize(tr, today, today, meals), period: summarize(pr, from, to, meals),
       locations: await all('SELECT id, name, active FROM food_locations WHERE tenant_id=? ORDER BY sort_order, name', tn.id),
       complaints: (await one(`SELECT count(*)::int n FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, svc.id)).n };
   }));
@@ -127,18 +149,35 @@ export function food(d) {
     res.type('text/csv').attachment(`food-feedback-${from}-to-${to}.csv`).send([cols.join(','), ...rows.map(r => cols.map(c => cell(r[c])).join(','))].join('\n'));
   } catch (e) { next(e); } });
   // admin: messes / canteens and meal times
-  S.get('/food/settings', wrap(async req => ({ windows: await mealWindows(req.tenantId),
+  S.get('/food/settings', wrap(async req => ({ windows: windowsOf(await mealsOf(req.tenantId)), meals: await mealsOf(req.tenantId, true), chips: chipsOf(await tenantRow(req.tenantId)), default_chips: FOOD_CHIPS,
     locations: await all('SELECT id, name, active, sort_order FROM food_locations WHERE tenant_id=? ORDER BY sort_order, name', req.tenantId) })));
   S.put('/food/settings', wrap(async req => {
     if (req.user.role === 'provider') throw new HttpErr(403, 'FORBIDDEN', 'Only admins change food settings');
     const b = req.body || {};
-    if (b.windows) for (const m of MEALS) { const w = b.windows[m]; if (!w) continue;
-      if (!HM.test(w[0] || '') || !HM.test(w[1] || '') || w[0] >= w[1]) throw bad(`${MEAL_NAMES[m]}: times as HH:MM, start before end`); }
+    // meals: the full list [{ key?, name, start, end, color?, active }]; windows: { key: [from, to] } (times only)
+    let meals = await mealsOf(req.tenantId, true);
+    if (b.meals !== undefined) {
+      if (!Array.isArray(b.meals) || !b.meals.length) throw bad('Keep at least one meal');
+      const keys = new Set(), next = [];
+      for (const x of b.meals) { const name = str(x.name, 40); if (!name) throw bad('Every meal needs a name');
+        let key = meals.some(m => m.key === x.key) ? x.key : name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24) || 'meal';
+        if (keys.has(key)) { if (meals.some(m => m.key === x.key)) throw bad('Two meals are the same'); let i = 2; while (keys.has(key + '_' + i)) i++; key += '_' + i; }
+        keys.add(key); next.push({ key, name, start: x.start, end: x.end, color: /^#[0-9a-fA-F]{6}$/.test(x.color || '') ? x.color : meals.find(m => m.key === key)?.color || null, active: x.active !== false && x.active !== 0 }); }
+      if (new Set(next.map(m => m.name.toLowerCase())).size !== next.length) throw bad('Two meals have the same name');
+      if (!next.some(m => m.active)) throw bad('Keep at least one meal switched on');
+      for (const m of meals) if (!keys.has(m.key)) next.push({ ...m, active: false }); // a removed meal is switched off, so its old ratings keep their name
+      meals = next;
+    }
+    if (b.windows) for (const [k, w] of Object.entries(b.windows)) { const m = meals.find(x => x.key === k); if (m && w) [m.start, m.end] = w; }
+    for (const m of meals) if (!HM.test(m.start || '') || !HM.test(m.end || '') || m.start >= m.end) throw bad(`${m.name}: times as HH:MM, start before end`);
+    if (b.chips !== undefined) { if (!Array.isArray(b.chips)) throw bad('Tags must be a list');
+      const c = [...new Set(b.chips.map(x => str(x, 30)).filter(Boolean))]; if (!c.length) throw bad('Keep at least one tag'); if (c.length > 20) throw bad('At most 20 tags');
+      await run('UPDATE tenants SET food_chips=? WHERE id=?', JSON.stringify(c), req.tenantId); }
     if (b.locations && !Array.isArray(b.locations)) throw bad('Locations must be a list');
     const names = (b.locations || []).map(l => str(l.name, 80)); if (names.some(n => !n)) throw bad('Every location needs a name');
     if (new Set(names.map(n => n.toLowerCase())).size !== names.length) throw bad('Two locations have the same name');
-    if (b.windows) for (const m of MEALS) if (b.windows[m]) await run(`INSERT INTO meal_windows (id, tenant_id, meal, start_time, end_time) VALUES (?,?,?,?,?)
-      ON CONFLICT (tenant_id, meal) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time`, uid(), req.tenantId, m, b.windows[m][0], b.windows[m][1]);
+    if (b.meals !== undefined || b.windows) { await run('DELETE FROM food_meals WHERE tenant_id=?', req.tenantId);
+      for (const [i, m] of meals.entries()) await insert('food_meals', { id: uid(), tenant_id: req.tenantId, key: m.key, name: m.name, color: m.color || MEAL_PALETTE[i % MEAL_PALETTE.length], start_time: m.start, end_time: m.end, sort_order: i, active: m.active ? 1 : 0 }); }
     if (b.locations) for (const [i, l] of b.locations.entries()) {
       if (l.id && await one('SELECT 1 AS x FROM food_locations WHERE id=? AND tenant_id=?', l.id, req.tenantId))
         await run('UPDATE food_locations SET name=?, active=?, sort_order=? WHERE id=?', names[i], l.active === false || l.active === 0 ? 0 : 1, i, l.id);
@@ -158,50 +197,50 @@ export function food(d) {
     res.set('Cache-Control', 'public, max-age=31536000, immutable').type('png').send(chartPng(spec));
   });
   const chartImg = (spec, alt) => `<img src="${base()}/api/food-chart/${signChart(spec)}.png" width="520" alt="${esc(alt)}" style="display:block;width:100%;max-width:520px;height:auto;border:1px solid #eceef5;border-radius:10px;margin:6px 0">`;
-  const legend = meals => `<p style="margin:2px 0 14px;font-size:12px;color:#5b5f73">${meals.map(m => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${MEAL_COLORS[m]};margin:0 4px 0 10px"></span>${MEAL_NAMES[m]}`).join('')}</p>`;
+  const legend = (meals, s) => `<p style="margin:2px 0 14px;font-size:12px;color:#5b5f73">${meals.map(m => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color[m]};margin:0 4px 0 10px"></span>${esc(s.name[m])}`).join('')}</p>`;
   const h2 = t => `<p style="margin:22px 0 8px;font-size:12px;font-weight:700;letter-spacing:.6px;color:#8b8fa8;text-transform:uppercase">${t}</p>`;
   const stars = v => v == null ? '—' : `${v.toFixed(1)} ★`;
   const fmtDay = ymd => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
   const mealTable = s => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px;border-collapse:separate">
-    ${MEALS.map((m, i) => `<tr><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${MEAL_COLORS[m]};margin-right:8px"></span><b>${MEAL_NAMES[m]}</b></td>
+    ${s.keys.map((m, i) => `<tr><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color[m]};margin-right:8px"></span><b>${s.name[m]}</b></td>
       <td style="padding:9px 14px;font-size:16px;font-weight:700;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${stars(s.per_meal[m].avg)}</td>
       <td style="padding:9px 14px;color:#8b8fa8;font-size:13px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${s.per_meal[m].count} rating${s.per_meal[m].count === 1 ? '' : 's'}${s.per_meal[m].chips.length ? ' · ' + esc(s.per_meal[m].chips.map(c => c.chip).join(', ')) : ''}</td></tr>`).join('')}</table>`;
   const issues = (list, n) => list.length ? `<ol style="margin:0;padding-left:20px;font-size:14px;line-height:1.7">${list.slice(0, n).map(c => `<li>${esc(c.chip)} <span style="color:#8b8fa8">(${c.count})</span></li>`).join('')}</ol>` : '<p style="color:#8b8fa8;font-size:14px">No issues tagged.</p>';
   const comments = (list, n) => list.length ? list.slice(0, n).map(c => `<p style="margin:0 0 8px;padding:10px 12px;background:#f6f7fb;border-radius:10px;font-size:14px;line-height:1.5">“${esc(c.comment)}”
-    <br><span style="color:#8b8fa8;font-size:12px">${MEAL_NAMES[c.meal]}${c.rating ? ` · ${c.rating} ★` : ''}${c.location ? ` · ${esc(c.location)}` : ''}${c.converted ? ' · sent as feedback instead of a complaint' : ''}</span></p>`).join('') : '<p style="color:#8b8fa8;font-size:14px">No comments.</p>';
+    <br><span style="color:#8b8fa8;font-size:12px">${esc(c.meal_name)}${c.rating ? ` · ${c.rating} ★` : ''}${c.location ? ` · ${esc(c.location)}` : ''}${c.converted ? ' · sent as feedback instead of a complaint' : ''}</span></p>`).join('') : '<p style="color:#8b8fa8;font-size:14px">No comments.</p>';
   const arrow = (a, b) => a == null || b == null ? '' : a > b ? ` <span style="color:#1a9a56">▲ ${(a - b).toFixed(1)}</span>` : a < b ? ` <span style="color:#e5484d">▼ ${(b - a).toFixed(1)}</span>` : ' <span style="color:#8b8fa8">= same</span>';
 
   // The report for one campus and period: { subject, html, text, to, empty }
   async function buildReport(tn, period, refDay) {
     const today = refDay || dayIn(tzOf(tn), now()), svc = await foodService(tn.id);
     const [from, to] = period === 'daily' ? [today, today] : period === 'weekly' ? [addDays(today, -6), today] : [today.slice(0, 8) + '01', today];
-    const s = summarize(await feedbackIn(tn.id, from, to), from, to), title = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }[period];
+    const rows = await feedbackIn(tn.id, from, to), meals = await mealsFor(tn.id, rows), s = summarize(rows, from, to, meals), title = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }[period];
     const span = from === to ? fmtDay(from) : `${fmtDay(from)} – ${fmtDay(to)}`, link = `${base()}/#/c/food?from=${from}&to=${to}`;
     const subject = `[Food] ${title} feedback report · ${tn.name} · ${span}`, to_ = svc ? (await providersFor(tn.id, svc.id)).map(p => p.email) : [];
     let body;
     if (!s.total) body = `<p style="font-size:15px;line-height:1.55">No feedback received for ${esc(span)}.</p><p style="font-size:14px;color:#5b5f73">Ask students to tap <b>Food → Rate your meal</b> after each meal; it takes 10 seconds.</p>`;
     else if (period === 'daily') body = `<p style="font-size:15px">Today: <b>${stars(s.avg)}</b> from ${s.rated} rating${s.rated === 1 ? '' : 's'}${s.total > s.rated ? ` (+${s.total - s.rated} converted complaint${s.total - s.rated === 1 ? '' : 's'})` : ''}.</p>
       ${h2('Score per meal')}${mealTable(s)}
-      ${h2('Number of ratings per meal')}${chartImg({ type: 'bar', labels: MEALS, colors: MEALS.map(m => MEAL_COLORS[m]), series: [{ color: '#1e4b8f', values: MEALS.map(m => s.per_meal[m].count) }] }, 'Number of ratings per meal')}
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;margin-bottom:14px"><tr>${MEALS.map(m => `<td align="center" width="25%" style="font-size:12px;color:#5b5f73"><b style="color:${MEAL_COLORS[m]}">${MEAL_NAMES[m]}</b><br>${s.per_meal[m].count} · ${stars(s.per_meal[m].avg)}</td>`).join('')}</tr></table>
+      ${h2('Number of ratings per meal')}${chartImg({ type: 'bar', labels: s.keys, colors: s.keys.map(m => s.color[m]), series: [{ color: '#1e4b8f', values: s.keys.map(m => s.per_meal[m].count) }] }, 'Number of ratings per meal')}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;margin-bottom:14px"><tr>${s.keys.map(m => `<td align="center" width="25%" style="font-size:12px;color:#5b5f73"><b style="color:${s.color[m]}">${s.name[m]}</b><br>${s.per_meal[m].count} · ${stars(s.per_meal[m].avg)}</td>`).join('')}</tr></table>
       ${h2('Top 3 issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 3)}${h2('Comments')}${comments(s.comments, 15)}`;
     else if (period === 'weekly') {
-      const ranked = MEALS.filter(m => s.per_meal[m].avg != null).sort((a, b) => s.per_meal[b].avg - s.per_meal[a].avg);
-      body = `<p style="font-size:15px">This week: <b>${stars(s.avg)}</b> from ${s.rated} ratings.${ranked.length ? ` Best: <b>${MEAL_NAMES[ranked[0]]}</b> (${stars(s.per_meal[ranked[0]].avg)}). Needs work: <b>${MEAL_NAMES[ranked.at(-1)]}</b> (${stars(s.per_meal[ranked.at(-1)].avg)}).` : ''}</p>
-      ${h2('Daily score per meal')}${chartImg({ type: 'line', labels: s.days, max: 5, series: MEALS.map(m => ({ color: MEAL_COLORS[m], values: s.series[m] })) }, 'Daily score per meal')}
-      <p style="margin:0;font-size:12px;color:#8b8fa8">${fmtDay(from)} → ${fmtDay(to)} · scale 0 to 5 ★</p>${legend(MEALS)}
+      const ranked = s.keys.filter(m => s.per_meal[m].avg != null).sort((a, b) => s.per_meal[b].avg - s.per_meal[a].avg);
+      body = `<p style="font-size:15px">This week: <b>${stars(s.avg)}</b> from ${s.rated} ratings.${ranked.length ? ` Best: <b>${s.name[ranked[0]]}</b> (${stars(s.per_meal[ranked[0]].avg)}). Needs work: <b>${s.name[ranked.at(-1)]}</b> (${stars(s.per_meal[ranked.at(-1)].avg)}).` : ''}</p>
+      ${h2('Daily score per meal')}${chartImg({ type: 'line', labels: s.days, max: 5, series: s.keys.map(m => ({ color: s.color[m], values: s.series[m] })) }, 'Daily score per meal')}
+      <p style="margin:0;font-size:12px;color:#8b8fa8">${fmtDay(from)} → ${fmtDay(to)} · scale 0 to 5 ★</p>${legend(s.keys, s)}
       ${h2('Score per meal')}${mealTable(s)}${h2('Recurring issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 5)}${h2('Comments')}${comments(s.comments, 10)}`;
     } else {
-      const prev = addDays(from, -1), pf = prev.slice(0, 8) + '01', p = summarize(await feedbackIn(tn.id, pf, prev), pf, prev);
+      const prev = addDays(from, -1), pf = prev.slice(0, 8) + '01', p = summarize(await feedbackIn(tn.id, pf, prev), pf, prev, meals);
       const weeks = []; for (let w = from; w <= to; w = addDays(w, 7)) weeks.push([w, addDays(w, 6) > to ? to : addDays(w, 6)]);
       const wk = m => weeks.map(([a, b]) => avg(s.days.filter(d => d >= a && d <= b).map((d, _, __) => s.series[m][s.days.indexOf(d)]).filter(v => v != null)));
-      const moved = MEALS.filter(m => s.per_meal[m].avg != null && p.per_meal[m].avg != null).map(m => [m, s.per_meal[m].avg - p.per_meal[m].avg]);
+      const moved = s.keys.filter(m => s.per_meal[m].avg != null && p.per_meal[m].avg != null).map(m => [m, s.per_meal[m].avg - p.per_meal[m].avg]);
       body = `<p style="font-size:15px">This month: <b>${stars(s.avg)}</b> from ${s.rated} ratings. Last month: ${stars(p.avg)}${arrow(s.avg, p.avg)}.</p>
-      ${h2('Weekly trend per meal')}${chartImg({ type: 'line', labels: weeks.map(w => w[0]), max: 5, series: MEALS.map(m => ({ color: MEAL_COLORS[m], values: wk(m) })) }, 'Weekly trend per meal')}
-      <p style="margin:0;font-size:12px;color:#8b8fa8">Week by week, ${fmtDay(from)} → ${fmtDay(to)} · scale 0 to 5 ★</p>${legend(MEALS)}
-      ${h2('This month vs last month')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px">${MEALS.map((m, i) =>
-        `<tr><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}"><b>${MEAL_NAMES[m]}</b></td><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${stars(s.per_meal[m].avg)}${arrow(s.per_meal[m].avg, p.per_meal[m].avg)}</td><td style="padding:9px 14px;color:#8b8fa8;font-size:13px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">last month ${stars(p.per_meal[m].avg)}</td></tr>`).join('')}</table>
-      ${moved.length ? `<p style="font-size:14px">Improved: <b>${moved.filter(x => x[1] > 0).map(x => MEAL_NAMES[x[0]]).join(', ') || 'none'}</b> · Declined: <b>${moved.filter(x => x[1] < 0).map(x => MEAL_NAMES[x[0]]).join(', ') || 'none'}</b></p>` : ''}
+      ${h2('Weekly trend per meal')}${chartImg({ type: 'line', labels: weeks.map(w => w[0]), max: 5, series: s.keys.map(m => ({ color: s.color[m], values: wk(m) })) }, 'Weekly trend per meal')}
+      <p style="margin:0;font-size:12px;color:#8b8fa8">Week by week, ${fmtDay(from)} → ${fmtDay(to)} · scale 0 to 5 ★</p>${legend(s.keys, s)}
+      ${h2('This month vs last month')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px">${s.keys.map((m, i) =>
+        `<tr><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}"><b>${s.name[m]}</b></td><td style="padding:9px 14px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${stars(s.per_meal[m].avg)}${arrow(s.per_meal[m].avg, p.per_meal[m].avg)}</td><td style="padding:9px 14px;color:#8b8fa8;font-size:13px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">last month ${stars(p.per_meal[m].avg)}</td></tr>`).join('')}</table>
+      ${moved.length ? `<p style="font-size:14px">Improved: <b>${moved.filter(x => x[1] > 0).map(x => s.name[x[0]]).join(', ') || 'none'}</b> · Declined: <b>${moved.filter(x => x[1] < 0).map(x => s.name[x[0]]).join(', ') || 'none'}</b></p>` : ''}
       ${h2('Most repeated issues')}${issues(s.chips.filter(c => !c.chip.startsWith('Good')), 5)}`;
     }
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
@@ -213,7 +252,7 @@ export function food(d) {
 <p style="margin:22px 0 8px"><a href="${esc(link)}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">View full report</a></p></td></tr>
 <tr><td style="padding:14px 24px;background:#fafbfe;color:#8b8fa8;font-size:12px">Feedback only (no tickets). Complaints arrive as tickets in your ONE Desk queue.</td></tr>
 </table></td></tr></table></body></html>`;
-    const text = `${subject}\n\n${s.total ? `Average ${stars(s.avg)} from ${s.rated} ratings.\n${MEALS.map(m => `${MEAL_NAMES[m]}: ${stars(s.per_meal[m].avg)} (${s.per_meal[m].count})`).join('\n')}\nTop issues: ${s.chips.slice(0, 3).map(c => c.chip).join(', ') || 'none'}` : `No feedback received for ${span}.`}\n\nView full report: ${link}`;
+    const text = `${subject}\n\n${s.total ? `Average ${stars(s.avg)} from ${s.rated} ratings.\n${s.keys.map(m => `${s.name[m]}: ${stars(s.per_meal[m].avg)} (${s.per_meal[m].count})`).join('\n')}\nTop issues: ${s.chips.slice(0, 3).map(c => c.chip).join(', ') || 'none'}` : `No feedback received for ${span}.`}\n\nView full report: ${link}`;
     return { tenant: tn.slug, period, from, until: to, subject, html, text, to: to_, empty: !s.total, summary: s }; // to: who it is mailed to
   }
   // GET /api/reports/food/daily|weekly|monthly?tenant=<slug>[&date=YYYY-MM-DD][&format=json], with the report key
