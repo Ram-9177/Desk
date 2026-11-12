@@ -58,9 +58,16 @@ const ICONS = ['wifi', 'bolt', 'bed', 'bus', 'tool', 'drop', 'book', 'cash', 'gr
 const BLOCK_FIELDS = ['progress', 'ticket_details', 'timeline', 'guide'];
 const ACT_ICON = { hold: 'pause', open: 'play', in_progress: 'play', closed: 'check', rejected: 'xmark' };
 const fmtLeft = m => { m = Math.abs(Math.round(m)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60 ? (m % 60) + 'm' : ''}`.trim() : `${m}m`; };
-const leaderboard = rows => `<b>Provider leaderboard</b><div class="muted small">Points for closing within SLA, this campus</div>${rows.length ? rows.map((u, i) => `<div class="brow">
-  <span class="rank r${i + 1}">${['🥇', '🥈', '🥉'][i] || i + 1}</span><div><b>${esc(u.name)}</b><div class="muted small">${u.closed} closed · ${u.on_time ?? 0}% on time</div></div>
-  <b class="mono" style="color:${u.points < 0 ? 'var(--warn)' : 'var(--brand)'}">${u.points} pts</b></div>`).join('') : '<p class="muted">No providers yet.</p>'}`;
+// Fair Score: everyone compared with their own team (pace, on time, done right, load), 0–100
+const FAIR_PARTS = [['pace', 'Pace'], ['on_time', 'On time'], ['done_right', 'Done right'], ['load', 'Load']];
+const fairChips = x => FAIR_PARTS.map(([k, l]) => `<span class="fchip2" title="${l}">${l} <b>${x.parts[k]}</b></span>`).join('');
+const fairBoard = (f, team = '') => { const all_ = f.rows.filter(x => !team || x.team_id === team), ranked = all_.filter(x => x.eligible), low = all_.filter(x => !x.eligible), teams = [...new Map(f.rows.filter(x => x.team_id).map(x => [x.team_id, x.team])).entries()];
+  return `<div class="fb-h"><div><b>Fair Score ranking</b><div class="muted small">Last ${f.cfg.window_days} days · each person compared with their own team · ranked from ${f.cfg.min_tickets} closed tickets</div></div>
+    ${teams.length > 1 ? `<select class="fb-team" aria-label="Team"><option value="">Whole campus</option>${teams.map(([id, n]) => `<option value="${esc(id)}" ${id === team ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}</div>
+    ${ranked.map((x, i) => `<div class="brow fbrow"><span class="rank r${x.rank}">${['🥇', '🥈', '🥉'][x.rank - 1] || x.rank}</span><div class="fb-n"><b>${esc(x.name)}</b><div class="muted small">${esc(x.team)} · ${x.tickets} closed · ${x.hours} work-h</div><div class="fb-c">${fairChips(x)}</div></div>
+      <b class="fb-s">${x.score.toFixed(1)}</b></div>`).join('') || '<p class="muted small" style="margin:10px 0 0">Nobody has enough closed tickets yet in this period.</p>'}
+    ${low.length ? `<div class="fb-low muted small">Not enough tickets yet: ${low.map(x => `${esc(x.name)} (${x.tickets} of ${f.cfg.min_tickets})`).join(' · ')}</div>` : ''}`; };
+const wireFairBoard = (box, f) => { const draw = team => { box.innerHTML = fairBoard(f, team); const s = box.querySelector('.fb-team'); if (s) s.onchange = e => draw(e.target.value); }; draw(''); };
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
 const ring = (pct, size = 96, color = 'var(--brand)', track = '#EEF0F3') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
   return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${track}" stroke-width="10" fill="none"/>
@@ -564,7 +571,7 @@ async function queue(main) {
   const draw = async () => {
     const keep = document.activeElement?.id === 'fq' ? [$('#fq').selectionStart, true] : null, more = $('.mt-more')?.classList.contains('open');
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
-    const [rows, rep, pts, rem] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/points'), api('/reminders').catch(() => ({ due: [], upcoming: [] }))]);
+    const [rows, rep, fair, rem] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] }))]), fm = fair.me;
     const c = rep.counts || {};
     const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
     const now = new Date(), h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now)), greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -577,7 +584,7 @@ async function queue(main) {
     main.innerHTML = `<div class="home">
       <div class="greet"><div><div class="eyebrow"><span class="d-only">${day({ weekday: 'long', day: 'numeric', month: 'long' })} · ${esc(tn?.name || '')}</span><span class="m-only">${day({ weekday: 'short', day: 'numeric', month: 'short' })} · ${esc(tn?.code || '')}</span></div>
         <h1>${greet}, ${esc(S.me.user.name.split(' ')[0])} <span class="wave" aria-hidden="true">👋</span></h1></div>
-        <div class="greet-r"><a href="#/c/me" class="ptschip" aria-label="${pts.me} points. Open my points">${I('star', 16)}<span>${pts.me} pts</span></a>
+        <div class="greet-r">${fm ? `<a href="#/c/me" class="ptschip" aria-label="Fair Score ${fm.eligible ? fm.score : 'not ranked yet'}. Open my score">${I('star', 16)}<span>${fm.eligible ? `${fm.score.toFixed(0)} · #${fm.rank}` : `${fm.tickets}/${fair.cfg.min_tickets} tickets`}</span></a>` : ''}
           <a href="#/c/new" class="btn primary d-only">${I('plus', 16)}New ticket</a></div></div>
       <div class="ovr"><div class="card wk"><span class="d-only">${ringSvg(pct, 88, 8)}</span><span class="m-only">${ringSvg(pct, 64, 7)}</span><div><div class="eyebrow up">This week</div><div class="wk-l">${done} of ${total} tickets closed</div><div class="wk-s d-only">${total - done} still open this week</div></div></div>
         <div class="card stcard">${cell('open', 'Open', c.open, 'Awaiting action')}${cell('in_progress', 'In progress', c.in_progress, 'Being worked on')}${cell('hold', 'On hold', c.hold, 'Paused, clock stopped')}${cell('closed', 'Closed', c.closed_period, 'Last 7 days')}${cell('overdue', 'Overdue', c.overdue, 'Past SLA due time')}
@@ -1065,7 +1072,7 @@ async function reports(main, { sa }) {
     ${r.by_location?.length ? `<div class="card"><b>People affected by place</b><div class="muted small">Everyone who reported a ticket raised in this period, per service and location</div><div class="tblbox"><table class="rtable"><thead><tr><th>Service</th><th>Location</th><th>Tickets</th><th>People affected</th></tr></thead><tbody>
       ${r.by_location.map(v => `<tr><td>${esc(v.service)}</td><td>${esc(v.location)}</td><td>${v.tickets}</td><td><b>${v.affected}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
     ${g ? `<div class="card"><b>All campuses</b><div class="muted small">As of now</div><div class="tblbox"><table class="rtable"><thead><tr><th>Campus</th><th>Open</th><th>On hold</th><th>Closed</th><th>Overdue</th></tr></thead><tbody>${g.map(t => `<tr><td><b>${esc(t.name)}</b></td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td class="${t.overdue > 0 ? 'hot' : ''}">${t.overdue || 0}</td></tr>`).join('')}</tbody></table></div></div>` : ''}</div>`;
-  api('/points').then(p => { if ($('#lb')) $('#lb').innerHTML = leaderboard(p.leaderboard); });
+  api('/fair').then(f => { if ($('#lb')) wireFairBoard($('#lb'), f); });
   $('#rd').onchange = e => { sessionStorage.setItem('rd', e.target.value); reports(main, { sa }); };
   $('#rcsv').onclick = () => { const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`, cols = ['name', 'raised', 'open', 'in_progress', 'hold', 'closed', 'rejected', 'overdue', 'on_time_pct', 'avg_hours'];
     const csv = [`"Report","${r.days.from} to ${r.days.to}"`, '', ['Service', 'Raised', 'Open', 'In progress', 'On hold', 'Closed', 'Rejected', 'Overdue', 'On time %', 'Avg hours to close'].map(cell).join(','), ...r.by_service.map(s2 => cols.map(k => cell(s2[k])).join(',')),
@@ -1099,7 +1106,7 @@ async function tenants(main) {
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 async function slaPage(main) {
-  const [c, pts] = await Promise.all([api('/sla'), api('/points')]);
+  const [c, fair] = await Promise.all([api('/sla'), api('/fair')]);
   const rRow = (r = { label: '', hours: 8 }) => `<div class="row hr" style="margin-top:8px;align-items:center"><input type="hidden" name="hk" value="${esc(r.key || '')}"><input name="hl" value="${esc(r.label)}" placeholder="e.g. Waiting for parts" style="flex:3">
     <input name="hh" type="number" min="1" value="${r.hours}" style="flex:1;min-width:80px" title="Hold limit in working hours"><button type="button" class="btn danger" data-rm style="flex:0 0 auto;min-width:0">✕</button></div>`;
   const badge = (n, cls) => `<span class="pill ${cls}" style="flex:0 0 52px;text-align:center">${n > 0 ? '+' : ''}${n}</span>`;
@@ -1118,11 +1125,30 @@ async function slaPage(main) {
     <div class="row muted small hrhead" style="margin-top:8px"><span style="flex:3">Reason</span><span style="flex:1;min-width:80px">Hold limit (h)</span><span style="flex:0 0 44px"></span></div>
     <div id="hrs">${c.hold_reasons.map(rRow).join('')}</div><button type="button" class="btn soft" id="addr" style="margin-top:10px">${I('plus', 16)} Add reason</button>
     <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn primary big">Save SLA settings</button></p></form>
-    <div><div class="card" style="margin-top:0"><b>How providers earn points</b><div class="muted small">Given to whoever closes the ticket, by how much of the SLA window they used.</div>
+    <div><form class="card" id="ff" style="margin-top:0"><b>Fair Score: how providers are ranked</b>
+      <div class="muted small">Everyone is compared with <b>their own team</b>, so a busy team with long jobs (like Maintenance) and a quiet, quick one compete on equal terms.</div>
+      <ol class="fmath">
+        <li><b>Pace</b>: each ticket's work time (working hours to close, minus hold) ÷ the team's usual time for that priority (median, last ${fair.cfg.baseline_days} days). 1.0 = the team's normal. Score = (1.5 − average) × 100, kept to 0–100.</li>
+        <li><b>On time</b>: share closed within the team's own SLA.</li>
+        <li><b>Done right</b>: 100 minus the share of tickets with an accepted reopen or a hold past its limit.</li>
+        <li><b>Load</b>: work hours handled ÷ the team's average, up to 1.5× (= 100).</li>
+      </ol>
+      <div class="muted small">Each person is counted as if they also had 5 tickets at their team's level, so one or two lucky tickets can't top the board.</div>
+      <div class="prow" style="margin-top:12px">${FAIR_PARTS.map(([k, l]) => `<div><label>${l} weight</label><input type="number" min="0" max="100" name="w_${k}" value="${fair.cfg.weights[k]}"></div>`).join('')}</div>
+      <div class="prow">${[['min_tickets', 'Min. tickets to rank', 1, 100], ['window_days', 'Ranking window (days)', 7, 365], ['baseline_days', 'Team usual time from (days)', 14, 730]].map(([k, l, lo, hi]) => `<div><label>${l}</label><input type="number" min="${lo}" max="${hi}" name="${k}" value="${fair.cfg[k]}"></div>`).join('')}</div>
+      <div class="muted small" id="fsum"></div><div class="err" id="ferr2"></div><p style="margin-bottom:0"><button class="btn primary">Save Fair Score settings</button></p></form>
+    <div class="card" id="lb2"></div>
+    <div class="card"><b>Lifetime points (history and badges, not the ranking)</b><div class="muted small">Still given to whoever closes the ticket, by how much of the SLA window they used.</div>
       ${c.point_rules.map(r => `<div class="brow">${badge(r.points, r.points > 0 ? 'p-low' : 'p-high')}<div>${esc(r.reason)}</div></div>`).join('')}
       <div class="brow">${badge(c.points.reopened, 'p-high')}<div>Requestor reopens a ticket you closed</div></div>
-      <div class="brow">${badge(c.points.holdBreach, 'p-high')}<div>A hold you started runs past its hold SLA</div></div></div>
-    <div class="card">${leaderboard(pts.leaderboard)}</div></div></div>`;
+      <div class="brow">${badge(c.points.holdBreach, 'p-high')}<div>A hold you started runs past its hold SLA</div></div></div></div></div>`;
+  wireFairBoard($('#lb2'), fair);
+  const ff = $('#ff'), fsum = () => { const w = FAIR_PARTS.map(([k]) => +ff['w_' + k].value || 0), t = w.reduce((x, y) => x + y, 0);
+    $('#fsum').textContent = `Fair Score = (${FAIR_PARTS.map(([k, l], i) => `${w[i]} × ${l}`).join(' + ')}) ÷ ${t || 1}`; };
+  ff.querySelectorAll('input').forEach(x => x.oninput = fsum); fsum();
+  ff.onsubmit = async e => { e.preventDefault(); $('#ferr2').textContent = '';
+    try { await api('/fair', { method: 'PUT', body: { weights: Object.fromEntries(FAIR_PARTS.map(([k]) => [k, Number(ff['w_' + k].value)])), min_tickets: ff.min_tickets.value, window_days: ff.window_days.value, baseline_days: ff.baseline_days.value } });
+      toast('Fair Score settings saved'); wireFairBoard($('#lb2'), await api('/fair')); } catch (er) { $('#ferr2').textContent = er.message; } };
   const f = $('#sf'), len = () => { const [a, b] = [f.work_start.value, f.work_end.value].map(v => +v.slice(0, 2) * 60 + +v.slice(3)); return Math.max(1, (b - a) / 60); };
   const hints = () => ['critical', 'high', 'medium', 'low'].forEach(p => { const h = +f['t_' + p].value, d = h / len();
     main.querySelector(`[data-d=${p}]`).textContent = h ? (d >= 1 ? `≈ ${+d.toFixed(1)} working day${d === 1 ? '' : 's'}` : `${h}h`) : ''; });
@@ -1440,12 +1466,15 @@ async function foodPage(main, { admin }) {
 }
 
 async function profile(main) {
-  const u = S.me.user, [r, svcs, pts] = S.tenant ? await Promise.all([api('/reports?days=7'), api('/services'), api('/points')]) : [{ counts: {} }, [], { me: 0, history: [] }];
+  const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
   const mine = u.role === 'provider' ? svcs.filter(s => s.members.some(m => m.id === u.id)) : svcs;
   main.innerHTML = `<div style="max-width:560px;margin:0 auto"><div class="profile"><div class="avatar">${u.name.split(' ').map(w => w[0]).slice(0, 2).join('')}</div>
     <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
-    <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b><span class="gold">${I('star', 18)}</span> ${pts.me}</b><span>Points</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
-    ${pts.history.length ? `<div class="card"><b>Recent points</b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
+    <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b><span class="gold">${I('star', 18)}</span> ${fm?.eligible ? fm.score.toFixed(0) : '—'}</b><span>Fair Score${fm?.eligible ? ` · #${fm.rank}` : ''}</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
+    ${fm ? `<div class="card fme"><b>My Fair Score${fm.eligible ? `: ${fm.score.toFixed(1)}` : ''}</b><div class="muted small">Last ${fair.cfg.window_days} days, compared with your team (${esc(fm.team)}). ${fm.eligible ? `Rank ${fm.rank} on this campus.` : `Ranked from ${fair.cfg.min_tickets} closed tickets; you have ${fm.tickets}.`}</div>
+      ${FAIR_PARTS.map(([k, l]) => `<div class="fme-r"><span>${l}</span><i><b style="width:${fm.parts[k]}%"></b></i><em>${fm.parts[k]}</em></div>`).join('')}
+      <div class="muted small fme-why">${[fm.typical_hours != null ? `Your typical ticket: ${fm.typical_hours} h of work; your team's usual: ${fm.team_typical_hours} h.` : '', `${fm.on_time_pct}% on time.`, fm.reopens_holds ? `${fm.reopens_holds} reopen${fm.reopens_holds === 1 ? '' : 's'} or late hold${fm.reopens_holds === 1 ? '' : 's'}.` : 'No reopens or late holds.', `${fm.hours} work hours (team average ${fm.team_avg_hours}).`].filter(Boolean).join(' ')}</div></div>` : ''}
+    ${pts.history.length ? `<div class="card"><b>Recent points <span class="muted small" style="font-weight:400">(lifetime ${pts.me}, history only)</span></b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}" class="mono">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${tile(ic, 18)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
       <a href="#" id="pw">${tile('shield', 18)}Change password<span class="chev">${I('chev', 18)}</span></a>

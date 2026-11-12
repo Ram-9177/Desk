@@ -997,9 +997,9 @@ async function staffBot(req, q) {
   if (said(q, /escalat/)) { const w = `t.escalated_at IS NOT NULL AND t.status IN (${act},'hold')`;
     return { text: (await count(w, ACTIVE)) ? 'Escalated tickets still open:' : 'No open escalated tickets.', items: items(await list(w, ACTIVE)) }; }
   if (said(q, /point|score|rank|leader/)) {
-    const board = await all(`SELECT u.id, u.name, coalesce((SELECT sum(points) FROM provider_points p WHERE p.user_id=u.id AND p.tenant_id=?),0)::int points FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND (u.role='provider' OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY points DESC`, tid, tid);
-    const me = board.findIndex(x => x.id === u.id), mine = (await one('SELECT coalesce(sum(points),0)::int p FROM provider_points WHERE tenant_id=? AND user_id=?', tid, u.id)).p;
-    return { text: `You have ${mine} points${me >= 0 ? `, rank ${me + 1} of ${board.length}` : ''}.\nClose within half the target time for 10 points, within the target for 5.${board.length ? `\nTop: ${board.slice(0, 3).map(x => `${x.name} ${x.points}`).join(' · ')}` : ''}` }; }
+    const f = await fairScores(tid), me = f.rows.find(x => x.id === u.id), top = f.rows.filter(x => x.eligible).slice(0, 3);
+    return { text: `${me ? (me.eligible ? `Your Fair Score is ${me.score} (rank ${me.rank}): pace ${me.parts.pace}, on time ${me.parts.on_time}, done right ${me.parts.done_right}, load ${me.parts.load}.` : `You need ${f.cfg.min_tickets} closed tickets in ${f.cfg.window_days} days to be ranked; you have ${me.tickets}.`) : ''}`
+      + `\nEveryone is compared with their own team, so busy and quiet teams are ranked fairly.${top.length ? `\nTop: ${top.map(x => `${x.name} ${x.score}`).join(', ')}` : ''}`, items: [{ title: 'Open my score', href: '#/c/me' }] }; }
   if (said(q, /no provider|unassigned|without provider/)) { if (!admin) return { text: 'That one is for admins.', chips };
     const rows = await all('SELECT s.name, s.code FROM services s WHERE s.tenant_id=? AND s.is_active=1 AND NOT EXISTS (SELECT 1 FROM service_members m JOIN users x ON x.id=m.user_id AND x.is_active=1 WHERE m.service_id=s.id) ORDER BY s.name', tid);
     return { text: rows.length ? `${rows.length} service${rows.length === 1 ? ' has' : 's have'} nobody to work on their tickets:` : 'Every service has a provider.', items: rows.map(r => ({ title: r.name, sub: r.code, href: '#/c/services' })) }; }
@@ -1022,6 +1022,80 @@ async function staffBot(req, q) {
   return { text: "Sorry, I didn't get that. Type a ticket number (like 0042), or pick one of these:", chips };
 }
 S.post('/bot', wrap(async req => { limit('sbot:' + req.user.id, 600); return await staffBot(req, String(req.body.q || '').slice(0, 300)); }));
+// ---------- Fair Score: rank providers fairly across busy and quiet teams (per campus) ----------
+// Every measure is relative to the provider's OWN team, so a heavy, slow flow (Maintenance) and a light, quick one (Exams)
+// compete on equal terms. For each provider, over the last `window_days` (default 30):
+//   work time of a ticket  = working minutes from when it reached the team to closing, minus time on hold
+//   team usual time        = median work time of the team's tickets of that priority, closed in the last `baseline_days` (90)
+//                            (falls back to the team's median, then the campus median, when there are fewer than 3 tickets)
+//   pace of a ticket       = work time ÷ team usual time (1.0 = the team's normal; capped at 3)
+//   Pace      P = (1.5 − average pace) × 100, kept to 0–100      (0.5 → 100, 1.0 → 50, 1.5 or slower → 0)
+//   On time   O = share closed within the team's own SLA × 100
+//   Done right D = (1 − (accepted reopens + holds past their limit) ÷ closed) × 100
+//   Load      L = min(work hours ÷ team average work hours, 1.5) ÷ 1.5 × 100
+//   Fair Score = (40 P + 30 O + 15 D + 15 L) ÷ 100                    (weights changeable per campus)
+// Averages are smoothed: each provider is counted as if they also had k = 5 tickets at their team's level, so 1–2 lucky
+// tickets can't top the board. Ranked only with at least `min_tickets` (5) closed in the window.
+const FAIR_DEFAULTS = { weights: { pace: 40, on_time: 30, done_right: 15, load: 15 }, min_tickets: 5, window_days: 30, baseline_days: 90, k: 5 };
+const fairCfg = tn => { let c = {}; try { c = JSON.parse(tn.fair_cfg || '{}') || {}; } catch { /* defaults */ }
+  return { ...FAIR_DEFAULTS, ...c, weights: { ...FAIR_DEFAULTS.weights, ...(c.weights || {}) } }; };
+const median = a => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+const r1 = v => Math.round(v * 10) / 10, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+async function fairScores(tid) {
+  const tn = await tenantRow(tid), cfg = fairCfg(tn), cal = calendar(tn), nowMs = Date.now(), k = cfg.k;
+  const since = d => new Date(nowMs - d * 864e5).toISOString();
+  const rows = await all(`SELECT t.id, t.service_id, t.priority, t.created_at, t.lands_at, t.closed_at, t.due_at, t.held_minutes, t.closed_by, s.name service
+    FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND t.status='closed' AND t.closed_by IS NOT NULL AND coalesce(t.kind,'issue')<>'suggestion' AND t.closed_at>=?`,
+    tid, since(Math.max(cfg.baseline_days, cfg.window_days)));
+  for (const t of rows) t.work = Math.max(1, workingBetween(cal, t.lands_at || t.created_at, t.closed_at) - (t.held_minutes || 0));
+  // the team's usual time, per priority
+  const base = rows.filter(t => t.closed_at >= since(cfg.baseline_days)), campusMed = median(base.map(t => t.work)) || 60, usual = {};
+  const usualOf = t => { const key = t.service_id + '|' + t.priority; if (usual[key] != null) return usual[key];
+    const sp = base.filter(x => x.service_id === t.service_id && x.priority === t.priority), s_ = base.filter(x => x.service_id === t.service_id);
+    return (usual[key] = sp.length >= 3 ? median(sp.map(x => x.work)) : s_.length >= 3 ? median(s_.map(x => x.work)) : campusMed); };
+  const win = rows.filter(t => t.closed_at >= since(cfg.window_days));
+  for (const t of win) { t.pace = Math.min(3, t.work / usualOf(t)); t.on = t.due_at ? t.closed_at <= t.due_at : null; }
+  // misses: accepted reopens and holds past their limit, in the window
+  const bad = Object.fromEntries((await all(`SELECT user_id, count(*)::int n FROM provider_points WHERE tenant_id=? AND created_at>=? AND reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY user_id`, tid, since(cfg.window_days))).map(r => [r.user_id, r.n]));
+  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND (u.role='provider' OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
+  const mine = Object.fromEntries(people.map(p => [p.id, win.filter(t => t.closed_by === p.id)]));
+  // a provider's team: the service they closed most tickets in (else their first service)
+  const firstSvc = Object.fromEntries((await all(`SELECT m.user_id, min(s.name) name, min(s.id) id FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.tenant_id=? GROUP BY m.user_id`, tid)).map(r => [r.user_id, r]));
+  const teamOf = p => { const c = {}; for (const t of mine[p.id]) c[t.service_id] = (c[t.service_id] || 0) + 1; const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+    return top ? { id: top[0], name: win.find(t => t.service_id === top[0]).service } : firstSvc[p.id] ? { id: firstSvc[p.id].id, name: firstSvc[p.id].name } : { id: null, name: 'No team yet' }; };
+  const list = people.map(p => ({ ...p, team: teamOf(p), t: mine[p.id], bad: bad[p.id] || 0 }));
+  const teams = {};
+  for (const x of list) { const tm = (teams[x.team.id] ??= { members: [], tickets: [], bad: 0 }); tm.members.push(x); tm.tickets.push(...x.t); tm.bad += x.bad; }
+  const W = cfg.weights, wsum = Math.max(1, W.pace + W.on_time + W.done_right + W.load);
+  const out = list.map(x => {
+    const tm = teams[x.team.id], n = x.t.length, onT = x.t.filter(t => t.on !== null), tmOn = tm.tickets.filter(t => t.on !== null);
+    const teamOnRate = tmOn.length ? tmOn.filter(t => t.on).length / tmOn.length : 0.8, teamBadRate = tm.tickets.length ? tm.bad / tm.tickets.length : 0;
+    const pace = (x.t.reduce((a, t) => a + t.pace, 0) + k * 1) / (n + k);
+    const onRate = (onT.filter(t => t.on).length + k * teamOnRate) / (onT.length + k);
+    const doneRate = 1 - Math.min(1, (x.bad + k * teamBadRate) / (n + k));
+    const hours = x.t.reduce((a, t) => a + t.work, 0) / 60, active = tm.members.filter(m => m.t.length), teamAvgH = active.length ? active.reduce((a, m) => a + m.t.reduce((b, t) => b + t.work, 0) / 60, 0) / active.length : 0;
+    const P = clamp((1.5 - pace) * 100, 0, 100), O = onRate * 100, D = doneRate * 100, L = teamAvgH ? Math.min(hours / teamAvgH, 1.5) / 1.5 * 100 : 0;
+    const usualH = n ? median(x.t.map(t => usualOf(t))) / 60 : null, ownH = n ? median(x.t.map(t => t.work)) / 60 : null;
+    return { id: x.id, name: x.name, team: x.team.name, team_id: x.team.id, tickets: n, eligible: n >= cfg.min_tickets,
+      pace: r1(pace * 100) / 100, on_time_pct: Math.round(onRate * 100), reopens_holds: x.bad, hours: r1(hours), team_avg_hours: r1(teamAvgH),
+      typical_hours: ownH == null ? null : r1(ownH), team_typical_hours: usualH == null ? null : r1(usualH),
+      parts: { pace: Math.round(P), on_time: Math.round(O), done_right: Math.round(D), load: Math.round(L) }, score: r1((W.pace * P + W.on_time * O + W.done_right * D + W.load * L) / wsum) };
+  });
+  const ranked = out.filter(x => x.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets);
+  ranked.forEach((x, i) => { x.rank = i + 1; });
+  return { cfg, rows: [...ranked, ...out.filter(x => !x.eligible).sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name))] };
+}
+S.get('/fair', wrap(async req => { const f = await fairScores(req.tenantId); return { ...f, me: f.rows.find(x => x.id === req.user.id) || null }; }));
+S.put('/fair', role('super_admin', 'tenant_admin'), wrap(async req => {
+  const b = req.body || {}, cur = fairCfg(await tenantRow(req.tenantId)), w = { ...cur.weights };
+  for (const kk of Object.keys(w)) if (b.weights?.[kk] !== undefined) { const v = Number(b.weights[kk]); if (!(Number.isInteger(v) && v >= 0 && v <= 100)) throw bad('Weights: whole numbers 0 to 100'); w[kk] = v; }
+  if (!Object.values(w).some(v => v > 0)) throw bad('At least one weight above 0');
+  const num = (v, lo, hi, def, label) => { if (v === undefined || v === '') return def; const n = Number(v); if (!(Number.isInteger(n) && n >= lo && n <= hi)) throw bad(`${label}: a whole number ${lo} to ${hi}`); return n; };
+  const c = { weights: w, min_tickets: num(b.min_tickets, 1, 100, cur.min_tickets, 'Minimum tickets'), window_days: num(b.window_days, 7, 365, cur.window_days, 'Ranking window (days)'),
+    baseline_days: num(b.baseline_days, 14, 730, cur.baseline_days, 'Team usual time from (days)'), k: cur.k };
+  await run('UPDATE tenants SET fair_cfg=? WHERE id=?', JSON.stringify(c), req.tenantId);
+  await audit(req, 'fair.update', 'tenant', req.tenantId, c); return { ok: true, cfg: c };
+}));
 S.get('/points', wrap(async req => ({
   me: (await one('SELECT coalesce(sum(points),0) total FROM provider_points WHERE tenant_id=? AND user_id=?', req.tenantId, req.user.id)).total,
   history: await all(`SELECT p.points, p.reason, p.created_at, t.ticket_no, t.id ticket_id FROM provider_points p LEFT JOIN tickets t ON t.id=p.ticket_id

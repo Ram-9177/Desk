@@ -123,6 +123,8 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS food_chips TEXT;
 -- Forgot password: a temporary password emailed to the person, good for an hour, next to their own (so nobody is locked out)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
+-- Fair Score settings per campus (weights, minimum tickets, windows); empty = the defaults
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS fair_cfg TEXT;
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;

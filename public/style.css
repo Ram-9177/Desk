@@ -773,3 +773,11 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 .tagc b{font-weight:500;padding:4px 4px}.tagc button{border:0;background:none;cursor:pointer;color:var(--icon-muted);width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:16px;line-height:1}
 .tagc button:hover{background:var(--hover);color:var(--text)}.tagc .tg-x:hover{background:var(--pa-rose);color:var(--danger)}
 .tagadd{display:flex;gap:8px;margin-top:10px}.tagadd input{flex:1;margin:0}.tagadd .btn{flex:none}
+/* Fair Score */
+.fb-h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:6px}.fb-team{width:auto;min-height:36px;margin:0}
+.fbrow{align-items:center}.fb-n{flex:1;min-width:0}.fb-c{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.fchip2{font-size:11.5px;padding:2px 8px;border-radius:99px;background:var(--pa-blue);color:var(--text-3)}.fchip2 b{color:var(--text);font-weight:600}
+.fb-s{font-size:22px;font-weight:600;color:var(--accent);min-width:56px;text-align:right}.fb-low{margin-top:10px;padding-top:10px;border-top:1px solid var(--divider)}
+.fmath{margin:10px 0 6px;padding-left:18px;font-size:13px;color:var(--text-2);line-height:1.5}.fmath li{margin-bottom:4px}
+.fme-r{display:grid;grid-template-columns:90px 1fr 36px;gap:10px;align-items:center;margin-top:8px;font-size:13px}.fme-r i{display:block;height:8px;border-radius:99px;background:var(--divider-soft);overflow:hidden}.fme-r i b{display:block;height:100%;background:var(--accent);border-radius:99px}.fme-r em{font-style:normal;text-align:right;font-weight:600}
+.fme-why{margin-top:10px}

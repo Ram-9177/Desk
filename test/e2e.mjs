@@ -590,7 +590,7 @@ try {
     b = (await sb(`ticket ${examNo}`, T.pavan)).data;
     check("provider: another team's ticket is not shown", !!examNo && /not in your services/.test(b.text), b.text);
     check('provider: admin questions are for admins', /for admins/.test((await sb('services with no provider', T.pavan)).data.text));
-    check('provider: own points and rank', /You have \d+ points, rank \d+ of \d+/.test((await sb('my points', T.pavan)).data.text));
+    check('provider: own Fair Score (or how many tickets are still needed)', /Fair Score is [\d.]+ \(rank \d+\)|closed tickets in \d+ days to be ranked/.test((await sb('my points', T.pavan)).data.text));
     b = (await sb(`ticket ${examNo}`, T.asha)).data;
     check('admin: any ticket of the campus', new RegExp(`#${examNo}`).test(b.text) && /Raised by/.test(b.text), b.text);
     check("admin: today's summary for the campus", /Today at Alpha Campus: \d+ raised/.test((await sb("today's summary", T.asha)).data.text));
@@ -783,6 +783,36 @@ try {
   await ok('an admin deletes the unused service', `/services/${tmp.id}`, { ...A, method: 'DELETE' });
   check('it is gone, with its providers list', !(await api('/services', A)).data.some(x => x.id === tmp.id) && !(await q('SELECT 1 FROM service_members WHERE service_id=?', tmp.id)).length);
   }
+
+  sec('Fair Score: busy and quiet teams ranked on equal terms');
+  { const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id }, tid = A.tenant;
+  const mk = async (name, email) => (await ok(`provider ${name}`, '/users', { ...A, method: 'POST', body: { name, email, role: 'provider' } })).id;
+  const [p1, p2, p3, p4, p5] = [await mk('Busy One', 'busy1@fair.example.com'), await mk('Busy Two', 'busy2@fair.example.com'), await mk('Quiet One', 'quiet1@fair.example.com'), await mk('Quiet Two', 'quiet2@fair.example.com'), await mk('New One', 'new1@fair.example.com')];
+  const busy = await ok('a busy team with long jobs', '/services', { ...A, method: 'POST', body: { code: 'BUSYX', name: 'Busy Maintenance', form_schema: { form_type: 'general', fields: [] } } });
+  const quiet = await ok('a quiet team with quick jobs', '/services', { ...A, method: 'POST', body: { code: 'QUIETX', name: 'Quiet Exams', form_schema: { form_type: 'general', fields: [] } } });
+  const third = await ok('a third team', '/services', { ...A, method: 'POST', body: { code: 'NEWX', name: 'New Team', form_schema: { form_type: 'general', fields: [] } } });
+  await ok('busy members', `/services/${busy.id}/members`, { ...A, method: 'PUT', body: { user_ids: [p1, p2] } });
+  await ok('new team member', `/services/${third.id}/members`, { ...A, method: 'PUT', body: { user_ids: [p5] } });
+  await ok('quiet members', `/services/${quiet.id}/members`, { ...A, method: 'PUT', body: { user_ids: [p3, p4] } });
+  const { calendar, addWorking, dateStart } = await import('../sla.js'), tnr = (await q('SELECT * FROM tenants WHERE id=?', tid))[0], cal = calendar(tnr);
+  let day = null; for (let b = 12; b < 30 && !day; b++) { const d = new Date(Date.now() - b * 864e5).toISOString().slice(0, 10); if (cal.days.has(new Date(d + 'T00:00:00Z').getUTCDay())) day = d; }
+  const start = addWorking(cal, dateStart(cal.tz, day), 0); let seq = 0;
+  // close n tickets for a provider, each taking `work` working minutes (all within their SLA)
+  const closeN = async (svc, who, n, work) => { for (let i = 0; i < n; i++) { seq++;
+    const t = await ok(`ticket ${seq}`, '/tickets', { ...A, method: 'POST', body: { channel: 'walk_in', service_id: svc, name: 'Fair ' + seq, email: `fair${seq}@fair.example.com`, phone: '90000' + String(10000 + seq), requestor_type: 'staff', subject: 'Fair job ' + seq, description: 'x', location: 'Room ' + seq } });
+    const closed = addWorking(cal, start, work);
+    await q("UPDATE tickets SET status='closed', closed_by=?, created_at=?, lands_at=NULL, closed_at=?, due_at=?, held_minutes=0, priority='medium' WHERE id=?", who, start, closed, addWorking(cal, closed, 60), t.id); } };
+  await closeN(busy.id, p1, 10, 600); await closeN(busy.id, p2, 10, 900); await closeN(quiet.id, p3, 6, 30); await closeN(quiet.id, p4, 6, 60); await closeN(third.id, p5, 2, 600);
+  const f = (await api('/fair', A)).data, row = id => f.rows.find(x => x.id === id), order = f.rows.filter(x => [p1, p2, p3, p4].includes(x.id)).map(x => x.id);
+  check('each ticket is measured against its own team’s usual time (busy 12.5 h, quiet 45 min)', row(p1).team_typical_hours === 12.5 && row(p3).team_typical_hours === 0.8 && row(p1).team === 'Busy Maintenance' && row(p3).team === 'Quiet Exams', JSON.stringify([row(p1), row(p3)]));
+  check('the quick provider of the quiet team (6 tickets, 3 work-hours) ranks with the best of the busy team (10 tickets, 100 work-hours)', order.join() === [p3, p1, p2, p4].join(), JSON.stringify(f.rows.filter(x => [p1, p2, p3, p4].includes(x.id)).map(x => [x.name, x.score, x.parts])));
+  check('the math: Quiet One 78.9 = 0.4×68.2 pace + 0.3×100 on time + 0.15×100 done right + 0.15×44.4 load', row(p3).score === 78.9 && row(p3).parts.pace === 68 && row(p3).parts.load === 44 && row(p1).score === 78.3, JSON.stringify([row(p3), row(p1)]));
+  check('too few tickets: listed as not ranked yet', row(p5).eligible === false && row(p5).rank === undefined && row(p5).tickets === 2);
+  await fails('a provider can’t change the Fair Score settings', '/fair', { token: (await login('busy1@fair.example.com', (await q("SELECT 1"))[0] && 'x')) || T.pavan, method: 'PUT', body: { min_tickets: 1 } }, 403);
+  await fails('weights must be 0–100', '/fair', { ...A, method: 'PUT', body: { weights: { pace: 150 } } }, 400);
+  await ok('admin lowers the minimum to 2', '/fair', { ...A, method: 'PUT', body: { min_tickets: 2 } });
+  check('…then the new provider is ranked too', (await api('/fair', A)).data.rows.find(x => x.id === p5).eligible === true);
+  await ok('(back to 5)', '/fair', { ...A, method: 'PUT', body: { min_tickets: 5 } }); }
 
   sec('Forgot password: a temporary password by email');
   { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
