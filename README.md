@@ -98,6 +98,16 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 
 ### Add a super admin, or reset a forgotten super admin password
 
+**Quickest, and works even when email doesn't:** on the server,
+
+```bash
+cd ~/one-desk && npm run add-super-admin
+```
+
+It uses `SUPER_ADMIN_EMAIL` from `.env`, makes that account an active super admin with a fresh temporary password, **prints the password on the screen**, emails it, says whether the email went out (and why not), and lists the last emails sent to that address. Sign in, choose your own password, done.
+
+Or let the app do it on restart:
+
 On the server, put the account in `.env` (never in the repo, which is public) and restart:
 
 ```bash

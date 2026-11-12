@@ -1392,7 +1392,7 @@ app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the r
     const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${envPw}`).digest('hex');
     // with a password: apply each email + password pair once; email only: only when the account is not already an active super admin
     const due = envPw ? getSettings().super_admin_env !== mark : !isSa;
-    if (!due) console.log(`Super admin ${email}: already set up${envPw ? ' with this SUPER_ADMIN_PASSWORD' : ''}. Forgot the password? Use “Forgot password?” on the sign-in page.`);
+    if (!due) console.log(`Super admin ${email}: already set up${envPw ? ' with this SUPER_ADMIN_PASSWORD' : ''}. No email this time. To get a new temporary password (printed here and emailed): npm run add-super-admin`);
     else {
       const pw = envPw || tempPw();
       if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
