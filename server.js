@@ -1380,7 +1380,7 @@ app.use('/desk', express.static(path.join(ROOT, 'public')));
 app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the root, e.g. https://stmarys-desk.supercxo.ai
 // Super admins on every start (deploy):
 //   OWNER (built in, sriram@smru.edu.in; OWNER_EMAIL in .env overrides it, empty turns it off) and SUPER_ADMIN_EMAIL from .env.
-//   If such an account is not yet an active super admin, it is created (or made one) with a temporary password that is
+//   An existing account is simply made an active super admin (password unchanged). A missing one is created with a temporary password that is
 //   emailed to it AND written to this server's log (pm2 logs), so it can sign in even when email is not working yet; the first
 //   sign-in must choose a new password. An account that already is an active super admin is left alone.
 //   SUPER_ADMIN_PASSWORD (optional) is used as SUPER_ADMIN_EMAIL's temporary password instead, applied once per email + password.
@@ -1391,6 +1391,9 @@ async function ensureSuperAdmin(email, envPw = '') {
   const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${envPw}`).digest('hex');
   if (envPw ? getSettings().super_admin_env === mark : isSa)
     return console.log(`Super admin ${email}: already set up. To get a new temporary password (shown here and emailed): npm run add-super-admin -- ${email}`);
+  // the owner's account already exists (e.g. as a campus admin): make it a super admin and keep its password
+  if (u && !envPw) { await run("UPDATE users SET role='super_admin', tenant_id=NULL, is_active=1 WHERE id=?", u.id);
+    return console.log(`Super admin ${email}: made super admin (was ${u.role}${u.is_active ? '' : ', inactive'}); password unchanged. Sign in as before; you now see every campus.`); }
   const pw = envPw || tempPw();
   if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
   else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);

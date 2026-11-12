@@ -945,6 +945,10 @@ try {
     await q("UPDATE users SET role='provider', tenant_id=(SELECT id FROM tenants LIMIT 1) WHERE email='owner@smru.example.com'");
     await login('owner@smru.example.com', opw);
     check('the owner signs in as super admin even if someone changed their role', (await q("SELECT role, tenant_id FROM users WHERE email='owner@smru.example.com'"))[0].role === 'super_admin');
+    await q("UPDATE users SET role='tenant_admin', tenant_id=(SELECT id FROM tenants LIMIT 1) WHERE email='owner@smru.example.com'");
+    await stop(); const so1 = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
+    check('an existing campus admin with the owner email is made super admin on deploy, password unchanged, no email', /owner@smru.example.com: made super admin \(was tenant_admin\); password unchanged/.test(so1.out())
+      && (await q("SELECT role, tenant_id FROM users WHERE email='owner@smru.example.com'"))[0].role === 'super_admin' && !!(await login('owner@smru.example.com', opw)) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='owner@smru.example.com'"))[0].n === 1, so1.out().slice(-300));
     await stop(); const so2 = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
     check('next deploy: already set up, no second email', /owner@smru.example.com: already set up/.test(so2.out()) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='owner@smru.example.com'"))[0].n === 1); }
   await stop(); let s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
