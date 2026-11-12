@@ -705,6 +705,7 @@ app.post('/api/auth/login', wrap(async req => {
   if (!own && !temp) throw new HttpErr(401, 'UNAUTHORIZED', 'Wrong email or password');
   // signed in with the emailed temporary password: they must choose a new one now
   if (temp) await run('UPDATE users SET must_change_pw=1 WHERE id=?', u.id);
+  if (OWNER && u.email.toLowerCase() === OWNER && (u.role !== 'super_admin' || u.tenant_id)) await run("UPDATE users SET role='super_admin', tenant_id=NULL WHERE id=?", u.id); // the owner signs in as super admin
   await run('UPDATE users SET last_login_at=? WHERE id=?', now(), u.id);
   return { token: sign({ sub: u.id, role: u.role, tid: u.tenant_id }) };
 }));
@@ -1377,32 +1378,33 @@ app.use((e, _req, res, _next) => {
 
 app.use('/desk', express.static(path.join(ROOT, 'public')));
 app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the root, e.g. https://stmarys-desk.supercxo.ai
-// The super admin from .env, on every start (deploy):
-//   SUPER_ADMIN_EMAIL alone: if that account is not yet an active super admin, it is created (or made one) with a generated
-//     temporary password that is EMAILED to it; the first sign-in must choose a new password. Done once per email.
-//   SUPER_ADMIN_EMAIL + SUPER_ADMIN_PASSWORD: that password becomes the temporary one (applied once per email + password pair).
-// Either way the email carries the sign-in details; nothing is ever written to the repo.
+// Super admins on every start (deploy):
+//   OWNER (built in, sriram@smru.edu.in; OWNER_EMAIL in .env overrides it, empty turns it off) and SUPER_ADMIN_EMAIL from .env.
+//   If such an account is not yet an active super admin, it is created (or made one) with a temporary password that is
+//   emailed to it AND written to this server's log (pm2 logs), so it can sign in even when email is not working yet; the first
+//   sign-in must choose a new password. An account that already is an active super admin is left alone.
+//   SUPER_ADMIN_PASSWORD (optional) is used as SUPER_ADMIN_EMAIL's temporary password instead, applied once per email + password.
+async function ensureSuperAdmin(email, envPw = '') {
+  if (!/^\S+@\S+\.\S+$/.test(email)) return console.log(`"${email}" is not an email address; no super admin set up for it.`);
+  if (envPw && envPw.length < 10) return console.log(`SUPER_ADMIN_PASSWORD is shorter than 10 characters; leave it out to have a temporary password generated for ${email}.`);
+  const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email), isSa = u?.role === 'super_admin' && u.is_active;
+  const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${envPw}`).digest('hex');
+  if (envPw ? getSettings().super_admin_env === mark : isSa)
+    return console.log(`Super admin ${email}: already set up. To get a new temporary password (shown here and emailed): npm run add-super-admin -- ${email}`);
+  const pw = envPw || tempPw();
+  if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+  else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
+  if (envPw) await setSetting('super_admin_env', mark);
+  const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
+  await notify({ tenant_id: null }, [acct.email], u ? 'password_reset' : 'invite', await staffVars(acct, pw)).catch(e => console.error('super admin email', e.message));
+  console.log(`Super admin ${email}: ${u ? 'temporary password set' : 'created'}; the sign-in details were emailed (see Email → Delivery log).${envPw ? '' : ` Temporary password: ${pw}`} They choose their own password at first sign-in.`);
+}
+const OWNER = String(process.env.OWNER_EMAIL ?? 'sriram@smru.edu.in').trim().toLowerCase();
 {
-  const email = String(process.env.SUPER_ADMIN_EMAIL || '').trim(), envPw = String(process.env.SUPER_ADMIN_PASSWORD || '');
-  if (!email) { if (!await one('SELECT 1 FROM users LIMIT 1')) console.log('No users yet. Set SUPER_ADMIN_EMAIL in .env and restart: the super admin is created and their temporary password emailed.'); }
-  else if (!/^\S+@\S+\.\S+$/.test(email)) console.log(`SUPER_ADMIN_EMAIL "${email}" is not an email address; no super admin set up.`);
-  else if (envPw && envPw.length < 10) console.log('SUPER_ADMIN_PASSWORD is shorter than 10 characters; leave it out to have a temporary password generated and emailed.');
-  else {
-    const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email), isSa = u?.role === 'super_admin' && u.is_active;
-    const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${envPw}`).digest('hex');
-    // with a password: apply each email + password pair once; email only: only when the account is not already an active super admin
-    const due = envPw ? getSettings().super_admin_env !== mark : !isSa;
-    if (!due) console.log(`Super admin ${email}: already set up${envPw ? ' with this SUPER_ADMIN_PASSWORD' : ''}. No email this time. To get a new temporary password (printed here and emailed): npm run add-super-admin`);
-    else {
-      const pw = envPw || tempPw();
-      if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
-      else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
-      if (envPw) await setSetting('super_admin_env', mark);
-      const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
-      await notify({ tenant_id: null }, [acct.email], u ? 'password_reset' : 'invite', await staffVars(acct, pw)).catch(e => console.error('super admin email', e.message));
-      console.log(`Super admin ${email}: ${u ? 'temporary password set' : 'created'}; the sign-in details were emailed (see Email → Delivery log). They choose their own password at first sign-in.`);
-    }
-  }
+  const envEmail = String(process.env.SUPER_ADMIN_EMAIL || '').trim(), envPw = String(process.env.SUPER_ADMIN_PASSWORD || '');
+  if (OWNER && OWNER !== envEmail.toLowerCase()) await ensureSuperAdmin(OWNER);
+  if (envEmail) await ensureSuperAdmin(envEmail, envPw);
+  if (!OWNER && !envEmail && !await one('SELECT 1 FROM users LIMIT 1')) console.log('No users yet. Set SUPER_ADMIN_EMAIL in .env and restart: the super admin is created and their temporary password emailed.');
 }
 // ---------- start-up provisioning ----------
 // provision/*.json (committed: campuses and services) and provision/*.private.json (git-ignored: staff and who serves what)

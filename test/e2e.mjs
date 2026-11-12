@@ -19,7 +19,7 @@ const admin = new pg.Client({ connectionString: ADMIN_URL }); await admin.connec
 await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME}`); await admin.query(`CREATE DATABASE ${DB_NAME}`);
 pg.types.setTypeParser(20, Number);
 const testDb = new pg.Pool({ connectionString: DB_URL, max: 2 });
-const ENV = { NODE_ENV: 'production', JWT_SECRET: 'e2e-' + 'x'.repeat(40) };
+const ENV = { NODE_ENV: 'production', JWT_SECRET: 'e2e-' + 'x'.repeat(40), OWNER_EMAIL: '' }; // the built-in owner is tested on its own below
 const SUPER = { email: 'super@example.com', password: 'SuperSecret123' };
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -937,6 +937,16 @@ try {
     check('SUPER_ADMIN_EMAIL alone: super admin created and the temporary password emailed', /boss@example.com: created/.test(s3.out()) && inv.length === 1 && !!pw3 && !!(await login('boss@example.com', pw3)) && await mc('boss@example.com') === 1, s3.out().slice(-400));
     await stop(); const s4 = await start({ SUPER_ADMIN_EMAIL: 'boss@example.com' });
     check('…and not again on the next deploy', /already set up/.test(s4.out()) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='boss@example.com'"))[0].n === 1 && !!(await login('boss@example.com', pw3))); }
+  // the built-in owner (OWNER_EMAIL; in production the code's default): always an active super admin, temp password emailed and logged
+  { await stop(); const so = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
+    const opw = so.out().match(/owner@smru.example.com: created;.*Temporary password: (\S+)/)?.[1];
+    const inv = await q("SELECT 1 FROM notifications WHERE recipient='owner@smru.example.com' AND template_key='invite'");
+    check('the built-in owner is created as super admin; the temporary password is emailed and in the server log', !!opw && inv.length === 1 && !!(await login('owner@smru.example.com', opw)), so.out().slice(-300));
+    await q("UPDATE users SET role='provider', tenant_id=(SELECT id FROM tenants LIMIT 1) WHERE email='owner@smru.example.com'");
+    await login('owner@smru.example.com', opw);
+    check('the owner signs in as super admin even if someone changed their role', (await q("SELECT role, tenant_id FROM users WHERE email='owner@smru.example.com'"))[0].role === 'super_admin');
+    await stop(); const so2 = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
+    check('next deploy: already set up, no second email', /owner@smru.example.com: already set up/.test(so2.out()) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='owner@smru.example.com'"))[0].n === 1); }
   await stop(); let s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
   let t2 = await login('second@example.com', 'SecondAdmin#2026');
   check('a new email in SUPER_ADMIN_* becomes another super admin, with a temporary password', /second@example.com: created/.test(s2.out()) && !!t2 && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));

@@ -1,8 +1,8 @@
 // Make SUPER_ADMIN_EMAIL a super admin with a fresh temporary password, from the server's shell. It always works, even when
 // email does not:
 //   npm run add-super-admin
-// It reads SUPER_ADMIN_EMAIL (and optional SUPER_ADMIN_NAME / SUPER_ADMIN_PASSWORD) from .env, never from code (the repo
-// is public). It then
+// The account: the email given (npm run add-super-admin -- you@org), else SUPER_ADMIN_EMAIL from .env, else the built-in owner
+// (sriram@smru.edu.in). Optional SUPER_ADMIN_NAME / SUPER_ADMIN_PASSWORD from .env. It then
 //   1. creates the account, or makes the existing one an active super admin, with a temporary password
 //      (SUPER_ADMIN_PASSWORD if set, else a generated one); the first sign-in must choose a new password,
 //   2. prints the temporary password here (only someone with access to this server sees it),
@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import { pool, uid, one, all, run, insert, hashPw, now } from './db.js';
 import { loadSettings, mailConfig, renderTemplate, renderEmail, toText, postToFlow } from './mailer.js';
 
-const email = String(process.env.SUPER_ADMIN_EMAIL || process.argv[2] || '').trim(), given = String(process.env.SUPER_ADMIN_PASSWORD || '');
+const email = String(process.argv[2] || process.env.SUPER_ADMIN_EMAIL || process.env.OWNER_EMAIL || 'sriram@smru.edu.in').trim(), given = String(process.env.SUPER_ADMIN_PASSWORD || '');
 const name = String(process.env.SUPER_ADMIN_NAME || '').trim() || 'Super admin';
 const done = async (msg, ok = true) => { console.log(msg); await pool.end(); process.exit(ok ? 0 : 1); };
 if (!/^\S+@\S+\.\S+$/.test(email)) await done('Set SUPER_ADMIN_EMAIL in .env (or run: npm run add-super-admin -- you@example.com).', false);

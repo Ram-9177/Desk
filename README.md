@@ -98,6 +98,8 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 
 ### Add a super admin, or reset a forgotten super admin password
 
+**Built-in owner:** `sriram@smru.edu.in` is always kept an active super admin. On a deploy where that account is missing (or not a super admin), it is created and its temporary password is emailed **and written to the log** (`pm2 logs one-desk --lines 30 --nostream`, look for "Temporary password"). It always signs in as super admin. (`OWNER_EMAIL` in `.env` changes or, left empty, turns this off.)
+
 **Quickest, and works even when email doesn't:** on the server,
 
 ```bash
