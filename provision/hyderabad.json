@@ -161,8 +161,8 @@
       "description": "Food quality, hygiene, menu, billing",
       "sort_order": 6,
       "form_schema": {
-        "icon": "cash",
-        "form_type": "location",
+        "icon": "utensils",
+        "form_type": "food",
         "fields": [
           {
             "key": "topic",

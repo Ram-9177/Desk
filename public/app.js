@@ -222,8 +222,8 @@ async function foodScreens(slug, tenant, svc, flow) {
   // One screen: two stacked cards (feedback first); the picked one's form opens right below them
   if (flow !== 'report') flow = 'rate';
   const kindCards = cur => `<div class="kindsw foodkind" role="radiogroup" aria-label="What would you like to do?">
-      <label><input type="radio" name="fkind" value="rate" ${cur === 'rate' ? 'checked' : ''}><span><i class="ks-ic">${I('star', 18)}</i><b>Feedback / suggestion<small>Pick the day and meal, give stars and a short review or idea. Goes to the kitchen team's report; no ticket.</small></b></span></label>
-      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a complaint<small>Raises a ticket, like any other service: you get a ticket number, the team acts on it, and you can track it. A photo is needed.</small></b></span></label></div>`;
+      <label><input type="radio" name="fkind" value="rate" ${cur === 'rate' ? 'checked' : ''}><span><i class="ks-ic">${I('star', 18)}</i><b>Share feedback<small>Pick the day and meal, give stars and a short review or idea. Goes to the kitchen team's report; no ticket.</small></b></span></label>
+      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>Raises a ticket, like any other service: you get a ticket number, the team acts on it, and you can track it. A photo is needed.</small></b></span></label></div>`;
   const wireKind = () => document.querySelectorAll('[name=fkind]').forEach(r => r.onchange = () => {
     const fm = $('#f'); foodCarry({ location_id: fm?.location_id?.value, meal: fm?.meal?.value }); location.replace(`${base}?flow=${r.value}`); });
   if (flow === 'rate') { // ---------- Flow A: Rate your meal ----------

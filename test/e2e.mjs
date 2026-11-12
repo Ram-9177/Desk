@@ -1135,7 +1135,7 @@ async function uiSmoke(tok, id) {
     check('food card subtitle', await js(`return /Rate meals or report a problem/.test(document.querySelector('a.svc[href*="FOODX"]').textContent)`));
     await visit('food: one screen with two stacked cards', '/d/alpha/raise/FOODX', null, '.foodkind');
     check('"Feedback / suggestion" first and open (its form below), "Report a complaint" stacked under it', await js(`const c = [...document.querySelectorAll('.foodkind label')];
-      return c.length === 2 && /Feedback \\/ suggestion/.test(c[0].textContent) && /Report a complaint/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1
+      return c.length === 2 && /Share feedback/.test(c[0].textContent) && /Report a problem/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1
         && document.querySelector('[name=fkind]:checked').value === 'rate' && !!document.querySelector('#f .stars')`));
     check('tapping Report a complaint opens the complaint form on the same screen', await js(`document.querySelector('[name=fkind][value=report]').click(); await new Promise(r => setTimeout(r, 1500));
       return !!document.querySelector('#f .fcats') && document.querySelector('[name=fkind]:checked').value === 'report' && /photo/i.test(document.querySelector('.foodkind').textContent)`));

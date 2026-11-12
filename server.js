@@ -1481,6 +1481,14 @@ async function provision() {
   if (applied.size !== before) await run("INSERT INTO app_settings (key, value) VALUES ('provision_applied', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value", JSON.stringify([...applied]));
 }
 await provision();
+// One time: the campus's FOOD service (set up as a Location form) becomes a Food service, so tapping it offers
+// Share feedback / Report a problem. Only where the campus has no Food service yet; remembered, so an admin's later change stays.
+if (getSettings().migr_food_type_v1 !== '1') {
+  for (const s of await all("SELECT id, form_schema FROM services WHERE upper(code)='FOOD' AND form_schema::jsonb->>'form_type' <> 'food' AND NOT EXISTS (SELECT 1 FROM services x WHERE x.tenant_id=services.tenant_id AND x.form_schema::jsonb->>'form_type'='food')")) {
+    const f = JSON.parse(s.form_schema || '{}'); await run('UPDATE services SET form_schema=? WHERE id=?', JSON.stringify({ ...f, form_type: 'food', icon: 'utensils' }), s.id);
+    console.log('Food service switched to the Food form (Share feedback / Report a problem).'); }
+  await setSetting('migr_food_type_v1', '1');
+}
 
 const server = app.listen(PORT, process.env.HOST, () => console.log(`ONE Desk on http://${process.env.HOST || 'localhost'}:${PORT}`));
 // HEIC photos stored before uploads were converted: turn them into JPEG once, in the background
