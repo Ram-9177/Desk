@@ -131,7 +131,6 @@ export function food(d) {
     if (!FOOD_CATEGORIES.some(c => c[0] === b.category)) throw bad('Please pick what the problem is');
     const description = str(b.description, 2000); if (!description) throw bad('Please describe the problem');
     const files = Array.isArray(b.files) ? b.files : [];
-    if (!files.length) throw bad('Please add a photo of the problem');
     for (const f of files) if (!['jpeg', 'png', 'gif', 'webp', 'heic'].includes(kindOf(Buffer.from(String(f.data || '').split(',').pop(), 'base64')))) throw bad('Only photos (no other files)');
     const t = await createTicket(tn, { service_id: svc.id, name: str(b.name, 80), email: b.email, phone: b.phone, requestor_type: b.requestor_type || 'student',
       identifier: str(b.identifier, 60) || null, department: str(b.department, 80) || null,

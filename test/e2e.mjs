@@ -886,8 +886,8 @@ try {
   for (const [rt, meal, loc, chips] of [[5, 'lunch', L2, ['Good food 👍']], [4, 'breakfast', L1, []], [1, 'dinner', L1, ['Cold food', 'Quantity']]]) await fb({ location_id: loc, meal, rating: rt, chips, name: 'Roll 23BPT01' });
   const PNGF = [{ name: 'p.png', type: 'image/png', source: 'camera', data: PNG }];
   const cb = (who, extra = {}) => ({ location_id: L1, meal: 'lunch', category: 'insect', description: 'Insect in the dal', name: who, email: `${who.toLowerCase()}@food.example.com`, phone: '9000044444', ...extra });
-  r = await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa') });
-  check('a complaint needs a photo', r.status === 400 && /photo/.test(r.error.message));
+  r = await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { description: '' }) });
+  check('a photo is optional (only the description is asked for here)', r.status === 400 && !/photo/i.test(r.error.message) && /describe/i.test(r.error.message), r.error?.message);
   r = await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { files: [{ name: 'a.pdf', type: 'application/pdf', data: 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4 x').toString('base64') }] }) });
   check('photos only (no PDFs)', r.status === 400);
   const c1 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { files: PNGF }) })).data, c2 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fb', { files: PNGF }) })).data;
@@ -1168,7 +1168,7 @@ async function uiSmoke(tok, id) {
       return c.length === 2 && /Share feedback/.test(c[0].textContent) && /Report a problem/.test(c[1].textContent) && c[1].getBoundingClientRect().top > c[0].getBoundingClientRect().bottom - 1
         && document.querySelector('[name=fkind]:checked').value === 'rate' && !!document.querySelector('#f .stars')`));
     check('tapping Report a complaint opens the complaint form on the same screen', await js(`document.querySelector('[name=fkind][value=report]').click(); await new Promise(r => setTimeout(r, 1500));
-      return !!document.querySelector('#f .fcats') && document.querySelector('[name=fkind]:checked').value === 'report' && /photo/i.test(document.querySelector('.foodkind').textContent)`));
+      return !!document.querySelector('#f .fcats') && document.querySelector('[name=fkind]:checked').value === 'report' && /optional/i.test(document.querySelector('#f').textContent)`));
     await visit('food: rate your meal', '/d/alpha/raise/FOODX?flow=rate', null, '.stars');
     check('the meal defaults to the one by the time of day', await js(`const m = await import('/shared.js'); const f = await (await fetch('/api/public/alpha/food')).json();
       const hm = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());

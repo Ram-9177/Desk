@@ -421,7 +421,7 @@ async function createTicket(tenant, b, opts) {
     if (!/^\+?[0-9 -]{7,15}$/.test(String(b.phone || '').trim())) throw bad('Please enter a valid phone number (7–15 digits)');
     if (!asStudent && !opts.food) { req_(b.identifier, 'Please fill in your ID (student ID, faculty ID, staff ID, or for visitors where you are from)'); req_(b.department, 'Please fill in your department (or for visitors the purpose of the visit)'); }
   }
-  buildFormCheck(schema, fd, f => (f.key.startsWith('stu_') && !asStudent) || (suggestion && !f.key.startsWith('stu_')));
+  if (!opts.food) buildFormCheck(schema, fd, f => (f.key.startsWith('stu_') && !asStudent) || (suggestion && !f.key.startsWith('stu_'))); // a food complaint has its own questions (meal, problem, photo)
   // the form type's answers fill the ticket's location and the requestor's ID / department
   if (suggestion) { req_(b.description, 'Please write your suggestion'); b.location = b.location ? String(b.location).slice(0, 200) : null; }
   else if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');

@@ -230,7 +230,7 @@ async function foodScreens(slug, tenant, svc, flow) {
   if (flow !== 'report') flow = 'rate';
   const kindCards = cur => `<div class="kindsw foodkind" role="radiogroup" aria-label="What would you like to do?">
       <label><input type="radio" name="fkind" value="rate" ${cur === 'rate' ? 'checked' : ''}><span><i class="ks-ic">${I('star', 18)}</i><b>Share feedback<small>Pick the day and meal, give stars and a short review or idea. Goes to the kitchen team's report; no ticket.</small></b></span></label>
-      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>Raises a ticket, like any other service: you get a ticket number, the team acts on it, and you can track it. A photo is needed.</small></b></span></label></div>`;
+      <label><input type="radio" name="fkind" value="report"><span><i class="ks-ic">${I('alert', 18)}</i><b>Report a problem<small>Raises a ticket, like any other service: you get a ticket number, the team acts on it, and you can track it. Photos are optional.</small></b></span></label></div>`;
   const wireKind = () => document.querySelectorAll('[name=fkind]').forEach(r => r.onchange = () => {
     const fm = $('#f'); foodCarry({ location_id: fm?.location_id?.value, meal: fm?.meal?.value }); location.replace(`${base}?flow=${r.value}`); });
   if (flow === 'rate') { // ---------- Flow A: Rate your meal ----------
@@ -271,7 +271,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <div class="limitbox" id="else" hidden>${I('alert', 22)}<div><b>Taste, quantity or cold food?</b><div>Share feedback instead. The kitchen team sees it tonight.</div>
         <button type="button" class="btn soft" id="toRate" style="margin-top:8px">${I('star', 16)} Switch to feedback</button></div></div>
       <label>Describe what happened</label><textarea name="description" required maxlength="2000" placeholder="What, where and when">${esc(c.description || '')}</textarea>
-      <label>Photo <span class="req" aria-hidden="true">*</span> <small>(camera or gallery)</small></label>${fileButtons('food')}
+      <label>Photos <small>(optional, up to 4: camera or gallery)</small></label>${fileButtons('food')}
       <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div></div><label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''}><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
       <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
         <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
@@ -281,8 +281,6 @@ async function foodScreens(slug, tenant, svc, flow) {
     fm.querySelectorAll('[name=category]').forEach(r => r.onchange = sync);
     $('#toRate').onclick = () => { foodCarry({ location_id: fm.location_id?.value, meal: fm.meal.value, comment: fm.description.value.trim().slice(0, 300) }); location.hash = `${base}?flow=rate`; };
     fm.onsubmit = async e => { e.preventDefault(); const btn = fm.querySelector('button.primary'); $('#err').textContent = '';
-      const n = [...document.querySelectorAll('.f-food')].reduce((a, x) => a + x.files.length, 0);
-      if (!n) { $('#err').textContent = 'Please add a photo of the problem (camera or gallery).'; return; }
       const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, category: fm.category.value, description: fm.description.value.trim(), name: fm.name.value.trim(),
         requestor_type: fm.requestor_type.value, email: fm.email.value.trim(), phone: fm.phone.value.trim(), website: fm.website.value, idempotency_key: idem };
       btn.disabled = true;
