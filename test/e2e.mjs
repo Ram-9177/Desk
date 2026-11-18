@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import pg from 'pg';
 import jpeg from 'jpeg-js';
+import { polish, SHORT } from '../polish.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4397, APP = `http://localhost:${PORT}`, API = APP + '/api';
@@ -852,7 +853,7 @@ try {
   const keep = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'Mail sent to Abc.Xyz@college.edu.in, see https://erp.example.com/fee?id=7' } })).data;
   check('emails and links are left exactly as typed', keep.text.includes('Abc.Xyz@college.edu.in') && keep.text.includes('https://erp.example.com/fee?id=7'), keep.text);
   const nm = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'devi madam and suresh garu will visit r block tommorow. rani, priya, anil reddy and sita informed, contact HR or IT dept. 40 wat bulb fixd in room r 12' } })).data;
-  check('names, places and abbreviations are never “corrected” (Devi, Rani, Priya, Reddy, R block, HR)', nm.text === 'Devi madam and suresh garu will visit r block tomorrow. Rani, priya, anil reddy and sita informed, contact HR or IT department. 40 wat bulb fixed in room R 12.', nm.text);
+  check('names, places and abbreviations are never “corrected” (Devi, Rani, Priya, Reddy, R block, HR)', nm.text === 'Devi madam and suresh garu will visit R block tomorrow. Rani, priya, anil reddy and sita informed, contact HR or IT department. 40 wat bulb fixed in room R 12.', nm.text);
   const ac = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'wifi router in pg hostel wing c replaced, pls check ur id. WATER PROBLEM IN BLOCK A SOLVED' } })).data;
   check('campus abbreviations and block letters shown the usual way', ac.text === 'Wi-Fi router in PG hostel wing C replaced, please check your ID. WATER PROBLEM IN BLOCK A SOLVED.', ac.text);
   await ok('a note sent without the preview is still tidied for the requester', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'we r checking the mcb now' } });
@@ -880,6 +881,44 @@ try {
   await ok('another note', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Checked again.', approved: true } });
   check('…and the next email uses it', (await q("SELECT html FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 1", tk.id))[0].html.includes('Test line.'));
   await ok('(back to the standard text)', '/mail/config', { token: T.sa, method: 'PUT', body: { brand: { brand_welcome: "Welcome to ONE DESK, St. Mary's own student service centre. We are always working to elevate your academic and learning experience, and to help every student grow into a life-ready professional." } } }); }
+
+  sec('Reply clean-up: prepared corrections only; names, capitals and codes are never touched');
+  { const P = x => polish(x).text, same = (...xs) => xs.filter(x => { const o = P(x), base = o.replace(/\.$/, ''); return base !== x && base !== x[0].toUpperCase() + x.slice(1); });
+  const never = [...new Set(fs.readFileSync(path.join(ROOT, 'tools/never-touch.txt'), 'utf8').split(/\s+/).filter(Boolean).map(w => w.toLowerCase()))], L = x => P(x).toLowerCase();
+  const hurt = never.filter(w => !L(`we spoke to ${w} today`).includes(` ${w} `) || !L(`${w} will come today`).startsWith(`${w} `) || !L(`informed Dr. ${w} and Mr. ${w}`).includes(`dr. ${w} and mr. ${w}`)
+    || !L(`${w} sir informed`).startsWith(`${w} sir`) || !L(`PLEASE CONTACT ${w.toUpperCase()} IN THE OFFICE`).includes(` ${w} `));
+  check(`${never.length} names, places, brands and campus terms come out as typed: in small letters, at the start of a sentence, after Dr./Mr., before “sir”, in capitals`, never.length > 2500 && !hurt.length, hurt.slice(0, 12).join(', '));
+  const typos = JSON.parse(fs.readFileSync(path.join(ROOT, 'typos.json'), 'utf8'));
+  check('the two correction lists hold no name or term, and no slip shorter than 6 letters', !never.some(w => Object.hasOwn(SHORT, w) || Object.hasOwn(typos, w)) && Object.keys(typos).every(k => k.length >= 6) && Object.keys(typos).length > 5000);
+  check('people and brands stay themselves (these became China, Mannish, Satay, Hedge, Moron and worse)', !same('Chinna will clean the room today', 'spoke to satya and manish, hegde sir also informed', 'Omron BP monitor is not working, we will replace it',
+    'niger seeds chutney served today', 'meet brian sir or christina madam in accounts', 'Uppal bus will come late', 'Imprest amount released to hostel office', 'Wen Li seminar on AI', 'Ty BPT students: lab at 9').length,
+    same('Chinna will clean the room today', 'spoke to satya and manish, hegde sir also informed', 'Omron BP monitor is not working, we will replace it', 'niger seeds chutney served today').map(P).join(' | '));
+  check('a note in capitals stays in capitals (names, initials and codes keep theirs); its words are still corrected', P('SPOKE TO RAVI KUMAR SIR. UPS AND TV REPAIRED IN R BLOCK ROOM 12B. CONTACT IT TEAM OR VC OFFICE') === 'SPOKE TO RAVI KUMAR SIR. UPS AND TV REPAIRED IN R BLOCK ROOM 12B. CONTACT IT TEAM OR VC OFFICE.'
+    && P('INFORMED R SURESH GARU AND U RAMESH') === 'INFORMED R SURESH GARU AND U RAMESH.' && P('PLS WAIT TOMMOROW WE WIL FIX THE PROBLAM') === 'PLEASE WAIT TOMORROW WE WILL FIX THE PROBLEM.', P('PLS WAIT TOMMOROW WE WIL FIX THE PROBLAM'));
+  check('“r” and “u” are “are” and “you” only where the sentence shows it; initials and abbreviations are left', P('informed r suresh garu') === 'Informed r suresh garu.' && P('w.r.t. your ticket, work is in progress') === 'w.r.t. your ticket, work is in progress.'
+    && P('r/o Guntur, c/o warden, u/s 10') === 'r/o Guntur, c/o warden, u/s 10.' && P('in which block r u staying') === 'In which block are you staying.' && P('fans r working, thank u priya') === 'Fans are working, thank you priya.'
+    && P('we r coming now, u r requested to wait') === 'We are coming now, you are requested to wait.', [P('in which block r u staying'), P('fans r working, thank u priya')].join(' | '));
+  check('short forms with another meaning on a campus are left where they mean that', P('room b4 fan capacitor changed') === 'Room b4 fan capacitor changed.' && P('collect key b4 8pm') === 'Collect key before 8pm.' && P('apply pl for 2 days') === 'Apply pl for 2 days.'
+    && P('pl. collect from counter 2') === 'Please collect from counter 2.' && P('til laddu and gud served for sankranti') === 'Til laddu and gud served for sankranti.' && P('see pg 12 of the manual') === 'See pg 12 of the manual.'
+    && P('hv panel maintenance on sunday') === 'HV panel maintenance on sunday.', [P('collect key b4 8pm'), P('pl. collect from counter 2'), P('hv panel maintenance on sunday')].join(' | '));
+  check('abbreviations with a full stop do not break the sentence', P('It will take approx. 2 days') === 'It will take approximately 2 days.' && P('accounts dept. will call you') === 'Accounts department will call you.'
+    && P('office is open from 10 a.m. to 5 p.m. on working days') === 'Office is open from 10 a.m. to 5 p.m. on working days.' && P('B.Tech and M.Sc students can collect') === 'B.Tech and M.Sc students can collect.'
+    && P('e.g. id card, fee receipt etc. are required') === 'e.g. ID card, fee receipt etc. are required.' && P('the no. of chairs is 40. Rs. five hundred paid') === 'The no. of chairs is 40. Rs. five hundred paid.', P('the no. of chairs is 40. Rs. five hundred paid'));
+  check('passwords, user names, network names, addresses and file names are never changed, and a password gets no full stop', P('connect to smru-wifi with password smru@123') === 'Connect to smru-wifi with password smru@123'
+    && P('ur password is welcom@123 and username is erp_student') === 'Your password is welcom@123 and username is erp_student' && P('Your MAC a4:5e:60:c1:22:9f is registered') === 'Your MAC a4:5e:60:c1:22:9f is registered.'
+    && P('pay at smru.edu.in/erp/login or bit.ly/smru-info') === 'Pay at smru.edu.in/erp/login or bit.ly/smru-info' && P('download form.pdf from drive.google.com/file/d/1AbCdEf') === 'Download form.pdf from drive.google.com/file/d/1AbCdEf'
+    && P('roll no 23BPT014, mail ravi@smru') === 'Roll no 23BPT014, mail ravi@smru', [P('ur password is welcom@123 and username is erp_student'), P('pay at smru.edu.in/erp/login or bit.ly/smru-info')].join(' | '));
+  check('a letter next to “block”, “room”, “wing” is a place only where it can be nothing else', P('pls come to lab u can collect ur id card') === 'Please come to lab you can collect your ID card.' && P('cleaning done in 2nd floor n 3rd floor') === 'Cleaning done in 2nd floor n 3rd floor.'
+    && P('we gave the hall a 2nd coat of paint') === 'We gave the hall a 2nd coat of paint.' && P('plug point in room r 12 and c wing repaired') === 'Plug point in room R 12 and C wing repaired.', P('plug point in room r 12 and c wing repaired'));
+  check('smileys, product names, a signature and a missing space', P('thanks :) will do') === 'Thanks :) will do.' && P('iPhone charger issue. ePass scholarship status is pending') === 'iPhone charger issue. ePass scholarship status is pending.'
+    && P('Thanks & Regards,\nSuresh Kumar\nElectrician\n98480 12345') === 'Thanks & Regards,\nSuresh Kumar\nElectrician\n98480 12345' && P('work is done.please check') === 'Work is done. Please check.' && P('- tap changed\n- flush repaired') === '- Tap changed.\n- Flush repaired.'
+    && P('at 5 : 30 pm the bus starts') === 'At 5:30 pm the bus starts.', [P('work is done.please check'), P('- tap changed\n- flush repaired')].join(' | '));
+  const all = ['tubelight choke is damged we orderd new one wil fix by tommorow plz wait', 'Recieved ur complaint, techncian wil come', 'ac in hod cabin servicd. filtr cleaned', 'Thanks & Regards,\nSuresh Kumar', 'pl. collect from counter 2', 'in which block r u staying'];
+  check('running it twice changes nothing more; odd input is handled', all.every(x => P(P(x)) === P(x)) && P('Recieved ur complaint, techncian wil come') === 'Received your complaint, technician will come.' && P(null) === '' && P('a\u0000b c') === 'Ab c.' && P('   ') === '',
+    all.filter(x => P(P(x)) !== P(x)).join(' | '));
+  const ptk = (await q("SELECT t.id FROM tickets t JOIN services s ON s.id=t.service_id WHERE s.code='ELEC' AND t.status IN ('open','in_progress') ORDER BY t.created_at LIMIT 1"))[0];
+  await fails('a note that is not text is refused (not turned into “[object Object]”)', `/tickets/${ptk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: { a: 1 } } }, 400);
+  await fails('…in the preview too', `/tickets/${ptk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: ['pls', 'chk'] } }, 400); }
 
   sec('Emails: “Latest updates” as one joined timeline; the preview is the email that goes out');
   { const TO = 'tara@tl.example.com', tl = await raise('alpha', { service_id: ids.elec, name: 'Tara', email: TO, requestor_type: 'student', subject: 'Switch board sparking', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Timeline room 3', issue: 'Fan' } });

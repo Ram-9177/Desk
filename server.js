@@ -1258,13 +1258,14 @@ const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
 // A note the requester will see: tidied on this server (spelling, short-forms, sentences) unless the provider already
 // approved the exact text in the preview. Returns { body, meta } where meta keeps the provider's original wording for staff.
 async function requesterNote(t, raw, approved, typed) {
+  if (typeof raw !== 'string' || (typed != null && typeof typed !== 'string')) throw bad('Write the note as text');
   const body = String(raw ?? '').trim(), orig = String(typed ?? '').trim();
   if (approved) return { body, meta: orig && orig !== body ? { original: orig.slice(0, 4000) } : {} };
   const r = polish(body, { keep: await keepWords(t) });
   return { body: r.text, meta: r.text !== body ? { original: body } : {} };
 }
 const keepWords = async t => { const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id), s = await one('SELECT name FROM services WHERE id=?', t.service_id);
-  return [t.subject, t.location, r?.name, s?.name, (await tenantRow(t.tenant_id))?.name]; };
+  return [t.location, r?.name, s?.name, (await tenantRow(t.tenant_id))?.name]; }; // names and places of this ticket (not its subject: that is free text, typing slips included)
 const ticketQuery = async (req) => {
   const sids = await myServiceIds(req.user, req.tenantId);
   // my services' tickets, plus any ticket escalated to me
@@ -1326,6 +1327,7 @@ S.post('/tickets', wrap(async req => {
 S.post('/tickets/:id/status', wrap(async req => {
   const t = await loadTicket(req), to = req.body.to;
   let note = req_(req.body.note, 'Please write a note'), meta = {};
+  if (typeof note !== 'string') throw bad('Write the note as text');
   if (!req.body.is_internal) { const pub = await requesterNote(t, note, req.body.approved, req.body.typed); note = pub.body; meta = { ...pub.meta }; }
   if (t.status === 'closed' && to === 'open') { await doReopen(t, actorOf(req), note); return { ok: true }; }
   assertTransition(t.status, to);
@@ -1365,6 +1367,7 @@ S.post('/tickets/:id/status', wrap(async req => {
 }));
 S.post('/tickets/:id/notes', wrap(async req => {
   const t = await loadTicket(req), raw = req_(req.body.body, 'Write a note');
+  if (typeof raw !== 'string') throw bad('Write the note as text');
   const pub = req.body.is_internal ? { body: raw, meta: {} } : await requesterNote(t, raw, req.body.approved, req.body.typed), body = pub.body;
   await tx(async () => { const ev = await addEvent(t, actorOf(req), 'note', { body, internal: req.body.is_internal, meta: pub.meta }); await saveFiles(t, ev, req.body.files, 'user');
     await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
@@ -1428,6 +1431,7 @@ S.post('/reminders/:id/done', wrap(async req => {
 // to = the new status, or 'note' for an update without a status change. Nothing is saved or sent.
 S.post('/tickets/:id/preview', wrap(async req => {
   const t = await loadTicket(req), b = req.body || {}, raw = req_(b.note, 'Write a note first'), tn = await tenantRow(t.tenant_id);
+  if (typeof raw !== 'string') throw bad('Write the note as text');
   const fixed = b.text_as_is ? { text: String(raw).trim(), changes: [] } : polish(raw, { keep: await keepWords(t) });
   const to = b.to === t.status || !b.to ? 'note' : b.to;
   const key = to === 'note' ? 'note' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
