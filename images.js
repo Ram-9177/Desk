@@ -3,6 +3,7 @@
 // and is turned into JPEG here.
 import decodeHeic from 'heic-decode';
 import jpeg from 'jpeg-js';
+import zlib from 'node:zlib';
 
 // Types browsers and email apps show as pictures. Other pictures (TIFF, BMP, AVIF) are kept as files to download.
 export const SHOWN = { jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
@@ -27,17 +28,63 @@ export function kindOf(b) {
   return null;
 }
 
-// Documents a notice may carry (decided by the bytes; the name only tells Word from Excel in the old formats)
+// Documents a notice may carry: PDF, Word, Excel. Decided by what is inside the file, never by its name.
 export const DOC_MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   doc: 'application/msword', xls: 'application/vnd.ms-excel' };
-export function docKindOf(b, name = '') {
+export const EXT = { jpeg: 'jpg', png: 'png', gif: 'gif', webp: 'webp', heic: 'heic', avif: 'avif', bmp: 'bmp', tiff: 'tiff', pdf: 'pdf', docx: 'docx', xlsx: 'xlsx', doc: 'doc', xls: 'xls' };
+
+// The files inside a zip, read from its directory at the end of the file. null when this is not a zip we can read.
+function zipEntries(b) {
+  let e = -1; for (let i = b.length - 22, min = Math.max(0, b.length - 65557); i >= min; i--) if (b.readUInt32LE(i) === 0x06054b50) { e = i; break; }
+  if (e < 0) return null;
+  const count = b.readUInt16LE(e + 10), size = b.readUInt32LE(e + 12), start = b.readUInt32LE(e + 16);
+  if (!count || count > 5000 || start + size > b.length) return null; // empty, huge, or zip64: not what Word and Excel save
+  const out = []; let p = start;
+  for (let i = 0; i < count; i++) {
+    if (p + 46 > b.length || b.readUInt32LE(p) !== 0x02014b50) return null;
+    const nlen = b.readUInt16LE(p + 28);
+    out.push({ name: b.toString('utf8', p + 46, p + 46 + nlen), method: b.readUInt16LE(p + 10), csize: b.readUInt32LE(p + 20), usize: b.readUInt32LE(p + 24), offset: b.readUInt32LE(p + 42) });
+    p += 46 + nlen + b.readUInt16LE(p + 30) + b.readUInt16LE(p + 32);
+  }
+  return out;
+}
+// One small text file from the zip
+function zipText(b, e, max = 2e6) {
+  if (!e || e.usize > max || e.offset + 30 > b.length || b.readUInt32LE(e.offset) !== 0x04034b50) return null;
+  const at = e.offset + 30 + b.readUInt16LE(e.offset + 26) + b.readUInt16LE(e.offset + 28), raw = b.subarray(at, at + e.csize);
+  try { return e.method === 0 ? raw.toString('utf8') : e.method === 8 ? zlib.inflateRawSync(raw, { maxOutputLength: max }).toString('utf8') : null; } catch { return null; }
+}
+// A plain Word (.docx) or Excel (.xlsx) file. Refused: macro-enabled files and templates (whatever they are named),
+// macro sheets, ActiveX parts, and any zip that merely carries a Word-looking name inside (a .jar, a zip with a program).
+const OFFICE_MAIN = { docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml' };
+function officeKind(b) {
+  const es = zipEntries(b); if (!es) return null;
+  const types = zipText(b, es.find(e => e.name === '[Content_Types].xml')); if (!types) return null;
+  const kind = Object.keys(OFFICE_MAIN).find(k => types.includes(OFFICE_MAIN[k])); if (!kind) return null; // .docm, .xlsm, templates and everything else stop here
+  if (/macroenabled|vbaproject|macrosheet|activex/i.test(types)) return null;
+  const home = kind === 'docx' ? 'word/' : 'xl/';
+  const fine = n => n === '[Content_Types].xml' || /^(_rels|docProps|customXml|_xmlsignatures)\//.test(n) || n.startsWith(home);
+  if (!es.some(e => e.name.startsWith(home)) || es.some(e => !fine(e.name) || /vbaproject|vbadata|macrosheet|activex/i.test(e.name) || /\.(exe|dll|com|scr|msi|bat|cmd|ps1|vbs|js|jse|wsf|hta|jar|lnk)$/i.test(e.name))) return null;
+  return kind;
+}
+// Old Word / Excel (.doc, .xls): which one from the streams inside; a file with a VBA project (macros) is refused
+function oleKind(b) {
+  const has = t => b.includes(Buffer.from(t, 'utf16le'));
+  if (has('_VBA_PROJECT')) return null;
+  return has('WordDocument') ? 'doc' : has('Workbook') || has('Book') ? 'xls' : null;
+}
+export function docKindOf(b) {
   const k = kindOf(b); if (k) return k;
   if (!b || b.length < 8) return null;
-  if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) { // a zip: Office Open XML says which inside
-    if (b.includes('vbaProject.bin')) return null; // macro-enabled files are refused: students download these
-    return b.includes('word/document') ? 'docx' : b.includes('xl/workbook') ? 'xlsx' : null; }
-  if (b.readUInt32BE(0) === 0xd0cf11e0 && b.readUInt32BE(4) === 0xa1b11ae1) return /\.xls$/i.test(name) ? 'xls' : /\.doc$/i.test(name) ? 'doc' : null; // old Word / Excel
+  if (b.readUInt32BE(0) === 0x504b0304) return officeKind(b);
+  if (b.readUInt32BE(0) === 0xd0cf11e0 && b.readUInt32BE(4) === 0xa1b11ae1) return oleKind(b);
   return null;
+}
+// The name a stored file is given back with: its own name, ending in the type it really is (so "tools.zip" can't be a
+// name for a Word file, and a long name keeps its ending)
+export function safeName(name, kind, max = 120) {
+  const ext = EXT[kind] || 'bin', base = String(name || '').replace(/[\u0000-\u001f\\/]+/g, ' ').trim().replace(/\.[A-Za-z0-9]{1,5}$/, '').trim() || 'file';
+  return `${base.slice(0, max - ext.length - 1)}.${ext}`;
 }
 
 // HEIC → JPEG, at most `max` pixels on the long side (phone photos are 3000–8000 px; 1920 shows the problem clearly)

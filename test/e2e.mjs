@@ -6,6 +6,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import pg from 'pg';
 import jpeg from 'jpeg-js';
 
@@ -23,6 +24,18 @@ const ENV = { NODE_ENV: 'production', JWT_SECRET: 'e2e-' + 'x'.repeat(40), OWNER
 const SUPER = { email: 'super@example.com', password: 'SuperSecret123' };
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// A real zip (stored, not compressed), as Word and Excel files are inside: [[name, text], …]
+const zipOf = files => { const parts = [], dir = []; let at = 0;
+  for (const [name, text] of files) { const n = Buffer.from(name), d = Buffer.from(text), crc = zlib.crc32(d), h = Buffer.alloc(30), c = Buffer.alloc(46);
+    h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt32LE(crc, 14); h.writeUInt32LE(d.length, 18); h.writeUInt32LE(d.length, 22); h.writeUInt16LE(n.length, 26);
+    c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt32LE(crc, 16); c.writeUInt32LE(d.length, 20); c.writeUInt32LE(d.length, 24); c.writeUInt16LE(n.length, 28); c.writeUInt32LE(at, 42);
+    parts.push(h, n, d); dir.push(c, n); at += 30 + n.length + d.length; }
+  const cd = Buffer.concat(dir), e = Buffer.alloc(22); e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(files.length, 8); e.writeUInt16LE(files.length, 10); e.writeUInt32LE(cd.length, 12); e.writeUInt32LE(at, 16);
+  return 'data:application/octet-stream;base64,' + Buffer.concat([...parts, cd, e]).toString('base64'); };
+const officeTypes = main => `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/main" ContentType="${main}"/></Types>`;
+const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml', XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml';
+const docxOf = (extra = [], type = DOCX_TYPE) => zipOf([['[Content_Types].xml', officeTypes(type)], ['_rels/.rels', '<Relationships/>'], ['word/document.xml', '<w:document/>'], ...extra]);
+const xlsxOf = (extra = []) => zipOf([['[Content_Types].xml', officeTypes(XLSX_TYPE)], ['xl/workbook.xml', '<workbook/>'], ...extra]);
 const HEIC_FILE = path.join(ROOT, 'test/fixtures/photo.heic'); // a real HEIC photo, as phone cameras save them
 
 // ---------- tiny harness ----------
@@ -915,13 +928,32 @@ try {
   const n1 = (await api('/notices/' + nt.id, { token: T.pavan })).data;
   check('the team sees the counts: seen, found their answer, raised anyway', n1.views === 1 && n1.answered === 1 && n1.raised === 1, JSON.stringify([n1.views, n1.answered, n1.raised]));
   check('the title is tidied like a reply (no full stop added)', (await api('/notices/' + nt.id, { token: T.pavan })).data.title === 'Power cut in block a till 4pm', (await api('/notices/' + nt.id, { token: T.pavan })).data.title);
-  const zip = (inner) => 'data:application/octet-stream;base64,' + Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('x'.repeat(30) + inner + 'y'.repeat(30))]).toString('base64');
-  await ok('a Word file attached', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'circular.docx', data: zip('word/document.xml') } });
-  await ok('an Excel file attached', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'timetable.xlsx', data: zip('xl/workbook.xml') } });
+  const wf = await ok('a Word file attached (named .zip: it is stored under what it really is)', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'circular.zip', data: docxOf() } });
+  await ok('an Excel file attached', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'timetable.xlsx', data: xlsxOf() } });
   await fails('at most 3 files', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'more.pdf', data: PDF } }, 400, 'at most 3');
-  await fails('macro-enabled Office files are refused', `/notices/${draft.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'macro.docm', data: zip('word/document.xml word/vbaProject.bin') } }, 400);
+  const refused = async (name, data) => (await api(`/notices/${draft.id}/files`, { token: T.pavan, method: 'POST', body: { name, data } })).status === 400;
+  check('macro-enabled Office files are refused, whatever they are named and however the macro part is spelt', await refused('macro.docm', docxOf([['word/vbaProject.bin', 'x']], 'application/vnd.ms-word.document.macroEnabled.main+xml'))
+    && await refused('plain-name.docx', docxOf([['word/VBAPROJECT.BIN', 'x']])) && await refused('sheet.xlsx', xlsxOf([['xl/macrosheets/sheet1.xml', '<x/>']])) && await refused('form.docx', docxOf([['word/activeX/activeX1.xml', '<x/>']])));
+  check('…so are templates, a zip with a program in it, a .jar, and a zip that only carries a Word-looking name', await refused('t.dotx', docxOf([], 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml'))
+    && await refused('tools.docx', docxOf([['setup.exe', 'MZ']])) && await refused('app.jar', zipOf([['META-INF/MANIFEST.MF', 'Manifest-Version: 1.0'], ['word/document.class', 'x']]))
+    && await refused('fake.docx', 'data:application/octet-stream;base64,' + Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('x'.repeat(30) + 'word/document.xml' + 'y'.repeat(30))]).toString('base64')));
+  check('…an empty file and a picture type browsers do not show get a clear reason', (await api(`/notices/${draft.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'empty.pdf', data: 'data:application/pdf;base64,' } })).error?.message.includes('empty')
+    && (await api(`/notices/${draft.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'scan.tiff', data: 'data:image/tiff;base64,' + Buffer.from('II*\0' + 'x'.repeat(40), 'latin1').toString('base64') } })).error?.message.includes('JPEG or PNG'));
   const nf = (await api('/public/alpha/notices/' + nt.id)).data.files;
-  check('Word and Excel download with their own type', nf.length === 3 && /wordprocessingml/.test(nf[1].type) && /spreadsheetml/.test(nf[2].type) && /attachment/.test((await fetch(API.replace('/api', '') + nf[1].url)).headers.get('content-disposition') || ''));
+  check('Word and Excel download with their own type and name', nf.length === 3 && /wordprocessingml/.test(nf[1].type) && nf[1].name === 'circular.docx' && wf.name === 'circular.docx' && /spreadsheetml/.test(nf[2].type) && /attachment; filename="circular\.docx"/.test((await fetch(APP + nf[1].url)).headers.get('content-disposition') || ''), JSON.stringify(nf.map(f => f.name)));
+  const longName = await ok('a very long file name keeps its ending', `/notices/${draft.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'x'.repeat(200) + '.pdf', data: PDF } });
+  check('…cut to 120 characters, still .pdf', longName.name.length === 120 && longName.name.endsWith('.pdf'));
+  check('a draft’s file is not public; the team opens it signed in', (await fetch(`${APP}/api/notice-files/${longName.key}`)).status === 404 && (await api(`/notices/${draft.id}/files/${longName.key}`, { token: T.pavan, raw: true })).status === 200
+    && (await api(`/notices/${draft.id}/files/${longName.key}`, { raw: true })).status === 401);
+  await fails('removing a file that is not on the notice says so', `/notices/${draft.id}/files/${wf.key}`, { token: T.pavan, method: 'DELETE' }, 404);
+  await ok('removing a file', `/notices/${draft.id}/files/${longName.key}`, { token: T.pavan, method: 'DELETE' });
+  check('…takes it off the disk too, and both steps are in the audit trail', !fs.existsSync(path.join(UPLOADS, longName.key)) && (await q("SELECT count(*)::int n FROM audit_logs WHERE entity_id=? AND action IN ('notice.file_add','notice.file_remove')", draft.id))[0].n === 2);
+  // several uploads arriving together must not pass the limit of 3
+  const many = await ok('a notice for the upload race', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Upload race', status: 'draft' } });
+  const race = await Promise.all(Array.from({ length: 6 }, (_, i) => api(`/notices/${many.id}/files`, { token: T.pavan, method: 'POST', body: { name: `f${i}.pdf`, data: PDF } })));
+  check('six uploads at once: three are kept', race.filter(r => r.status === 200).length === 3 && (await q('SELECT count(*)::int n FROM notice_files WHERE notice_id=?', many.id))[0].n === 3 && fs.readdirSync(UPLOADS).filter(f => f.endsWith('.pdf')).length === (await q("SELECT count(*)::int n FROM notice_files WHERE storage_key LIKE '%.pdf'"))[0].n, race.map(r => r.status).join(' '));
+  await ok('deleting that notice', '/notices/' + many.id, { token: T.pavan, method: 'DELETE' });
+  check('…removes its files from the disk', !(await q('SELECT 1 FROM notice_files WHERE notice_id=?', many.id)).length && fs.readdirSync(UPLOADS).filter(f => f.endsWith('.pdf')).length === (await q("SELECT count(*)::int n FROM notice_files WHERE storage_key LIKE '%.pdf'"))[0].n);
   const newTeam = await ok('a new team is created', '/services', { token: T.sa, tenant: tid, method: 'POST', body: { code: 'NEWDEPT', name: 'New Department', form_schema: { form_type: 'general', fields: [] } } });
   check('…and it is in the notice team list straight away (admin), not for a provider outside it', (await api('/notices', { token: T.asha })).data.teams.some(x => x.id === newTeam.id) && !(await api('/notices', { token: T.pavan })).data.teams.some(x => x.id === newTeam.id));
   const later = await ok('a notice scheduled for tomorrow', '/notices', { token: T.asha, method: 'POST', body: { service_id: newTeam.id, title: 'Opens tomorrow', starts_at: new Date(Date.now() + 864e5).toISOString(), status: 'published' } });
@@ -933,6 +965,57 @@ try {
   await fails('a provider can’t delete the campus notice', '/notices/' + camp.id, { token: T.pavan, method: 'DELETE' }, 404);
   await ok('the admin deletes it', '/notices/' + camp.id, { token: T.asha, method: 'DELETE' });
   check('deleted: gone for everyone', !(await api('/public/alpha/notices')).data.some(x => x.id === camp.id));
+  check('the file of an ended notice is no longer public either', (await fetch(APP + nf[0].url)).status === 404 && (await api(`/notices/${nt.id}/files/${wf.key}`, { token: T.pavan, raw: true })).status === 200);
+  // counters
+  const cn = await ok('a notice for the counters', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Counter notice', status: 'published' } });
+  const seen = body => api('/public/alpha/notices/seen', { method: 'POST', body }), cnt = async id => (await q('SELECT views, answered, raised FROM notices WHERE id=?', id))[0];
+  await seen({ ids: [cn.id, cn.id, cn.id, cn.id] }); await seen({ ids: [cn.id], outcome: 'answered' }); await seen({ ids: [cn.id], outcome: 'answered' }); await seen({ ids: [draft.id, 'not-an-id', nt.id] });
+  check('counters: a notice named four times in one go counts once, answers never pass views, drafts and ended notices are not counted', (await cnt(cn.id)).views === 1 && (await cnt(cn.id)).answered === 1 && (await cnt(draft.id)).views === 0 && (await cnt(nt.id)).views === 1, JSON.stringify([await cnt(cn.id), await cnt(draft.id), await cnt(nt.id)]));
+  check('students see which team posted a notice, never the person; the team sees who', (await api('/public/alpha/notices/' + cn.id)).data.posted_by === 'Electrical team' && !JSON.stringify((await api('/public/alpha/notices')).data).includes('Pavan') && (await api('/notices/' + cn.id, { token: T.pavan })).data.posted_by === 'Pavan Provider');
+  // who it is for
+  const fac = await ok('a team notice for faculty only', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Faculty lab keys', audience: 'faculty', status: 'published' } });
+  check('the pop-up before a ticket shows it to faculty and to “All”, not to a student', (await api(`/public/alpha/notices/for/${elec}?for=student`)).data.every(x => x.id !== fac.id) && (await api(`/public/alpha/notices/for/${elec}?for=faculty`)).data.some(x => x.id === fac.id) && (await api(`/public/alpha/notices/for/${elec}`)).data.some(x => x.id === fac.id));
+  await fails('an unknown “For” is refused, not saved as Everyone', '/notices/' + fac.id, { token: T.pavan, method: 'PATCH', body: { audience: 'students' } }, 400, 'who the notice is for');
+  // dates
+  await fails('a date that does not exist is refused', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Bad date', starts_at: '2027-02-30T10:00:00.000Z', status: 'draft' } }, 400, 'Show from');
+  await fails('…so is a bare number or a date without a time zone', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Bad date', starts_at: '12', ends_at: '2027-03-01T10:00', status: 'draft' } }, 400);
+  await fails('publishing with an Until that is already over is refused', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Too late', ends_at: new Date(Date.now() - 3600e3).toISOString(), status: 'published' } }, 400, 'already past');
+  // tidying: lengths, saving again, the poster's own words
+  const longT = ('Fee refund: pls bring ur ID card and ur receipt to the accounts office by 5 pm, pls come early and pls wait in the line ' + 'now '.repeat(10)).slice(0, 120).trim();
+  const lg = await ok('a title that grows past 120 characters when tidied is saved', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: longT, status: 'published' } });
+  check('…and the poster is told the text was tidied', lg.tidied === true && lg.title.length > 120 && lg.title.includes('please bring your ID card'), JSON.stringify(lg));
+  await ok('…it can still be saved again unchanged (text that was tidied is not tidied twice)', '/notices/' + lg.id, { token: T.pavan, method: 'PATCH', body: { title: lg.title, important: true } });
+  await ok('…and ended', '/notices/' + lg.id, { token: T.pavan, method: 'PATCH', body: { end_now: true } });
+  const own = await ok('“use my text exactly” keeps what was typed', '/notices/' + lg.id, { token: T.pavan, method: 'PATCH', body: { title: 'Wen Li seminar on AI, pls come', as_typed: true } });
+  check('…exactly', own.title === 'Wen Li seminar on AI, pls come' && own.tidied === false && (await q('SELECT title FROM notices WHERE id=?', lg.id))[0].title === 'Wen Li seminar on AI, pls come');
+  const nul = await ok('a stray NUL character in the text is dropped, not an error', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Lift\u0000 under repair', body: 'Use the stairs\u0000.', status: 'draft' } });
+  check('…saved clean', (await q('SELECT title, body FROM notices WHERE id=?', nul.id))[0].title === 'Lift under repair' && (await q('SELECT body FROM notices WHERE id=?', nul.id))[0].body === 'Use the stairs.');
+  check('…and a NUL in a link is a plain “not found”, never a crash', (await api('/public/alpha/notices/%00')).status === 404 && (await fetch(`${APP}/api/notice-files/%00`)).status === 404 && (await api('/notices/%00', { token: T.pavan, method: 'DELETE' })).status === 404 && (await api(`/public/alpha/notices/for/%00`)).status === 200);
+  // a draft published later is today's notice
+  await run('UPDATE notices SET created_at=?, published_at=NULL WHERE id=?', new Date(Date.now() - 10 * 864e5).toISOString(), nul.id);
+  await ok('a draft written ten days ago is published today', '/notices/' + nul.id, { token: T.pavan, method: 'PATCH', body: { status: 'published' } });
+  const b2 = (await api('/public/alpha/notices')).data;
+  check('…dated today and listed with the newest, not below everything written since', b2.filter(x => !x.important)[0]?.id === nul.id && Date.now() - new Date(b2.find(x => x.id === nul.id).published_at) < 60000, JSON.stringify(b2.map(x => x.title)));
+  // a deactivated team
+  const offTeam = await ok('a team with a live notice', '/services', { token: T.sa, tenant: tid, method: 'POST', body: { code: 'OFFDEPT', name: 'Off Department', form_schema: { form_type: 'general', fields: [] } } });
+  const on1 = await ok('its notice', '/notices', { token: T.asha, method: 'POST', body: { service_id: offTeam.id, title: 'Office shifted to block C', status: 'published' } });
+  await ok('the team is deactivated', '/services/' + offTeam.id, { token: T.sa, tenant: tid, method: 'PATCH', body: { is_active: 0 } });
+  const stf = (await api('/notices', { token: T.asha })).data.notices.find(x => x.id === on1.id);
+  check('a deactivated team’s notice leaves the board and its own page, and the team’s list says why', !(await api('/public/alpha/notices')).data.some(x => x.id === on1.id) && (await api('/public/alpha/notices/' + on1.id)).status === 404 && stf?.state === 'off' && stf.team_active === false, JSON.stringify(stf));
+  await ok('editing it keeps it with its team', '/notices/' + on1.id, { token: T.asha, method: 'PATCH', body: { service_id: offTeam.id, title: 'Office shifted to block C', body: 'From Monday.' } });
+  check('…it is not moved to the whole campus', (await q('SELECT service_id FROM notices WHERE id=?', on1.id))[0].service_id === offTeam.id);
+  await fails('no new notice for a deactivated team', '/notices', { token: T.asha, method: 'POST', body: { service_id: offTeam.id, title: 'x', status: 'draft' } }, 400, 'deactivated');
+  await ok('(that team is deleted again)', '/services/' + offTeam.id, { token: T.sa, tenant: tid, method: 'DELETE' });
+  // "raised a ticket anyway"
+  const oth = await ok('another team’s notice', '/notices', { token: T.asha, method: 'POST', body: { service_id: other, title: 'Other team notice', status: 'published' } });
+  const rq3 = { service_id: elec, requestor_type: 'student', identifier: 'S10', department: 'BPT', subject: 'Fan regulator broken', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Notice room 8', issue: 'Fan' } };
+  const tk3 = await api('/public/alpha/tickets', { method: 'POST', body: { ...rq3, name: 'Omi', email: 'omi@notice.example.com', phone: '9000088882', seen_notices: [cn.id, oth.id, draft.id] } });
+  check('“raised anyway” counts only what the pop-up showed: the team’s own published notices', tk3.status === 200 && (await cnt(cn.id)).raised === 1 && (await cnt(oth.id)).raised === 0 && (await cnt(draft.id)).raised === 0, JSON.stringify(tk3.error || [await cnt(cn.id), await cnt(oth.id)]));
+  const tk4 = await api('/public/alpha/tickets', { method: 'POST', body: { ...rq3, name: 'Pia', email: 'pia@notice.example.com', phone: '9000088883', seen_notices: [cn.id] } });
+  check('a report that joins an existing ticket is counted too', tk4.status === 200 && tk4.data.merged === true && (await cnt(cn.id)).raised === 2, JSON.stringify(tk4.data || tk4.error));
+  await ok('(the other team’s notice is removed)', '/notices/' + oth.id, { token: T.asha, method: 'DELETE' });
+  for (const x of [cn, fac, nul, lg, draft]) await api('/notices/' + x.id, { token: T.pavan, method: 'DELETE' });
+  check('(the test notices are cleared: Electrical has no live notice left for the screens tested below)', !(await api(`/public/alpha/notices/for/${elec}`)).data.length);
   const nd = await ok('a file on the new team’s notice', `/notices/${later.id}/files`, { token: T.asha, method: 'POST', body: { name: 'plan.pdf', data: PDF } });
   await ok('a team with notices (and no tickets) can be deleted', '/services/' + newTeam.id, { token: T.sa, tenant: tid, method: 'DELETE' });
   check('…its notices and their files go with it; the notice list still loads', !(await q('SELECT 1 FROM notices WHERE service_id=?', newTeam.id)).length && !(await q('SELECT 1 FROM notice_files WHERE notice_id=?', later.id)).length

@@ -8,7 +8,7 @@ import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
-import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME } from './images.js';
+import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME, safeName } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
@@ -29,7 +29,10 @@ const app = express();
 app.set('trust proxy', 'loopback');
 app.disable('x-powered-by');
 app.use((_q, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' }); next(); });
-app.use(express.json({ limit: '40mb' }));
+// PostgreSQL can't store a NUL character. JSON writes one as \u0000: note a request that carries it and drop it from the text.
+app.use(express.json({ limit: '40mb', verify: (req, _res, buf) => { req.hasNul = buf.includes('\\u0000'); } }));
+const noNul = v => typeof v === 'string' ? v.replace(/\u0000/g, '') : Array.isArray(v) ? v.map(noNul) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, noNul(x)])) : v;
+app.use((req, _res, next) => { if (req.hasNul) req.body = noNul(req.body); next(); });
 // Email buttons need the site's public address. Until someone sets it on the Email page, learn it from the first real
 // (non-local) visit, e.g. https://stmarys-desk.supercxo.ai behind nginx, so links never point at the server's own localhost.
 app.use((req, _res, next) => {
@@ -54,6 +57,7 @@ const mw = fn => (req, res, next) => fn(req, res, next).catch(next);
 const audit = async (req, action, entity, entity_id, meta = {}) =>
   await insert('audit_logs', { id: uid(), tenant_id: req.tenantId || null, actor_id: req.user?.id, action, entity, entity_id, meta: JSON.stringify(meta), created_at: now() });
 const req_ = (v, m) => { if (v === undefined || v === null || String(v).trim() === '') throw bad(m); return v; };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const safeEq = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 // JWT HS256 (minimal)
@@ -71,6 +75,8 @@ function limit(key, max, ms = 3600e3) {
   if (arr.length >= max) throw new HttpErr(429, 'RATE_LIMIT', 'Too many requests, try again later');
   arr.push(t); hits.set(key, arr);
 }
+// for counters: past the limit the hit is simply not counted (the page must not break)
+const allow = (key, max, ms) => { try { limit(key, max, ms); return true; } catch { return false; } };
 // drop keys idle for over an hour (the longest window) so the map doesn't grow forever
 setInterval(() => { const t = Date.now(); for (const [k, arr] of hits) if (t - arr[arr.length - 1] > 3600e3) hits.delete(k); }, 600e3).unref();
 
@@ -449,6 +455,17 @@ async function checkDailyLimit(tn, b) {
   throw new HttpErr(429, 'DAILY_LIMIT', `Daily limit reached: ${{ student: 'students', faculty: 'faculty', staff: 'staff', parent: 'parents', visitor: 'visitors' }[type] || 'each person'} can raise ${max} tickets a day, and ${String(b.email).trim()} has raised ${n} today. `
     + `You can raise a new ticket after ${when}. For something urgent, add a note to one of today's tickets or contact the help desk.`);
 }
+// The team's notices the requester read before raising the ticket: noted for the team (an internal line) and counted on
+// the notice. Only published notices of the ticket's own team or its main team count: those are the ones the pop-up shows.
+async function noticesRead(t, svc, ids) {
+  const seen = Array.isArray(ids) ? [...new Set(ids.map(String))].filter(x => UUID.test(x)).slice(0, 10) : [], n = now();
+  for (const nid of seen) {
+    const nt = await one(`SELECT id, title FROM notices WHERE id=? AND tenant_id=? AND service_id IN (?, ?) AND deleted_at IS NULL AND status='published' AND (starts_at IS NULL OR starts_at<=?)`, nid, t.tenant_id, svc.id, svc.parent_id || svc.id, n);
+    if (!nt) continue;
+    await run('UPDATE notices SET raised=raised+1 WHERE id=?', nt.id);
+    await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'notice_seen', { body: `The requester read the notice "${nt.title}" and still raised this ticket.`, internal: true, meta: { notice_id: nt.id } });
+  }
+}
 async function createTicket(tenant, b, opts) {
   const svc = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', b.service_id, tenant.id);
   if (!svc) throw notFound();
@@ -499,6 +516,7 @@ async function createTicket(tenant, b, opts) {
       if (mergeMode() === 'confirm' && b.merge !== 'yes') // the form asks "Same issue?" first
         throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `Ticket ${m.ticket_no} already exists for this problem.`, { ticket_no: m.ticket_no, subject: m.subject, affected_count: m.affected_count });
       merged = await joinTicket(m, r, b, contact, opts.actor, ts);
+      if (!merged.again) await noticesRead(merged.ticket, svc, b.seen_notices); // a report that joins an existing ticket counts too
       return merged.ticket;
     }
     const byStaff = PRIORITIES.includes(b.priority) && opts.actor.type === 'user', priority = byStaff ? b.priority : suggestion ? 'low' : 'medium';
@@ -514,11 +532,7 @@ async function createTicket(tenant, b, opts) {
     await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, raised_at: ts, is_first: 1 });
     const ev = await addEvent(t, opts.actor, 'created', { to: svc.name, meta: b.related_ticket_no ? { related_ticket_no: b.related_ticket_no } : {} });
     await saveFiles(t, ev, b.files, opts.actor.type);
-    // the team's notices the requester read before raising it: noted for the team (internal) and counted on the notice
-    const seen = Array.isArray(b.seen_notices) ? [...new Set(b.seen_notices.map(String))].slice(0, 10) : [];
-    for (const nid of seen) { const nt = await one('SELECT id, title FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', nid, t.tenant_id); if (!nt) continue;
-      await run('UPDATE notices SET raised=raised+1 WHERE id=?', nt.id);
-      await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'notice_seen', { body: `The requester read the notice "${nt.title}" and still raised this ticket.`, internal: true, meta: { notice_id: nt.id } }); }
+    await noticesRead(t, svc, b.seen_notices);
     return t;
   }); } catch (e) { // the same submission arriving twice at once: the unique index keeps one, return it
     const ex = e.code === '23505' && b.idempotency_key && await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
@@ -721,59 +735,76 @@ P.post('/:slug/bot', wrap(async req => {
 }));
 
 // ---------- notice board (public side) ----------
-// A notice belongs to a team (service) or the whole campus. Live = published, started, not ended, not deleted.
+// A notice belongs to a team (service) or the whole campus. Live = published, started, not ended, not deleted, and its
+// team is still on the portal (a deactivated team's notices are kept, but students don't see them).
 const NOTICE_AUD = ['all', 'student', 'faculty', 'staff', 'parent', 'visitor'];
-const liveNotice = n => `${n}.deleted_at IS NULL AND ${n}.status='published' AND (${n}.starts_at IS NULL OR ${n}.starts_at<=?) AND (${n}.ends_at IS NULL OR ${n}.ends_at>?)`;
-const noticesOut = async rows => { // what the public sees of each notice, with its files (one query for all of them)
+const liveNotice = n => `${n}.deleted_at IS NULL AND ${n}.status='published' AND (${n}.starts_at IS NULL OR ${n}.starts_at<=?) AND (${n}.ends_at IS NULL OR ${n}.ends_at>?)
+  AND (${n}.service_id IS NULL OR EXISTS (SELECT 1 FROM services sv WHERE sv.id=${n}.service_id AND sv.is_active=1))`;
+const NOTICE_ORDER = n => `${n}.important DESC, coalesce(${n}.starts_at, ${n}.published_at, ${n}.created_at) DESC`; // important first, then the newest (by when it went up, not when it was drafted)
+const noticeFor = q => NOTICE_AUD.includes(q) && q !== 'all' ? q : null; // "I'm a student": notices for everyone plus that group
+// What the public sees of each notice, with its files (one query for all of them). Students see which team posted it,
+// never the staff member's name; the team's own pages (staff = true) show the person.
+const noticesOut = async (rows, staff = false) => {
   if (!rows.length) return [];
   const files = await all('SELECT notice_id, file_name, mime_type, size_bytes, storage_key FROM notice_files WHERE notice_id = ANY(?::text[]) ORDER BY created_at', rows.map(r => r.id));
   return rows.map(n => ({ id: n.id, title: n.title, body: n.body, audience: n.audience, important: !!n.important, starts_at: n.starts_at, ends_at: n.ends_at,
-    team: n.team || 'Whole campus', service_id: n.service_id, posted_by: n.created_by_name, created_at: n.created_at,
-    files: files.filter(f => f.notice_id === n.id).map(f => ({ name: f.file_name, type: f.mime_type, size: f.size_bytes, url: `/api/notice-files/${f.storage_key}` })) }));
+    team: n.team || 'Whole campus', service_id: n.service_id, posted_by: staff ? n.created_by_name : n.team ? `${n.team} team` : 'Campus administration', created_at: n.created_at, published_at: n.published_at,
+    files: files.filter(f => f.notice_id === n.id).map(f => ({ name: f.file_name, type: f.mime_type, size: f.size_bytes, key: f.storage_key, url: staff ? `/api/notices/${n.id}/files/${f.storage_key}` : `/api/notice-files/${f.storage_key}` })) }));
 };
-const noticeOut = async n => (await noticesOut([n]))[0];
 // the board: every live notice of the campus (optionally only those for one group of people), important first
 P.get('/:slug/notices', wrap(async req => {
-  const tn = await tenantBySlug(req.params.slug), n = now(), aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null;
+  const tn = await tenantBySlug(req.params.slug), n = now(), aud = noticeFor(req.query.for);
   const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
-    ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 100`, tn.id, n, n, ...(aud ? [aud] : []));
+    ORDER BY ${NOTICE_ORDER('x')} LIMIT 100`, tn.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
 }));
-// before raising a ticket for a team: its live notices (a sub-team also shows its main team's)
+// before raising a ticket for a team: its live notices (a sub-team also shows its main team's), for this kind of requester
 P.get('/:slug/notices/for/:serviceId', wrap(async req => {
-  const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
-  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}
-    ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n);
+  const tn = await tenantBySlug(req.params.slug), n = now(), aud = noticeFor(req.query.for);
+  const sv = UUID.test(req.params.serviceId) ? await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.params.serviceId, tn.id) : null; if (!sv) return [];
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
+    ORDER BY ${NOTICE_ORDER('x')} LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
 }));
 P.get('/:slug/notices/:id', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now();
-  const r = await one(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, req.params.id, tn.id, n, n);
-  if (!r) throw notFound(); return noticeOut(r);
+  const r = UUID.test(req.params.id) ? await one(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, req.params.id, tn.id, n, n) : null;
+  if (!r) throw notFound(); return (await noticesOut([r]))[0];
 }));
-// counts for the team: shown (views), "This answers my question" (answered); "raised" is counted when the ticket is made
+// Counts for the team: shown (views) and "This answers my question" (answered); "raised" is counted when the ticket is made.
+// Only live notices count, each once per request, and never more answers than views. A whole hostel can share one
+// address, so the limits per address are wide; past them a hit is quietly not counted.
 P.post('/:slug/notices/seen', wrap(async req => {
-  const tn = await tenantBySlug(req.params.slug); limit('nseen:' + req.ip, 300);
-  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).slice(0, 10).map(String), col = req.body.outcome === 'answered' ? 'answered' : 'views';
-  for (const id of ids) await run(`UPDATE notices SET ${col}=${col}+1 WHERE id=? AND tenant_id=?`, id, tn.id);
+  const tn = await tenantBySlug(req.params.slug), n = now(), answered = req.body?.outcome === 'answered';
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).slice(0, 30).map(String))].filter(x => UUID.test(x)).slice(0, 10);
+  if (!allow('nseen:' + req.ip, 1500)) return { ok: true };
+  for (const id of ids) { if (!allow(`nseen:${answered ? 'a' : 'v'}:${id}:${req.ip}`, answered ? 40 : 200)) continue;
+    await run(`UPDATE notices x SET ${answered ? 'answered=LEAST(x.answered+1, x.views)' : 'views=x.views+1'} WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, id, tn.id, n, n); }
   return { ok: true };
 }));
 
 app.use('/api/public', P);
+// Send a stored upload: pictures and PDFs open in the browser, other files download. A file missing from the disk is a plain 404.
+const dropFile = key => { try { fs.rmSync(path.join(UPLOAD_DIR, key), { force: true }); } catch { /* already gone */ } }; // a stored upload nothing points to any more
+const FILE_KEY = /^[a-f0-9]{36}(\.[a-z0-9]{0,12})?$/; // 18 random bytes, then the type (files from the first versions may have none)
+const sendStored = (res, f, cache) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'Cache-Control': cache });
+  if (!Object.values(SHOWN).includes(f.mime_type) && f.mime_type !== 'application/pdf') res.attachment(f.file_name);
+  res.type(f.mime_type).sendFile(path.resolve(UPLOAD_DIR, f.storage_key), err => { if (err && !res.headersSent) res.status(404).end(); });
+};
+// A notice's file is public only while the notice itself is live (and its campus is on). Staff open the files of drafts,
+// scheduled and ended notices through /api/notices/:id/files/:key, signed in.
 app.get('/api/notice-files/:key', mw(async (req, res) => {
-  const f = await one('SELECT f.* FROM notice_files f JOIN notices x ON x.id=f.notice_id WHERE f.storage_key=? AND x.deleted_at IS NULL', req.params.key);
+  const n = now(), f = FILE_KEY.test(req.params.key) ? await one(`SELECT f.* FROM notice_files f JOIN notices x ON x.id=f.notice_id JOIN tenants tn ON tn.id=x.tenant_id
+    WHERE f.storage_key=? AND tn.is_active=1 AND ${liveNotice('x')}`, req.params.key, n, n) : null;
   if (!f) return res.status(404).end();
-  res.set({ 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=86400' });
-  if (!Object.values(SHOWN).includes(f.mime_type) && f.mime_type !== 'application/pdf') res.attachment(f.file_name); // Word and Excel download
-  res.type(f.mime_type).sendFile(path.resolve(UPLOAD_DIR, f.storage_key));
+  sendStored(res, f, 'private, max-age=300'); // short: a notice that ends takes its files with it
 }));
 app.get('/api/files/:key', mw(async (req, res) => {
-  const a = await one('SELECT * FROM attachments WHERE storage_key=?', req.params.key);
+  const a = FILE_KEY.test(req.params.key) ? await one('SELECT * FROM attachments WHERE storage_key=?', req.params.key) : null;
   if (!a) return res.status(404).end();
   // the key is the permission (it is in the ticket and its emails); a stored file never changes, so it may be kept
-  res.set({ 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=31536000, immutable' });
-  if (!Object.values(SHOWN).includes(a.mime_type) && a.mime_type !== 'application/pdf') res.attachment(a.file_name); // other files download
-  res.type(a.mime_type).sendFile(path.resolve(UPLOAD_DIR, a.storage_key));
+  sendStored(res, a, 'private, max-age=31536000, immutable');
 }));
 app.get('/api/health', mw(async (_q, r) => { await one('SELECT 1'); r.json({ ok: true }); })); // also checks the database
 
@@ -1011,7 +1042,7 @@ S.delete('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req =>
     const tn = await one('SELECT reply_phrases FROM tenants WHERE id=?', req.tenantId), p = phrasesOf(tn || {});
     if (p[s.id]) { delete p[s.id]; await run('UPDATE tenants SET reply_phrases=? WHERE id=?', JSON.stringify(p), req.tenantId); }
   });
-  for (const f of files) fs.rm(path.join(UPLOAD_DIR, f.storage_key), { force: true }, () => {});
+  for (const f of files) dropFile(f.storage_key);
   await audit(req, 'service.delete', 'service', s.id, { code: s.code, name: s.name, notices }); return { ok: true, notices };
 }));
 S.put('/services/:id/members', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -1447,61 +1478,114 @@ S.put('/reply-phrases', role('super_admin', 'tenant_admin'), wrap(async req => {
 // providers also for its sub-teams). Create, edit, publish, end, delete; files one at a time (images, PDF, Word, Excel).
 const noticeTeams = async req => isAdmin(req.user) ? (await all('SELECT id FROM services WHERE tenant_id=?', req.tenantId)).map(r => r.id) : await myServiceIds(req.user, req.tenantId);
 const canNotice = async (req, serviceId) => serviceId ? (await noticeTeams(req)).includes(serviceId) : isAdmin(req.user);
-const loadNotice = async req => { const x = await one('SELECT * FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', req.params.id, req.tenantId);
+const loadNotice = async req => { const x = UUID.test(req.params.id) ? await one('SELECT * FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', req.params.id, req.tenantId) : null;
   if (!x || !await canNotice(req, x.service_id)) throw notFound(); return x; };
-const noticeBody = async (req, b, cur = {}) => {
-  const typed = String(b.title ?? cur.title ?? '').trim().replace(/\s+/g, ' '); if (!typed) throw bad('Write a title'); if (typed.length > 120) throw bad('Title: at most 120 characters');
-  const title = /[.!?]$/.test(typed) ? polish(typed).text : polish(typed).text.replace(/\.$/, ''); // tidied like a reply; a title keeps no full stop of ours
-  const body = String(b.body ?? cur.body ?? '').trim(); if (body.length > 3000) throw bad('Message: at most 3000 characters');
-  const service_id = b.service_id === undefined ? cur.service_id ?? null : b.service_id || null;
-  if (service_id && !await one('SELECT 1 AS x FROM services WHERE id=? AND tenant_id=?', service_id, req.tenantId)) throw notFound();
-  if (!await canNotice(req, service_id)) throw new HttpErr(403, 'FORBIDDEN', service_id ? 'You can post notices only for your own team' : 'Only admins post notices for the whole campus');
-  const audience = NOTICE_AUD.includes(b.audience ?? cur.audience) ? (b.audience ?? cur.audience) : 'all';
-  const iso = (v, label) => { if (v === '' || v == null) return null; const d = new Date(v); if (isNaN(d)) throw bad(`${label}: pick a date and time`); return d.toISOString(); };
-  const starts_at = b.starts_at === undefined ? cur.starts_at ?? null : iso(b.starts_at, 'Show from'), ends_at = b.ends_at === undefined ? cur.ends_at ?? null : iso(b.ends_at, 'Until');
-  if (starts_at && ends_at && ends_at <= starts_at) throw bad('Until must be after Show from');
-  const status = ['draft', 'published'].includes(b.status) ? b.status : cur.status || 'draft';
-  return { title, body: polish(body).text, service_id, audience, important: (b.important ?? cur.important) ? 1 : 0, starts_at, ends_at, status };
+const NOTICE_MAX = { title: 120, body: 3000 };
+// A date and time as the editor sends it: full ISO with a zone, a real calendar day, a sensible year
+const noticeTime = (v, label) => {
+  if (v === '' || v == null) return null;
+  const m = typeof v === 'string' && /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.exec(v), d = m ? new Date(v) : null;
+  if (!d || isNaN(d) || +m[1] < 2020 || +m[1] > 2100 || new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDate() !== +m[3]) throw bad(`${label}: pick a date and time`);
+  return d.toISOString();
 };
+// A notice's text is tidied like a reply (typing slips, short forms, capitals) unless the poster wants it exactly as typed
+const tidyNotice = (typed, isTitle) => { const t = polish(typed).text; return isTitle && !/[.!?]$/.test(typed) ? t.replace(/\.$/, '') : t; };
+const noticeTyped = b => ({ title: String(b.title ?? '').trim().replace(/\s+/g, ' '), body: String(b.body ?? '').trim() });
+const noticeBody = async (req, b, cur = null) => {
+  const has = k => b[k] !== undefined && b[k] !== null, ts = now(), typed = noticeTyped(b);
+  // Text is checked and tidied only when it is new or was changed: ending, publishing or re-saving a notice never trips
+  // over text that was saved earlier, and never rewrites it a second time.
+  const text = (k, label, need) => {
+    if (cur && (!has(k) || typed[k] === (cur[k] || ''))) return cur[k] || '';
+    if (need && !typed[k]) throw bad(need); if (typed[k].length > NOTICE_MAX[k]) throw bad(`${label}: at most ${NOTICE_MAX[k]} characters`);
+    return b.as_typed || !typed[k] ? typed[k] : tidyNotice(typed[k], k === 'title');
+  };
+  const title = text('title', 'Title', 'Write a title'), body = text('body', 'Message');
+  const service_id = b.service_id === undefined ? cur?.service_id ?? null : b.service_id ? String(b.service_id) : null;
+  if (!cur || service_id !== cur.service_id) { // a new notice, or one being moved: the team must be this campus's, on the portal, and one this person posts for
+    const sv = service_id && UUID.test(service_id) ? await one('SELECT is_active FROM services WHERE id=? AND tenant_id=?', service_id, req.tenantId) : null;
+    if (service_id && !sv) throw notFound();
+    if (!await canNotice(req, service_id)) throw new HttpErr(403, 'FORBIDDEN', service_id ? 'You can post notices only for your own team' : 'Only admins post notices for the whole campus');
+    if (sv && !sv.is_active) throw bad('That team is deactivated, so students would not see the notice. Activate the team first, or pick another.');
+  }
+  if (has('audience') && !NOTICE_AUD.includes(b.audience)) throw bad('Pick who the notice is for');
+  const audience = has('audience') ? b.audience : cur?.audience || 'all';
+  const starts_at = b.starts_at === undefined ? cur?.starts_at ?? null : noticeTime(b.starts_at, 'Show from');
+  const ends_at = b.end_now ? ts : b.ends_at === undefined ? cur?.ends_at ?? null : noticeTime(b.ends_at, 'Until');
+  if (!b.end_now && starts_at && ends_at && ends_at <= starts_at) throw bad('Until must be after Show from');
+  const status = ['draft', 'published'].includes(b.status) ? b.status : cur?.status || 'draft';
+  // an Until that is already over would publish a notice nobody sees
+  if (status === 'published' && !b.end_now && b.ends_at !== undefined && ends_at && ends_at <= ts) throw bad('Until is already past. Pick a later time, or leave it empty.');
+  // when it went up: the board lists and dates a notice by this, so a draft published today is today's notice
+  const wasUp = cur && cur.status === 'published' && !(cur.ends_at && cur.ends_at <= ts);
+  const published_at = status === 'published' ? (wasUp ? cur.published_at || cur.created_at : ts) : cur?.published_at ?? null;
+  return { title, body, service_id, audience, important: (b.important ?? cur?.important) ? 1 : 0, starts_at, ends_at, status, published_at };
+};
+// what the poster gets back: the saved text, and whether tidying changed what they typed (the editor then offers "use my text")
+const noticeSaved = (v, b, cur) => { const t = noticeTyped(b), ch = k => b[k] != null && (!cur || t[k] !== (cur[k] || '')) && v[k] !== t[k];
+  return { title: v.title, body: v.body, tidied: ch('title') || ch('body') }; };
+const noticeState = (x, n) => x.status === 'draft' ? 'draft' : x.ends_at && x.ends_at <= n ? 'ended' : x.starts_at && x.starts_at > n ? 'scheduled' : x.service_id && !x.team_active ? 'off' : 'live';
 S.get('/notices', wrap(async req => {
   const teams = await noticeTeams(req), n = now(), admin = isAdmin(req.user);
-  const rows = await all(`SELECT x.*, s.name team, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files FROM notices x LEFT JOIN services s ON s.id=x.service_id
-    WHERE x.tenant_id=? AND x.deleted_at IS NULL AND (${admin ? 'TRUE' : 'FALSE'} OR x.service_id = ANY(?::text[])) ORDER BY coalesce(x.updated_at, x.created_at) DESC LIMIT 300`, req.tenantId, teams);
-  const stateOf = x => x.status === 'draft' ? 'draft' : x.ends_at && x.ends_at <= n ? 'ended' : x.starts_at && x.starts_at > n ? 'scheduled' : 'live';
+  // every notice that is live, scheduled or a draft (so each can always be ended or edited here), then the 200 that ended last
+  const sel = `SELECT x.*, s.name team, s.is_active team_active, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files FROM notices x LEFT JOIN services s ON s.id=x.service_id
+    WHERE x.tenant_id=? AND x.deleted_at IS NULL AND (${admin ? 'TRUE' : 'FALSE'} OR x.service_id = ANY(?::text[]))`, over = "x.status='published' AND x.ends_at IS NOT NULL AND x.ends_at<=?";
+  const rows = [...await all(`${sel} AND NOT (${over}) ORDER BY coalesce(x.updated_at, x.created_at) DESC LIMIT 2000`, req.tenantId, teams, n),
+    ...await all(`${sel} AND ${over} ORDER BY x.ends_at DESC LIMIT 200`, req.tenantId, teams, n)];
   const svcs = await all(`SELECT id, name, parent_id FROM services WHERE tenant_id=? AND is_active=1 ${admin ? '' : 'AND id = ANY(?::text[])'} ORDER BY sort_order, name`, req.tenantId, ...(admin ? [] : [teams]));
-  return { can_campus: admin, teams: svcs, notices: rows.map(x => ({ ...x, team: x.team || 'Whole campus', important: !!x.important, state: stateOf(x) })) };
+  return { can_campus: admin, teams: svcs, notices: rows.map(x => ({ ...x, team: x.team || 'Whole campus', team_active: !x.service_id || !!x.team_active, important: !!x.important, state: noticeState(x, n) })) };
 }));
-S.get('/notices/:id', wrap(async req => { const x = await loadNotice(req); return { ...await noticeOut({ ...x, team: (await one('SELECT name FROM services WHERE id=?', x.service_id))?.name }), status: x.status, views: x.views, answered: x.answered, raised: x.raised }; }));
+S.get('/notices/:id', wrap(async req => { const x = await loadNotice(req), sv = x.service_id ? await one('SELECT name, is_active FROM services WHERE id=?', x.service_id) : null;
+  return { ...(await noticesOut([{ ...x, team: sv?.name }], true))[0], status: x.status, views: x.views, answered: x.answered, raised: x.raised, team_active: !sv || !!sv.is_active, state: noticeState({ ...x, team_active: sv?.is_active }, now()) }; }));
 S.post('/notices', wrap(async req => {
-  const v = await noticeBody(req, req.body || {}), ts = now();
+  const b = req.body || {}, v = await noticeBody(req, b), ts = now();
   const x = await insert('notices', { id: uid(), tenant_id: req.tenantId, ...v, created_by: req.user.id, created_by_name: req.user.name, updated_by_name: req.user.name, created_at: ts, updated_at: ts });
-  await audit(req, 'notice.create', 'notice', x.id, { title: v.title, service_id: v.service_id }); return { id: x.id };
+  await audit(req, 'notice.create', 'notice', x.id, { title: v.title, service_id: v.service_id, status: v.status }); return { id: x.id, ...noticeSaved(v, b, null) };
 }));
 S.patch('/notices/:id', wrap(async req => {
-  const cur = await loadNotice(req), b = { ...req.body };
-  if (b.end_now) b.ends_at = now();
-  const v = await noticeBody(req, b, cur);
-  await run('UPDATE notices SET title=?, body=?, service_id=?, audience=?, important=?, starts_at=?, ends_at=?, status=?, updated_by_name=?, updated_at=? WHERE id=?',
-    v.title, v.body, v.service_id, v.audience, v.important, v.starts_at, v.ends_at, v.status, req.user.name, now(), cur.id);
-  await audit(req, 'notice.update', 'notice', cur.id, { title: v.title, status: v.status }); return { ok: true };
+  const cur = await loadNotice(req), b = { ...req.body }, v = await noticeBody(req, b, cur);
+  await run('UPDATE notices SET title=?, body=?, service_id=?, audience=?, important=?, starts_at=?, ends_at=?, status=?, published_at=?, updated_by_name=?, updated_at=? WHERE id=?',
+    v.title, v.body, v.service_id, v.audience, v.important, v.starts_at, v.ends_at, v.status, v.published_at, req.user.name, now(), cur.id);
+  // what changed, for the audit page (old → new; the message itself is not copied there)
+  const changed = Object.fromEntries(['title', 'service_id', 'audience', 'important', 'starts_at', 'ends_at', 'status'].filter(k => (cur[k] ?? null) !== (v[k] ?? null)).map(k => [k, [cur[k] ?? null, v[k] ?? null]]));
+  if ((cur.body || '') !== v.body) changed.message = true;
+  await audit(req, 'notice.update', 'notice', cur.id, { title: v.title, status: v.status, changed }); return { ok: true, ...noticeSaved(v, b, cur) };
 }));
-S.delete('/notices/:id', wrap(async req => { const x = await loadNotice(req); await run('UPDATE notices SET deleted_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id);
-  await audit(req, 'notice.delete', 'notice', x.id, { title: x.title }); return { ok: true }; }));
-// one file per request (up to 10 MB): images (HEIC becomes JPEG), PDF, Word, Excel; at most 3 per notice
+// Deleting is for good: the notice leaves every list (its row is kept for the audit trail) and its files are removed
+S.delete('/notices/:id', wrap(async req => { const x = await loadNotice(req), files = await all('SELECT storage_key FROM notice_files WHERE notice_id=?', x.id);
+  await tx(async () => { await run('DELETE FROM notice_files WHERE notice_id=?', x.id); await run('UPDATE notices SET deleted_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id); });
+  for (const f of files) dropFile(f.storage_key);
+  await audit(req, 'notice.delete', 'notice', x.id, { title: x.title, files: files.length }); return { ok: true }; }));
+// One file per request (up to 10 MB): photos (HEIC becomes JPEG), PDF, Word, Excel; at most 3 per notice. What a file is
+// comes from its bytes; the name it is stored under ends in that type.
 S.post('/notices/:id/files', wrap(async req => {
   const x = await loadNotice(req), f = req.body || {};
-  if ((await one('SELECT count(*)::int n FROM notice_files WHERE notice_id=?', x.id)).n >= 3) throw bad('At most 3 files per notice');
-  let buf = Buffer.from(String(f.data || '').split(',').pop(), 'base64'), name = String(f.name || 'file').slice(0, 120), kind = docKindOf(buf, name);
-  if (!kind || ['tiff', 'bmp', 'avif'].includes(kind)) throw bad('Only photos, PDF, Word or Excel files');
-  if (buf.length > 10 * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${name} is too large: each file must be under 10 MB`);
-  if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; name = name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.jpg'; } catch { throw bad('This photo could not be read. Try a JPEG or PNG.'); }
-  const key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
+  let buf = Buffer.from(String(f.data || '').split(',').pop(), 'base64'), kind = docKindOf(buf);
+  if (!buf.length) throw bad('That file is empty. Pick it again.');
+  if (['tiff', 'bmp', 'avif'].includes(kind)) throw bad('This kind of picture is not supported. Save it as JPEG or PNG and add it again.');
+  if (!kind) throw bad('Only photos, PDF, Word or Excel files. A Word or Excel file with macros is not accepted: save it as PDF and add that.');
+  if (buf.length > 10 * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${safeName(f.name, kind)} is too large: each file must be under 10 MB`);
+  if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; } catch { throw bad('This photo could not be read. Try a JPEG or PNG.'); }
+  const name = safeName(f.name, kind), key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
   fs.writeFileSync(path.join(UPLOAD_DIR, key), buf);
-  await insert('notice_files', { id: uid(), tenant_id: req.tenantId, notice_id: x.id, file_name: name, mime_type: MIME[kind] || DOC_MIME[kind], size_bytes: buf.length, storage_key: key, created_at: now() });
-  await run('UPDATE notices SET updated_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id); return { ok: true };
+  try { await tx(async () => { // one upload at a time per notice, so the limit of 3 holds when several arrive together
+    await one('SELECT id FROM notices WHERE id=? FOR UPDATE', x.id);
+    if ((await one('SELECT count(*)::int n FROM notice_files WHERE notice_id=?', x.id)).n >= 3) throw bad('At most 3 files per notice');
+    await insert('notice_files', { id: uid(), tenant_id: req.tenantId, notice_id: x.id, file_name: name, mime_type: MIME[kind] || DOC_MIME[kind], size_bytes: buf.length, storage_key: key, created_at: now() });
+    await run('UPDATE notices SET updated_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id); });
+  } catch (e) { dropFile(key); throw e; }
+  await audit(req, 'notice.file_add', 'notice', x.id, { title: x.title, file: name }); return { ok: true, name, key };
 }));
+// the team opens a notice's files here, also while it is a draft, scheduled or ended (students get them only while it is live)
+S.get('/notices/:id/files/:key', mw(async (req, res) => { const x = await loadNotice(req);
+  const f = FILE_KEY.test(req.params.key) ? await one('SELECT * FROM notice_files WHERE notice_id=? AND storage_key=?', x.id, req.params.key) : null;
+  if (!f) throw notFound(); sendStored(res, f, 'private, no-store'); }));
 S.delete('/notices/:id/files/:key', wrap(async req => { const x = await loadNotice(req);
-  await run('DELETE FROM notice_files WHERE notice_id=? AND storage_key=?', x.id, req.params.key); return { ok: true }; }));
+  const f = FILE_KEY.test(req.params.key) ? await one('DELETE FROM notice_files WHERE notice_id=? AND storage_key=? RETURNING file_name, storage_key', x.id, req.params.key) : null;
+  if (!f) throw notFound();
+  dropFile(f.storage_key);
+  await run('UPDATE notices SET updated_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id);
+  await audit(req, 'notice.file_remove', 'notice', x.id, { title: x.title, file: f.file_name }); return { ok: true }; }));
 
 // Send this campus's morning brief now (both kinds, even on a quiet day), e.g. to check how it looks
 S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
@@ -1680,6 +1764,10 @@ app.use('/api', S);
 app.use('/api', (_q, _r, next) => next(notFound()));
 app.use((e, _req, res, _next) => {
   if (e.code === '23505') e = new HttpErr(409, 'CONFLICT', 'That already exists'); // a unique index caught a race the checks above missed
+  else if (e.code === '22021' || e.code === '22P05') e = bad('That has a character that cannot be saved. Please type it again.'); // e.g. %00 in a link
+  else if (!(e instanceof HttpErr) && e.status && e.status !== 500) // raised by Express itself (a body that is not JSON or is too large, a stored file that is gone): its own text can name server folders
+    e = new HttpErr(e.status, e.status === 413 ? 'TOO_LARGE' : e.status === 404 ? 'NOT_FOUND' : 'BAD_REQUEST',
+      e.status === 413 ? 'That is too large to send. Use smaller photos or files.' : e.status === 404 ? 'Not found' : 'That request could not be read');
   const status = e.status || 500; if (status === 500) console.error(e);
   res.status(status).json({ error: { code: (status !== 500 && e.code) || 'INTERNAL', message: status === 500 ? 'Something went wrong' : e.message, details: e.details } });
 });

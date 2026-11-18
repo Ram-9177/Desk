@@ -182,7 +182,7 @@ const NB_AUD = [['all', 'All'], ['student', 'Student'], ['faculty', 'Faculty'], 
 const nbFor = v => { try { if (v !== undefined) localStorage.setItem('nb-for', v); return localStorage.getItem('nb-for') || 'all'; } catch { return 'all'; } };
 const seenNotices = sid => { try { return JSON.parse(sessionStorage.getItem('ng:' + sid) || '[]'); } catch { return []; } };
 const ntTags = n => `${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>`;
-const ntWhen = n => `${shortDate(n.starts_at || n.created_at)}${n.ends_at ? ` · until ${shortDate(n.ends_at)}` : ''}`;
+const ntWhen = n => `${shortDate(n.starts_at || n.published_at || n.created_at)}${n.ends_at ? ` · until ${shortDate(n.ends_at)}` : ''}`;
 const ntFiles = n => n.files.length ? ` · 📎 ${n.files.length === 1 ? esc(n.files[0].name) : `${n.files.length} files`}` : '';
 const ntRow = (slug, n) => `<a class="ntrow ${n.important ? 'imp' : ''}" href="#/d/${slug}/notices/${n.id}"><div>${ntTags(n)}<b>${esc(n.title)}</b><div class="muted small">${ntWhen(n)}${ntFiles(n)}</div></div><span class="chev">${I('chev', 18)}</span></a>`;
 const ntBody = n => `<div class="ntbody">${esc(n.body || '').replace(/\n/g, '<br>')}</div>
@@ -216,7 +216,7 @@ async function noticesPage(slug, id) {
 // Before raising a ticket for a team: its live notices pop up. "This answers my question" → no ticket (counted);
 // "I still need to raise a ticket" → the form, and the ticket records which notices were read.
 async function noticeGate(slug, svc) {
-  let list; try { list = await api(`/public/${slug}/notices/for/${svc.id}`); } catch { return true; }
+  let list; try { list = await api(`/public/${slug}/notices/for/${svc.id}?for=${nbFor()}`); } catch { return true; }
   if (!list.length || list.every(n => seenNotices(svc.id).includes(n.id))) return true;
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1></div></div>`;
   api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: list.map(n => n.id) } }).catch(() => {});
@@ -736,7 +736,8 @@ function dlg(html, onSubmit) {
     <p class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="ok">Save</button></p></form>`;
   document.body.append(d); d.showModal(); d.onclose = () => d.remove();
   d.querySelector('form').onsubmit = async e => { if (e.submitter?.value !== 'ok') return; e.preventDefault();
-    try { await onSubmit(e.target); d.close(); } catch (er) { d.querySelector('#derr').textContent = er.message; } };
+    const ok = d.querySelector('button[value=ok]'); if (ok.disabled) return; ok.disabled = true; // one save at a time: a second tap must not save twice
+    try { await onSubmit(e.target); d.close(); } catch (er) { d.querySelector('#derr').textContent = er.message; } finally { ok.disabled = false; } };
   return d;
 }
 
@@ -1587,20 +1588,29 @@ async function foodPage(main, { admin }) {
 
 // ================= NOTICES (staff): create, edit, publish, end, delete =================
 const NT_STATES = [['live', 'Live'], ['scheduled', 'Scheduled'], ['draft', 'Drafts'], ['ended', 'Ended']];
-const toLocalInput = iso => { if (!iso) return ''; const d = new Date(iso), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+// The two date fields are in India time, like every date the app shows, whatever zone the computer's own clock is in
+const toLocalInput = iso => iso ? new Date(iso).toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }).slice(0, 16).replace(' ', 'T') : '';
+const fromLocalInput = v => v ? new Date(`${v.slice(0, 16)}:00+05:30`).toISOString() : '';
+// A notice's file, opened signed in (the team sees the files of drafts and ended notices too; students only while it is live)
+const openNoticeFile = async (url, name) => { const w = window.open('', '_blank');
+  try { const r = await api(url.replace(/^\/api/, ''), { raw: true }); if (!r.ok) throw new Error('That file could not be opened');
+    const u = URL.createObjectURL(await r.blob()); if (w) w.location = u; else { const a = document.createElement('a'); a.href = u; a.download = name; a.click(); } setTimeout(() => URL.revokeObjectURL(u), 60000);
+  } catch (er) { if (w) w.close(); toast(er.message); } };
 const fileB64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); });
 async function noticesAdmin(main) {
   const st = { tab: sessionStorage.getItem('ntab') || 'live' };
   const draw = async () => {
-    const d = await api('/notices'), by = Object.fromEntries(NT_STATES.map(([k]) => [k, d.notices.filter(n => n.state === k).sort((x, y) => y.important - x.important)])); // important first, then the latest change
+    // important first, then the latest change. A notice of a deactivated team ("off") is listed with the live ones, marked: it would be live if its team were on the portal
+    const d = await api('/notices'), by = Object.fromEntries(NT_STATES.map(([k]) => [k, d.notices.filter(n => (n.state === 'off' ? 'live' : n.state) === k).sort((x, y) => y.important - x.important)]));
     main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">${d.can_campus ? 'You can post notices for any team or the whole campus.' : `You can post notices for: <b>${esc(d.teams.map(t => t.name).join(', ') || 'no team yet')}</b>.`} Students see them on the campus page, and a team's notice pops up before they raise a ticket for that team.</span>
       ${d.teams.length || d.can_campus ? `<button class="btn primary" id="ntNew">${I('plus', 18)} New notice</button>` : ''}</div>
       <div class="tabs">${NT_STATES.map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}${by[k].length ? ` <span class="cnt">${by[k].length}</span>` : ''}</button>`).join('')}</div>
       <div class="ntlist">${by[st.tab].map(n => `<div class="card ntadm ${n.important ? 'imp' : ''}">${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>
-        <h3>${esc(n.title)}</h3><div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · from ${shortDate(n.starts_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
+        <h3>${esc(n.title)}</h3>${n.state === 'off' ? `<div class="ntoff">${I('calert', 15)} The ${esc(n.team)} team is deactivated, so students do not see this notice. Activate the team on the Services page to show it again.</div>` : ''}
+        <div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · from ${shortDate(n.starts_at || n.published_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
         <div class="muted small" style="margin-top:4px">👁 Seen ${n.views} · <b style="color:var(--ok)">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
         <div class="ntacts"><button class="btn" data-ed="${n.id}">${I('pencil', 15)} Edit</button>
-          ${n.state === 'draft' ? `<button class="btn primary" data-pub="${n.id}">Publish</button>` : n.state === 'live' ? `<button class="btn" data-end="${n.id}">End now</button>`
+          ${n.state === 'draft' ? `<button class="btn primary" data-pub="${n.id}">Publish</button>` : n.state === 'live' || n.state === 'off' ? `<button class="btn" data-end="${n.id}">End now</button>`
             : n.state === 'scheduled' ? `<button class="btn" data-undo="${n.id}">Move to drafts</button>` : `<button class="btn" data-again="${n.id}">Show again</button>`}
           <button class="btn danger" data-del="${n.id}">Delete</button></div></div>`).join('') || `<div class="empty card"><p class="muted">No ${NT_STATES.find(x => x[0] === st.tab)[1].toLowerCase()} notices.</p></div>`}</div>`;
     main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; sessionStorage.setItem('ntab', st.tab); draw(); });
@@ -1619,32 +1629,65 @@ async function noticesAdmin(main) {
 }
 function noticeEditor(d, n, done) {
   const aud = [['all', 'Everyone'], ['student', 'Students'], ['faculty', 'Faculty'], ['staff', 'Staff'], ['parent', 'Parents'], ['visitor', 'Visitors']];
-  const files = n?.files || [];
+  const files = n?.files || [], st = { id: n?.id || null }; // st.id: once the notice exists, pressing the button again updates it (never a second copy)
   // main teams first, each followed by its sub-teams; a sub-team whose main team is not in the list stands alone
   const mains = d.teams.filter(t => !t.parent_id || !d.teams.some(x => x.id === t.parent_id));
   const teams = mains.flatMap(t => [t, ...d.teams.filter(x => x.parent_id === t.id).map(x => ({ ...x, sub: true }))]);
+  // a notice whose team was deactivated keeps that team in the list, so saving an edit never moves it somewhere else
+  const gone = n?.service_id && !teams.some(t => t.id === n.service_id) ? `<option value="${esc(n.service_id)}" selected>${esc(n.team)} (deactivated)</option>` : '';
   const dd = dlg(`<h2>${n ? 'Edit notice' : 'New notice'}</h2>
-    <label>Team</label><select name="service_id">${d.can_campus ? `<option value="" ${n && !n.service_id ? 'selected' : ''}>Whole campus</option>` : ''}${teams.map(t => `<option value="${t.id}" ${n?.service_id === t.id ? 'selected' : ''}>${t.sub ? '— ' : ''}${esc(t.name)}</option>`).join('')}</select>
+    <label>Team</label><select name="service_id">${d.can_campus ? `<option value="" ${n && !n.service_id ? 'selected' : ''}>Whole campus</option>` : ''}${gone}${teams.map(t => `<option value="${t.id}" ${n?.service_id === t.id ? 'selected' : ''}>${t.sub ? '— ' : ''}${esc(t.name)}</option>`).join('')}</select>
     <div class="muted small">A team's notice pops up when a student starts a ticket for that team (and its sub-teams).</div>
     <label>Title</label><input name="title" required maxlength="120" value="${esc(n?.title || '')}" placeholder="e.g. Ground is wet: play not allowed today">
     <label>Message</label><textarea name="body" rows="4" maxlength="3000" placeholder="What students need to know, and what to do instead">${esc(n?.body || '')}</textarea>
     <label>Files <small>(photo, PDF, Word, Excel · up to 3, 10 MB each)</small></label>
-    <div id="ntf">${files.map(f => `<div class="ntfrow" data-key="${esc(f.url.split('/').pop())}"><span>${esc(f.name)}</span><button type="button" class="linkbtn" data-rmf>Remove</button></div>`).join('')}</div>
+    <div id="ntf">${files.map(f => `<div class="ntfrow" data-key="${esc(f.key || f.url.split('/').pop())}"><button type="button" class="linkbtn" data-open="${esc(f.url)}" data-name="${esc(f.name)}">${esc(f.name)}</button><button type="button" class="linkbtn" data-rmf>Remove</button></div>`).join('')}</div>
     <input type="file" id="ntin" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,application/pdf">
     <label>For</label><select name="audience">${aud.map(([k, l]) => `<option value="${k}" ${(n?.audience || 'all') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <div class="row"><div><label>Show from <small>(empty = now)</small></label><input type="datetime-local" name="starts_at" value="${toLocalInput(n?.starts_at)}"></div><div><label>Until <small>(empty = no end)</small></label><input type="datetime-local" name="ends_at" value="${toLocalInput(n?.ends_at)}"></div></div>
+    <div class="muted small">Both times are India time (IST).</div>
     <label class="chk ntimp"><input type="checkbox" name="important" ${n?.important ? 'checked' : ''}> <span><b>Important</b>: pinned on top and highlighted</span></label>
     <label class="chk"><input type="checkbox" name="publish" ${!n || n.status === 'published' ? 'checked' : ''}> Publish (untick to keep it as a draft)</label>`,
-    async f => { const el = f.elements;
+    async f => { const el = f.elements, picked = [...$('#ntin').files], want = el.publish.checked ? 'published' : 'draft';
+      // Everything about the files is checked before anything is saved, so a refused file never leaves a notice half made
+      if (dd.querySelectorAll('.ntfrow').length + picked.length > 3) throw new Error('At most 3 files per notice. Remove one first.');
+      const ready = [];
+      for (const f0 of picked) {
+        if (!f0.size) throw new Error(`${f0.name} is empty. Pick it again.`);
+        const pic = /^image\//.test(f0.type) || /\.(jpe?g|png|gif|webp|heic|heif|avif|bmp|tiff?)$/i.test(f0.name), file = pic ? await shrinkPhoto(f0) : f0; // photos go up at 1920 px, without the camera's hidden details (place, phone)
+        if (!pic && !/\.(pdf|docx?|xlsx?)$/i.test(f0.name)) throw new Error(`${f0.name}: only photos, PDF, Word or Excel files`);
+        if (file.size > 10 * 1024 * 1024) throw new Error(`${f0.name} is over 10 MB`);
+        ready.push(file); }
       const body = { service_id: el.service_id.value, title: el.title.value, body: el.body.value, audience: el.audience.value, important: el.important.checked,
-        starts_at: el.starts_at.value ? new Date(el.starts_at.value).toISOString() : '', ends_at: el.ends_at.value ? new Date(el.ends_at.value).toISOString() : '', status: el.publish.checked ? 'published' : 'draft' };
-      const id = n ? (await api('/notices/' + n.id, { method: 'PATCH', body }), n.id) : (await api('/notices', { method: 'POST', body })).id;
-      for (const key of removed) await api(`/notices/${id}/files/${key}`, { method: 'DELETE' });
-      for (const file of [...$('#ntin').files]) { if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} is over 10 MB`); await api(`/notices/${id}/files`, { method: 'POST', body: { name: file.name, data: await fileB64(file) } }); }
-      toast(body.status === 'published' ? 'Notice published' : 'Saved as draft'); done(); });
+        starts_at: fromLocalInput(el.starts_at.value), ends_at: fromLocalInput(el.ends_at.value) };
+      // With files to add, a new notice is saved as a draft first and published once its files are in: students never see it without them
+      const first = { ...body, status: ready.length && !(n && n.status === 'published') ? 'draft' : want };
+      const saved = st.id ? await api('/notices/' + st.id, { method: 'PATCH', body: first }) : await api('/notices', { method: 'POST', body: first });
+      st.id = st.id || saved.id; dd.querySelector('button[value=ok]').textContent = 'Save notice';
+      for (const key of removed.splice(0)) await api(`/notices/${st.id}/files/${key}`, { method: 'DELETE' }).catch(er => { if (er.status !== 404) throw er; });
+      const left = [...picked];
+      for (const file of ready) { await api(`/notices/${st.id}/files`, { method: 'POST', body: { name: file.name, data: await fileB64(file) } });
+        left.shift(); try { const dt = new DataTransfer(); left.forEach(x => dt.items.add(x)); $('#ntin').files = dt.files; } catch { /* old browser: the list stays */ } // sent: a retry after an error must not send it twice
+        $('#ntf').insertAdjacentHTML('beforeend', `<div class="ntfrow"><span>${esc(file.name)}</span><span class="muted small">added</span></div>`); }
+      if (first.status !== want) await api('/notices/' + st.id, { method: 'PATCH', body: { status: want } });
+      toast(want === 'published' ? 'Notice published' : 'Saved as draft'); done();
+      if (saved.tidied) { const typed = { title: el.title.value, body: el.body.value }; setTimeout(() => noticeTidied(st.id, typed, saved, done), 0); } });
   dd.style.maxWidth = '640px'; const removed = [];
   dd.querySelectorAll('[data-rmf]').forEach(b => b.onclick = () => { const r = b.closest('.ntfrow'); removed.push(r.dataset.key); r.remove(); });
+  dd.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openNoticeFile(b.dataset.open, b.dataset.name));
   dd.querySelector('button[value=ok]').textContent = n ? 'Save notice' : 'Create notice';
+}
+// The text of a notice is tidied when it is saved (typing slips, short forms). When that changed what was typed, the
+// poster sees the result and can keep it, or have their own words exactly.
+function noticeTidied(id, typed, saved, done) {
+  const row = (label, a, b) => a.trim().replace(/\s+/g, ' ') === b.trim().replace(/\s+/g, ' ') ? '' : `<label>${label}</label><div class="ntsaved">${esc(b).replace(/\n/g, '<br>')}</div><div class="muted small">You typed: ${esc(a)}</div>`;
+  const html = row('Title', typed.title, saved.title) + row('Message', typed.body, saved.body); if (!html) return;
+  const d = dlg(`<h2>We tidied the text a little</h2><p class="muted">Typing slips and short forms were corrected. This is what students see:</p>${html}`, async () => {});
+  d.style.maxWidth = '560px'; d.querySelector('button[value=ok]').textContent = 'Looks good';
+  const mine = d.querySelector('button[value=cancel]'); mine.textContent = 'Use my text exactly';
+  mine.onclick = async e => { e.preventDefault(); mine.disabled = true;
+    try { await api('/notices/' + id, { method: 'PATCH', body: { title: typed.title, body: typed.body, as_typed: true } }); toast('Saved exactly as you typed it'); d.close(); done(); }
+    catch (er) { d.querySelector('#derr').textContent = er.message; mine.disabled = false; } };
 }
 
 async function profile(main) {
