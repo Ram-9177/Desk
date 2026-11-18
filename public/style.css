@@ -782,3 +782,15 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 .fme-r{display:grid;grid-template-columns:90px 1fr 36px;gap:10px;align-items:center;margin-top:8px;font-size:13px}.fme-r i{display:block;height:8px;border-radius:99px;background:var(--divider-soft);overflow:hidden}.fme-r i b{display:block;height:100%;background:var(--accent);border-radius:99px}.fme-r em{font-style:normal;text-align:right;font-weight:600}
 .fme-why{margin-top:10px}
 .brief-now{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:10px 0 14px}.brief-now>div{flex:1 1 300px}
+/* reply: ready-made sentences and the "Check before sending" preview */
+.phr{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}.phr:empty{display:none}
+.phc{border:1px solid var(--pa-blue-b);background:var(--pa-blue);color:#1e3a8a;border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer;text-align:left;line-height:1.35}.phc:hover{background:#dfe9ff}
+dialog.prev{width:min(640px,96vw);max-height:92vh;overflow:auto;padding:18px}
+.pv-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.pv-h h2{margin:0 0 2px}
+.pv-tabs{display:flex;background:#F2F4F7;border-radius:12px;padding:4px;margin:12px 0 8px}.pv-tabs button{flex:1;border:0;background:none;padding:8px;border-radius:9px;font:inherit;font-weight:600;color:var(--text-3);cursor:pointer}.pv-tabs .on{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(16,24,40,.1)}
+.pv-fix{background:#ECFDF3;border:1px solid #ABEFC6;border-radius:12px;padding:10px 12px;font-size:13px;margin:8px 0;line-height:1.6}.pv-fix b{color:#067647}.pv-fix svg{color:#067647}
+.pv-fix del{color:#D92D20;background:#FEF3F2;text-decoration:line-through;padding:0 2px;border-radius:3px}.pv-fix ins{color:#067647;background:#fff;text-decoration:none;font-weight:600;padding:0 2px;border-radius:3px}
+.pv-mail{border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-top:12px}.pv-sub{padding:8px 12px;font-size:12.5px;color:var(--text-3);background:#F9FAFB;border-bottom:1px solid var(--border)}
+.pv-mail iframe{width:100%;height:440px;border:0;display:block;background:#f3f4fb}
+.pv-acts{display:flex;gap:8px;margin-top:12px;position:sticky;bottom:-18px;background:#fff;padding:10px 0 4px}.pv-acts .btn{flex:1}.pv-acts .primary{flex:2}
+.typed{margin-top:4px;font-style:italic}

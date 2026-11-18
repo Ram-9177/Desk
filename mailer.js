@@ -50,22 +50,22 @@ export const MAIL_EVENTS = [
     body: 'A new ticket has arrived in **{{service}}**. Target: {{due}}.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },
   { key: 'status_in_progress', label: 'Work started', who: 'Requestor', when: 'A provider starts working on it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Work has started on your ticket',
-    body: 'Hi {{requestor_name}},\n{{actor_name}} has started working on "{{subject}}".\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". We have started working on it.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
   { key: 'status_hold', label: 'Ticket on hold', who: 'Requestor', when: 'A provider puts it on hold', vars: [...T, 'note', 'actor_name', 'hold_reason', 'resume_by'],
     subject: '[{{ticket_no}}] Your ticket is on hold',
-    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is paused for a short while. Here is what {{actor_name}} wrote:\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for your patience. Your ticket "{{subject}}" is on hold for a short while ({{hold_reason}}); we will resume by {{resume_by}}.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_open', label: 'Work resumed', who: 'Requestor', when: 'A hold ends', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Work has resumed on your ticket',
-    body: 'Hi {{requestor_name}},\nGood news: work has resumed on "{{subject}}".\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nGood news: work on "{{subject}}" has resumed.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_closed', label: 'Ticket closed', who: 'Requestor', when: 'A provider closes it', vars: [...T, 'note', 'actor_name', 'reopen_days'],
     subject: '[{{ticket_no}}] Your ticket is closed',
-    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" has been resolved by {{actor_name}}:\n{{note}}\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n{{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_rejected', label: 'Ticket rejected', who: 'Requestor', when: 'A provider rejects it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket could not be accepted',
-    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" could not be accepted.\nReason: {{note}}\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n{{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
   { key: 'note', label: 'Update from the provider', who: 'Requestor', when: 'A provider adds a public note', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] New update on your ticket',
-    body: 'Hi {{requestor_name}},\n{{actor_name}} added an update to "{{subject}}":\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
+    body: 'Hi {{requestor_name}},\nHere is an update on "{{subject}}".\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}' },
   { key: 'reopen_requested', label: 'Reopen requested', who: 'Provider who closed it', when: 'The requestor asks to reopen a closed ticket (they accept or decline)', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Reopen requested: {{subject}}',
     body: '{{actor_name}} asks to reopen "{{subject}}", which you closed.\nReason: {{note}}\nOpen the ticket to accept (it reopens with a fresh target) or decline (it stays closed). You can reply with a note first.\n[[Accept or decline|{{staff_link}}]]\n{{timeline}}' },
@@ -211,7 +211,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
-<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE Desk${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
+<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
 <tr><td style="padding:24px 24px 10px">${ref && !/^(ONE Desk|Digest|Morning brief)$/.test(ref) ? `<div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">TICKET ${esc(ref)}</div>` : ''}
 <h1 style="font-size:20px;line-height:1.3;margin:6px 0 16px">${esc(title)}</h1>${html}</td></tr>
 <tr><td style="padding:14px 24px;background:#fafbfe;color:#8b8fa8;font-size:12px;line-height:1.5">Automated message from the St. Mary's Group service desk. Please don't reply to this email; use the ticket link to add a note.</td></tr>

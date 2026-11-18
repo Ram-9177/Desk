@@ -125,6 +125,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
 -- Fair Score settings per campus (weights, minimum tickets, windows); empty = the defaults
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS fair_cfg TEXT;
+-- Ready-made reply sentences per campus, with optional per-team lists: { "*": { step: [..] }, "<service id>": { .. } }
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS reply_phrases TEXT;
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;

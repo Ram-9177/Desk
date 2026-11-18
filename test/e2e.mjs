@@ -830,6 +830,32 @@ try {
   check('no brief for another campus’s admin', !mails.some(m => m.recipient === 'bina@example.com'));
   check('one email per person', new Set(mails.map(m => m.recipient + m.template_key)).size === mails.length && mails.length === r.sent && r.sent >= 2, String(r.sent)); }
 
+  sec('Replies: tidied on this server, previewed, polite template');
+  { const tk = (await q("SELECT t.id, t.ticket_no, t.tenant_id FROM tickets t JOIN services s ON s.id=t.service_id WHERE s.code='ELEC' AND t.status IN ('open','in_progress') ORDER BY t.created_at LIMIT 1"))[0];
+  const pv = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'tubelight choke is damged we orderd new one wil fix by tommorow plz wait' } })).data;
+  check('the note is tidied: spelling, short-forms, capitals and a full stop', pv.text === 'Tube light choke is damaged we ordered new one will fix by tomorrow please wait.', pv.text);
+  check('…with the list of fixes and the original kept', pv.changes.some(c => c.from === 'damged' && c.to === 'damaged') && pv.original.startsWith('tubelight'));
+  check('the preview is the real email: Hi name, the note, Thank you and the provider’s name', /Hi /.test(pv.html) && pv.html.includes('Tube light choke is damaged') && /Thank you,/.test(pv.html) && pv.html.includes('Pavan Provider') && /ONE DESK/.test(pv.html));
+  const keep = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'Mail sent to Abc.Xyz@college.edu.in, see https://erp.example.com/fee?id=7' } })).data;
+  check('emails and links are left exactly as typed', keep.text.includes('Abc.Xyz@college.edu.in') && keep.text.includes('https://erp.example.com/fee?id=7'), keep.text);
+  await ok('a note sent without the preview is still tidied for the requester', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'we r checking the mcb now' } });
+  const ev1 = (await q("SELECT body, meta FROM ticket_events WHERE ticket_id=? AND event_type='note' ORDER BY id DESC LIMIT 1", tk.id))[0];
+  check('…stored clean, the provider’s original kept for staff only', ev1.body === 'We are checking the mcb now.' && JSON.parse(ev1.meta).original === 'we r checking the mcb now', JSON.stringify(ev1));
+  await ok('a note approved in the preview is sent exactly as approved', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'ok sir, done', approved: true } });
+  check('…as approved', (await q("SELECT body FROM ticket_events WHERE ticket_id=? AND event_type='note' ORDER BY id DESC LIMIT 1", tk.id))[0].body === 'ok sir, done');
+  const slug = (await q('SELECT slug FROM tenants WHERE id=?', tk.tenant_id))[0].slug, pub = (await api(`/public/${slug}/tickets/${tk.ticket_no}`)).data;
+  check('the requester’s ticket page shows only the tidied text, never the original', JSON.stringify(pub).includes('We are checking the mcb now.') && !JSON.stringify(pub).includes('we r checking'));
+  const mail = (await q("SELECT body FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 2", tk.id)).map(x => x.body).join('\n');
+  check('the email: Hi, the note, Thank you and the provider’s name and team', mail.includes('We are checking the mcb now.') && /Thank you,\n\*\*Pavan Provider\*\* · Electrical team/.test(mail), mail.slice(0, 300));
+  const ph = (await api('/reply-phrases?service=' + (await q("SELECT id FROM services WHERE code='ELEC' LIMIT 1"))[0].id, { token: T.pavan })).data;
+  check('ready-made sentences for every step', ['in_progress', 'hold', 'open', 'closed', 'rejected', 'note'].every(k => ph.phrases[k].length >= 3));
+  await fails('a provider can’t change them', '/reply-phrases', { token: T.pavan, method: 'PUT', body: { phrases: { closed: ['x'] } } }, 403);
+  const elec = (await q("SELECT id FROM services WHERE code='ELEC' LIMIT 1"))[0].id;
+  await ok('admin sets Electrical’s own closing sentences (tidied on save)', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: elec, phrases: { closed: ['fuse replaced, power is back', 'MCB reset done'] } } });
+  const ph2 = (await api('/reply-phrases?service=' + elec, { token: T.pavan })).data;
+  check('the team sees its own list; other steps fall back to the campus list', ph2.phrases.closed[0] === 'Fuse replaced, power is back.' && ph2.phrases.hold.length >= 3, JSON.stringify(ph2.phrases.closed));
+  await ok('back to the campus list', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: elec, reset: true } }); }
+
   sec('Forgot password: a temporary password by email');
   { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
   const r1 = await api('/auth/forgot', { method: 'POST', body: { email: 'nobody-here@example.com' } }), r2 = await api('/auth/forgot', { method: 'POST', body: { email: pav.toUpperCase() } });

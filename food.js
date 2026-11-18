@@ -286,7 +286,7 @@ export function food(d) {
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:580px;background:#ffffff;border-radius:16px;border:1px solid #eceef5">
-<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE Desk<span style="font-weight:400;opacity:.85"> · ${esc(tn.name)}</span></td></tr>
+<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK<span style="font-weight:400;opacity:.85"> · ${esc(tn.name)}</span></td></tr>
 <tr><td style="padding:24px 24px 10px"><div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">${title.toUpperCase()} FOOD FEEDBACK · ${esc(span.toUpperCase())}</div>
 <h1 style="font-size:20px;margin:6px 0 12px">${esc(svc?.name || 'Food service')}</h1>${body}
 <p style="margin:22px 0 8px"><a href="${esc(link)}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">View full report</a></p></td></tr>

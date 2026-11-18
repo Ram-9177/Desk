@@ -629,6 +629,44 @@ function remindDlg(id, done) {
   d.querySelectorAll('[name=in]').forEach(r => r.onchange = () => { const on = r.value === 'at' && r.checked; if (r.checked) { d.querySelector('#remat').hidden = !on; dt.required = on; } });
   d.querySelector('button[value=ok]').textContent = 'Set reminder';
 }
+// "Check before sending": the note corrected on the server, the changes, and the exact email the requester will get.
+// Resolves with the text to send (corrected, original or edited), or null if the provider goes back.
+function replyPreview(id, req, t) {
+  return new Promise(async resolve => {
+    let r; try { r = await api(`/tickets/${id}/preview`, { method: 'POST', body: req }); } catch (er) { toast(er.message); return resolve(null); }
+    const d = document.createElement('dialog'); d.className = 'sheet prev';
+    const fixes = r.changes.filter(c => !['spacing', 'sentences', 'CAPITALS'].includes(c.from));
+    const extra = r.changes.filter(c => ['spacing', 'sentences', 'CAPITALS'].includes(c.from)).map(c => c.from === 'CAPITALS' ? 'capitals made normal' : c.from === 'spacing' ? 'spacing tidied' : 'capitals and full stops');
+    d.innerHTML = `<div class="pv-h"><div><h2>Check before sending</h2><div class="muted small">This is exactly what ${esc(t.requestor?.name || 'the requester')} will ${r.sends ? 'get by email and see on their ticket page' : 'see on their ticket page'}.</div></div><button type="button" class="msheet-x" data-x aria-label="Close">${I('x', 20)}</button></div>
+      ${r.changes.length ? `<div class="pv-tabs" role="tablist"><button type="button" class="on" data-v="fixed">Corrected</button><button type="button" data-v="orig">My original</button></div>
+        <div class="pv-fix">${I('check', 15)} <b>${fixes.length + extra.length} fix${fixes.length + extra.length === 1 ? '' : 'es'}</b>, meaning unchanged${fixes.length ? ': ' + fixes.map(c => `<del>${esc(c.from)}</del> <ins>${esc(c.to)}</ins>`).join(' · ') : ''}${extra.length ? `${fixes.length ? ' · ' : ': '}${extra.join(' · ')}` : ''}</div>`
+        : `<div class="pv-fix ok">${I('check', 15)} Looks good. No corrections needed.</div>`}
+      <label for="pvt">Your note <small>(you can still change it)</small></label><textarea id="pvt" rows="3">${esc(r.text)}</textarea>
+      <div class="pv-mail"><div class="pv-sub">${r.sends ? `To ${esc(r.to)} · ` : ''}<b>${esc(r.subject)}</b></div><iframe title="Email preview" sandbox=""></iframe></div>
+      <div class="pv-acts"><button type="button" class="btn" data-x>Back</button><button type="button" class="btn primary" data-go>${I('send', 16)} Send update</button></div>`;
+    document.body.append(d); d.showModal();
+    const fr = d.querySelector('iframe'), ta = d.querySelector('#pvt'), show = html => { fr.srcdoc = html; };
+    show(r.html);
+    let tm; const refresh = () => { clearTimeout(tm); tm = setTimeout(async () => { try { const x = await api(`/tickets/${id}/preview`, { method: 'POST', body: { ...req, note: ta.value || ' ', text_as_is: true } }); show(x.html); } catch { /* keep the last one */ } }, 400); };
+    ta.oninput = refresh;
+    d.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { d.querySelectorAll('[data-v]').forEach(x => x.classList.toggle('on', x === b)); ta.value = b.dataset.v === 'orig' ? r.original : r.text; refresh(); });
+    const done = v => { d.close(); d.remove(); resolve(v); };
+    d.querySelectorAll('[data-x]').forEach(b => b.onclick = () => done(null)); d.oncancel = e => { e.preventDefault(); done(null); };
+    d.querySelector('[data-go]').onclick = () => { const v = ta.value.trim(); if (!v) return toast('Write a note first'); done(v); };
+  });
+}
+// Admin: the ready-made reply sentences, for the whole campus or one team (one sentence per line)
+async function phraseEditor(scope = '*') {
+  const [svcs, pr] = await Promise.all([api('/services'), api('/reply-phrases')]), saved = pr.saved || {}, base = saved['*'] || {};
+  const listFor = k => (saved[scope]?.[k]) || (scope !== '*' && base[k]) || pr.defaults[k];
+  const d = dlg(`<h2>Ready-made reply sentences</h2><div class="muted small">One sentence per line, up to 12 per step. Spelling is tidied when you save. A team without its own list uses the whole campus's.</div>
+    <label>For</label><select name="scope" id="phsc"><option value="*">Whole campus</option>${svcs.filter(s => s.is_active).map(s => `<option value="${s.id}" ${s.id === scope ? 'selected' : ''}>${esc(s.name)}${saved[s.id] ? ' (own list)' : ''}</option>`).join('')}</select>
+    ${Object.entries(pr.steps).map(([k, l]) => `<label>${esc(l)}</label><textarea name="ph_${k}" rows="4">${esc(listFor(k).join('\n'))}</textarea>`).join('')}
+    ${scope !== '*' && saved[scope] ? '<label class="chk" style="margin-top:12px"><input type="checkbox" name="reset"> Use the whole campus list for this team again</label>' : ''}`,
+    async f => { await api('/reply-phrases', { method: 'PUT', body: { scope, reset: !!f.reset?.checked, phrases: Object.fromEntries(Object.keys(pr.steps).map(k => [k, f['ph_' + k].value.split('\n')])) } }); toast('Sentences saved'); });
+  d.style.maxWidth = '640px';
+  d.querySelector('#phsc').value = scope; d.querySelector('#phsc').onchange = e => { d.close(); phraseEditor(e.target.value); };
+}
 function dlg(html, onSubmit) {
   const d = document.createElement('dialog'); d.innerHTML = `<form method="dialog" id="df">${html}<div class="err" id="derr"></div>
     <p class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="ok">Save</button></p></form>`;
@@ -639,7 +677,7 @@ function dlg(html, onSubmit) {
 }
 
 async function workspace(main, id, { admin }) {
-  const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]);
+  const [t, services] = await Promise.all([api('/tickets/' + id), api('/services')]), phr = await api('/reply-phrases?service=' + t.service.id).catch(() => ({ phrases: {} }));
   document.body.classList.add('on-ticket'); // phones: this page has its own app bar and bottom action bar
   const meta = e => { try { return JSON.parse(e.meta || '{}'); } catch { return {}; } };
   const stName = v => (STATUS_INFO[v] || [v])[0];
@@ -695,7 +733,7 @@ async function workspace(main, id, { admin }) {
   const evs = t.events, last = evs.length - 1;
   const timeline = `<ol class="tl">${evs.map((e, i) => `<li class="${i === last ? 'latest' : ''}"><span class="rail"><i style="background:${evDot(e)}"></i></span>
     <div class="tlc"><div class="tlt"><b>${evLabel(e)}</b>${e.is_internal ? '<span class="tag">Internal</span>' : ''}</div><div class="tlm">${shortDate(e.created_at)} · ${esc(e.actor_name || e.actor_type || '')}</div>
-      ${e.body ? `<div class="bubble">${esc(e.body)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div></li>`).join('')}</ol>`;
+      ${e.body ? `<div class="bubble">${esc(e.body)}</div>` : ''}${meta(e).original ? `<div class="typed muted small" title="Only staff see this">Typed as: “${esc(meta(e).original)}” · tidied for the requester</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div></li>`).join('')}</ol>`;
   const details = `<div class="issue"><div class="eyebrow up ic">${tile('file', 14)}Issue</div><p>${esc(t.description || t.subject)}</p></div>
     ${t.location ? `<div class="locrow m-only">${I('pin', 16)}<div><dt>Location</dt><dd>${esc(t.location)}</dd></div></div>` : ''}
     <dl class="dlist">${t.location ? `<div class="dli dli-loc"><dt>Location</dt><dd>${esc(t.location)}</dd></div>` : ''}${dl([...fd, ['Created', fmt(t.created_at)], ['Channel', cap(String(t.channel).replace('_', ' '))], ...(t.is_internal ? [['Kind', 'Internal request']] : [])])}</dl>`;
@@ -704,7 +742,7 @@ async function workspace(main, id, { admin }) {
       <label for="to">Status<span class="m-only"> · now ${stName(t.status)}</span></label><select name="to" id="to">${STATUSES.map(s2 => `<option value="${s2}" ${s2 === t.status ? 'selected' : ''} ${s2 !== t.status && !targets.includes(s2) ? 'disabled' : ''}>${STATUS_INFO[s2][0]}${s2 === t.status ? ' (current)' : ''}</option>`).join('')}</select>
       <div class="helper" id="tohint"></div>
       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(x => `<option value="${x.key}">${esc(x.label)} — ${x.hours}h limit</option>`).join('')}</select></div>
-      <label for="unote">Note</label><textarea name="note" id="unote" required rows="4" placeholder="What did you do, or why this change?"></textarea>
+      <label for="unote">Note</label><div class="phr" id="phr" aria-label="Ready-made sentences"></div><textarea name="note" id="unote" required rows="4" placeholder="What did you do, or why this change? Tap a sentence above, or type your own."></textarea>
       ${t.location_key && t.problem_key ? `<label id="earlyrow" class="chk" hidden><input type="checkbox" name="close_earlier"> Also close earlier open tickets for the same problem and location</label>` : ''}
       <div class="upd-row"><label class="iconbtn" aria-label="Attach a photo from camera">${I('camera', 18)}<input hidden type="file" accept="image/*" capture="environment" multiple data-source="camera" class="f-act"></label>
         <label class="iconbtn" aria-label="Attach from gallery">${I('image', 18)}<input hidden type="file" accept="image/*,application/pdf" multiple data-source="gallery" class="f-act"></label>
@@ -745,13 +783,19 @@ async function workspace(main, id, { admin }) {
   $('#updX').onclick = () => sheet(false); main.querySelector('.upd-back').onclick = () => sheet(false);
   const sel = $('#to'), sync = () => { const to = sel.value, same = to === t.status;
     $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to]; if ($('#earlyrow')) $('#earlyrow').hidden = to !== 'closed';
-    $('#mailhint').textContent = $('#act').is_internal.checked ? 'Saved as an internal note. The requester will not be emailed.' : 'The requester will get this note by email.'; };
+    $('#mailhint').textContent = $('#act').is_internal.checked ? 'Saved as an internal note. The requester will not be emailed.' : "Before it goes out you'll see it corrected, inside the email the requester gets.";
+    // ready-made sentences for this step (tap to add)
+    const step = same ? 'note' : to === 'in_progress' && t.status === 'hold' ? 'open' : to, list = (phr.phrases || {})[step] || [];
+    $('#phr').innerHTML = list.map((x, i) => `<button type="button" class="phc" data-ph="${i}">${esc(x)}</button>`).join('');
+    $('#phr').querySelectorAll('[data-ph]').forEach(b => b.onclick = () => { const ta = $('#unote'), v = ta.value.trim(); ta.value = (v ? v + (/[.!?]$/.test(v) ? ' ' : '. ') : '') + list[b.dataset.ph]; ta.focus(); }); };
   sel.onchange = sync; $('#act').is_internal.onchange = sync; sync();
   $('#act').onsubmit = async e => {
     e.preventDefault(); const f = e.target, to = f.to.value, note = f.note.value.trim();
     if (!note) return toast('Write a note first');
     if (to === 'hold' && !f.hold_reason.value) return toast('Pick a hold reason');
-    try { const body = { note, body: note, is_internal: f.is_internal.checked, files: await readFiles(document.querySelectorAll('.f-act')) };
+    try { let final = note, approved = false;
+      if (!f.is_internal.checked) { const p = await replyPreview(id, { to, note, hold_reason: f.hold_reason.value }, t); if (p == null) return; final = p; approved = true; }
+      const body = { note: final, body: final, approved, typed: note, is_internal: f.is_internal.checked, files: await readFiles(document.querySelectorAll('.f-act')) };
       if (to === t.status) { await api(`/tickets/${id}/notes`, { method: 'POST', body }); toast('Note added'); }
       else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value, close_earlier: !!f.close_earlier?.checked } });
         toast((res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : `Status: ${STATUS_INFO[to][0]}`) + (res.closed_earlier ? ` · ${res.closed_earlier} earlier closed too` : '')); }
@@ -1234,6 +1278,8 @@ async function mailEvents(box) {
     Switch one off and it is recorded as "skipped" in the delivery log instead of being sent.</p>
     <div class="card brief-now"><div><b>Morning brief</b><div class="muted small">Every working day at 08:30 campus time: campus admins get the whole campus (counts and every open ticket, by team); each service provider gets only their own team's open tickets.</div></div>
       <button type="button" class="btn" id="briefNow">${I('send', 16)} Send this campus's brief now</button></div>
+    <div class="card brief-now"><div><b>Ready-made reply sentences</b><div class="muted small">Sentences providers tap to answer in good English, for each step (work started, on hold, closed…). Set them for the whole campus, or differently for one team.</div></div>
+      <button type="button" class="btn" id="phrEdit">${I('pencil', 16)} Edit sentences</button></div>
     <div class="tlist">${c.events.map(e => `<div class="trow" style="cursor:default"><label class="switch" title="Send this email"><input type="checkbox" data-ev="${e.key}" ${e.on ? 'checked' : ''}></label>
       <div class="tm"><b>${esc(e.label)} ${e.custom ? '<span class="pill p-int">Customised</span>' : ''}</b>
         <div class="sub"><span class="pill c4">${esc(e.who)}</span><span>${esc(e.when)}</span></div><div class="sub mono" style="margin-top:2px">${esc(e.subject)}</div></div>
@@ -1247,6 +1293,7 @@ async function mailEvents(box) {
     d.innerHTML = `<form method="dialog"><h2>${esc(c.events.find(e => e.key === b.dataset.pv).label)}</h2><div class="muted small">Subject</div><b>${esc(r.subject)}</b>
       <iframe style="width:100%;height:440px;border:1px solid var(--line);border-radius:12px;margin-top:10px"></iframe><p class="row"><button class="btn primary" value="ok">Close</button></p></form>`;
     document.body.append(d); d.querySelector('iframe').srcdoc = r.html; d.showModal(); d.onclose = () => d.remove(); });
+  if ($('#phrEdit')) $('#phrEdit').onclick = () => phraseEditor();
   if ($('#briefNow')) $('#briefNow').onclick = async e => { e.target.disabled = true; try { const r = await api('/digest/send', { method: 'POST' }); toast(`Morning brief sent: ${r.sent} email${r.sent === 1 ? '' : 's'}. See the delivery log.`, 5000); } catch (er) { toast(er.message); } e.target.disabled = false; };
   box.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => templateEditor(c, c.events.find(e => e.key === b.dataset.ed), () => mailEvents(box)));
 }
