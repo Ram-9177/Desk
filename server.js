@@ -651,7 +651,7 @@ P.post('/:slug/tickets/:no/notes', wrap(async req => {
   limit('note:' + t.id, 20);
   if (t.status === 'rejected') throw new HttpErr(409, 'BAD_TRANSITION', 'This ticket is rejected; raise a new one');
   const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
-  await tx(async () => { const ev = await addEvent(t, { type: 'requestor', id: t.requestor_id, name: r.name }, 'note', { body: req_(req.body.body, 'Write a note') });
+  await tx(async () => { const ev = await addEvent(t, { type: 'requestor', id: t.requestor_id, name: r.name }, 'note', { body: noteText(req_(req.body.body, 'Write a note')) });
     await saveFiles(t, ev, req.body.files, 'requestor'); await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
   await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'requestor_note', await ticketVars(t, { note: req.body.body }));
   return await publicTicket(await one('SELECT * FROM tickets WHERE id=?', t.id));
@@ -662,7 +662,7 @@ P.post('/:slug/tickets/:no/reopen', wrap(async req => {
   if (Date.now() > new Date(addH(t.closed_at, tn.reopen_window_days * 24)).getTime()) throw new HttpErr(409, 'BAD_TRANSITION', 'The reopen window has passed; raise a new ticket');
   if (t.reopen_requested_at) throw new HttpErr(409, 'ALREADY_REQUESTED', 'You already asked to reopen this ticket. The team will answer soon; you can add a note meanwhile.');
   limit('reopen:' + t.id, 5);
-  const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id), reason = req_(req.body.reason, 'Give a reason'), ts = now();
+  const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id), reason = noteText(req_(req.body.reason, 'Give a reason')), ts = now();
   // a request, not a reopen: the provider who closed it accepts (it reopens) or declines (it stays closed)
   await tx(async () => {
     stillAs(await run('UPDATE tickets SET reopen_requested_at=?, reopen_request_note=?, updated_at=? WHERE id=? AND status=? AND reopen_requested_at IS NULL', ts, String(reason).slice(0, 2000), ts, t.id, 'closed'));
@@ -679,12 +679,14 @@ async function reopenDeciders(t) {
   return closer ? [closer] : await providersFor(t.tenant_id, t.service_id);
 }
 // penalty: the requestor asked for it (the ticket was not fixed), so the closer loses the reopen points
-async function doReopen(t, actor, reason, { penalty = false } = {}) {
+// internal: the staff member's note is for the team only. The requester still sees that the ticket was reopened, without the note.
+async function doReopen(t, actor, reason, { penalty = false, internal = false, meta = {} } = {}) {
   await tx(async () => {
     if (penalty) await award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
     stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, reopen_requested_at=NULL, reopen_request_note=NULL, due_at=?, updated_at=? WHERE id=? AND status=?',
       'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), t.id, t.status));
-    await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: reason });
+    await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: internal ? '' : reason, meta });
+    if (internal) await addEvent(t, actor, 'note', { body: reason, internal: true });
   });
   await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'reopened', await ticketVars(t, { note: reason, actor_name: actor.type === 'requestor' ? `the requestor (${actor.name})` : actor.name }));
 }
@@ -1257,8 +1259,10 @@ async function loadTicket(req) {
 const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
 // A note the requester will see: tidied on this server (spelling, short-forms, sentences) unless the provider already
 // approved the exact text in the preview. Returns { body, meta } where meta keeps the provider's original wording for staff.
+const NOTE_MAX = 5000;
+const noteText = raw => { if (typeof raw !== 'string') throw bad('Write the note as text'); if (raw.length > NOTE_MAX) throw bad(`That note is too long: at most ${NOTE_MAX.toLocaleString('en-IN')} characters`); return raw; };
 async function requesterNote(t, raw, approved, typed) {
-  if (typeof raw !== 'string' || (typed != null && typeof typed !== 'string')) throw bad('Write the note as text');
+  noteText(raw); if (typed != null && typeof typed !== 'string') throw bad('Write the note as text');
   const body = String(raw ?? '').trim(), orig = String(typed ?? '').trim();
   if (approved) return { body, meta: orig && orig !== body ? { original: orig.slice(0, 4000) } : {} };
   const r = polish(body, { keep: await keepWords(t) });
@@ -1326,10 +1330,13 @@ S.post('/tickets', wrap(async req => {
 }));
 S.post('/tickets/:id/status', wrap(async req => {
   const t = await loadTicket(req), to = req.body.to;
-  let note = req_(req.body.note, 'Please write a note'), meta = {};
-  if (typeof note !== 'string') throw bad('Write the note as text');
+  let note = noteText(req_(req.body.note, 'Please write a note')), meta = {};
   if (!req.body.is_internal) { const pub = await requesterNote(t, note, req.body.approved, req.body.typed); note = pub.body; meta = { ...pub.meta }; }
-  if (t.status === 'closed' && to === 'open') { await doReopen(t, actorOf(req), note); return { ok: true }; }
+  if (t.status === 'closed' && to === 'open') { // staff reopen a closed ticket: the requester is told (unless the note is internal), like every other step
+    await doReopen(t, actorOf(req), note, { internal: !!req.body.is_internal, meta });
+    if (!req.body.is_internal) await notifyRequestors(t, 'status_open', await ticketVars(t, { note, actor_name: req.user.name }));
+    return { ok: true };
+  }
   assertTransition(t.status, to);
   const ts = now();
   await tx(async () => {
@@ -1358,7 +1365,7 @@ S.post('/tickets/:id/status', wrap(async req => {
   });
   if (!req.body.is_internal) {
     // after a hold, moving to "in progress" is a resume ("work resumed"); from open it is a fresh start ("work started")
-    const key = to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
+    const key = to === 'closed' && t.kind === 'suggestion' ? 'suggestion_closed' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
     await notifyRequestors(t, key, await ticketVars(t, { note, actor_name: req.user.name,
       hold_reason: meta.hold_reason || '', resume_by: meta.hold_due_at ? fmtIST(meta.hold_due_at) : '' }));
   }
@@ -1366,8 +1373,7 @@ S.post('/tickets/:id/status', wrap(async req => {
   return { ok: true, points: meta.points, closed_earlier: closedEarlier };
 }));
 S.post('/tickets/:id/notes', wrap(async req => {
-  const t = await loadTicket(req), raw = req_(req.body.body, 'Write a note');
-  if (typeof raw !== 'string') throw bad('Write the note as text');
+  const t = await loadTicket(req), raw = noteText(req_(req.body.body, 'Write a note'));
   const pub = req.body.is_internal ? { body: raw, meta: {} } : await requesterNote(t, raw, req.body.approved, req.body.typed), body = pub.body;
   await tx(async () => { const ev = await addEvent(t, actorOf(req), 'note', { body, internal: req.body.is_internal, meta: pub.meta }); await saveFiles(t, ev, req.body.files, 'user');
     await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
@@ -1375,13 +1381,13 @@ S.post('/tickets/:id/notes', wrap(async req => {
   return { ok: true };
 }));
 S.post('/tickets/:id/transfer', wrap(async req => {
-  const t = await loadTicket(req), note = (await requesterNote(t, req_(req.body.note, 'Please write a note'), req.body.approved)).body;
+  const t = await loadTicket(req), pub = await requesterNote(t, req_(req.body.note, 'Please write a note'), req.body.approved, req.body.typed), note = pub.body;
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
   const ns = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
   const old = await one('SELECT name FROM services WHERE id=?', t.service_id), oldProv = await providersFor(t.tenant_id, t.service_id);
   await tx(async () => { await run('UPDATE tickets SET service_id=?, escalated_at=NULL, escalated_to=NULL, updated_at=? WHERE id=?', ns.id, now(), t.id);
-    await addEvent(t, actorOf(req), 'transferred', { from: old.name, to: ns.name, body: note }); });
+    await addEvent(t, actorOf(req), 'transferred', { from: old.name, to: ns.name, body: note, meta: pub.meta }); });
   const tv = await ticketVars(t, { note, actor_name: req.user.name, from_service: old.name, to_service: ns.name });
   await notify(t, [...oldProv, ...(await providersFor(t.tenant_id, ns.id))].map(p => p.email), 'transferred', tv);
   await notifyRequestors(t, 'transferred_requestor', tv);
@@ -1389,18 +1395,18 @@ S.post('/tickets/:id/transfer', wrap(async req => {
 }));
 // A requestor asked to reopen: the provider who closed it (or an admin) accepts (it reopens, with a fresh target) or declines (it stays closed)
 S.post('/tickets/:id/reopen-request', wrap(async req => {
-  const t = await loadTicket(req), decision = req.body.decision, note = (await requesterNote(t, req_(req.body.note, 'Please write a note for the requester'), req.body.approved)).body;
+  const t = await loadTicket(req), decision = req.body.decision, pub = await requesterNote(t, req_(req.body.note, 'Please write a note for the requester'), req.body.approved, req.body.typed), note = pub.body;
   if (!t.reopen_requested_at || t.status !== 'closed') throw new HttpErr(409, 'BAD_TRANSITION', 'There is no reopen request on this ticket');
   const deciders = await reopenDeciders(t);
   if (!isAdmin(req.user) && !deciders.some(x => x.id === req.user.id)) throw new HttpErr(403, 'FORBIDDEN', `Only ${deciders.map(x => x.name).join(' or ') || 'the provider who closed it'} or an admin can decide`);
   if (decision === 'accept') {
-    await doReopen(t, actorOf(req), note, { penalty: true });
+    await doReopen(t, actorOf(req), note, { penalty: true, meta: pub.meta });
     await notifyRequestors(t, 'reopen_accepted', await ticketVars(t, { note, actor_name: req.user.name }));
     return { ok: true, status: 'open' };
   }
   if (decision !== 'decline') throw bad('Pick accept or decline');
   await tx(async () => { stillAs(await run('UPDATE tickets SET reopen_requested_at=NULL, reopen_request_note=NULL, updated_at=? WHERE id=? AND status=? AND reopen_requested_at IS NOT NULL', now(), t.id, 'closed'));
-    await addEvent(t, actorOf(req), 'reopen_declined', { body: note }); });
+    await addEvent(t, actorOf(req), 'reopen_declined', { body: note, meta: pub.meta }); });
   await notifyRequestors(t, 'reopen_declined', await ticketVars(t, { note, actor_name: req.user.name }));
   return { ok: true, status: 'closed' };
 }));
@@ -1430,25 +1436,28 @@ S.post('/reminders/:id/done', wrap(async req => {
 // The reply preview: the note tidied (spelling, short-forms, sentences) and the exact email the requester will get.
 // to = the new status, or 'note' for an update without a status change. Nothing is saved or sent.
 S.post('/tickets/:id/preview', wrap(async req => {
-  const t = await loadTicket(req), b = req.body || {}, raw = req_(b.note, 'Write a note first'), tn = await tenantRow(t.tenant_id);
-  if (typeof raw !== 'string') throw bad('Write the note as text');
+  const t = await loadTicket(req), b = req.body || {}, raw = noteText(req_(b.note, 'Write a note first')), tn = await tenantRow(t.tenant_id);
   const fixed = b.text_as_is ? { text: String(raw).trim(), changes: [] } : polish(raw, { keep: await keepWords(t) });
   const to = b.to === t.status || !b.to ? 'note' : b.to;
-  const key = to === 'note' ? 'note' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
+  const key = to === 'note' ? 'note' : to === 'closed' && t.kind === 'suggestion' ? 'suggestion_closed' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
   // the ticket and its newest update as they will be once this is saved, so the progress tracker and "Latest updates" match the real email
-  const ts = now(), after = { status: to === 'note' ? t.status : to }, meta = {};
+  const ts = now(), after = { status: to === 'note' ? t.status : to }, meta = {}, reopening = t.status === 'closed' && to === 'open';
   let extra = {};
   if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0], hdue = hr ? await dueFrom(t.tenant_id, ts, hr.hours * 60) : null;
     extra = { hold_reason: hr?.label || '', resume_by: hdue ? fmtIST(hdue) : '' }; Object.assign(after, { hold_reason: hr?.key || null, hold_due_at: hdue, hold_started_at: ts }); if (hr) meta.hold_reason = hr.label; }
   else if (to !== 'note') {
     if (t.status === 'hold') { const cal = await calOf(t.tenant_id); Object.assign(after, { due_at: t.due_at ? addWorking(cal, t.due_at, workingBetween(cal, t.hold_started_at, ts)) : null, hold_reason: null, hold_due_at: null, hold_started_at: null }); }
     if (to === 'closed' || to === 'rejected') after.closed_at = ts;
+    if (reopening) Object.assign(after, { closed_at: null, escalated_to: null, due_at: t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, t.priority) * 60) });
   }
-  const event = { event_type: to === 'note' ? 'note' : 'status_changed', from_value: t.status, to_value: to === 'note' ? null : to, actor_type: 'user', actor_id: req.user.id, actor_name: req.user.name, body: fixed.text, meta: JSON.stringify(meta), created_at: ts };
+  const event = { event_type: to === 'note' ? 'note' : reopening ? 'reopened' : 'status_changed', from_value: t.status, to_value: to === 'note' ? null : to, actor_type: 'user', actor_id: req.user.id, actor_name: req.user.name, body: fixed.text, meta: JSON.stringify(meta), created_at: ts };
   const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }, { ticket: after, event }) });
   const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name; v.timeline = { ...v.timeline, reader: t.requestor_id };
   const { subject, body } = renderTemplate(cfg, key, v), blocks = Object.fromEntries(BLOCKS.filter(x => v[x]).map(x => [x, v[x]]));
-  return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || '', subject, html: renderEmail({ subject, body, campus: tn.name, blocks, requester: true }), sends: !!rq?.email && eventOn(cfg, key) };
+  // everyone who reported this ticket gets the note, each greeted by name: the preview says how many
+  const people = await all("SELECT name, contact FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
+  return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || people[0]?.contact || '', recipients: people.map(p => ({ name: p.name, email: p.contact })), subject,
+    html: renderEmail({ subject, body, campus: tn.name, blocks, requester: true }), sends: (!!rq?.email || people.length > 0) && eventOn(cfg, key) };
 }));
 // ---------- ready-made reply sentences (good English with one tap), per campus and optionally per team ----------
 const REPLY_STEPS = { in_progress: 'Work started', hold: 'On hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected', note: 'Reply / update' };
@@ -1468,14 +1477,17 @@ S.get('/reply-phrases', wrap(async req => { const tn = await tenantRow(req.tenan
 S.put('/reply-phrases', role('super_admin', 'tenant_admin'), wrap(async req => {
   const tn = await tenantRow(req.tenantId), b = req.body || {}, scope = b.scope || '*', p = phrasesOf(tn);
   if (scope !== '*' && !await one('SELECT 1 AS x FROM services WHERE id=? AND tenant_id=?', scope, req.tenantId)) throw notFound();
-  const clean = {};
-  for (const k of Object.keys(REPLY_STEPS)) { if (!Array.isArray(b.phrases?.[k])) continue;
-    const list = [...new Set(b.phrases[k].map(x => String(x || '').trim().replace(/\s+/g, ' ')).filter(Boolean))];
-    if (list.length > 12) throw bad(`${REPLY_STEPS[k]}: at most 12 sentences`); if (list.some(x => x.length > 200)) throw bad('Each sentence: at most 200 characters');
-    clean[k] = list.map(x => polish(x).text); }
-  if (b.reset) delete p[scope]; else p[scope] = { ...(p[scope] || {}), ...clean };
+  const mine = b.reset ? {} : { ...(p[scope] || {}) };
+  for (const k of Object.keys(REPLY_STEPS)) { if (b.reset || !Array.isArray(b.phrases?.[k])) continue;
+    const typed = b.phrases[k].map(x => String(x ?? '').trim().replace(/\s+/g, ' ')).filter(Boolean);
+    if (typed.some(x => x.length > 200)) throw bad('Each sentence: at most 200 characters');
+    // tidied first, then doubles dropped ("done" and "Done." are one sentence)
+    const list = [...new Map(typed.map(x => polish(x).text).map(x => [x.toLowerCase(), x])).values()];
+    if (list.length > 12) throw bad(`${REPLY_STEPS[k]}: at most 12 sentences`);
+    if (list.length) mine[k] = list; else delete mine[k]; } // an emptied step follows the main team, the campus or the standard text again
+  if (Object.keys(mine).length) p[scope] = mine; else delete p[scope];
   await run('UPDATE tenants SET reply_phrases=? WHERE id=?', JSON.stringify(p), req.tenantId);
-  await audit(req, 'reply_phrases.update', 'tenant', req.tenantId, { scope }); return { ok: true };
+  await audit(req, 'reply_phrases.update', 'tenant', req.tenantId, { scope, steps: Object.keys(b.phrases || {}), reset: !!b.reset }); return { ok: true, saved: p[scope] || null };
 }));
 // ---------- notice board (staff side) ----------
 // Admins: notices for any team or the whole campus. A team's providers: notices for their own team(s) (a main team's

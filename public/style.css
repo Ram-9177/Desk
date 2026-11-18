@@ -785,7 +785,8 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 /* reply: ready-made sentences and the "Check before sending" preview */
 .phr{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}.phr:empty{display:none}
 .phc{border:1px solid var(--pa-blue-b);background:var(--pa-blue);color:#1e3a8a;border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer;text-align:left;line-height:1.35}.phc:hover{background:#dfe9ff}
-dialog.prev{width:min(640px,96vw);max-height:92vh;overflow:auto;padding:18px}
+dialog.sheet.prev{width:min(640px,96vw);max-width:640px;max-height:92vh;overflow:auto;padding:18px}
+.evtext{white-space:pre-wrap;overflow-wrap:anywhere}
 .pv-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.pv-h h2{margin:0 0 2px}
 .pv-tabs{display:flex;background:#F2F4F7;border-radius:12px;padding:4px;margin:12px 0 8px}.pv-tabs button{flex:1;border:0;background:none;padding:8px;border-radius:9px;font:inherit;font-weight:600;color:var(--text-3);cursor:pointer}.pv-tabs .on{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(16,24,40,.1)}
 .pv-fix{background:#ECFDF3;border:1px solid #ABEFC6;border-radius:12px;padding:10px 12px;font-size:13px;margin:8px 0;line-height:1.6}.pv-fix b{color:#067647}.pv-fix svg{color:#067647}

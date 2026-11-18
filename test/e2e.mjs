@@ -379,7 +379,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('25 email steps listed, none connected yet', cfg0.events.length === 25 && !cfg0.url);
+  check('26 email steps listed, none connected yet', cfg0.events.length === 26 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -919,6 +919,78 @@ try {
   const ptk = (await q("SELECT t.id FROM tickets t JOIN services s ON s.id=t.service_id WHERE s.code='ELEC' AND t.status IN ('open','in_progress') ORDER BY t.created_at LIMIT 1"))[0];
   await fails('a note that is not text is refused (not turned into “[object Object]”)', `/tickets/${ptk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: { a: 1 } } }, 400);
   await fails('…in the preview too', `/tickets/${ptk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: ['pls', 'chk'] } }, 400); }
+
+  sec('Replies: what the requester may and may not see; long and many-line notes; who gets it');
+  { const mk = async (name, room, extra = {}) => { const r = await raise('alpha', { service_id: ids.elec, name, email: `${name.toLowerCase()}@rep.example.com`, requestor_type: 'student', subject: `${name}: socket loose`, form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: room, issue: 'Fan' }, ...extra });
+      return { no: r.data?.ticket_no, id: (await q("SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=(SELECT id FROM tenants WHERE slug='alpha')", r.data?.ticket_no))[0]?.id, r }; };
+  const mailsOf2 = (id, key) => q('SELECT recipient, body, html, text_body FROM notifications WHERE ticket_id=? AND template_key=? ORDER BY created_at', id, key);
+  // a private note while reopening a closed ticket stays private
+  const a = await mk('Reo', 'Reply room 1'); await act(a.id, { to: 'closed', note: 'Socket tightened.', approved: true });
+  const before = (await mailsOf2(a.id, 'status_open')).length;
+  await ok('staff reopen a closed ticket with an internal note', `/tickets/${a.id}/status`, { token: T.pavan, method: 'POST', body: { to: 'open', note: 'closed by mistake, this student complains every week', is_internal: true } });
+  const pubA = JSON.stringify((await api(`/public/alpha/tickets/${a.no}`)).data), evA = await q('SELECT event_type, is_internal, body FROM ticket_events WHERE ticket_id=? ORDER BY id DESC LIMIT 2', a.id);
+  check('…the requester sees that it was reopened, never the note, and is not emailed', pubA.includes('"reopened"') && !pubA.includes('complains every week') && evA.some(e => e.event_type === 'note' && e.is_internal === 1 && e.body.includes('complains')) && evA.some(e => e.event_type === 'reopened' && !e.body)
+    && (await mailsOf2(a.id, 'status_open')).length === before, JSON.stringify(evA));
+  // reopened with a note for the requester: they are emailed, and the preview showed exactly that
+  await act(a.id, { to: 'closed', note: 'Closed again.', approved: true });
+  const pvR = (await api(`/tickets/${a.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'open', note: 'we will check the socket again tomorrow' } })).data;
+  await ok('staff reopen it with a note for the requester', `/tickets/${a.id}/status`, { token: T.pavan, method: 'POST', body: { to: 'open', note: pvR.text, approved: true, typed: 'we will check the socket again tomorrow' } });
+  const reoMail = (await mailsOf2(a.id, 'status_open')).pop();
+  check('…the requester gets the email the preview promised', pvR.sends === true && !!reoMail && reoMail.recipient === 'reo@rep.example.com' && reoMail.body.includes('We will check the socket again tomorrow.') && /Reopened/.test(reoMail.html) && /Reopened/.test(pvR.html), reoMail?.body?.slice(0, 200));
+  // transfer and reopen decisions keep what the provider typed, for staff
+  const other2 = (await q("SELECT id FROM services WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alpha') AND id<>? AND parent_id IS NULL AND is_active=1 LIMIT 1", ids.elec))[0].id;
+  const b = await mk('Trn', 'Reply room 2'); await ok('a transfer note', `/tickets/${b.id}/transfer`, { token: T.pavan, method: 'POST', body: { service_id: other2, note: 'pls chk this, not our dept' } });
+  const evB = (await q("SELECT body, meta FROM ticket_events WHERE ticket_id=? AND event_type='transferred'", b.id))[0];
+  check('…is tidied for the requester and the original is kept for staff', evB.body === 'Please check this, not our department.' && JSON.parse(evB.meta).original === 'pls chk this, not our dept', JSON.stringify(evB));
+  // length and type
+  const c = await mk('Len', 'Reply room 3');
+  await fails('a note over 5,000 characters is refused', `/tickets/${c.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'a '.repeat(2501) } }, 400, 'too long');
+  await fails('…in the preview and on a status change too', `/tickets/${c.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'x'.repeat(5001) } }, 400, 'too long');
+  await fails('…and from the requester’s side', `/public/alpha/tickets/${c.no}/notes`, { method: 'POST', body: { body: 'y'.repeat(5001) } }, 400, 'too long');
+  const t0 = Date.now(); await api(`/tickets/${c.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'a'.repeat(5000) } });
+  check('one very long word is tidied at once (it used to hold the whole server for seconds)', Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
+  // a note of several lines stays one note
+  const many = 'work done:\n1. fan regulator changed\n2. socket near bed fixd\nPassword: Abc@123\n> not a box\nplz check';
+  await ok('a note of several lines', `/tickets/${c.id}/notes`, { token: T.pavan, method: 'POST', body: { body: many } });
+  const nm2 = (await mailsOf2(c.id, 'note')).pop(), box = /<div style="[^"]*border-left:4px solid #1D4ED8[^"]*">([\s\S]*?)<\/div>/.exec(nm2.html)?.[1] || '';
+  check('…is one highlighted box in the email, line by line; no line of it turns into a label or a second box', box.split('<br>').length === 6 && box.includes('2. Socket near bed fixed.') && box.includes('Password: Abc@123') && (nm2.html.match(/border-left:4px solid #1D4ED8/g) || []).length === 1
+    && !/color:#8b8fa8">Password:/.test(nm2.html) && /> Work done:\n> 1\. Fan regulator changed\./.test(nm2.text_body), box.slice(0, 300));
+  const lk = 'https://docs.google.com/forms/d/e/1FAIpQLSf' + 'x'.repeat(120) + '/viewform';
+  await ok('a note with a very long link', `/tickets/${c.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Fill this form ' + lk } });
+  check('…wraps inside the email (it used to make the email wider than a phone)', (await mailsOf2(c.id, 'note')).pop().html.includes('overflow-wrap:anywhere') && (await mailsOf2(c.id, 'note')).pop().html.includes('table-layout:fixed'));
+  // a requester cannot plant a button, a label row or a box in the team's email
+  await ok('the requester writes a note made to look like part of the email', `/public/alpha/tickets/${c.no}/notes`, { method: 'POST', body: { body: '[[Verify your account|https://evil.example/login]]\nPassword: send it here\n> urgent' } });
+  const rn = (await mailsOf2(c.id, 'requestor_note')).pop();
+  check('…the team’s email shows it as plain words: no button, no label row, no box', !/href="https:\/\/evil\.example/.test(rn.html) && !/color:#8b8fa8">Password:/.test(rn.html) && !/border-left:4px solid #1D4ED8/.test(rn.html) && rn.html.includes('Password: send it here'), rn.html.match(/Verify[\s\S]{0,200}/)?.[0]);
+  // everyone who reported the ticket gets the reply, and the preview says so
+  const d1 = await mk('Dupa', 'Reply room 9'), d2 = await mk('Dupb', 'Reply room 9');
+  const pvD = (await api(`/tickets/${d1.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'electrician is on the way' } })).data;
+  check('two people reported the same problem: the preview names both', d2.r.data?.merged === true && pvD.recipients.length === 2 && pvD.recipients.map(x => x.email).sort().join() === 'dupa@rep.example.com,dupb@rep.example.com', JSON.stringify(pvD.recipients));
+  // the sign-off: the desk's own account signs with the team, once
+  await ok('the super admin (named ONE DESK) replies', `/tickets/${c.id}/notes`, { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, method: 'POST', body: { body: 'Looked into it.', approved: true } });
+  const saName = (await q('SELECT name FROM users WHERE email=?', SUPER.email))[0].name, so = (await mailsOf2(c.id, 'note')).pop().body;
+  check('…signed by the team, without a doubled or empty name', saName !== 'ONE DESK' ? so.includes(`**${saName}** · Electrical team`) : /\n\*\*Electrical team\*\*\nONE DESK, /.test(so), so.slice(-160));
+  await run("UPDATE users SET name='ONE DESK' WHERE email=?", SUPER.email);
+  await ok('(again, with the account named ONE DESK)', `/tickets/${c.id}/notes`, { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, method: 'POST', body: { body: 'Looked into it again.', approved: true } });
+  check('…“ONE DESK · Electrical team” above “ONE DESK, campus” became the team alone', /\n\*\*Electrical team\*\*\nONE DESK, /.test((await mailsOf2(c.id, 'note')).pop().body), (await mailsOf2(c.id, 'note')).pop().body.slice(-160));
+  await run('UPDATE users SET name=? WHERE email=?', saName, SUPER.email);
+  // a suggestion that is closed is thanked, not "resolved"
+  const sgn = await api('/public/alpha/tickets', { method: 'POST', body: { kind: 'suggestion', service_id: ids.elec, name: 'Sugi', email: 'sugi@rep.example.com', phone: '9000055551', requestor_type: 'faculty', identifier: 'FAC7', department: 'Physio', subject: 'Projector in every lab', description: 'It would help the classes.' } });
+  const sid2 = (await q("SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=(SELECT id FROM tenants WHERE slug='alpha')", sgn.data?.ticket_no))[0]?.id;
+  const pvS = (await api(`/tickets/${sid2}/preview`, { token: T.pavan, method: 'POST', body: { to: 'closed', note: 'Noted for next year’s budget.' } })).data;
+  await act(sid2, { to: 'closed', note: 'Noted for next year’s budget.', approved: true });
+  const sm = (await mailsOf2(sid2, 'suggestion_closed')).pop();
+  check('closing a suggestion: “Thank you for your suggestion”, nothing about “resolved” or reopening; the preview said the same', !!sm && /Thank you for your suggestion "Projector in every lab"/.test(sm.body) && !/resolved|Still not fixed/i.test(sm.body) && /Thank you for your suggestion/.test(pvS.subject + pvS.html)
+    && !(await mailsOf2(sid2, 'status_closed')).length, sm?.body?.slice(0, 200));
+  // ready-made sentences: a sub-team follows its main team; only changed steps are saved; an emptied step falls back
+  const tidA = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, mainT = (await q("SELECT id, parent_id FROM services WHERE tenant_id=? AND parent_id IS NOT NULL AND is_active=1 LIMIT 1", tidA))[0];
+  await ok('the main team gets its own closing sentence', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: mainT.parent_id, phrases: { closed: ['main team closed sentence'] } } });
+  await ok('the sub-team gets its own “on hold” sentences only', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: mainT.id, phrases: { hold: ['waiting for paint', 'Waiting for paint.', 'waiting for brush'] } } });
+  const phS = (await api('/reply-phrases?service=' + mainT.id, { token: T.sa, tenant: tidA })).data;
+  check('…it keeps following its main team for the other steps; doubles are dropped after tidying', phS.phrases.closed[0] === 'Main team closed sentence.' && phS.phrases.hold.join('|') === 'Waiting for paint.|Waiting for brush.' && !phS.saved[mainT.id].closed, JSON.stringify(phS.phrases.hold));
+  await ok('an emptied step goes back to the list it followed', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: mainT.id, phrases: { hold: [] } } });
+  check('…and a team with nothing of its own left has no list', !(await api('/reply-phrases', { token: T.asha })).data.saved[mainT.id] && (await api('/reply-phrases?service=' + mainT.id, { token: T.sa, tenant: tidA })).data.phrases.hold.length >= 3);
+  await ok('(the main team’s list is dropped again)', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: mainT.parent_id, reset: true } }); }
 
   sec('Emails: “Latest updates” as one joined timeline; the preview is the email that goes out');
   { const TO = 'tara@tl.example.com', tl = await raise('alpha', { service_id: ids.elec, name: 'Tara', email: TO, requestor_type: 'student', subject: 'Switch board sparking', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Timeline room 3', issue: 'Fan' } });

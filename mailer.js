@@ -60,6 +60,9 @@ export const MAIL_EVENTS = [
   { key: 'status_closed', label: 'Ticket closed', who: 'Requestor', when: 'A provider closes it', vars: [...T, 'note', 'actor_name', 'reopen_days'],
     subject: '[{{ticket_no}}] Your ticket is closed',
     body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+  { key: 'suggestion_closed', label: 'Suggestion closed', who: 'Requestor', when: 'A provider closes a suggestion', vars: [...T, 'note', 'actor_name'],
+    subject: '[{{ticket_no}}] Thank you for your suggestion',
+    body: 'Hi {{requestor_name}},\nThank you for your suggestion "{{subject}}". The {{service}} team has gone through it.\n> {{note}}\n[[View your suggestion|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}' },
   { key: 'status_rejected', label: 'Ticket rejected', who: 'Requestor', when: 'A provider rejects it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket could not be accepted',
     body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n> {{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
@@ -145,6 +148,10 @@ export const sampleVars = (base, key) => eventByKey(key)?.who === 'Requestor' ? 
 
 // Values typed by people are cleaned so they can't add buttons or bold to an email.
 const clean = v => String(v ?? '').replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]').replace(/\*\*/g, '* *').replace(/\{\{/g, '{ {');
+// Free text typed by people (a note of several lines, a subject): its line breaks are kept inside the template line it
+// fills (as \u2028), so the whole note stays in its one box and a line of it can never pass for a label, a box or a button.
+const TYPED = new Set(['note', 'description', 'subject', 'location', 'requestor_name', 'actor_name', 'staff_name', 'affected_note']);
+const typed = (n, v) => TYPED.has(n) ? clean(v).trim().replace(/\s*\r?\n\s*/g, '\u2028') : clean(v);
 // Replace {{fields}}; a line whose fields are all empty is left out.
 export function fill(tpl, vars) {
   return String(tpl || '').split('\n').flatMap(line => {
@@ -152,14 +159,17 @@ export function fill(tpl, vars) {
     const blk = /^\s*\{\{\s*(\w+)\s*\}\}\s*$/.exec(line);
     if (blk && BLOCKS.includes(blk[1])) return vars[blk[1]] && (!Array.isArray(vars[blk[1]]) || vars[blk[1]].length) ? [`{{${blk[1]}}}`] : [];
     if (names.length && names.every(n => BLOCKS.includes(n) || clean(vars[n]).trim() === '')) return [];
-    return [line.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, n) => BLOCKS.includes(n) ? '' : clean(vars[n]))];
+    // a line that is nothing but typed text starts with a no-width mark: it is shown as plain words, whatever it begins with
+    const only = /^\s*\{\{\s*(\w+)\s*\}\}\s*$/.exec(line);
+    return [(only && TYPED.has(only[1]) ? '\u200b' : '') + line.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, n) => BLOCKS.includes(n) ? '' : typed(n, vars[n]))];
   }).join('\n');
 }
 export const unknownVars = (tpl, allowed) => [...new Set([...String(tpl).matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map(m => m[1]))].filter(n => !allowed.includes(n));
 export const templateFor = (cfg, key) => ({ ...(({ subject, body }) => ({ subject, body }))(eventByKey(key) || {}), ...(cfg.templates[key] || {}) });
 export function renderTemplate(cfg, key, vars) {
   const t = templateFor(cfg, key);
-  return { subject: fill(t.subject, vars).replace(/\s*\n\s*/g, ' ').trim().slice(0, 250), body: fill(t.body, vars) };
+  // sign-off: with no person's name (or when the desk's own account acted) the team signs, once
+  return { subject: fill(t.subject, vars).replace(/\s*[\n\u2028]\s*/g, ' ').replace(/\u200b/g, '').trim().slice(0, 250), body: fill(t.body, vars).replace(/^\*\*\s*(?:ONE DESK)?\s*\*\* · (.+)$/gmi, '**$1**') };
 }
 // Plain-text version: buttons become "label: link", bold markers dropped.
 const STEP_TEXT = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Not accepted' };
@@ -175,7 +185,7 @@ export const toText = (body, blocks = {}, requester = false) => String(body).spl
       + (tl.more && link ? `\nSee all updates: ${link}` : ''); }
   if (b === 'guide' && blocks.guide) { const c = GUIDE_COPY[blocks.guide.kind] || GUIDE_COPY.requestor; return `\n${c.title}${/[?.!]$/.test(c.title) ? '' : '.'} ${c.label}: ${blocks.guide.url}`; }
   if (b && BLOCKS.includes(b)) return '';
-  return line.replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$1: $2').replace(/\*\*(.+?)\*\*/g, '$1');
+  return line.replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$1: $2').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\u200b/g, '').replace(/\u2028/g, /^\s*>/.test(line) ? '\n> ' : '\n');
 }).join('\n');
 // One reassuring sentence about what happens next, per status.
 export function nextStep(p) {
@@ -210,6 +220,7 @@ export const BRAND_DEFAULTS = {
   brand_welcome: "Welcome to ONE DESK, St. Mary's own student service centre. We are always working to elevate your academic and learning experience, and to help every student grow into a life-ready professional.",
 };
 export const brandOf = () => { const s = getSettings(); return Object.fromEntries(Object.keys(BRAND_DEFAULTS).map(k => [k, s[k] ?? BRAND_DEFAULTS[k]])); };
+const WRAP = 'word-break:break-word;overflow-wrap:anywhere'; // a long link wraps; it must not make the email wider than a phone
 export function renderEmail({ subject, body, campus, blocks = {}, requester = false }) {
   const br = brandOf(), site = String(getSettings().public_base_url || process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
   const logo = /^https:\/\//.test(site) || /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(site + "/") ? `${site}/logo.png` : ''; // the university logo, from the site's public address (needs https so mail apps load it)
@@ -225,15 +236,16 @@ export function renderEmail({ subject, body, campus, blocks = {}, requester = fa
     if (blk && BLOCKS.includes(blk)) return blocks[blk] ? BLOCK_HTML[blk](blocks[blk], requester) : '';
     const btn = /^\s*\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]\s*$/.exec(line);
     if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
-    const q = /^\s*&gt;\s?(.*)$/.exec(esc(line)); // "> text": the provider's note, in a highlighted box
-    if (q) return q[1].trim() ? `<div style="margin:12px 0 14px;padding:12px 14px;background:#EEF4FF;border-left:4px solid #1D4ED8;border-radius:0 10px 10px 0;line-height:1.55">${links(bold(q[1]))}</div>` : '';
-    const kv = /^([A-Z][A-Za-z ]{1,24}):\s+(.+)$/.exec(line);
+    const br2 = h => h.replace(/\u2028/g, '<br>'), plain = line.startsWith('\u200b'); if (plain) line = line.slice(1);
+    const q = !plain && /^\s*&gt;\s?([\s\S]*)$/.exec(esc(line)); // "> text": the provider's note, in a highlighted box (all its lines)
+    if (q) return q[1].trim() ? `<div style="margin:12px 0 14px;padding:12px 14px;background:#EEF4FF;border-left:4px solid #1D4ED8;border-radius:0 10px 10px 0;line-height:1.55;${WRAP}">${br2(links(bold(q[1])))}</div>` : '';
+    const kv = !plain && /^([A-Z][A-Za-z ]{1,24}):\s+(.+)$/.exec(line);
     if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|ticket/i.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
-    return `<p style="margin:0 0 10px;line-height:1.55">${links(bold(esc(line)))}</p>`;
+    return `<p style="margin:0 0 10px;line-height:1.55;${WRAP}">${br2(links(bold(esc(line))))}</p>`;
   }).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;table-layout:fixed;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
 ${logo ? `<tr><td style="background:#ffffff;padding:16px 24px 12px"><img src="${esc(logo)}" width="150" alt="St. Mary's Rehabilitation University" style="display:block;width:150px;max-width:150px;height:auto;border:0"></td></tr>` : ''}
 <tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}${br.brand_strap ? `<div style="margin-top:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#f8c77a">${esc(br.brand_strap)}</div>` : ''}</td></tr>
 ${requester && br.brand_one ? `<tr><td style="background:#fff8ec;border-bottom:1px solid #fde3b7;padding:9px 24px;font-size:12.5px;line-height:1.5;color:#7a4b05">${oneHtml}</td></tr>` : ''}
@@ -273,7 +285,7 @@ const BLOCK_HTML = {
   ticket_details(rows) {
     return `${sectionTitle('Ticket details')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eceef5;border-radius:12px;border-collapse:separate;overflow:hidden">${rows.map(([k, v], i) =>
       `<tr><td valign="top" style="padding:9px 14px;width:34%;color:#8b8fa8;font-size:13px;${i ? 'border-top:1px solid #f0f1f6;' : ''}">${esc(k)}</td>
-       <td valign="top" style="padding:9px 14px;font-size:14px;color:#1c1d2e;${i ? 'border-top:1px solid #f0f1f6;' : ''}${k === 'Ticket' ? 'font-family:Consolas,monospace;font-weight:700;' : ''}">${Array.isArray(v) ? photosHtml(v) : esc(v).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>`;
+       <td valign="top" style="padding:9px 14px;font-size:14px;color:#1c1d2e;${WRAP};${i ? 'border-top:1px solid #f0f1f6;' : ''}${k === 'Ticket' ? 'font-family:Consolas,monospace;font-weight:700;' : ''}">${Array.isArray(v) ? photosHtml(v) : esc(v).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>`;
   },
   guide(g) {
     const c = GUIDE_COPY[g.kind] || GUIDE_COPY.requestor;
@@ -295,7 +307,7 @@ const BLOCK_HTML = {
       `<tr><td valign="top" width="18" style="width:18px;${rail(i)}"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td width="10" height="10" bgcolor="${esc(e.tone || '#1e4b8f')}" style="width:10px;height:10px;border:4px solid #ffffff;border-radius:50%;font-size:1px;line-height:10px;mso-line-height-rule:exactly">&nbsp;</td></tr></table></td>
        <td valign="top" style="padding:0 0 ${i === n - 1 ? 2 : 16}px 10px"><div style="font-size:12.5px;line-height:18px;color:#8b8fa8">${esc([e.at, tlWho(tl, e, requester)].filter(Boolean).join(' · '))}${i === 0 && n > 1 ? latest : ''}</div>
        <div style="font-size:14.5px;line-height:1.4;font-weight:700;color:#1c1d2e">${esc(e.title || e.label)}</div>
-       ${e.body ? `<div style="margin-top:6px;padding:8px 12px;background:#f6f7fb;border-radius:10px;font-size:14px;line-height:1.5;color:#344054">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}${e.photos?.length ? `<div style="margin-top:6px">${photosHtml(e.photos)}</div>` : ''}</td></tr>`).join('')}</table>
+       ${e.body ? `<div style="margin-top:6px;padding:8px 12px;background:#f6f7fb;border-radius:10px;font-size:14px;line-height:1.5;color:#344054;${WRAP}">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}${e.photos?.length ? `<div style="margin-top:6px">${photosHtml(e.photos)}</div>` : ''}</td></tr>`).join('')}</table>
       ${tl.more && link ? `<p style="margin:10px 0 0;font-size:12.5px;line-height:1.5;color:#8b8fa8">Showing the last ${n} updates · <a href="${esc(link)}" style="color:#1e4b8f;font-weight:700;text-decoration:underline">See all on ${requester ? 'your ticket page' : 'the ticket'}</a></p>` : ''}`;
   },
 };
