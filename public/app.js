@@ -1232,6 +1232,8 @@ async function mailEvents(box) {
   const c = await api('/mail/config');
   box.innerHTML = `<p class="muted small">Every step that sends an email. Each one has its own template: click <b>Edit template</b> to change the subject and message.
     Switch one off and it is recorded as "skipped" in the delivery log instead of being sent.</p>
+    <div class="card brief-now"><div><b>Morning brief</b><div class="muted small">Every working day at 08:30 campus time: campus admins get the whole campus (counts and every open ticket, by team); each service provider gets only their own team's open tickets.</div></div>
+      <button type="button" class="btn" id="briefNow">${I('send', 16)} Send this campus's brief now</button></div>
     <div class="tlist">${c.events.map(e => `<div class="trow" style="cursor:default"><label class="switch" title="Send this email"><input type="checkbox" data-ev="${e.key}" ${e.on ? 'checked' : ''}></label>
       <div class="tm"><b>${esc(e.label)} ${e.custom ? '<span class="pill p-int">Customised</span>' : ''}</b>
         <div class="sub"><span class="pill c4">${esc(e.who)}</span><span>${esc(e.when)}</span></div><div class="sub mono" style="margin-top:2px">${esc(e.subject)}</div></div>
@@ -1245,6 +1247,7 @@ async function mailEvents(box) {
     d.innerHTML = `<form method="dialog"><h2>${esc(c.events.find(e => e.key === b.dataset.pv).label)}</h2><div class="muted small">Subject</div><b>${esc(r.subject)}</b>
       <iframe style="width:100%;height:440px;border:1px solid var(--line);border-radius:12px;margin-top:10px"></iframe><p class="row"><button class="btn primary" value="ok">Close</button></p></form>`;
     document.body.append(d); d.querySelector('iframe').srcdoc = r.html; d.showModal(); d.onclose = () => d.remove(); });
+  if ($('#briefNow')) $('#briefNow').onclick = async e => { e.target.disabled = true; try { const r = await api('/digest/send', { method: 'POST' }); toast(`Morning brief sent: ${r.sent} email${r.sent === 1 ? '' : 's'}. See the delivery log.`, 5000); } catch (er) { toast(er.message); } e.target.disabled = false; };
   box.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => templateEditor(c, c.events.find(e => e.key === b.dataset.ed), () => mailEvents(box)));
 }
 

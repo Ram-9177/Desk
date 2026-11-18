@@ -365,7 +365,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('24 email steps listed, none connected yet', cfg0.events.length === 24 && !cfg0.url);
+  check('25 email steps listed, none connected yet', cfg0.events.length === 25 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -813,6 +813,22 @@ try {
   await ok('admin lowers the minimum to 2', '/fair', { ...A, method: 'PUT', body: { min_tickets: 2 } });
   check('…then the new provider is ranked too', (await api('/fair', A)).data.rows.find(x => x.id === p5).eligible === true);
   await ok('(back to 5)', '/fair', { ...A, method: 'PUT', body: { min_tickets: 5 } }); }
+
+  sec('Morning brief: whole campus for admins, own team for providers');
+  { const tid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, pav = (await q("SELECT id, email FROM users WHERE email='pavan@example.com'"))[0];
+  const before = (await q("SELECT count(*)::int n FROM notifications WHERE template_key IN ('digest','digest_admin')"))[0].n;
+  await fails('a provider can’t send it', '/digest/send', { token: T.pavan, method: 'POST' }, 403);
+  const r = await ok('admin sends this campus’s morning brief now', '/digest/send', { token: T.asha, method: 'POST' });
+  const mails = await q("SELECT recipient, template_key, subject, body FROM notifications WHERE template_key IN ('digest','digest_admin') ORDER BY created_at DESC LIMIT ?", r.sent);
+  const adm = mails.find(m => m.template_key === 'digest_admin' && m.recipient === 'asha@example.com'), mine = mails.find(m => m.template_key === 'digest' && m.recipient === pav.email);
+  check('the campus admin gets the whole campus: counts, then every open ticket by group', !!adm && /\d+ open · Overdue \d+ · Due today \d+/.test(adm.body) && /Yesterday: \d+ raised, \d+ closed/.test(adm.body) && /OVERDUE \(\d+\)/.test(adm.body), adm?.body?.slice(0, 400));
+  const myS = (await q("SELECT m.service_id FROM service_members m WHERE m.user_id=? UNION SELECT s.id FROM services s JOIN service_members m ON m.service_id=s.parent_id WHERE m.user_id=?", pav.id, pav.id)).map(x => x.service_id);
+  const other = (await q(`SELECT ticket_no FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress') AND queued=0 AND coalesce(kind,'issue')<>'suggestion' AND NOT (service_id = ANY(?::text[])) LIMIT 1`, tid, myS))[0];
+  const own = (await q(`SELECT ticket_no FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress') AND queued=0 AND coalesce(kind,'issue')<>'suggestion' AND service_id = ANY(?::text[]) LIMIT 1`, tid, myS))[0];
+  check('a provider gets only their own team’s tickets', !!mine && (!own || mine.body.includes('#' + own.ticket_no)) && (!other || !mine.body.includes('#' + other.ticket_no)) && /Morning brief\] .+: (\d+ open tickets?|nothing open) · /.test(mine.subject), mine?.subject);
+  check('…and the admin’s list has the other teams’ tickets too', !other || adm.body.includes('#' + other.ticket_no));
+  check('no brief for another campus’s admin', !mails.some(m => m.recipient === 'bina@example.com'));
+  check('one email per person', new Set(mails.map(m => m.recipient + m.template_key)).size === mails.length && mails.length === r.sent && r.sent >= 2, String(r.sent)); }
 
   sec('Forgot password: a temporary password by email');
   { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;

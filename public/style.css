@@ -781,3 +781,4 @@ h1{font-weight:700;letter-spacing:-.02em}h2{font-weight:600}
 .fmath{margin:10px 0 6px;padding-left:18px;font-size:13px;color:var(--text-2);line-height:1.5}.fmath li{margin-bottom:4px}
 .fme-r{display:grid;grid-template-columns:90px 1fr 36px;gap:10px;align-items:center;margin-top:8px;font-size:13px}.fme-r i{display:block;height:8px;border-radius:99px;background:var(--divider-soft);overflow:hidden}.fme-r i b{display:block;height:100%;background:var(--accent);border-radius:99px}.fme-r em{font-style:normal;text-align:right;font-weight:600}
 .fme-why{margin-top:10px}
+.brief-now{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:10px 0 14px}.brief-now>div{flex:1 1 300px}

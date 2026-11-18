@@ -115,9 +115,12 @@ export const MAIL_EVENTS = [
   { key: 'password_reset', label: 'Password reset', who: 'Staff member', when: 'An admin resets their password', vars: STAFF,
     subject: '[ONE Desk] Your password was reset',
     body: 'Hi {{staff_name}},\nAn admin reset your ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose a new password when you sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
-  { key: 'digest', label: 'Daily digest (08:30)', who: 'Providers and admins', when: 'Each morning, if they have overdue or on-hold tickets', vars: ['staff_name', 'campus', 'count', 'ticket_list', 'login_link'],
-    subject: '[Digest] {{count}} tickets need your attention',
-    body: 'Good morning {{staff_name}},\nThese tickets are overdue or on hold:\n{{ticket_list}}\n[[Open ONE Desk|{{login_link}}]]' },
+  { key: 'digest', label: 'Morning brief: my team (08:30)', who: 'Service providers', when: 'Each working morning at 08:30 campus time, when their team has open tickets', vars: ['staff_name', 'campus', 'team', 'date', 'count', 'open_text', 'counts', 'ticket_list', 'login_link'],
+    subject: '[Morning brief] {{team}}: {{open_text}} · {{date}}',
+    body: 'Good morning {{staff_name}},\nHere is where **{{team}}** stands this morning.\n{{counts}}\n{{ticket_list}}\n[[Open ONE Desk|{{login_link}}]]' },
+  { key: 'digest_admin', label: 'Morning brief: whole campus (08:30)', who: 'Campus admins', when: 'Each working morning at 08:30 campus time', vars: ['staff_name', 'campus', 'date', 'count', 'open_text', 'counts', 'ticket_list', 'login_link'],
+    subject: '[Morning brief] {{campus}}: {{open_text}} · {{date}}',
+    body: 'Good morning {{staff_name}},\nHere is the whole campus this morning.\n{{counts}}\n{{ticket_list}}\n[[Open ONE Desk|{{login_link}}]]' },
 ];
 export const eventByKey = k => MAIL_EVENTS.find(e => e.key === k);
 
@@ -209,7 +212,7 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
 <tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE Desk${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
-<tr><td style="padding:24px 24px 10px">${ref && !/^(ONE Desk|Digest)$/.test(ref) ? `<div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">TICKET ${esc(ref)}</div>` : ''}
+<tr><td style="padding:24px 24px 10px">${ref && !/^(ONE Desk|Digest|Morning brief)$/.test(ref) ? `<div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">TICKET ${esc(ref)}</div>` : ''}
 <h1 style="font-size:20px;line-height:1.3;margin:6px 0 16px">${esc(title)}</h1>${html}</td></tr>
 <tr><td style="padding:14px 24px;background:#fafbfe;color:#8b8fa8;font-size:12px;line-height:1.5">Automated message from the St. Mary's Group service desk. Please don't reply to this email; use the ticket link to add a note.</td></tr>
 </table></td></tr></table></body></html>`;

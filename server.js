@@ -286,21 +286,57 @@ async function sendOne(id) {
 setInterval(() => { while (queue.length) sendOne(queue.shift()).catch(e => console.error('mail', e.message)); }, 1000);
 for (const r of await all("SELECT id FROM notifications WHERE status='queued'")) queue.push(r.id); // resume after a restart
 
-// daily 08:30 IST digest (IST = UTC+5:30, no DST; the server itself usually runs on UTC)
-let lastDigest = '';
-setInterval(() => digest().catch(e => console.error('digest', e.message)), 60e3);
+// ---------- morning brief (08:30 campus time, working days) ----------
+// Campus admins: counts + every open ticket of the campus, by team. Service providers: the same for the tickets of their
+// own team(s) only (a main team includes its sub-teams). Sent once a day per campus (remembered across restarts);
+// a team with nothing open gets no email. Admins can also send it now from the Email page.
+const DIGEST_MAX = 150; // lines per email; the rest is "and N more"
+async function briefFor(tn, sids) { // sids: null = whole campus
+  const n = now(), day = localDay(tn.timezone || 'Asia/Kolkata', n), yday = localDay(tn.timezone || 'Asia/Kolkata', new Date(Date.parse(day.start) - 3600e3).toISOString());
+  const w = `t.tenant_id=?${sids ? ` AND t.service_id IN (${sids.map(() => '?').join()})` : ''}`, a = [tn.id, ...(sids || [])];
+  const open = await all(`SELECT t.ticket_no, t.subject, t.status, t.due_at, t.hold_due_at, t.location, t.kind, t.queued, s.name team, t.created_at
+    FROM tickets t JOIN services s ON s.id=t.service_id WHERE ${w} AND t.status IN ('open','in_progress','hold') ORDER BY s.name, t.due_at NULLS LAST, t.created_at`, ...a);
+  const y = await one(`SELECT count(*) FILTER (WHERE t.created_at>=? AND t.created_at<?)::int raised, count(*) FILTER (WHERE t.status='closed' AND t.closed_at>=? AND t.closed_at<?)::int closed FROM tickets t WHERE ${w}`, yday.start, yday.next, yday.start, yday.next, ...a);
+  const live = open.filter(t => !t.queued), sug = live.filter(t => t.kind === 'suggestion'), work = live.filter(t => t.kind !== 'suggestion');
+  const group = t => t.status === 'hold' ? 'hold' : !t.due_at ? 'open' : t.due_at < n ? 'overdue' : t.due_at < day.next ? 'today' : 'open';
+  const by = { overdue: [], today: [], hold: [], open: [] }; for (const t of work) by[group(t)].push(t);
+  const c = { open: work.filter(t => t.status === 'open').length, in_progress: work.filter(t => t.status === 'in_progress').length, hold: by.hold.length, overdue: by.overdue.length, today: by.today.length,
+    queued: open.filter(t => t.queued).length, suggestions: sug.length, raised: y.raised, closed: y.closed };
+  const counts = `${work.length} open · Overdue ${c.overdue} · Due today ${c.today} · In progress ${c.in_progress} · On hold ${c.hold}${c.queued ? ` · In queue ${c.queued}` : ''}${c.suggestions ? ` · Suggestions ${c.suggestions}` : ''}\nYesterday: ${c.raised} raised, ${c.closed} closed`;
+  const line = t => `#${t.ticket_no} · ${t.subject}${t.location ? ` · ${t.location}` : ''}${sids && sids.length < 2 ? '' : ` · ${t.team}`} · ${t.status === 'hold' ? `resume by ${t.hold_due_at ? fmtIST(t.hold_due_at) : '—'}` : t.due_at ? `${t.due_at < n ? 'was due' : 'due'} ${fmtIST(t.due_at)}` : 'no target'}`;
+  const parts = [['overdue', 'Overdue'], ['today', 'Due today'], ['hold', 'On hold'], ['open', 'Other open']].filter(([k]) => by[k].length);
+  let left = DIGEST_MAX; const out = [];
+  for (const [k, label] of parts) { out.push(`\n${label.toUpperCase()} (${by[k].length})`); for (const t of by[k]) { if (left-- > 0) out.push(line(t)); } }
+  if (sug.length) out.push(`\nSUGGESTIONS WAITING (${sug.length})`, ...sug.slice(0, Math.max(0, left)).map(t => `#${t.ticket_no} · ${t.subject} · ${t.team}`));
+  const shown = Math.min(DIGEST_MAX, work.length); if (work.length > shown) out.push(`…and ${work.length - shown} more in ONE Desk.`);
+  return { count: work.length, open_text: work.length ? `${work.length} open ticket${work.length === 1 ? '' : 's'}` : 'nothing open', counts, list: out.join('\n') || 'Nothing open. All clear!', any: work.length + sug.length + c.queued + c.raised + c.closed > 0 };
+}
+async function sendBriefs(tn, { force } = {}) {
+  const dayKey = localDay(tn.timezone || 'Asia/Kolkata').start.slice(0, 10), date = new Date().toLocaleDateString('en-IN', { timeZone: tn.timezone || 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short' });
+  let sent = 0;
+  // campus admins: the whole campus
+  const admins = await all("SELECT * FROM users WHERE tenant_id=? AND is_active=1 AND role='tenant_admin'", tn.id);
+  if (admins.length) { const b = await briefFor(tn, null);
+    if (b.any || force) for (const u of admins) { await notify({ tenant_id: tn.id }, [u.email], 'digest_admin', { staff_name: u.name, campus: tn.name, date, count: b.count, open_text: b.open_text, counts: b.counts, ticket_list: b.list }); sent++; } }
+  // service providers: their own team(s) only
+  for (const u of await all(`SELECT DISTINCT u.* FROM users u JOIN service_members m ON m.user_id=u.id WHERE u.tenant_id=? AND u.is_active=1 AND u.role='provider'`, tn.id)) {
+    const sids = await myServiceIds(u, tn.id); if (!sids.length) continue;
+    const b = await briefFor(tn, sids); if (!b.count && !force) continue;
+    const teams = (await all(`SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.tenant_id=? ORDER BY s.name`, u.id, tn.id)).map(r => r.name);
+    await notify({ tenant_id: tn.id }, [u.email], 'digest', { staff_name: u.name, campus: tn.name, team: teams.join(', ') || 'Your team', date, count: b.count, open_text: b.open_text, counts: b.counts, ticket_list: b.list }); sent++;
+  }
+  if (!force) await setSetting('digest:' + tn.id, dayKey);
+  return sent;
+}
 async function digest() {
-  const d = new Date(Date.now() + 330 * 60e3), key = d.toISOString().slice(0, 10);
-  if (d.getUTCHours() !== 8 || d.getUTCMinutes() < 30 || lastDigest === key) return;
-  lastDigest = key;
-  for (const u of await all("SELECT * FROM users WHERE is_active=1 AND role!='super_admin'")) {
-    const sids = await myServiceIds(u, u.tenant_id); if (!sids.length) continue;
-    const q = await all(`SELECT ticket_no,subject,status,due_at FROM tickets WHERE tenant_id=? AND service_id IN (${sids.map(() => '?').join()})
-      AND ((status IN ('open','in_progress') AND due_at<?) OR status='hold')`, u.tenant_id, ...sids, now());
-    if (q.length) await notify({ tenant_id: u.tenant_id }, [u.email], 'digest', { staff_name: u.name, campus: (await tenantRow(u.tenant_id))?.name, count: q.length,
-      ticket_list: q.map(x => `${x.ticket_no} · ${x.status === 'hold' ? 'on hold' : 'overdue'} · ${x.subject}`).join('\n') });
+  for (const tn of await all('SELECT * FROM tenants WHERE is_active=1')) {
+    const cal = calendar(tn), hm = new Intl.DateTimeFormat('en-GB', { timeZone: cal.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
+    const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: cal.tz }).format(new Date()), wd = new Date(ymd + 'T12:00:00Z').getUTCDay();
+    if (hm < '08:30' || !cal.days.has(wd) || getSettings()['digest:' + tn.id] === localDay(cal.tz).start.slice(0, 10)) continue;
+    await sendBriefs(tn).catch(e => console.error('morning brief', tn.code, e.message));
   }
 }
+setInterval(() => digest().catch(e => console.error('digest', e.message)), 60e3);
 
 // ---------- escalation ----------
 // A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
@@ -1272,6 +1308,8 @@ S.post('/reminders/:id/done', wrap(async req => {
   if (!(await run('UPDATE ticket_reminders SET done_at=? WHERE id=? AND user_id=? AND done_at IS NULL', now(), req.params.id, req.user.id)).changes) throw notFound();
   return { ok: true };
 }));
+// Send this campus's morning brief now (both kinds, even on a quiet day), e.g. to check how it looks
+S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
 S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
