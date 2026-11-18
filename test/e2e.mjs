@@ -46,7 +46,12 @@ function check(name, cond, detail = '') {
   if (cond) { passed++; console.log(`  ✓ ${name}`); }
   else { failed++; failures.push(`${section}: ${name}${detail ? ' — ' + detail : ''}`); console.log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`); }
 }
-async function api(p, { method = 'GET', body, token, tenant, raw } = {}) {
+async function api(p, { method = 'GET', body, token, tenant, raw, nokey } = {}) {
+  // A requester opens their ticket with its key (the link in every email about it). The checks act as that person, so the
+  // key is added here for the ticket's own pages; a check that wants to come without it says nokey.
+  const pub = !nokey && /^\/public\/([a-z0-9-]+)\/tickets\/([A-Za-z0-9-]+)(\/notes|\/reopen)?$/.exec(p);
+  if (pub && !(body && 'k' in body)) { const k = (await q('SELECT t.tracking_token k FROM tickets t JOIN tenants n ON n.id=t.tenant_id WHERE n.slug=? AND t.ticket_no=?', pub[1], /^\d+$/.test(pub[2]) ? pub[2].padStart(4, '0') : pub[2].toUpperCase()))[0]?.k;
+    if (k && pub[3]) body = { ...body, k }; else if (k) p += '?k=' + encodeURIComponent(k); }
   const r = await fetch(API + p, { method, body: body ? JSON.stringify(body) : undefined,
     headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(tenant ? { 'x-tenant-id': tenant } : {}) } });
   if (raw) return r;
@@ -222,12 +227,25 @@ try {
   check('general ticket 0003 raised', r.data?.ticket_no === '0003');
   r = await raise('beta', { service_id: gen.id, name: 'Ben', email: 'b1@example.com', subject: 'Beta ticket', location: 'Office' });
   check('each campus numbers from 0001', r.data?.ticket_no === '0001');
-  const p1 = await ok('track 0001 by number only', `/public/alpha/tickets/1`);
+  const p1 = await ok('the requester opens ticket 0001 (with its key)', `/public/alpha/tickets/1`);
   check('ticket page shows provider, location and the stamped photo', p1.providers[0].name === 'Pavan Provider' && p1.location === 'Main block · 2nd floor · Room 214' && p1.events[0].files?.length === 1 && !!p1.events[0].files[0].stamped_at);
   const img = await fetch(`${APP}/api/files/${p1.events[0].files[0].storage_key}`);
   check('photo is served', img.status === 200 && img.headers.get('content-type')?.includes('image/png'));
   check('student answers saved on the requestor', (await q("SELECT r.identifier, r.department, r.requestor_type FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.ticket_no='0002' AND t.tenant_id=?", alpha.id))[0]?.identifier === '23BPT014');
   await fails('unknown number is 404', '/public/alpha/tickets/0099', {}, 404);
+  // --- a ticket opens with its key (the link in the email), or with its number and the email it was raised with ---
+  const key1 = (await q("SELECT tracking_token k FROM tickets WHERE ticket_no='0001' AND tenant_id=?", alpha.id))[0].k;
+  await fails('the number alone opens nothing (numbers run 0001, 0002…: anyone could read anyone’s ticket)', '/public/alpha/tickets/0001', { nokey: true }, 404);
+  await fails('…nor does a wrong key', '/public/alpha/tickets/0001?k=wrong-key', {}, 404);
+  await fails('…a note cannot be added without the key', '/public/alpha/tickets/0001/notes', { method: 'POST', nokey: true, body: { body: 'from a stranger' } }, 404);
+  await fails('…nor a reopen asked for', '/public/alpha/tickets/0001/reopen', { method: 'POST', nokey: true, body: { reason: 'from a stranger' } }, 404);
+  check('with the key from the email link it opens', (await api(`/public/alpha/tickets/0001?k=${key1}`)).data?.ticket_no === '0001');
+  const op = (email, no = '0001') => api(`/public/alpha/tickets/${no}/open`, { method: 'POST', body: { email } });
+  const o1 = await op('  R1@Example.com '), o2 = await op('someone.else@example.com'), o3 = await op('r1@example.com', '0099');
+  check('Track ticket: the number and the email it was raised with give the key', o1.status === 200 && o1.data.k === key1 && o1.data.ticket_no === '0001', JSON.stringify(o1.error || o1.data));
+  check('…another email, or a number that does not exist, get the same plain answer', o2.status === 404 && o3.status === 404 && o2.error.message === o3.error.message && /number and email/.test(o2.error.message), JSON.stringify([o2.error, o3.error]));
+  await fails('…and the email must be one address', '/public/alpha/tickets/0001/open', { method: 'POST', body: { email: 'r1@example.com;x@y.example.com' } }, 404);
+  await fails('a ticket number with odd characters is simply not found (it used to answer 500)', '/public/alpha/tickets/%00?k=x', {}, 404);
   const pn = await ok('requestor adds a note', '/public/alpha/tickets/0001/notes', { method: 'POST', body: { body: 'It sparks when switched on.' } });
   check('note appears on the public timeline', pn.events.some(e => e.event_type === 'note'));
   await fails('an open ticket cannot be reopened', '/public/alpha/tickets/0001/reopen', { method: 'POST', body: { reason: 'x' } }, 409);
@@ -590,7 +608,7 @@ try {
     let b = (await pb('hi')).data;
     check('requestor: a greeting with quick choices', /ONE Desk Bot/.test(b.text) && b.chips.includes('Track my ticket'));
     b = (await pb('status of ticket 0001')).data;
-    check('requestor: a ticket number gives its status, team and a link', /Ticket 0001 is/.test(b.text) && /Electrical/.test(b.text) && b.items[0].href === '#/d/alpha/t/0001' && !/r1@example\.com|Ria/.test(b.text), b.text);
+    check('requestor: a ticket number gives its status, team and a link; nothing anybody typed (no place, no notes, no names)', /Ticket 0001 is/.test(b.text) && /Electrical/.test(b.text) && b.items[0].href === '#/d/alpha/t/0001' && !/r1@example\.com|Ria|Room 214|Latest update|Handled by|sparks/.test(b.text), b.text);
     check('requestor: no personal details of others (no requestor name or email)', !/@example\.com/.test(JSON.stringify(b)));
     b = (await pb('how do I raise a complaint?')).data;
     check('requestor: how to raise, with links to the form and the guide', /To raise a ticket/.test(b.text) && b.items.some(x => x.href === '#/d/alpha/raise'));
@@ -1128,6 +1146,17 @@ try {
   const n1 = await mailTo('divya@join.example.com', 'note'), n2 = await mailTo('esha@join.example.com', 'note');
   check('one’s own note is shown with its words; another person’s note without their name or their words', n1.html.includes('my roommate is unwell') && !n2.html.includes('roommate') && !n2.html.includes('Divya')
     && n2.html.includes('Someone else who reported this') && n2.html.includes('The tanker arrives at 7 pm.'), n2.text_body.slice(0, 600));
+  // the ticket page is each person's own too
+  const kd = j1.data.tracking_token, ke = j2.data.tracking_token, pd = (await api(`/public/alpha/tickets/${j1.data.ticket_no}?k=${kd}`)).data, pe = (await api(`/public/alpha/tickets/${j1.data.ticket_no}?k=${ke}`)).data;
+  const sd = JSON.stringify(pd), se = JSON.stringify(pe);
+  check('each person on the ticket has their own key', !!kd && !!ke && kd !== ke && (await api(`/public/alpha/tickets/${j1.data.ticket_no}/open`, { method: 'POST', body: { email: 'esha@join.example.com' } })).data?.k === ke);
+  check('the one who joined sees their own report on the ticket page: never the first person’s words, photos or notes', pe.subject === 'Esha: no water' && se.includes('Nothing from the tap in our room either.') && se.includes(k2)
+    && !/9000011111|roommate|Divya/.test(se) && !se.includes(k1) && pe.events.some(e => e.event_type === 'joined') && se.includes('The tanker arrives at 7 pm.'), se.slice(0, 600));
+  check('…and the first person does not see theirs', sd.includes('my roommate is unwell') && sd.includes(k1) && !sd.includes('Nothing from the tap') && !sd.includes(k2) && !/Esha/.test(sd), sd.slice(0, 400));
+  await ok('the one who joined adds a note from their page', `/public/alpha/tickets/${j1.data.ticket_no}/notes`, { method: 'POST', body: { k: ke, body: 'Water is back in our room now.' } });
+  const jn = await mailTo('asha@example.com', 'requestor_note');
+  check('…the team reads it under that person’s name, and the first person’s page shows only that someone wrote', /Esha added a note/.test(jn.subject)
+    && (pd2 => pd2.events.some(e => e.event_type === 'note' && e.actor_name === 'Someone else who reported this' && !e.body) && !JSON.stringify(pd2).includes('Water is back'))((await api(`/public/alpha/tickets/${j1.data.ticket_no}?k=${kd}`)).data), jn.subject);
   check('a team with nobody on it: the campus admin is told about the new ticket, so it does not wait unseen', (await q("SELECT 1 FROM notifications WHERE ticket_id=? AND template_key='new_ticket' AND recipient='asha@example.com'", jt)).length === 1);
   // --- one email address, one line, a length limit ---
   for (const bad of ['one@victims.example.com;two@victims.example.com', 'a@x.example.com,b@y.example.com', 'Dean <dean@x.example.com>', 'a b@x.example.com', 'a@x', 'a@@x.example.com'])
@@ -1376,14 +1405,30 @@ try {
   check('the temporary password signs in and asks for a new password', lt.status === 200 && await mustChange(pav) === 1);
   await ok('choosing a new password with the temporary one', '/me/password', { token: lt.data.token, method: 'POST', body: { current: tpw, password: 'Pavan#New2026' } });
   check('after that the temporary one stops working and the new one works', !(await login(pav, tpw)) && !!(await login(pav, 'Pavan#New2026')) && await mustChange(pav) === 0);
-  await api('/auth/forgot', { method: 'POST', body: { email: pav } }); await api('/auth/forgot', { method: 'POST', body: { email: pav } });
+  check('choosing a new password signs out every other session of the account; this one carries on with a new token', (await api('/me', { token: lt.data.token })).status === 401 && (await api('/me', { token: T.pavan })).status === 401);
   await api('/auth/forgot', { method: 'POST', body: { email: pav } });
-  check('at most 3 emails an hour per account', (await q("SELECT count(*)::int n FROM notifications WHERE template_key='password_forgot' AND recipient=?", pav))[0].n === 3);
+  const tpw2 = (await q("SELECT body FROM notifications WHERE template_key='password_forgot' AND recipient=? ORDER BY created_at DESC LIMIT 1", pav))[0].body.match(/Temporary password: (\S+)/)[1];
+  await api('/auth/forgot', { method: 'POST', body: { email: pav } }); const again = await api('/auth/forgot', { method: 'POST', body: { email: pav } });
+  check('asking again within the hour (anyone can, with your address) does not cancel the temporary password already in the inbox', again.status === 200 && again.data.message === r1.data.message
+    && (await q("SELECT count(*)::int n FROM notifications WHERE template_key='password_forgot' AND recipient=?", pav))[0].n === 2 && !!(await login(pav, tpw2)));
+  const stuck = await login(pav, tpw2);
+  check('a session from a temporary password can only choose a new password: the rest of the desk stays shut', (await api('/tickets', { token: stuck })).status === 403 && (await api('/me', { token: stuck })).status === 200
+    && !('temp_pw_hash' in (await api('/me', { token: stuck })).data.user) && !('password_hash' in (await api('/me', { token: stuck })).data.user));
+  await fails('…and the new password cannot be the temporary one again', '/me/password', { token: stuck, method: 'POST', body: { current: tpw2, password: tpw2 } }, 400, 'different');
+  await q('UPDATE users SET must_change_pw=0 WHERE email=?', pav); // (the person did not use it: their own password still stands)
   check('the own password keeps working while a temporary one is out (no lock-out)', !!(await login(pav, 'Pavan#New2026')));
   await q("UPDATE users SET temp_pw_expires=? WHERE email=?", new Date(Date.now() - 1000).toISOString(), pav);
   const last = (await q("SELECT body FROM notifications WHERE template_key='password_forgot' AND recipient=? ORDER BY created_at DESC LIMIT 1", pav))[0].body.match(/Temporary password: (\S+)/)[1];
   check('an expired temporary password is refused', !(await login(pav, last)));
-  const tk2 = await login(pav, 'Pavan#New2026'); await ok('(back to the usual test password)', '/me/password', { token: tk2, method: 'POST', body: { current: 'Pavan#New2026', password: 'Pavan2026ok' } }); }
+  const tk2 = await login(pav, 'Pavan#New2026'); const bk = await ok('(back to the usual test password)', '/me/password', { token: tk2, method: 'POST', body: { current: 'Pavan#New2026', password: 'Pavan2026ok' } });
+  check('the answer carries the new session', (await api('/me', { token: bk.token })).status === 200 && (await api('/me', { token: tk2 })).status === 401);
+  // wrong tries are counted per account: a few wrong passwords do not lock the whole campus out, ten do stop that account for a while
+  for (let i = 0; i < 10; i++) await api('/auth/login', { method: 'POST', body: { email: 'lata@example.com', password: 'wrong-' + i } });
+  const locked = await api('/auth/login', { method: 'POST', body: { email: 'lata@example.com', password: 'wrong-again' } });
+  check('ten wrong passwords for one account: that account waits 15 minutes; everyone else on the same network still signs in', locked.status === 429 && /Forgot password/.test(locked.error.message) && !!(await login(pav, 'Pavan2026ok')), `${locked.status} ${locked.error?.message}`);
+  check('a password that is not text is simply wrong (it used to answer 500)', (await api('/auth/login', { method: 'POST', body: { email: pav, password: 12345678 } })).status === 401);
+  await stop(); await start(); // (fresh counts)
+  T.pavan = await login(pav, 'Pavan2026ok'); }
 
   sec('Remind me later (a provider’s reminder on a ticket)');
   { const tk = (await q("SELECT id, status, due_at, ticket_no, subject FROM tickets WHERE service_id=? AND status IN ('open','in_progress') ORDER BY created_at LIMIT 1", ids.elec))[0];
@@ -1622,12 +1667,23 @@ try {
     await q("UPDATE users SET role='provider', tenant_id=(SELECT id FROM tenants LIMIT 1) WHERE email='owner@smru.example.com'");
     await login('owner@smru.example.com', opw);
     check('the owner signs in as super admin even if someone changed their role', (await q("SELECT role, tenant_id FROM users WHERE email='owner@smru.example.com'"))[0].role === 'super_admin');
+    // the owner has chosen their own password, and is (say) a campus admin when the deploy names them owner
+    const otk = await login('owner@smru.example.com', opw); await ok('(the owner chooses their own password)', '/me/password', { token: otk, method: 'POST', body: { current: opw, password: 'Owner#Own2026' } });
+    const mailsTo = async () => (await q("SELECT count(*)::int n FROM notifications WHERE recipient='owner@smru.example.com'"))[0].n, before = await mailsTo();
     await q("UPDATE users SET role='tenant_admin', tenant_id=(SELECT id FROM tenants LIMIT 1) WHERE email='owner@smru.example.com'");
     await stop(); const so1 = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
-    check('an existing campus admin with the owner email is made super admin on deploy, password unchanged, no email', /owner@smru.example.com: made super admin \(was tenant_admin\); password unchanged/.test(so1.out())
-      && (await q("SELECT role, tenant_id FROM users WHERE email='owner@smru.example.com'"))[0].role === 'super_admin' && !!(await login('owner@smru.example.com', opw)) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='owner@smru.example.com'"))[0].n === 1, so1.out().slice(-300));
+    check('an existing campus admin with the owner email, who chose their own password, is made super admin on deploy: password unchanged, no email', /owner@smru.example.com: made super admin \(was tenant_admin\); password unchanged/.test(so1.out())
+      && (await q("SELECT role, tenant_id FROM users WHERE email='owner@smru.example.com'"))[0].role === 'super_admin' && !!(await login('owner@smru.example.com', 'Owner#Own2026')) && await mailsTo() === before, so1.out().slice(-300));
     await stop(); const so2 = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
-    check('next deploy: already set up, no second email', /owner@smru.example.com: already set up/.test(so2.out()) && (await q("SELECT count(*)::int n FROM notifications WHERE recipient='owner@smru.example.com'"))[0].n === 1); }
+    check('next deploy: already set up, no second email', /owner@smru.example.com: already set up/.test(so2.out()) && await mailsTo() === before);
+    // …but a password somebody else issued (an account an admin created or reset, that never chose its own) is not trusted with every campus
+    const oid = (await q("SELECT id FROM users WHERE email='owner@smru.example.com'"))[0].id, anyTeam = (await q('SELECT id, tenant_id FROM services WHERE is_active=1 LIMIT 1'))[0];
+    await q("UPDATE users SET role='provider', tenant_id=?, must_change_pw=1 WHERE id=?", anyTeam.tenant_id, oid);
+    await q('INSERT INTO service_members (id, tenant_id, service_id, user_id, created_at) VALUES (?, ?, ?, ?, ?)', 'own-team-row', anyTeam.tenant_id, anyTeam.id, oid, new Date().toISOString());
+    await stop(); const so3 = await start({ OWNER_EMAIL: 'owner@smru.example.com' });
+    check('an account with the owner email whose password an admin issued gets a fresh temporary password by email: whoever issued the old one cannot sign in as super admin', /owner@smru.example.com: temporary password set/.test(so3.out())
+      && !(await login('owner@smru.example.com', 'Owner#Own2026')) && await mailsTo() === before + 1 && (await q("SELECT role FROM users WHERE id=?", oid))[0].role === 'super_admin', so3.out().slice(-300));
+    check('…and it leaves its teams: a super admin belongs to no campus', (await q('SELECT count(*)::int n FROM service_members WHERE user_id=?', oid))[0].n === 0); }
   await stop(); let s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'SecondAdmin#2026' });
   let t2 = await login('second@example.com', 'SecondAdmin#2026');
   check('a new email in SUPER_ADMIN_* becomes another super admin, with a temporary password', /second@example.com: created/.test(s2.out()) && !!t2 && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));
@@ -1653,7 +1709,7 @@ try {
   await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1, alpha: ids.alpha, beta: ids.beta });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1, alpha: ids.alpha, beta: ids.beta, k1: (await q("SELECT tracking_token k FROM tickets WHERE ticket_no='0001' AND tenant_id=?", ids.alpha))[0].k });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1710,7 +1766,11 @@ async function uiSmoke(tok, id) {
     check('other teams open straight into the problem form: no suggestion choice (that is Food only)', await js(`return !document.querySelector('.kindcard') && !document.querySelector('.kindsw:not([hidden])') && !/suggestion/i.test(document.querySelector('.wrap').innerText.replace(/\\s+/g, ' ').split('Your name')[0]) && /Raise ticket/.test(document.querySelector('#raiseBtn').textContent)`));
     await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
-    await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
+    await visit('requestor ticket page (from the link in their email)', `/d/alpha/t/0001?k=${id.k1}`, null, '.stamps li');
+    await visit('a ticket link without its key asks for the email it was raised with, the number already filled in', '/d/alpha/t/0001', null, '#f #trem');
+    check('…typing that email opens the ticket', await js(`document.querySelector('#trem').value = 'r1@example.com'; document.querySelector('#f button').click();
+      for (let i = 0; i < 30 && !document.querySelector('.stamps li'); i++) await new Promise(r => setTimeout(r, 150));
+      return !!document.querySelector('.stamps li') && /[?&]k=/.test(location.hash) && document.querySelector('#trno') === null;`));
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
     check('staff screens offer no guide card (the guide is for requestors)', !(await js("return !!document.querySelector('.guidecard')")));
@@ -1810,8 +1870,8 @@ async function uiSmoke(tok, id) {
       for (let i = 0; i < 20 && !document.querySelector('.bchips [data-q]'); i++) await new Promise(r => setTimeout(r, 150));
       return !!document.querySelector('.bchips [data-q="Overdue"]');`));
     // a merged ticket: the requestor sees the known-issue note; the provider sees every requestor
-    const mt = (await q("SELECT id, ticket_no, affected_count FROM tickets WHERE location_key='hostel block:203' AND problem_key='fan'"))[0];
-    await visit('requestor ticket page of a merged ticket', `/d/alpha/t/${mt.ticket_no}`, null, '.stamps li');
+    const mt = (await q("SELECT id, ticket_no, affected_count, tracking_token FROM tickets WHERE location_key='hostel block:203' AND problem_key='fan'"))[0];
+    await visit('requestor ticket page of a merged ticket', `/d/alpha/t/${mt.ticket_no}?k=${mt.tracking_token}`, null, '.stamps li');
     check('it says how many others reported it', await js(`return /Known issue: ${mt.affected_count - 1} others reported this too/.test(document.querySelector('.knownissue')?.textContent || '')`));
     await visit('provider workspace of a merged ticket', '/c/t/' + mt.id, tok.pavan, '#act #to');
     check('the provider sees every requestor, and a "close earlier" choice when closing', await js(`document.querySelector('#to').value = 'closed'; document.querySelector('#to').dispatchEvent(new Event('change'));

@@ -9,7 +9,7 @@ import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor, goodChipsOf } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME, safeName } from './images.js';
-import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor, maskSecret, HOW_IT_WORKS } from './mailer.js';
+import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor, maskSecret, HOW_IT_WORKS, cleanBase } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES, isEmail } from './public/shared.js';
 
@@ -28,20 +28,27 @@ const app = express();
 // Behind nginx on the same host: take the client IP from X-Forwarded-For so per-IP rate limits work.
 app.set('trust proxy', 'loopback');
 app.disable('x-powered-by');
-app.use((_q, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' }); next(); });
+// What a page of this site may load and run: its own files only. No script written into a page (by a bug, or by someone's
+// typed text) can run, and nothing can be sent to another site. Fonts come from Google Fonts; pictures from this site (and
+// the site's public address, for the email previews). The guide pages are static and carry their own small script.
+const cspOf = req => {
+  let pub = ''; try { const o = new URL(base()).origin; if (o !== `${req.protocol}://${req.get('host')}`) pub = ' ' + o; } catch { /* no public address yet */ }
+  const guide = /^\/(desk\/)?guide\//.test(req.path);
+  return `default-src 'self'; script-src 'self'${guide ? " 'unsafe-inline'" : ''}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; `
+    + `img-src 'self' data: blob:${pub}; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'`;
+};
+app.use((req, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin', 'Content-Security-Policy': cspOf(req) }); next(); });
 // PostgreSQL can't store a NUL character. JSON writes one as \u0000: note a request that carries it and drop it from the text.
-app.use(express.json({ limit: '40mb', verify: (req, _res, buf) => { req.hasNul = buf.includes('\\u0000'); } }));
+// Photos and files travel inside the JSON (as data URLs), so the routes that take them accept a large body. Every other
+// route (sign-in, the bot, counters, settings…) takes a small one: nobody can make the server hold tens of MB by posting junk.
+const jsonBody = limit => express.json({ limit, verify: (req, _res, buf) => { req.hasNul = buf.includes('\\u0000'); } });
+const bigBody = jsonBody('40mb'), smallBody = jsonBody('256kb');
+const WITH_FILES = /^\/api\/(public\/[^/]+\/(tickets(\/[^/]+\/notes)?|food\/complaint)|tickets(\/[^/]+\/(status|notes))?|notices\/[^/]+\/files)\/?$/;
+app.use((req, res, next) => (req.method === 'POST' && WITH_FILES.test(req.path) ? bigBody : smallBody)(req, res, next));
 const noNul = v => typeof v === 'string' ? v.replace(/\u0000/g, '') : Array.isArray(v) ? v.map(noNul) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, noNul(x)])) : v;
 app.use((req, _res, next) => { if (req.hasNul) req.body = noNul(req.body); next(); });
-// Email buttons need the site's public address. Until someone sets it on the Email page, learn it from the first real
-// (non-local) visit, e.g. https://stmarys-desk.supercxo.ai behind nginx, so links never point at the server's own localhost.
-app.use((req, _res, next) => {
-  const host = req.get('host') || '';
-  // not from this computer, and not from a bare IP address: email buttons should carry the site's name
-  if (!getSettings().public_base_url && !process.env.PUBLIC_BASE_URL && host && !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host) && !/^((\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\])(:\d+)?$/i.test(host))
-    setSetting('public_base_url', `${req.protocol}://${host}`).catch(e => console.error('public address', e.message));
-  next();
-});
+// Email buttons need the site's public address: PUBLIC_BASE_URL in .env, or the Email page (which warns while it is missing
+// and fills it in with one tap). It is never taken from a request: a made-up Host header must not decide where emails link to.
 
 // ---------- helpers ----------
 class HttpErr extends Error { constructor(status, code, message, details) { super(message); Object.assign(this, { status, code, details }); } }
@@ -87,17 +94,26 @@ function limit(key, max, ms = 3600e3) {
   if (arr.length >= max) throw new HttpErr(429, 'RATE_LIMIT', 'Too many requests, try again later');
   arr.push(t); hits.set(key, arr);
 }
+// wrong tries (a password): looked at before the check, counted only when the try was wrong
+const tooMany = (key, max, ms = 900e3) => (hits.get(key) || []).filter(x => Date.now() - x < ms).length >= max;
+const strike = key => { const arr = hits.get(key) || []; arr.push(Date.now()); hits.set(key, arr.slice(-50)); };
 // for counters: past the limit the hit is simply not counted (the page must not break)
 const allow = (key, max, ms) => { try { limit(key, max, ms); return true; } catch { return false; } };
 // drop keys idle for over an hour (the longest window) so the map doesn't grow forever
 setInterval(() => { const t = Date.now(); for (const [k, arr] of hits) if (t - arr[arr.length - 1] > 3600e3) hits.delete(k); }, 600e3).unref();
 
 // ---------- auth + tenant scope ----------
+const MUST_CHANGE_OK = new Set(['GET /api/me', 'POST /api/me/password']);
+const tokenFor = u => sign({ sub: u.id, role: u.role, tid: u.tenant_id, v: u.token_v || 0 });
 const auth = mw(async (req, _res, next) => {
   const p = verify((req.headers.authorization || '').replace('Bearer ', ''));
   if (!p) return next(new HttpErr(401, 'UNAUTHORIZED', 'Please sign in'));
   const u = await one('SELECT * FROM users WHERE id=? AND is_active=1', p.sub);
-  if (!u) return next(new HttpErr(401, 'UNAUTHORIZED', 'Please sign in'));
+  // a session ends when the password is changed or reset, or the account was switched off (even if it is on again)
+  if (!u || (p.v || 0) !== (u.token_v || 0)) return next(new HttpErr(401, 'UNAUTHORIZED', 'Please sign in'));
+  // signed in with a temporary password: the only things open are "who am I" and "choose my own password"
+  if (u.must_change_pw && !MUST_CHANGE_OK.has(`${req.method} ${req.baseUrl}${req.path}`.replace(/\/$/, '')))
+    return next(new HttpErr(403, 'PASSWORD_CHANGE_REQUIRED', 'Choose your own password first.'));
   req.user = u;
   const hdr = req.headers['x-tenant-id'];
   if (u.role === 'super_admin') req.tenantId = hdr || null;
@@ -337,7 +353,15 @@ const staffVars = async (u, pw) => {
     ...(u.role === 'super_admin' ? {} : { guide: { kind: 'provider', url: PROVIDER_GUIDE } }), // the welcome email links the provider guide (how tickets are worked)
     services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : u.role === 'super_admin' ? 'All campuses' : 'All services of your campus' };
 };
-const trackUrl = async (t) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${t.tracking_token}`; };
+// Each person on a ticket has their own key. The one who raised it uses the ticket's; someone who joined it later gets one of
+// their own (made the first time it is needed), so their page and their emails show their own report, not the first person's.
+const newKey = () => crypto.randomBytes(24).toString('base64url');
+async function reporterKey(t, tr) {
+  if (!tr || tr.is_first) return t.tracking_token;
+  if (!tr.token) { await run('UPDATE ticket_requestors SET token=? WHERE id=? AND token IS NULL', newKey(), tr.id); tr.token = (await one('SELECT token FROM ticket_requestors WHERE id=?', tr.id))?.token; }
+  return tr.token || t.tracking_token;
+}
+const trackUrl = async (t, tr = null) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${await reporterKey(t, tr)}`; };
 // Statuses: queued → sent | failed (after 4 tries); 'logged' = no flow connected or sending paused (printed to the server log only).
 const RETRY_MS = [60e3, 300e3, 1800e3], sending = new Set(), waiting = new Set(); // sending: being handed over now · waiting: a retry is timed
 const retryLater = (id, a) => { waiting.add(id); setTimeout(() => { waiting.delete(id); queue.push(id); }, RETRY_MS[Math.min(a, RETRY_MS.length) - 1]); };
@@ -561,7 +585,7 @@ async function createTicket(tenant, b, opts) {
   if (!svc) throw notFound();
   // a name and a subject are one line each (they go into email subjects); the description has a length limit like a note
   b.name = oneLine(b.name, 120); b.subject = oneLine(b.subject, 200);
-  req_(b.name, 'Please fill in your name'); req_(b.subject, 'Please fill in the subject');
+  req_(b.name, opts.actor?.type === 'user' ? 'Please fill in the requester’s name' : 'Please fill in your name'); req_(b.subject, 'Please fill in the subject');
   if (b.description !== undefined && b.description !== null) {
     if (!['string', 'number'].includes(typeof b.description)) throw bad('The description must be text');
     b.description = String(b.description).replace(/\u0000/g, '');
@@ -644,7 +668,7 @@ async function createTicket(tenant, b, opts) {
     const others = merged.count - 1, guide = first ? { guide: guideLink('requestor') } : {};
     if (merged.added) await notify(t, await teamEmails(t.tenant_id, t.service_id), 'requestor_note', await ticketVars(t, { note: merged.added, requestor_name: b.name }));
     if (!merged.again) await notify(t, [b.email || null], 'created', { ...await forReporter(t, await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), merged.tr), ...guide });
-    return Object.assign(t, { merged: true, affected_count: merged.count });
+    return Object.assign(t, { merged: true, affected_count: merged.count, my_key: await reporterKey(t, merged.tr) }); // the key of the person who just reported, not the first person's
   }
   const v = await ticketVars(t);
   await notify(t, [b.email || null], 'created', first ? { ...v, guide: guideLink('requestor') } : v);
@@ -672,15 +696,15 @@ async function joinTicket(t, r, b, contact, actor, ts) {
     const told = words && (words === String(t.description || '').trim() || (await all("SELECT body FROM ticket_events WHERE ticket_id=? AND event_type IN ('merged','note')", t.id)).some(e => String(e.body || '').includes(words)));
     if ((words && !told) || files.length) { const ev = await addEvent(t, { ...actor, id: r.id }, 'note', { body: words && !told ? `Reported again: ${words}` : 'Sent another photo.' });
       await saveFiles(t, ev, files, actor.type); await run('UPDATE tickets SET updated_at=? WHERE id=?', ts, t.id);
-      return { ticket: t, again: true, added: words && !told ? words : 'Sent another photo.', count: t.affected_count }; }
-    return { ticket: t, again: true, count: t.affected_count };
+      return { ticket: t, again: true, added: words && !told ? words : 'Sent another photo.', count: t.affected_count, tr: await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND contact=?', t.id, contact) }; }
+    return { ticket: t, again: true, count: t.affected_count, tr: await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND contact=?', t.id, contact) };
   }
   // what this person typed stays with their own report: it is what their emails show (see forReporter)
   const ev = await addEvent(t, actor, 'merged', { body: `Also reported by ${b.name}${b.description ? `: ${b.description}` : ''}`, internal: true,
     meta: { contact, subject: String(b.subject || '').slice(0, 200), description: String(b.description || '') } });
   await saveFiles(t, ev, b.files, actor.type);
   const pic = await one('SELECT storage_key FROM attachments WHERE event_id=? ORDER BY created_at LIMIT 1', ev);
-  const tr = await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, photo_url: pic ? `/api/files/${pic.storage_key}` : null, event_id: ev, raised_at: ts, is_first: 0 });
+  const tr = await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, photo_url: pic ? `/api/files/${pic.storage_key}` : null, event_id: ev, raised_at: ts, is_first: 0, token: newKey() });
   const { n } = await one('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=?', t.id);
   // more people affected raises the priority; it is never lowered, and a priority a provider set by hand is left alone
   const p = !t.priority_by_staff && RANK[priorityFor(n)] > RANK[t.priority] ? priorityFor(n) : t.priority;
@@ -693,16 +717,24 @@ async function joinTicket(t, r, b, contact, actor, ts) {
 // later (same place, same problem, same day) gets their own words and photos next to the facts everyone shares: the first
 // reporter's student ID, department, description and photos are never sent to them. In "Latest updates" the reader's own
 // steps read "You"; another reporter is not named, and their words and photos are left out.
-async function forReporter(t, v, tr) {
-  const me = tr.requestor_id, tl = v.timeline && { ...v.timeline, reader: me, items: v.timeline.items.map(e => e.by?.requestor && e.by.id !== me
-    ? { ...e, by: { requestor: true, name: 'Someone else who reported this' }, body: '', photos: [] } : e) };
-  const out = { ...v, requestor_name: tr.name, ...(tl ? { timeline: tl } : {}) };
-  if (tr.is_first || !v.shared_details) return out;
+const OTHER_REPORTER = 'Someone else who reported this';
+// What a person who joined a ticket wrote themselves: their subject, their words and their files (kept with the "also reported" line)
+async function ownReport(t, tr) {
   const ev = tr.event_id ? await one('SELECT body, meta FROM ticket_events WHERE id=?', tr.event_id) : null, m = JSON.parse(ev?.meta || '{}'), lead = `Also reported by ${tr.name}: `;
   const words = (m.description !== undefined ? String(m.description || '') : String(ev?.body || '').startsWith(lead) ? ev.body.slice(lead.length) : '').trim(); // older reports kept the words in the line only
-  const photos = tr.event_id ? (await all('SELECT file_name, mime_type, storage_key FROM attachments WHERE event_id=? ORDER BY created_at', tr.event_id))
-    .filter(f => Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name })) : [];
-  const s = v.shared_details, subject = String(m.subject || '').trim() || s.place.map(([, x]) => x).reverse().join(' · ') || v.service || 'Your report';
+  const files = tr.event_id ? await all('SELECT event_id, file_name, mime_type, storage_key, source, stamped_at FROM attachments WHERE event_id=? ORDER BY created_at', tr.event_id) : [];
+  const place = [String(t.problem_key || '').startsWith('other:') ? '' : t.problem_label, t.location].filter(Boolean).join(' · ');
+  return { subject: String(m.subject || '').trim() || place || 'Your report', words, files };
+}
+async function forReporter(t, v, tr) {
+  const me = tr.requestor_id, link = v.ticket_link && !tr.is_first ? await trackUrl(t, tr) : v.ticket_link; // their own key opens their own view
+  const tl = v.timeline && { ...v.timeline, reader: me, ticket_link: link, items: v.timeline.items.map(e => e.by?.requestor && e.by.id !== me
+    ? { ...e, by: { requestor: true, name: OTHER_REPORTER }, body: '', photos: [] } : e) };
+  const out = { ...v, requestor_name: tr.name, ...(link ? { ticket_link: link } : {}), ...(tl ? { timeline: tl } : {}) };
+  if (tr.is_first || !v.shared_details) return out;
+  const own = await ownReport(t, tr), words = own.words, subject = own.subject;
+  const photos = own.files.filter(f => Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
+  const s = v.shared_details;
   return { ...out, subject, description: words, ticket_details: [...s.head, ['Subject', subject], ...(words ? [['Description', words]] : []), ...s.place,
     ['Raised on', fmtIST(tr.raised_at)], ...s.tail, ...(photos.length ? [['Photos', photos]] : [])] };
 }
@@ -732,28 +764,47 @@ async function closeEarlier(t, req, note) {
 // ---------- public view ----------
 // A provider as the requestor sees them. Students never see the provider's mobile number (only the name and email).
 const providerCard = ({ name, email, phone }, type) => (type || 'student') === 'student' ? { name, email } : { name, email, phone };
+// The ticket as the person looking at it may see it (t.viewer: someone who joined it; none: the person who raised it).
+// Everyone sees the team's steps and replies. What another reporter typed or sent (their subject, words, notes, photos)
+// is theirs alone: the viewer sees their own report, and of the others only that they are there.
 async function publicTicket(t) {
   const svc = await one('SELECT name, code FROM services WHERE id=?', t.service_id), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
-  const ev = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_name,created_at FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
+  const me = t.viewer ? t.viewer.requestor_id : t.requestor_id, own = t.viewer ? await ownReport(t, t.viewer) : null;
+  const rows = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_id,actor_name,created_at FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
   const att = await all('SELECT event_id,file_name,mime_type,storage_key,source,stamped_at FROM attachments WHERE ticket_id=?', t.id);
-  const r = await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id);
+  const r = await one('SELECT requestor_type FROM requestors WHERE id=?', me);
+  const ev = rows.map(({ actor_id, ...e }) => {
+    const theirs = e.actor_type === 'requestor' && (actor_id || t.requestor_id) !== me; // typed or sent by another person on this ticket
+    return theirs ? { ...e, actor_name: OTHER_REPORTER, body: '', files: [] } : { ...e, actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: att.filter(a => a.event_id === e.id) }; });
+  // someone who joined: their own report sits where they made it
+  if (own) { const at = t.viewer.raised_at, i = ev.findIndex(e => e.created_at > at);
+    ev.splice(i < 0 ? ev.length : i, 0, { id: `own-${t.viewer.id}`, event_type: 'joined', from_value: null, to_value: null, body: own.words, actor_type: 'requestor', actor_name: 'You', created_at: at, files: own.files }); }
   // no priority here: the service provider sets it, for the team only
-  return { ticket_no: t.ticket_no, subject: t.subject, description: t.description, location: t.location, status: t.status, affected_count: t.affected_count || 1,
+  return { ticket_no: t.ticket_no, subject: own ? own.subject : t.subject, description: own ? own.words : t.description, location: t.location, status: t.status, affected_count: t.affected_count || 1,
     queue: t.status === 'open' ? await queueInfo(t) : null, kind: t.kind || 'issue',
     reopen_request: t.reopen_requested_at && t.status === 'closed' ? { at: t.reopen_requested_at, with: (await reopenDeciders(t)).map(x => x.name.split(' ')[0]).join(' or ') } : null,
     due_at: t.due_at, created_at: t.created_at, closed_at: t.closed_at, reopen_count: t.reopen_count, service: svc.name,
     hold_label: t.status === 'hold' && t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label : null, hold_due_at: t.status === 'hold' ? t.hold_due_at : null,
     reopen_until: t.status === 'closed' ? addH(t.closed_at, tn.reopen_window_days * 24) : null,
     providers: tn.show_provider_contact ? (await handlersOf(t.tenant_id, t.service_id)).map(p => providerCard(p, r?.requestor_type)) : [],
-    events: ev.map(e => ({ ...e, actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: att.filter(a => a.event_id === e.id) })) };
+    events: ev };
 }
+// A ticket opens for the person who has its key: the key is in the link of every email about it and on the screen shown after
+// raising. Someone who has only the number gets the key by also giving the email they raised it with (POST …/open). The number
+// alone opens nothing (numbers run 0001, 0002…, so anyone could read anyone's ticket), and a wrong key reads like no ticket.
+const TICKET_NO = /^[A-Za-z0-9-]{1,20}$/;
 async function findPublic(slug, no, q) {
   const tn = await tenantBySlug(slug);
-  const t = await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no));
-  if (!t) throw notFound();
-  return t; // the ticket number alone opens the ticket
-
+  const t = TICKET_NO.test(String(no)) ? await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
+  const k = typeof q?.k === 'string' ? q.k : ''; if (!t || !k) throw notFound();
+  if (t.tracking_token && safeEq(k, t.tracking_token)) return t; // the person who raised it
+  const viewer = await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND token=? AND is_first=0', t.id, k); // someone who joined it
+  if (!viewer) throw notFound();
+  return Object.assign(t, { viewer });
 }
+// The requester acting on the ticket page: the person whose key opened it
+const publicActor = async t => t.viewer ? { type: 'requestor', id: t.viewer.requestor_id, name: t.viewer.name }
+  : { type: 'requestor', id: t.requestor_id, name: (await one('SELECT name FROM requestors WHERE id=?', t.requestor_id))?.name || '' };
 
 const P = express.Router();
 P.get('/', wrap(async () => await all('SELECT name, code, slug FROM tenants WHERE is_active=1 ORDER BY name')));
@@ -769,20 +820,31 @@ P.post('/:slug/tickets', wrap(async req => {
   limit('ip:' + req.ip, 300); limit('c:' + (b.email || b.phone || ''), 12); // a hostel on one campus Wi-Fi shares one address
   const t = await createTicket(tn, b, { channel: 'portal', actor: { type: 'requestor', name: b.name } });
   const type = (await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id))?.requestor_type;
-  return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1, kind: t.kind || 'issue',
+  return { ticket_no: t.ticket_no, tracking_token: t.my_key || t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1, kind: t.kind || 'issue',
     queue: t.status === 'open' ? await queueInfo(t) : null,
     providers: (await handlersOf(tn.id, t.service_id)).map(p => { const { email, ...c } = providerCard(p, type); return c; }) };
 }));
 P.get('/:slug/tickets/:no', wrap(async req => await publicTicket(await findPublic(req.params.slug, req.params.no, req.query))));
+// "Track ticket": the number and the email it was raised with give the key (the page then opens like the link in the email).
+// The answer is the same for a wrong number and a wrong email, and tries are limited, so it cannot be used to guess either.
+P.post('/:slug/tickets/:no/open', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug), no = String(req.params.no), email = oneEmail(req.body.email);
+  limit('open:' + req.ip, 60); limit(`open-t:${tn.id}:${normNo(no).slice(0, 20)}`, 20);
+  const t = email && TICKET_NO.test(no) ? await one('SELECT id, tracking_token, requestor_id FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
+  const tr = t && await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND lower(contact)=? ORDER BY is_first DESC LIMIT 1', t.id, email);
+  const first = t && !tr && await one('SELECT 1 AS x FROM requestors WHERE id=? AND lower(email)=?', t.requestor_id, email); // tickets older than the list of reporters
+  if ((!tr && !first) || !t.tracking_token) throw new HttpErr(404, 'NOT_FOUND', 'We could not find a ticket with that number and email. Check both, or open it from the link in your email.');
+  return { ticket_no: normNo(no), k: await reporterKey(t, tr) };
+}));
 P.post('/:slug/tickets/:no/notes', wrap(async req => {
   const t = await findPublic(req.params.slug, req.params.no, req.body);
   limit('note:' + t.id, 20);
   if (t.status === 'rejected') throw new HttpErr(409, 'BAD_TRANSITION', 'This ticket is rejected; raise a new one');
-  const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
-  await tx(async () => { const ev = await addEvent(t, { type: 'requestor', id: t.requestor_id, name: r.name }, 'note', { body: noteText(req_(req.body.body, 'Write a note')) });
+  const who = await publicActor(t);
+  await tx(async () => { const ev = await addEvent(t, who, 'note', { body: noteText(req_(req.body.body, 'Write a note')) });
     await saveFiles(t, ev, req.body.files, 'requestor'); await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
-  await notify(t, await teamEmails(t.tenant_id, t.service_id), 'requestor_note', await ticketVars(t, { note: req.body.body }));
-  return await publicTicket(await one('SELECT * FROM tickets WHERE id=?', t.id));
+  await notify(t, await teamEmails(t.tenant_id, t.service_id), 'requestor_note', await ticketVars(t, { note: req.body.body, requestor_name: who.name }));
+  return await publicTicket(Object.assign(await one('SELECT * FROM tickets WHERE id=?', t.id), { viewer: t.viewer }));
 }));
 P.post('/:slug/tickets/:no/reopen', wrap(async req => {
   const t = await findPublic(req.params.slug, req.params.no, req.body), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
@@ -790,14 +852,14 @@ P.post('/:slug/tickets/:no/reopen', wrap(async req => {
   if (Date.now() > new Date(addH(t.closed_at, tn.reopen_window_days * 24)).getTime()) throw new HttpErr(409, 'BAD_TRANSITION', 'The reopen window has passed; raise a new ticket');
   if (t.reopen_requested_at) throw new HttpErr(409, 'ALREADY_REQUESTED', 'You already asked to reopen this ticket. The team will answer soon; you can add a note meanwhile.');
   limit('reopen:' + t.id, 5);
-  const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id), reason = noteText(req_(req.body.reason, 'Give a reason')), ts = now();
+  const r = await publicActor(t), reason = noteText(req_(req.body.reason, 'Give a reason')), ts = now();
   // a request, not a reopen: the provider who closed it accepts (it reopens) or declines (it stays closed)
   await tx(async () => {
     stillAs(await run('UPDATE tickets SET reopen_requested_at=?, reopen_request_note=?, updated_at=? WHERE id=? AND status=? AND reopen_requested_at IS NULL', ts, String(reason).slice(0, 2000), ts, t.id, 'closed'));
-    await addEvent(t, { type: 'requestor', id: t.requestor_id, name: r.name }, 'reopen_requested', { body: reason });
+    await addEvent(t, r, 'reopen_requested', { body: reason });
   });
   await notify(t, (await reopenDeciders(t)).map(u => u.email), 'reopen_requested', await ticketVars(t, { note: reason, actor_name: r.name }));
-  return await publicTicket(await one('SELECT * FROM tickets WHERE id=?', t.id));
+  return await publicTicket(Object.assign(await one('SELECT * FROM tickets WHERE id=?', t.id), { viewer: t.viewer }));
 }));
 // a conditional UPDATE that matched nothing: someone else changed the ticket since we read it
 const stillAs = r => { if (!r.changes) throw new HttpErr(409, 'BAD_TRANSITION', 'This ticket was just changed by someone else. Reload it and try again.'); };
@@ -833,12 +895,12 @@ async function publicBot(tn, q) {
   if (no) {
     const t = await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no));
     if (!t || t.is_internal) return { text: `I couldn't find ticket ${normNo(no)}. Check the number in your email, it looks like 0042.`, chips: ['Track my ticket', 'How to raise a ticket'] };
-    const svc = await one('SELECT name FROM services WHERE id=?', t.service_id), up = await lastUpdate(t), names = (await handlersOf(tn.id, t.service_id)).map(p => p.name.split(' ')[0]).join(', ');
+    // by number alone: where the ticket stands, and nothing anybody typed (the place, the notes and the names are on the ticket page, which needs the email or the link)
+    const svc = await one('SELECT name FROM services WHERE id=?', t.service_id);
     const qi = t.status === 'open' ? await queueInfo(t) : null;
     const when = t.kind === 'suggestion' ? (t.status === 'closed' ? `Your suggestion was closed on ${fmtIST(t.closed_at)}. Thank you!` : `Your suggestion is with the ${svc.name} team. Thank you!`) : qi ? `It is in the ${svc.name} queue: number ${qi.queue_no}, reaching the team on ${qi.lands_on}. Target: ${fmtIST(t.due_at)}.` : ACTIVE.includes(t.status) && t.due_at < now() ? `It is taking longer than planned (the target was ${fmtIST(t.due_at)})${t.escalated_at ? ' and has been escalated for faster help' : ''}. We are sorry for the wait.`
       : t.status === 'hold' ? `It is on hold${t.hold_due_at ? `, expected to resume by ${fmtIST(t.hold_due_at)}` : ''}.` : ACTIVE.includes(t.status) ? `Target: ${fmtIST(t.due_at)}.` : t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}. Not fixed? You can reopen it within ${tn.reopen_window_days} days.` : 'This ticket was not accepted. You can raise a new one.';
-    return { text: `Ticket ${t.ticket_no} is ${BOT_ST[t.status]}.\n${svc.name}${t.location ? ' · ' + t.location : ''}\n${when}${names ? `\nHandled by ${names}.` : ''}`
-      + `${t.affected_count > 1 ? `\nKnown issue: ${t.affected_count} people reported this.` : ''}${up ? `\nLatest update (${fmtIST(up.created_at)}): ${up.body}` : ''}`,
+    return { text: `Ticket ${t.ticket_no} is ${BOT_ST[t.status]}.\n${svc.name}\n${when}${t.affected_count > 1 ? `\nKnown issue: ${t.affected_count} people reported this.` : ''}\nFor the notes and replies, open the ticket with the link in your email, or with its number and your email.`,
       items: [{ title: `Open ticket ${t.ticket_no}`, href: `#/d/${tn.slug}/t/${t.ticket_no}` }], chips: ['Reopen a ticket', 'How long will it take?'] };
   }
   if (said(q, /\b(food|meal|mess|canteen|breakfast|lunch|snacks|dinner|rate|rating)/)) { const fs = await foodService(tn.id);
@@ -961,19 +1023,30 @@ app.get('/api/version', (_q, r) => {
 });
 
 // ---------- auth ----------
+const NO_ACCOUNT = hashPw(crypto.randomBytes(12).toString('hex')); // checked when no account matches, so a wrong email takes as long as a wrong password
+// An account that becomes a super admin belongs to no campus: it leaves its teams and escalation roles (tickets escalated to it go back in line)
+async function leaveTeams(userId) {
+  await run('DELETE FROM service_members WHERE user_id=?', userId); await run('DELETE FROM service_escalations WHERE user_id=?', userId);
+  await run("UPDATE services SET escalation_user_id=NULL WHERE escalation_user_id=?", userId);
+  await run("UPDATE tickets SET escalated_at=NULL, escalated_to=NULL WHERE escalated_to=? AND status IN ('open','in_progress','hold')", userId);
+}
 app.post('/api/auth/login', wrap(async req => {
-  limit('login:' + req.ip, 30, 900e3);
-  const u = await one('SELECT * FROM users WHERE lower(email)=lower(?) AND is_active=1', req.body.email || '');
-  const own = u && checkPw(req.body.password || '', u.password_hash);
-  const temp = u && !own && u.temp_pw_hash && u.temp_pw_expires > now() && checkPw(req.body.password || '', u.temp_pw_hash);
-  if (!own && !temp) throw new HttpErr(401, 'UNAUTHORIZED', 'Wrong email or password');
+  // a whole campus often shares one address: the count per address is generous, and wrong tries are counted per account
+  limit('login:' + req.ip, 300, 900e3);
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '', pw = typeof req.body.password === 'string' ? req.body.password.slice(0, 200) : '';
+  const tries = `login-bad:${req.ip}:${email}`;
+  if (tooMany(tries, 10)) throw new HttpErr(429, 'RATE_LIMIT', 'Too many wrong tries for this account. Wait 15 minutes, or tap “Forgot password?”.');
+  const u = email ? await one('SELECT * FROM users WHERE lower(email)=? AND is_active=1', email) : null;
+  const own = checkPw(pw, u ? u.password_hash : NO_ACCOUNT) && !!u; // the same work whether or not the account exists
+  const temp = !!u && !own && !!u.temp_pw_hash && u.temp_pw_expires > now() && checkPw(pw, u.temp_pw_hash);
+  if (!own && !temp) { strike(tries); throw new HttpErr(401, 'UNAUTHORIZED', 'Wrong email or password'); }
   // the temporary password an admin issued (new account, reset) works for TEMP_PW_DAYS days
   if (own && u.must_change_pw && tempPwDead(u.pw_issued_at)) throw new HttpErr(401, 'TEMP_EXPIRED', `This temporary password has run out (it works for ${TEMP_PW_DAYS} days). Tap “Forgot password?” to get a new one by email, or ask your admin to reset it.`);
   // signed in with the emailed temporary password: they must choose a new one now
   if (temp) await run('UPDATE users SET must_change_pw=1 WHERE id=?', u.id);
-  if (OWNER && u.email.toLowerCase() === OWNER && (u.role !== 'super_admin' || u.tenant_id)) await run("UPDATE users SET role='super_admin', tenant_id=NULL WHERE id=?", u.id); // the owner signs in as super admin
+  if (OWNER && u.email.toLowerCase() === OWNER && (u.role !== 'super_admin' || u.tenant_id)) { await run("UPDATE users SET role='super_admin', tenant_id=NULL WHERE id=?", u.id); await leaveTeams(u.id); } // the owner signs in as super admin
   await run('UPDATE users SET last_login_at=? WHERE id=?', now(), u.id);
-  return { token: sign({ sub: u.id, role: u.role, tid: u.tenant_id }) };
+  return { token: tokenFor(await one('SELECT * FROM users WHERE id=?', u.id)) };
 }));
 
 // Forgot password: email a temporary password (valid 1 hour) to that address if it is a ONE Desk account. Their own password
@@ -983,9 +1056,10 @@ app.post('/api/auth/forgot', wrap(async req => {
   const email = oneEmail(req.body.email);
   limit('forgot:' + req.ip, 10, 900e3);
   if (!email) throw bad('Enter your email');
-  const msg = { ok: true, message: 'If this email has a ONE Desk account, a temporary password is on its way. It works for 1 hour. Check your spam folder too.' };
-  const u = await one('SELECT * FROM users WHERE lower(email)=? AND is_active=1', email); if (!u) return msg;
-  try { limit('forgot-u:' + u.id, 3, 3600e3); } catch { return msg; } // at most 3 emails an hour per account
+  const msg = { ok: true, message: 'If this email has a ONE Desk account, a temporary password is on its way. It works for 1 hour. Check your spam folder too. If you asked in the last hour, use the email you already have.' };
+  const u = await one('SELECT * FROM users WHERE lower(email)=? AND is_active=1', email); if (!u) { hashPw('no such account'); return msg; } // …and takes as long
+  // one temporary password an hour: asking again (anyone can, with your address) never cancels the one already in your inbox
+  if (u.temp_pw_hash && u.temp_pw_expires > now()) { hashPw('already sent'); return msg; }
   const pw = tempPw(), exp = new Date(Date.now() + 3600e3).toISOString();
   await run('UPDATE users SET temp_pw_hash=?, temp_pw_expires=? WHERE id=?', hashPw(pw), exp, u.id);
   await notify({ tenant_id: u.tenant_id }, [u.email], 'password_forgot', await staffVars(u, pw));
@@ -995,7 +1069,7 @@ app.post('/api/auth/forgot', wrap(async req => {
 const S = express.Router();
 S.use(auth);
 S.get('/me', wrap(async req => {
-  const { password_hash, ...u } = req.user;
+  const { password_hash, temp_pw_hash, temp_pw_expires, token_v, pw_issued_at, ...u } = req.user; // never a password hash, in any form
   return { user: u, tenants: u.role === 'super_admin' ? await all('SELECT * FROM tenants ORDER BY name') : await all('SELECT * FROM tenants WHERE id=?', u.tenant_id) };
 }));
 S.post('/me/password', wrap(async req => {
@@ -1004,11 +1078,11 @@ S.post('/me/password', wrap(async req => {
   const cur = String(req.body.current || ''), viaTemp = req.user.temp_pw_hash && req.user.temp_pw_expires > now() && checkPw(cur, req.user.temp_pw_hash);
   if (!checkPw(cur, req.user.password_hash) && !viaTemp) throw bad(req.user.must_change_pw ? 'Temporary password is wrong' : 'Current password is wrong');
   if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) throw bad('Use at least 8 characters with letters and numbers');
-  if (checkPw(pw, req.user.password_hash)) throw bad('Pick a password different from the current one');
-  await run('UPDATE users SET password_hash=?, must_change_pw=0, temp_pw_hash=NULL, temp_pw_expires=NULL, pw_issued_at=NULL WHERE id=?', hashPw(pw), req.user.id);
+  if (pw === cur || checkPw(pw, req.user.password_hash)) throw bad('Pick a password different from the current one');
+  await run('UPDATE users SET password_hash=?, must_change_pw=0, temp_pw_hash=NULL, temp_pw_expires=NULL, pw_issued_at=NULL, token_v=coalesce(token_v,0)+1 WHERE id=?', hashPw(pw), req.user.id);
   await notify({ tenant_id: req.user.tenant_id }, [req.user.email], 'password_changed', { ...await staffVars(req.user, pw), password: pw });
   await audit(req, 'user.password_changed', 'user', req.user.id, {});
-  return { ok: true };
+  return { ok: true, token: tokenFor(await one('SELECT * FROM users WHERE id=?', req.user.id)) }; // every other session of this account is signed out; this one goes on
 }));
 
 // tenants (super admin)
@@ -1041,6 +1115,8 @@ S.get('/users', role('super_admin', 'tenant_admin'), wrap(async req =>
   await all(`SELECT u.id,u.name,u.email,u.phone,u.role,u.is_active,u.last_login_at,u.must_change_pw,
     (SELECT string_agg(s.name, ', ' ORDER BY s.name) FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=u.id) services
     FROM users u WHERE u.tenant_id=? ORDER BY u.is_active DESC, u.role DESC, u.name`, req.tenantId)));
+// A staff phone number is shown to requesters (not to students): digits, spaces and hyphens, with an optional + in front
+const staffPhone = v => { const p = typeof v === 'string' || typeof v === 'number' ? String(v).trim() : ''; if (!/^\+?[0-9][0-9 -]{5,17}[0-9]$/.test(p)) throw bad('Phone: 7 to 15 digits (spaces and hyphens are fine), e.g. 98765 43210'); return p; };
 const tempPw = () => crypto.randomBytes(6).toString('base64url').replace(/[-_]/g, 'x') + Math.floor(10 + Math.random() * 90);
 // a tenant admin manages providers (and edits themselves); only the super admin manages tenant admins
 async function managed(req) {
@@ -1050,6 +1126,8 @@ async function managed(req) {
 }
 S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body; req_(b.name, 'Name required'); req_(b.email, 'Email required');
+  if (typeof b.name !== 'string' || typeof b.email !== 'string') throw bad('Name and email must be text');
+  b.name = oneLine(b.name, 120); if (b.phone !== undefined && b.phone !== null && b.phone !== '') b.phone = staffPhone(b.phone);
   b.email = String(b.email).trim(); if (!isEmail(b.email)) throw bad('Enter a valid email (one address)'); // the sign-in details go to this address
   const r = b.role === 'tenant_admin' ? 'tenant_admin' : 'provider';
   if (r === 'tenant_admin' && req.user.role !== 'super_admin') throw forbid();
@@ -1068,6 +1146,10 @@ S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
 }));
 S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   const u = await managed(req), b = req.body;
+  // on or off, as 1 or 0 (false or "0" used to slip past the checks below); a name is text; a phone number looks like one
+  if (b.is_active !== undefined) { if (![0, 1, true, false].includes(b.is_active)) throw bad('is_active must be 1 (active) or 0 (inactive)'); b.is_active = b.is_active ? 1 : 0; }
+  if (b.name !== undefined && (typeof b.name !== 'string' || !b.name.trim())) throw bad('Name required');
+  if (b.phone !== undefined && b.phone !== null && b.phone !== '') b.phone = staffPhone(b.phone);
   if (b.is_active === 0 && u.id === req.user.id) throw bad("You can't deactivate yourself");
   if (b.role && b.role !== u.role) {
     if (req.user.role !== 'super_admin' || !['provider', 'tenant_admin'].includes(b.role)) throw forbid();
@@ -1076,7 +1158,7 @@ S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (b.email && !isEmail(email)) throw bad('Enter a valid email (one address)');
   if (email.toLowerCase() !== u.email.toLowerCase() && await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', email)) throw new HttpErr(409, 'CONFLICT', 'Email already in use');
   await run('UPDATE users SET name=?, email=?, phone=?, role=?, is_active=? WHERE id=?', String(b.name ?? u.name).trim() || u.name, email, b.phone ?? u.phone, b.role || u.role, b.is_active ?? u.is_active, u.id);
-  if (b.is_active === 0) await run('DELETE FROM service_members WHERE user_id=?', u.id);
+  if (b.is_active === 0) { await run('DELETE FROM service_members WHERE user_id=?', u.id); await run('UPDATE users SET token_v=coalesce(token_v,0)+1 WHERE id=?', u.id); } // …and their sessions end for good
   await audit(req, 'user.update', 'user', u.id, b); return { ok: true };
 }));
 S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -1084,7 +1166,7 @@ S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(as
   if (u.id === req.user.id) throw bad('Change your own password from Profile');
   if (!u.is_active) throw bad('Activate this account first');
   const pw = tempPw();
-  await run('UPDATE users SET password_hash=?, must_change_pw=1, pw_issued_at=? WHERE id=?', hashPw(pw), now(), u.id);
+  await run('UPDATE users SET password_hash=?, must_change_pw=1, pw_issued_at=?, temp_pw_hash=NULL, temp_pw_expires=NULL, token_v=coalesce(token_v,0)+1 WHERE id=?', hashPw(pw), now(), u.id);
   await notify({ tenant_id: req.tenantId }, [u.email], 'password_reset', await staffVars(u, pw));
   await audit(req, 'user.reset_password', 'user', u.id, { email: u.email });
   return { temp_password: pw };
@@ -1215,6 +1297,9 @@ S.put('/sla', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (!hhmm.test(b.work_start) || !hhmm.test(b.work_end) || b.work_end <= b.work_start) throw bad('Working hours must be like 09:00 – 17:00');
   const days = [...new Set((b.work_days || []).map(Number))].filter(d => d >= 0 && d <= 6);
   if (!days.length) throw bad('Pick at least one working day');
+  // nothing is dropped silently: a hold reason without a name, or a target that is not above 0, is said so
+  if (!Array.isArray(b.hold_reasons) || b.hold_reasons.some(r => !r || !String(r.label || '').trim())) throw bad('Each hold reason needs a name (remove the empty row, or give it one)');
+  for (const p of PRIORITIES) if (b.targets && b.targets[p] !== undefined && b.targets[p] !== '' && !(Number(b.targets[p]) > 0 && Number(b.targets[p]) <= 2000)) throw bad(`Target for ${p}: hours above 0`);
   const reasons = (b.hold_reasons || []).filter(r => String(r.label || '').trim()).map((r, i) => ({
     key: String(r.key || r.label).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30) || 'r' + i, label: String(r.label).trim().slice(0, 60), hours: Number(r.hours) }));
   if (!reasons.length || reasons.some(r => !(r.hours > 0))) throw bad('Each hold reason needs a name and hours above 0');
@@ -1483,7 +1568,9 @@ S.get('/tickets.csv', async (req, res, next) => { try {
   const { sql, args } = await ticketQuery(req);
   const rows = await all(`${LIST_SQL} WHERE ${sql} ORDER BY t.created_at DESC`, ...args);
   const cols = ['ticket_no', 'service', 'subject', 'status', 'priority', 'affected_count', 'channel', 'requestor', 'location', 'created_at', 'due_at', 'closed_at'];
-  res.type('text/csv').attachment('tickets.csv').send([cols.join(','), ...rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n'));
+  // typed text that starts with = + - @ would run as a formula when the file is opened in a spreadsheet: an apostrophe makes it text
+  const cell = v => { const x = String(v ?? ''); return `"${(/^[=+\-@\t\r]/.test(x) ? "'" + x : x).replace(/"/g, '""')}"`; };
+  res.type('text/csv').attachment('tickets.csv').send('\ufeff' + [cols.join(','), ...rows.map(r => cols.map(c => cell(r[c])).join(','))].join('\n'));
 } catch (e) { next(e); } });
 S.get('/tickets/:id', wrap(async req => {
   const t = await loadTicket(req);
@@ -1544,8 +1631,11 @@ S.post('/tickets/:id/status', wrap(async req => {
       }
     }
     if (t.queued) await run('UPDATE tickets SET queued=0 WHERE id=?', t.id); // a provider took it early, before its day in the queue
-    const ev = await addEvent(t, actorOf(req), 'status_changed', { from: t.status, to, body: note, internal: req.body.is_internal, meta });
-    await saveFiles(t, ev, req.body.files, 'user');
+    // "Internal": the note (and its photos) is for the team only. The step itself is never secret: the requester's page
+    // shows that the ticket was put on hold, resumed or closed, without the words.
+    const ev = await addEvent(t, actorOf(req), 'status_changed', { from: t.status, to, body: req.body.is_internal ? '' : note, meta });
+    const at = req.body.is_internal ? await addEvent(t, actorOf(req), 'note', { body: note, internal: true }) : ev;
+    await saveFiles(t, at, req.body.files, 'user');
   });
   if (!req.body.is_internal) {
     // after a hold, moving to "in progress" is a resume ("work resumed"); from open it is a fresh start ("work started")
@@ -1847,7 +1937,10 @@ const resent = id => run(`UPDATE users SET pw_issued_at=? WHERE must_change_pw=1
 S.get('/reports', wrap(async req => {
   // my services' tickets plus any escalated to me
   const sids = await myServiceIds(req.user, req.tenantId);
-  const inS = sids.length ? `(service_id IN (${sids.map(() => '?').join()}) OR escalated_to=?)` : 'escalated_to=?', base = [req.tenantId, ...sids, req.user.id];
+  // …and, like the ticket list, tickets escalated to a team this person is an escalation officer of (so Home's numbers and the bell match the list)
+  const off = (await all('SELECT s.id FROM services s JOIN service_escalations e ON e.service_id IN (s.id, s.parent_id) WHERE e.user_id=? AND s.tenant_id=?', req.user.id, req.tenantId)).map(x => x.id);
+  const mine = [sids.length ? `service_id IN (${sids.map(() => '?').join()})` : '', 'escalated_to=?', off.length ? `(escalated_at IS NOT NULL AND service_id IN (${off.map(() => '?').join()}))` : ''].filter(Boolean);
+  const inS = `(${mine.join(' OR ')})`, base = [req.tenantId, ...sids, req.user.id, ...off];
   const n = now(), tz = (await tenantRow(req.tenantId))?.timezone || 'Asia/Kolkata', ymd = /^\d{4}-\d{2}-\d{2}$/;
   let from = addH(n, -24 * (Number(req.query.days) || 30)), to = '9999';
   if (req.query.from || req.query.to) {
@@ -1914,7 +2007,7 @@ M.put('/config', superOnly, wrap(async req => {
     await setSetting('pa_url', u);
   }
   if (b.key) { if (String(b.key).length < 16) throw bad('Use a secret key of at least 16 characters'); await setSetting('pa_key', String(b.key).trim()); }
-  if (b.base !== undefined) { const u = String(b.base).trim().replace(/\/+$/, ''); if (!/^https?:\/\/\S+$/.test(u)) throw bad('The public address must start with http:// or https://'); await setSetting('public_base_url', u); }
+  if (b.base !== undefined) { const u = /^https?:\/\//i.test(String(b.base).trim()) ? cleanBase(b.base) : ''; if (!u) throw bad('The public address must be a plain web address that starts with http:// or https://, like https://desk.example.edu'); await setSetting('public_base_url', u); }
   if (b.sending !== undefined) await setSetting('mail_enabled', b.sending ? '1' : '0');
   if (b.brand) for (const k of Object.keys(BRAND_DEFAULTS)) if (b.brand[k] !== undefined) { const v = String(b.brand[k]).replace(/\s+/g, ' ').trim(); if (v.length > 400) throw bad('Each brand line: at most 400 characters'); await setSetting(k, v); }
   if (b.events) await setSetting('mail_events', JSON.stringify({ ...c.events, ...Object.fromEntries(Object.entries(b.events).map(([k, v]) => [k, !!v])) }));
@@ -2005,18 +2098,20 @@ app.use('/', express.static(path.join(ROOT, 'public'))); // also served at the r
 //   sign-in must choose a new password. An account that already is an active super admin is left alone.
 //   SUPER_ADMIN_PASSWORD (optional) is used as SUPER_ADMIN_EMAIL's temporary password instead, applied once per email + password.
 async function ensureSuperAdmin(email, envPw = '') {
-  if (!/^\S+@\S+\.\S+$/.test(email)) return console.log(`"${email}" is not an email address; no super admin set up for it.`);
+  if (!isEmail(email)) return console.log(`"${email}" is not an email address; no super admin set up for it.`);
   if (envPw && envPw.length < 10) return console.log(`SUPER_ADMIN_PASSWORD is shorter than 10 characters; leave it out to have a temporary password generated for ${email}.`);
   const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email), isSa = u?.role === 'super_admin' && u.is_active;
   const mark = crypto.createHmac('sha256', SECRET).update(`${email.toLowerCase()}\n${envPw}`).digest('hex');
   if (envPw ? getSettings().super_admin_env === mark : isSa)
     return console.log(`Super admin ${email}: already set up. To get a new temporary password (shown here and emailed): npm run add-super-admin -- ${email}`);
-  // the owner's account already exists (e.g. as a campus admin): make it a super admin and keep its password
-  if (u && !envPw) { await run("UPDATE users SET role='super_admin', tenant_id=NULL, is_active=1 WHERE id=?", u.id);
-    return console.log(`Super admin ${email}: made super admin (was ${u.role}${u.is_active ? '' : ', inactive'}); password unchanged. Sign in as before; you now see every campus.`); }
+  // the owner's account already exists (e.g. as a campus admin) with a password they chose themselves: it becomes a super
+  // admin and keeps that password. A password someone else issued (a new or reset account that never signed in and chose
+  // its own) is not trusted with every campus: a fresh temporary one is emailed to the address instead.
+  if (u && !envPw && !u.must_change_pw && u.is_active) { await run("UPDATE users SET role='super_admin', tenant_id=NULL, is_active=1, token_v=coalesce(token_v,0)+1 WHERE id=?", u.id); await leaveTeams(u.id);
+    return console.log(`Super admin ${email}: made super admin (was ${u.role}); password unchanged. Sign in as before; you now see every campus.`); }
   const pw = envPw || tempPw();
   if (!u) await insert('users', { id: uid(), tenant_id: null, name: process.env.SUPER_ADMIN_NAME || 'Super admin', email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
-  else await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1 WHERE id=?", hashPw(pw), u.id);
+  else { await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1, temp_pw_hash=NULL, temp_pw_expires=NULL, pw_issued_at=NULL, token_v=coalesce(token_v,0)+1 WHERE id=?", hashPw(pw), u.id); await leaveTeams(u.id); }
   if (envPw) await setSetting('super_admin_env', mark);
   const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
   await notify({ tenant_id: null }, [acct.email], u ? 'password_reset' : 'invite', await staffVars(acct, pw)).catch(e => console.error('super admin email', e.message));

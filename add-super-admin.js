@@ -13,7 +13,8 @@ import crypto from 'node:crypto';
 import { pool, uid, one, all, run, insert, hashPw, now } from './db.js';
 import { loadSettings, mailConfig, renderTemplate, renderEmail, toText, postToFlow } from './mailer.js';
 
-const email = String(process.argv[2] || process.env.SUPER_ADMIN_EMAIL || process.env.OWNER_EMAIL || 'sriram@smru.edu.in').trim(), given = String(process.env.SUPER_ADMIN_PASSWORD || '');
+// the built-in owner is used only when OWNER_EMAIL is not set at all: OWNER_EMAIL= (empty) switches it off, here too
+const email = String(process.argv[2] || process.env.SUPER_ADMIN_EMAIL || (process.env.OWNER_EMAIL === undefined ? 'sriram@smru.edu.in' : process.env.OWNER_EMAIL)).trim(), given = String(process.env.SUPER_ADMIN_PASSWORD || '');
 const name = String(process.env.SUPER_ADMIN_NAME || '').trim() || 'Super admin';
 const done = async (msg, ok = true) => { console.log(msg); await pool.end(); process.exit(ok ? 0 : 1); };
 if (!/^\S+@\S+\.\S+$/.test(email)) await done('Set SUPER_ADMIN_EMAIL in .env (or run: npm run add-super-admin -- you@example.com).', false);
@@ -21,7 +22,11 @@ if (given && given.length < 10) await done('SUPER_ADMIN_PASSWORD is shorter than
 
 const pw = given || crypto.randomBytes(6).toString('base64url').replace(/[-_]/g, 'x') + Math.floor(10 + Math.random() * 90);
 const u = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
-if (u) await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1, temp_pw_hash=NULL, temp_pw_expires=NULL WHERE id=?", hashPw(pw), u.id);
+if (u) { await run("UPDATE users SET role='super_admin', tenant_id=NULL, password_hash=?, is_active=1, must_change_pw=1, temp_pw_hash=NULL, temp_pw_expires=NULL, pw_issued_at=NULL, token_v=coalesce(token_v,0)+1 WHERE id=?", hashPw(pw), u.id);
+  // a super admin belongs to no campus: the account leaves its teams and escalation roles
+  await run('DELETE FROM service_members WHERE user_id=?', u.id); await run('DELETE FROM service_escalations WHERE user_id=?', u.id);
+  await run('UPDATE services SET escalation_user_id=NULL WHERE escalation_user_id=?', u.id);
+  await run("UPDATE tickets SET escalated_at=NULL, escalated_to=NULL WHERE escalated_to=? AND status IN ('open','in_progress','hold')", u.id); }
 else await insert('users', { id: uid(), tenant_id: null, name, email, role: 'super_admin', password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
 const acct = await one('SELECT * FROM users WHERE lower(email)=lower(?)', email);
 

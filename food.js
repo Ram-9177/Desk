@@ -371,7 +371,8 @@ ${emailHead(tn.name)}
     const tn = await tenantBySlug(String(req.query.tenant || ''));
     const r = await buildReport(tn, req.params.period, realDay(req.query.date) ? req.query.date : null);
     if (req.query.format === 'json') { const { summary, ...rest } = r; return rest; }
-    res.type('html').send(r.html);
+    // the report is a page of pictures and text only: no script may run on it, whatever a name or a comment contains
+    res.set('Content-Security-Policy', "default-src 'none'; img-src https: http: data:; style-src 'unsafe-inline'").type('html').send(r.html);
   }));
   // ONE Desk also sends them itself at 10:00 PM campus time (daily; weekly on Sunday; monthly on the month's last day),
   // unless FOOD_REPORT_AUTOSEND=0 (when Power Automate sends them instead).

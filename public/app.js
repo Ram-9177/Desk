@@ -74,18 +74,33 @@ const ring = (pct, size = 96, color = 'var(--brand)', track = '#EEF0F3') => { co
   return `<div class="ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${track}" stroke-width="10" fill="none"/>
   <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${color}" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><b>${pct}%</b></div>`; };
 const S = { token: localStorage.getItem('tok'), tenant: localStorage.getItem('tid'), me: null };
+const ROLE_LABEL = { super_admin: 'Super admin', tenant_admin: 'Campus admin', provider: 'Service provider' }; // the words the People page uses
 
-async function api(path, { method = 'GET', body, raw } = {}) {
-  const h = { 'content-type': 'application/json' };
+let saving = 0; // saves on their way to the server (quiet: counters nobody waits for)
+async function api(path, { method = 'GET', body, raw, quiet } = {}) {
+  const h = { 'content-type': 'application/json' }, save = method !== 'GET' && !quiet;
   if (S.token) h.authorization = 'Bearer ' + S.token;
   if (S.tenant && S.me?.user.role === 'super_admin') h['x-tenant-id'] = S.tenant;
-  const r = await fetch('/api' + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
-  if (raw) return r;
-  const j = await r.json().catch(() => ({}));
-  if (r.status === 401 && S.token && !path.startsWith('/auth')) { logout(true); throw new Error('Session expired'); }
-  if (!r.ok) { const e = new Error(j.error?.message || 'Error'); e.details = j.error?.details; e.status = r.status; e.code = j.error?.code; throw e; }
-  return j.data;
+  if (save) saving++;
+  try {
+    let r;
+    // no answer at all is a connection problem, and is said so (not "Not found", not "No ticket with that number")
+    try { r = await fetch('/api' + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined }); }
+    catch { const e = new Error(navigator.onLine === false ? 'You are offline. Check your connection and try again.' : 'Could not reach ONE Desk. Check your connection and try again.'); e.offline = true; throw e; }
+    if (raw) return r;
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401 && S.token && !path.startsWith('/auth')) { logout(true); throw new Error('Session expired'); }
+    if (!r.ok) { const e = new Error(j.error?.message || (r.status === 413 ? 'That is too large to send. Use smaller or fewer photos.' : 'Error')); e.details = j.error?.details; e.status = r.status; e.code = j.error?.code; throw e; }
+    return j.data;
+  } finally { if (save) saving--; }
 }
+// A form is sent once. While its save (or any other save from this page) is on its way, another tap on its button is
+// ignored: it used to save twice (two tickets, two notes, two emails). The form frees itself when the save has answered.
+document.addEventListener('submit', e => { const f = e.target; if (!(f instanceof HTMLFormElement) || f.dataset.fast !== undefined) return;
+  if (saving > 0 || f.dataset.sending) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  f.dataset.sending = '1'; const t0 = Date.now();
+  const free = () => { if (!document.contains(f) || (saving === 0 && Date.now() - t0 >= 800) || Date.now() - t0 > 90000) delete f.dataset.sending; else setTimeout(free, 150); };
+  setTimeout(free, 150); }, true);
 // Photos go up as JPEG, at most 1920 px on the long side: a phone's 5–12 MB picture becomes a few hundred KB, and every
 // browser and email app can show it. What this browser can't open (HEIC in Chrome, say) goes up as it is; the server turns it into JPEG.
 const shrinkPhoto = async f => {
@@ -186,7 +201,7 @@ const seenNotices = sid => { try { return JSON.parse(sessionStorage.getItem('ng:
 const countSeen = (slug, ids) => { let old = []; try { old = JSON.parse(sessionStorage.getItem('nv') || '[]'); } catch { /* memory only */ }
   const fresh = ids.filter(id => !NV.has(id) && !old.includes(id)); if (!fresh.length) return; fresh.forEach(id => NV.add(id));
   try { sessionStorage.setItem('nv', JSON.stringify([...old, ...fresh].slice(-200))); } catch { /* memory only */ }
-  api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: fresh } }).catch(() => {}); };
+  api(`/public/${slug}/notices/seen`, { method: 'POST', quiet: true, body: { ids: fresh } }).catch(() => {}); };
 // web addresses in a notice can be tapped (the text is escaped first; only http, https and www links are made)
 const ntLinks = h => h.replace(/\b(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]|www\.[^\s<]+[^\s<.,;:!?)\]'"])/g, m => `<a href="${m.startsWith('www.') ? 'https://' + m : m}" target="_blank" rel="noopener noreferrer">${m}</a>`);
 const ntTags = n => `${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>`;
@@ -249,7 +264,7 @@ async function noticeGate(slug, svc, back = `#/d/${slug}/raise`) {
     addEventListener('hashchange', left);
     const done = a => { if (over) return; shut();
       // "answered" and the X leave no extra step in the browser's history, so Back does not bring the pop-up up again
-      if (a === 'answered') { api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: list.map(n => n.id), outcome: 'answered' } }).catch(() => {}); toast('Glad that helped!'); location.replace(`#/d/${slug}`); return resolve(false); }
+      if (a === 'answered') { api(`/public/${slug}/notices/seen`, { method: 'POST', quiet: true, body: { ids: list.map(n => n.id), outcome: 'answered' } }).catch(() => {}); toast('Glad that helped!'); location.replace(`#/d/${slug}`); return resolve(false); }
       if (a === 'back') { location.replace(back); return resolve(false); }
       NG[svc.id] = list.map(n => n.id); try { sessionStorage.setItem('ng:' + svc.id, JSON.stringify(NG[svc.id])); } catch { /* kept in memory */ }
       resolve(location.hash === here); }; // only if the person is still on the page the pop-up was for
@@ -284,7 +299,7 @@ async function portal(slug, q, view, code) {
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
       ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with voice in English or తెలుగు.')}
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
-      ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
+      ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number and email')}
       <div id="nboard"></div>
       ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
     wireGuide('guide-seen', route); noticeBoard(slug, $('#nboard'));
@@ -336,7 +351,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <label>Your name or roll no. <small>(leave empty to stay anonymous)</small></label><input name="name" maxlength="80" autocomplete="name">
       <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Send feedback</button></p></form></div>`;
     const ta = $('#f').comment, cc = () => { $('#cc').textContent = `${ta.value.length} / 300`; }; ta.oninput = cc; cc(); wireKind();
-    $('#f').querySelectorAll('[name=dayk]').forEach(r => r.onchange = () => { const on = $('#f').dayk.value === 'pick'; $('#dpick').hidden = !on; $('#pday').required = on; if (on) $('#pday').focus(); });
+    $('#f').querySelectorAll('[name=dayk]').forEach(r => r.onchange = () => { const on = $('#f').dayk.value === 'pick'; $('#dpick').hidden = !on; $('#pday').required = on; if (on) $('#pday').focus(); else $('#pday').value = ''; }); // a date typed and then hidden is emptied: a hidden box must never stop the form
     $('#f').onsubmit = async e => { e.preventDefault(); const fm = e.target, btn = fm.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
       const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, meal_date: fm.dayk.value === 'pick' ? fm.pday.value : fm.dayk.value, rating: Number(fm.rating.value), chips: [...fm.querySelectorAll('[name=chips]:checked')].map(x => x.value),
         comment: fm.comment.value.trim(), name: fm.name.value.trim(), website: fm.website.value, device_key: foodDevice() };
@@ -458,15 +473,21 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
   };
 }
 
-async function track(slug) {
+// Track a ticket: its number and the email it was raised with. (The link in any email about the ticket opens it directly.)
+// no: a number already known (a ticket link without its key, or the bot's "Open ticket"), filled in for the person.
+async function track(slug, no = '') {
   document.body.className = '';
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Track a ticket</h1></div><form id="f" class="card">
-    <label>Ticket number</label><input name="no" required placeholder="0001" inputmode="numeric" class="mono">
-    <div class="err" id="err"></div><p><button class="btn primary big">${I('search')} Find my ticket</button></p></form></div>`;
-  $('#f').onsubmit = async e => { e.preventDefault(); const v = formVals(e.target);
-    try { await api(`/public/${slug}/tickets/${encodeURIComponent(v.no.trim())}`);
-      location.hash = `#/d/${slug}/t/${/^\d+$/.test(v.no.trim()) ? v.no.trim().padStart(4, '0') : v.no.trim().toUpperCase()}`;
-    } catch { $('#err').textContent = 'No ticket with that number.'; } };
+    <p class="muted small" style="margin-top:0">${no ? 'To open this ticket, enter the email you raised it with.' : 'Enter the ticket number and the email you raised it with.'} The link in any email about the ticket opens it directly.</p>
+    <label for="trno">Ticket number</label><input id="trno" name="no" required placeholder="0001" inputmode="numeric" class="mono" maxlength="20" value="${esc(/^[A-Za-z0-9-]{1,20}$/.test(no) ? no : '')}">
+    <label for="trem">Your email <small>(the one you raised it with)</small></label><input id="trem" name="email" type="email" required autocomplete="email" placeholder="you@example.com" maxlength="254">
+    <div class="err" id="err" role="alert"></div><p><button class="btn primary big">${I('search')} Find my ticket</button></p></form></div>`;
+  if (no) $('#trem').focus();
+  $('#f').onsubmit = async e => { e.preventDefault(); const v = formVals(e.target), btn = e.target.querySelector('button'); btn.disabled = true; $('#err').textContent = '';
+    try { const r = await api(`/public/${slug}/tickets/${encodeURIComponent(v.no.trim())}/open`, { method: 'POST', body: { email: v.email } });
+      const to = `#/d/${slug}/t/${r.ticket_no}?k=${encodeURIComponent(r.k)}`;
+      if (location.hash === to) route(); else location.hash = to;
+    } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
 }
 
 // A team that takes N tickets a day: past that, the ticket waits in the team's queue with a number and the day it reaches them
@@ -485,11 +506,12 @@ async function ticketPage(slug, no, q) {
   const key = q.get('k') ? { k: q.get('k') } : {};
   const qs = new URLSearchParams(key).toString();
   let t;
-  try { t = await api(`/public/${slug}/tickets/${no}?${qs}`); } catch { return track(slug); }
+  try { if (!key.k) throw new Error('no key'); t = await api(`/public/${slug}/tickets/${encodeURIComponent(no)}?${qs}`); } catch { return track(slug, no); } // without its key a ticket opens with the number and the email
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
-    note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}`, reopen_requested: 'You asked to reopen', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
+    note: e.actor_name === 'You' ? 'Your note' : `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}`, reopen_requested: e.actor_name === 'You' ? 'You asked to reopen' : 'A reopen was asked for', reopen_declined: `Reopen declined by ${esc(e.actor_name)}`,
+    joined: 'You reported this too' })[e.event_type] || e.event_type;
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && !t.reopen_request && new Date(t.reopen_until) > new Date(), sug = t.kind === 'suggestion';
   const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
@@ -517,7 +539,9 @@ async function ticketPage(slug, no, q) {
 // ================= STAFF =================
 // After signing in again, staff return to the screen they were opening (a ticket from an email button), not always Home.
 function logout(expired) { if (expired && location.hash.startsWith('#/c')) sessionStorage.setItem('after-login', location.hash);
-  localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; S.foodFor = S.foodOk = S.bell = undefined; location.hash = '#/login'; }
+  // nothing of this person stays for the next one on the same device: no filters, no search text, no menu they may not see
+  const keep = expired ? sessionStorage.getItem('after-login') : null; try { sessionStorage.clear(); if (keep) sessionStorage.setItem('after-login', keep); } catch { /* storage off */ }
+  localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; S.tenant = null; S.foodFor = S.foodOk = S.bell = undefined; location.hash = '#/login'; }
 function login() {
   if (S.token && location.hash.startsWith('#/login')) return location.replace('#/c'); // already signed in (e.g. the Sign in button in an email)
   document.body.className = 'console';
@@ -566,7 +590,7 @@ async function shell(active, render, title) {
     <div class="top-r">${sa ? `<select id="tsw" aria-label="Campus">${S.me.tenants.map(t => `<option value="${t.id}" ${t.id === S.tenant ? 'selected' : ''}>${esc(t.code)}</option>`).join('')}</select>` : ''}
       <a class="ibtn bell" href="${bellHref}" ${bellAttr} aria-label="Notifications">${I('bell', 20)}<i class="ndot" hidden></i></a>
       <a class="ibtn gear" href="#/settings" aria-label="Settings">${I('settings', 20)}</a><span class="vdiv"></span>
-      <a class="melink" href="#/c/me" aria-label="Profile: ${esc(u.name)}">${avatar(u.name, 36, 'dark')}<span class="who"><b>${esc(u.name)}</b><span>${esc(cap(u.role.replace('_', ' ')))}</span></span></a></div></div></header>
+      <a class="melink" href="#/c/me" aria-label="Profile: ${esc(u.name)}">${avatar(u.name, 36, 'dark')}<span class="who"><b>${esc(u.name)}</b><span>${esc(ROLE_LABEL[u.role] || cap(u.role.replace('_', ' ')))}</span></span></a></div></div></header>
     <div class="cwrap">${active !== 'c' || title ? `<div class="head"><a class="iconbtn" href="#/c" id="bk" aria-label="Back">${I('back')}</a><h1>${esc(title || (all.find(n => n[0] === active) || [])[1] || '')}</h1></div>` : ''}<div id="main">Loading…</div></div>
     <nav class="bnav" aria-label="Primary">${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
@@ -579,9 +603,14 @@ async function shell(active, render, title) {
     if (!S.navDoc) { S.navDoc = true; document.addEventListener('click', e => { const m = document.getElementById('navmm'); if (m && !e.target.closest('.navmore')) { m.hidden = true; document.getElementById('navmb')?.setAttribute('aria-expanded', 'false'); } }); } }
   $('#moreb').onclick = () => moreSheet(all.filter(n => !['c', 'c/new', 'c/attention', 'c/reports'].includes(n[0])));
   bellDot(admin);
-  if ($('#tsw')) $('#tsw').onchange = e => { S.tenant = e.target.value; localStorage.setItem('tid', S.tenant); route(); };
+  if ($('#tsw')) $('#tsw').onchange = e => { S.tenant = e.target.value; localStorage.setItem('tid', S.tenant);
+    for (const k of ['qf', 'uf', 'ml', 'nf']) sessionStorage.removeItem(k); // a filter chosen on one campus (a team, a person) means nothing on another
+    S.bell = null; route(); };
   const main = $('#main');
   S.nav = all;
+  // a link to a screen this person's menu does not have (another role's): say so, instead of a form whose every button is refused
+  if (active !== 'c' && active !== 'c/me' && !all.some(n => n[0] === active)) { active = 'c'; title = 'Not available';
+    render = m => { m.innerHTML = `<div class="card"><b>This page is not part of your desk</b><p class="muted">It is for another role. <a href="#/c">Go to Home</a></p></div>`; }; }
   if ($('#bk') && title === 'Ticket') $('#bk').onclick = e => { e.preventDefault(); history.length > 1 ? history.back() : location.hash = '#/c'; };
   if (!S.tenant && !['c/tenants', 'c/me'].includes(active)) { main.innerHTML = '<p>No tenant yet. <a href="#/c/tenants">Create one</a>.</p>'; return; }
   try { await render(main, { sa, admin, u }); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -698,7 +727,7 @@ async function queue(main) {
     if (keep) { $('#fq').focus(); $('#fq').setSelectionRange(keep[0], keep[0]); }
   };
   await draw();
-  clearInterval(pollT); pollT = setInterval(() => location.hash === '#/c' && !document.hidden && draw(), 30000);
+  clearInterval(pollT); pollT = setInterval(() => location.hash === '#/c' && !document.hidden && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') && !$('dialog[open]') && draw(), 30000); // never while someone is typing or choosing
 }
 
 // Remind me: when (a day, a week, a month, or a date) and what about. Only the ticket's reminder is saved; its status stays.
@@ -735,7 +764,7 @@ function replyPreview(id, req, t) {
       <div class="err" id="pverr" role="alert"></div>
       <div class="pv-acts"><button type="button" class="btn" data-x>Back</button><button type="button" class="btn primary" data-go>${I('send', 16)} Send update</button></div>`;
     document.body.append(d); d.showModal();
-    const fr = d.querySelector('iframe'), ta = d.querySelector('#pvt'), show = html => { fr.srcdoc = html; };
+    let fr = d.querySelector('iframe'); const ta = d.querySelector('#pvt'), show = html => { const nf = fr.cloneNode(false); nf.srcdoc = html; fr.replaceWith(nf); fr = nf; };
     show(r.html);
     let tm; const refresh = () => { clearTimeout(tm); tm = setTimeout(async () => { try { const x = await api(`/tickets/${id}/preview`, { method: 'POST', body: { ...req, note: ta.value || ' ', text_as_is: true } }); show(x.html); } catch { /* keep the last one */ } }, 400); };
     ta.oninput = () => { d.querySelector('#pverr').textContent = ''; refresh(); };
@@ -766,9 +795,9 @@ async function phraseEditor(scope = '*') {
   const sel = d.querySelector('#phsc'), dirty = () => Object.keys(pr.steps).some(k => d.querySelector(`[name=ph_${k}]`).value.trim() !== first[k].trim());
   sel.value = scope; sel.onchange = e => { if (dirty() && !confirm('You changed sentences here and have not saved them. Leave without saving?')) { sel.value = scope; return; } d.close(); phraseEditor(e.target.value); };
 }
-function dlg(html, onSubmit) {
-  const d = document.createElement('dialog'); d.innerHTML = `<form method="dialog" id="df">${html}<div class="err" id="derr"></div>
-    <p class="row"><button type="button" class="btn" value="cancel">Cancel</button><button class="btn primary" value="ok">Save</button></p></form>`;
+function dlg(html, onSubmit, okLabel = 'Save') { // okLabel: the button says what it does ("Deactivate", "Reset password"), not always "Save"
+  const d = document.createElement('dialog'); d.innerHTML = `<form method="dialog" id="df">${html}<div class="err" id="derr" role="alert"></div>
+    <p class="row"><button type="button" class="btn" value="cancel">Cancel</button><button class="btn primary" value="ok">${esc(okLabel)}</button></p></form>`;
   document.body.append(d); d.showModal(); d.onclose = () => d.remove();
   d.querySelector('button[value=cancel]').onclick = () => d.close(); // not a submit button: Enter in a text box must reach Save, never Cancel
   d.querySelector('form').onsubmit = async e => { if (e.submitter?.value !== 'ok') return; e.preventDefault();
@@ -854,11 +883,11 @@ async function workspace(main, id, { admin }) {
   const seg = sessionStorage.getItem('tkseg') || 'activity';
   main.innerHTML = `<div class="tkp" data-seg="${seg}">
     <div class="tk-appbar m-only"><button type="button" class="ibtn" data-back aria-label="Back to my tickets">${I('back', 22)}</button><div class="tk-abt"><b>Ticket</b><span class="mono">#${t.ticket_no}</span></div>
-      <a class="ibtn" href="${t.tracking_url}" target="_blank" rel="noopener" aria-label="Requester's view">${I('eye', 20)}</a><button type="button" class="ibtn" id="tkmore" aria-label="More actions" aria-haspopup="dialog">${I('more', 20)}</button></div>
+      <a class="ibtn" href="${esc(t.tracking_url)}" target="_blank" rel="noopener" aria-label="Requester's view">${I('eye', 20)}</a><button type="button" class="ibtn" id="tkmore" aria-label="More actions" aria-haspopup="dialog">${I('more', 20)}</button></div>
     <a href="#/c" class="backlink d-only" data-back>${I('back', 16)}Back to my tickets</a>
     <div class="tk-title"><div><div class="tk-ids"><span class="mono d-only">#${t.ticket_no}</span>${pill(shown)}${priorityTag(t.priority, true)}${flags}</div>
         <h1>${esc(t.subject)}</h1><div class="tk-sub"><span>${esc(t.service.name)}</span><span class="d-only"> · Raised via ${esc(String(t.channel).replace('_', ' '))} by</span><span class="m-only"> ·</span> <span>${esc(r.name)}</span></div></div>
-      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+      <div class="tk-acts d-only"><a class="btn" href="${esc(t.tracking_url)}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
     <div class="tk-cols">
       <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
       ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
@@ -915,11 +944,11 @@ async function workspace(main, id, { admin }) {
   main.querySelectorAll('[data-reo]').forEach(b => b.onclick = () => { const acc = b.dataset.reo === 'accept';
     dlg(`<h2>${acc ? 'Accept and reopen' : 'Decline the reopen request'}</h2><p class="muted">${acc ? 'The ticket opens again with a fresh target. The requester is emailed.' : 'The ticket stays closed. The requester is emailed your note.'}</p>
       <label>Note to the requester</label><textarea name="note" required maxlength="5000" placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea><div class="muted small">Spelling and short forms are tidied before it is sent.</div>`,
-      async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
+      async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }, acc ? 'Accept and reopen' : 'Decline'); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
   // phones: the three-dots menu holds the secondary actions
   $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
     ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
-  document.onkeydown = e => { if (!location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
+  document.onkeydown = e => { if (e.ctrlKey || e.metaKey || e.altKey || !location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
     const m = { h: 'hold', c: 'closed', r: 'rejected' }[e.key];
     if (m && targets.includes(m)) { sel.value = m; sync(); $('#act').note.focus(); }
     if (e.key === 't' && live) transfer(); };
@@ -973,7 +1002,7 @@ async function attention(main) {
     ${sec('bell', 'Escalated', a.escalated.length, tix(a.escalated), 'No open ticket is escalated.')}
     ${sec('cpause', 'On hold past the hold limit', a.stuck_hold.length, tix(a.stuck_hold), 'No hold has run past its limit.')}
     ${sec('users', 'Services with no provider', a.no_provider.length, `<div class="att-list">${a.no_provider.map(s => `<a class="att-row" href="#/c/services"><span><b>${esc(s.name)}</b><span class="psub">${s.open_count} active ticket${s.open_count === 1 ? '' : 's'}</span></span><span class="linkbtn">Map a provider</span></a>`).join('')}</div>`, 'Every service has a provider.')}
-    ${sec('mail', 'Emails that failed to send', a.failed_mail.length, `<div class="att-list">${a.failed_mail.map(n => `<div class="att-row"><span><b>${esc(n.subject)}</b><span class="psub">${esc(n.recipient)} · ${esc(n.last_error || '')}</span></span><button class="btn" data-n="${n.id}">Resend</button></div>`).join('')}</div>`, 'Every email went out.')}</div>`;
+    ${sec('mail', 'Emails that failed to send', a.failed_mail.length, `<div class="att-list">${a.failed_mail.map(n => `<div class="att-row"><span><b>${esc(n.subject)}</b><span class="psub">${esc(n.recipient)} · ${esc(n.last_error || '')}</span></span><button class="btn" data-n="${n.id}">Resend</button></div>`).join('')}</div>`, 'No email failed.')}</div>`;
   main.querySelectorAll('.ttable tbody tr').forEach(tr => { tr.onclick = e => { if (!e.target.closest('a')) location.hash = '#/c/t/' + tr.dataset.id; }; });
   main.querySelectorAll('[data-n]').forEach(b => b.onclick = async () => { await api(`/notifications/${b.dataset.n}/resend`, { method: 'POST' }); toast('Queued'); attention(main); });
 }
@@ -1155,11 +1184,11 @@ async function users(main, { sa }) {
         ${sa && u.id !== me.id ? `<label>Role</label><select name="role"><option value="provider" ${u.role === 'provider' ? 'selected' : ''}>Service provider</option><option value="tenant_admin" ${u.role === 'tenant_admin' ? 'selected' : ''}>Campus admin</option></select>` : ''}`,
         async f => { await api('/users/' + u.id, { method: 'PATCH', body: formVals(f) }); toast('Saved'); reload(); }); });
     main.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.r);
-      dlg(`<h2>Reset password?</h2><p>${esc(u.name)} gets a new temporary password by email and must set their own at next sign-in. Their old password stops working.</p>`,
-        async () => { const r = await api(`/users/${u.id}/reset-password`, { method: 'POST' }); showTemp('Password reset', u, r.temp_password); reload(); }); });
+      dlg(`<h2>Reset password?</h2><p>${esc(u.name)} gets a new temporary password by email (it works for 14 days) and must set their own at next sign-in. Their old password stops working and they are signed out everywhere.</p>`,
+        async () => { const r = await api(`/users/${u.id}/reset-password`, { method: 'POST' }); showTemp('Password reset', u, r.temp_password); reload(); }, 'Reset password'); });
     main.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.a), on = !u.is_active;
       dlg(`<h2>${on ? 'Activate' : 'Deactivate'} ${esc(u.name)}?</h2><p class="muted">${on ? 'They can sign in again. Add them back to services under Services.' : 'They can no longer sign in and are removed from their services. Their ticket history stays.'}</p>`,
-        async () => { await api('/users/' + u.id, { method: 'PATCH', body: { is_active: on ? 1 : 0 } }); toast(on ? 'Activated' : 'Deactivated'); reload(); }); });
+        async () => { await api('/users/' + u.id, { method: 'PATCH', body: { is_active: on ? 1 : 0 } }); toast(on ? 'Activated' : 'Deactivated'); reload(); }, on ? 'Activate' : 'Deactivate'); });
   };
   const save = () => sessionStorage.setItem('uf', JSON.stringify(st)), reload = () => users(main, { sa });
   draw();
@@ -1169,7 +1198,7 @@ function setOwnPassword() {
   document.body.className = 'console';
   app.innerHTML = `<div class="wrap hero" style="max-width:440px;padding-top:48px"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Set your <span>new password</span></h1><p class="muted">Hi ${esc(S.me.user.name.split(' ')[0])}, you signed in with a temporary password. Choose your own to continue.</p>
-    <form id="f" class="card"><label style="margin-top:0">Temporary password <small>(from your welcome email)</small></label><input name="current" type="password" required autofocus autocomplete="current-password">
+    <form id="f" class="card"><label style="margin-top:0">Temporary password <small>(from the email we sent you)</small></label><input name="current" type="password" required autofocus autocomplete="current-password">
     <label>New password <small>(8+ characters, letters and numbers)</small></label><input name="password" type="password" required autocomplete="new-password">
     <label>Confirm new password</label><input name="confirm" type="password" required autocomplete="new-password">
     <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn dark big">Save and continue ${I('chev', 18)}</button></p></form>
@@ -1177,7 +1206,8 @@ function setOwnPassword() {
   $('#lo').onclick = e => { e.preventDefault(); logout(); };
   $('#f').onsubmit = async e => { e.preventDefault(); const v = formVals(e.target);
     try { if (v.password !== v.confirm) throw new Error('The two new passwords do not match');
-      await api('/me/password', { method: 'POST', body: { current: v.current, password: v.password } }); S.me = null; toast('Password set. Your sign-in details were emailed to you.'); route();
+      const r = await api('/me/password', { method: 'POST', body: { current: v.current, password: v.password } }); if (r.token) { S.token = r.token; localStorage.setItem('tok', r.token); }
+      S.me = null; toast('Password set. Your sign-in details were emailed to you.'); route();
     } catch (er) { $('#err').textContent = er.message; } };
 }
 
@@ -1218,7 +1248,7 @@ async function reports(main, { sa }) {
     ${g ? `<div class="card"><b>All campuses</b><div class="muted small">As of now</div><div class="tblbox"><table class="rtable"><thead><tr><th>Campus</th><th>Open</th><th>On hold</th><th>Closed</th><th>Overdue</th></tr></thead><tbody>${g.map(t => `<tr><td><b>${esc(t.name)}</b></td><td>${t.open || 0}</td><td>${t.hold || 0}</td><td>${t.closed || 0}</td><td class="${t.overdue > 0 ? 'hot' : ''}">${t.overdue || 0}</td></tr>`).join('')}</tbody></table></div></div>` : ''}</div>`;
   api('/fair').then(f => { if ($('#lb')) wireFairBoard($('#lb'), f); });
   $('#rd').onchange = e => { sessionStorage.setItem('rd', e.target.value); reports(main, { sa }); };
-  $('#rcsv').onclick = () => { const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`, cols = ['name', 'raised', 'open', 'in_progress', 'hold', 'closed', 'rejected', 'overdue', 'on_time_pct', 'avg_hours'];
+  $('#rcsv').onclick = () => { const cell = v => { const x = String(v ?? ''); return `"${(/^[=+\-@\t\r]/.test(x) ? "'" + x : x).replace(/"/g, '""')}"`; }, cols = ['name', 'raised', 'open', 'in_progress', 'hold', 'closed', 'rejected', 'overdue', 'on_time_pct', 'avg_hours'];
     const csv = [`"Report","${r.days.from} to ${r.days.to}"`, '', ['Service', 'Raised', 'Open', 'In progress', 'On hold', 'Closed', 'Rejected', 'Overdue', 'On time %', 'Avg hours to close'].map(cell).join(','), ...r.by_service.map(s2 => cols.map(k => cell(s2[k])).join(',')),
       '', ['Day', 'Raised', 'Closed'].map(cell).join(','), ...days.map(d => [d, rm[d] || 0, cm[d] || 0].map(cell).join(','))].join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `report-${r.days.from}-to-${r.days.to}.csv`; a.click(); };
@@ -1237,7 +1267,7 @@ async function tenants(main) {
   main.innerHTML = `<p><button class="btn primary" id="add">+ New tenant</button></p><table><tr><th>Code</th><th>Name</th><th>Portal</th><th>Reopen days</th><th></th></tr>
     ${list.map(t => `<tr class="${t.is_active ? '' : 'dim'}"><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td><td><a href="#/d/${t.slug}" target="_blank">/d/${esc(t.slug)}</a></td><td>${t.reopen_window_days}</td>
     <td><button class="btn" data-t="${t.id}" data-a="${t.is_active ? 0 : 1}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('')}</table>
-    <p class="muted">To add a tenant admin, switch to the tenant (top right), then People → Add person → Tenant admin.</p>
+    <p class="muted">To add a campus admin, switch to the campus (top right), then People → Add person → Campus admin.</p>
     <div class="card"><b>Same-day duplicate reports</b><div class="muted small">When people report the same problem at the same place on the same day, later reports join the first ticket.</div>
       <label>When a report matches today's ticket</label><select id="mm"><option value="silent">Add it to that ticket automatically</option><option value="confirm">Ask the person "Same issue?" first</option></select></div>`;
   api('/merge-mode').then(m => { $('#mm').value = m.mode; });
@@ -1245,7 +1275,10 @@ async function tenants(main) {
   $('#add').onclick = () => dlg(`<h2>New tenant</h2><label>Code</label><input name="code" required placeholder="SMRU"><label>Name</label><input name="name" required>
     <label>Slug (URL)</label><input name="slug" required placeholder="smru"><label>Reopen window days</label><input name="reopen_window_days" type="number" value="7">`,
     async f => { const t = await api('/tenants', { method: 'POST', body: formVals(f) }); S.tenant = t.id; S.me = null; route(); });
-  main.querySelectorAll('[data-t]').forEach(b => b.onclick = async () => { await api('/tenants/' + b.dataset.t, { method: 'PATCH', body: { is_active: Number(b.dataset.a) } }); tenants(main); });
+  main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { const off = b.dataset.a === '0', nm = b.closest('tr')?.querySelector('b')?.textContent || 'this campus';
+    dlg(`<h2>${off ? 'Deactivate' : 'Activate'} ${esc(nm)}?</h2><p class="muted">${off ? 'Its portal closes: nobody can raise or track a ticket there, and its staff cannot work tickets, until you activate it again. Nothing is deleted.' : 'Its portal opens again and its staff can work tickets.'}</p>`,
+      async () => { await api('/tenants/' + b.dataset.t, { method: 'PATCH', body: { is_active: Number(b.dataset.a) } }); toast(off ? 'Campus deactivated' : 'Campus activated'); tenants(main); })
+      .querySelector('button[value=ok]').textContent = off ? 'Deactivate' : 'Activate'; });
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1541,7 +1574,9 @@ async function foodPage(main, { admin }) {
   // what was chosen (tab, dates, mess, opened meal) is kept per campus: another campus has other messes and meals
   const KEY = 'foodf:' + (S.tenant || ''), read = () => { try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch { return null; } };
   const st = read() || { tab: 'scores', range: 'week' }, q = new URLSearchParams(location.hash.split('?')[1] || '');
-  if (q.get('from')) { Object.assign(st, { range: 'custom', from: q.get('from'), to: q.get('to') || q.get('from'), tab: 'scores' }); delete st.meal; } // a report link opens the overview for its dates
+  const ymd = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null; // a date from a link or from memory is used only when it is a date
+  if (ymd(q.get('from'))) { Object.assign(st, { range: 'custom', from: q.get('from'), to: ymd(q.get('to')) || q.get('from'), tab: 'scores' }); delete st.meal; } // a report link opens the overview for its dates
+  if (!ymd(st.from)) delete st.from; if (!ymd(st.to)) delete st.to;
   const save = () => { try { sessionStorage.setItem(KEY, JSON.stringify(st)); } catch { /* kept for this visit only */ } };
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()), back = n => { const d = new Date(today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
   const span = () => st.range === 'day' ? [today, today] : st.range === 'week' ? [back(6), today] : st.range === 'month' ? [back(29), today] : [st.from || back(6), st.to || today];
@@ -1614,7 +1649,7 @@ async function foodPage(main, { admin }) {
       const cs = d.complaint_split;
       main.innerHTML = `${tabs}
         <div class="filters" style="margin-top:4px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-          ${st.range === 'custom' ? `<input type="date" id="ffrom" value="${from}"><input type="date" id="fto" value="${to}">` : ''}
+          ${st.range === 'custom' ? `<input type="date" id="ffrom" value="${esc(from)}"><input type="date" id="fto" value="${esc(to)}">` : ''}
           <select id="floc"><option value="">All messes / canteens</option>${d.locations.map(l => `<option value="${l.id}" ${st.location === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
           <button class="btn" id="fcsv">${I('copy', 16)} Export CSV</button></div>
         <div class="fsec-h"><h2>Feedback</h2><span class="muted small">Ratings and reviews from students · not tickets · ${pr.days[0] === pr.days.at(-1) ? pr.days[0] : `${pr.days[0]} → ${pr.days.at(-1)}`}</span></div>
@@ -1778,7 +1813,7 @@ async function profile(main) {
   const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
   const mine = u.role === 'provider' ? svcs.filter(s => s.members.some(m => m.id === u.id)) : svcs;
   main.innerHTML = `<div style="max-width:560px;margin:0 auto"><div class="profile"><div class="avatar">${u.name.split(' ').map(w => w[0]).slice(0, 2).join('')}</div>
-    <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
+    <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small">${esc(ROLE_LABEL[u.role] || u.role)}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
     <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b><span class="gold">${I('star', 18)}</span> ${fm?.eligible ? fm.score.toFixed(0) : '—'}</b><span>Fair Score${fm?.eligible ? ` · #${fm.rank}` : ''}</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
     ${fm ? `<div class="card fme"><b>My Fair Score${fm.eligible ? `: ${fm.score.toFixed(1)}` : ''}</b><div class="muted small">Last ${fair.cfg.window_days} days, compared with your team (${esc(fm.team)}). ${fm.eligible ? `Rank ${fm.rank} on this campus.` : `Ranked from ${fair.cfg.min_tickets} closed tickets; you have ${fm.tickets}.`}</div>
       ${fm.tickets ? FAIR_PARTS.map(([k, l]) => `<div class="fme-r"><span>${l}</span><i><b style="width:${fm.parts[k]}%"></b></i><em>${fm.parts[k]}</em></div>`).join('') : ''}
@@ -1788,14 +1823,15 @@ async function profile(main) {
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${tile(ic, 18)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}
       <a href="#" id="pw">${tile('shield', 18)}Change password<span class="chev">${I('chev', 18)}</span></a>
       <a href="#/settings">${tile('settings', 18)}Settings<span class="chev">${I('chev', 18)}</span></a>
-      ${canInstall() ? `<a href="#" class="install" onclick="return false">${tile('download', 18)}Install app<span class="chev">${I('chev', 18)}</span></a>` : ''}</div>
+      ${canInstall() ? `<a href="#" class="install">${tile('download', 18)}Install app<span class="chev">${I('chev', 18)}</span></a>` : ''}</div>
     <button class="btn big" id="lo" style="color:var(--warn)">${I('logout')} Log out</button></div>`;
-  $('#lo').onclick = logout;
+  $('#lo').onclick = () => logout();
   $('#pw').onclick = e => { e.preventDefault(); dlg(`<h2>Change password</h2><label>Current password</label><input name="current" type="password" required autocomplete="current-password">
     <label>New password <small>(8+ characters, letters and numbers)</small></label><input name="password" type="password" minlength="8" required autocomplete="new-password">
     <label>Confirm new password</label><input name="confirm" type="password" required autocomplete="new-password">`,
     async f => { if (f.elements.password.value !== f.elements.confirm.value) throw new Error('The two new passwords do not match');
-      await api('/me/password', { method: 'POST', body: formVals(f) }); toast('Password changed. Your sign-in details were emailed to you.'); }); };
+      const r = await api('/me/password', { method: 'POST', body: formVals(f) }); if (r.token) { S.token = r.token; localStorage.setItem('tok', r.token); }
+      toast('Password changed. Your sign-in details were emailed to you. Other devices are signed out.'); }); };
 }
 
 // ================= ONE DESK BOT =================
@@ -1814,7 +1850,7 @@ function botFor(url) { // url: '/public/<slug>/bot', '/bot', or null to hide the
     b = $('#botbtn');
     b.onclick = () => { const p = $('#botp'); p.hidden = !p.hidden; if (!p.hidden) { if (!$('#botlog').children.length) botAsk('help', true); $('#botf').q.focus(); } };
     $('#botx').onclick = () => { $('#botp').hidden = true; };
-    $('#botf').onsubmit = e => { e.preventDefault(); const q = e.target.q.value.trim(); if (q) { e.target.q.value = ''; botAsk(q); } };
+    $('#botf').dataset.fast = ''; $('#botf').onsubmit = e => { e.preventDefault(); const q = e.target.q.value.trim(); if (q) { e.target.q.value = ''; botAsk(q); } };
   }
   if (b) { b.hidden = !url; if (!url) $('#botp').hidden = true; }
 }
@@ -1831,7 +1867,11 @@ async function botAsk(q, quiet) {
 }
 
 // ================= ROUTER =================
+// Whatever was open on top of the last page (a pop-up, a sheet, a menu) goes when the page changes: it must not sit on, or act on, another page
+const closeOverlays = () => { document.querySelectorAll('dialog[open]').forEach(d => { try { d.close(); } catch { /* already closing */ } d.remove(); });
+  document.querySelectorAll('.msheet, .msheet-back, .asheet, .asheet-back').forEach(x => x.remove()); };
 async function route() {
+  closeOverlays();
   document.onkeydown = null; clearInterval(pollT); stickyInstall(); cornerMenu(location.hash); // Install button and the Sign in corner on every screen
   const [p, qs] = location.hash.slice(1).split('?'), q = new URLSearchParams(qs), seg = p.split('/').filter(Boolean);
   botFor(seg[0] === 'd' && seg[1] ? `/public/${seg[1]}/bot` : seg[0] === 'c' && S.token ? '/bot' : null); // the bot, for who is looking
@@ -1858,13 +1898,33 @@ async function route() {
     app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University"><h1>ONE <span>Desk</span></h1><p class="muted">St. Mary's Group service desk. Choose your campus.</p>
       ${camps.map((c, i) => `<a class="svc" href="#/d/${c.slug}"><span class="chip c${i % 5}">${I('building', 22)}</span><span class="t"><b>${esc(c.name)}</b><span class="muted small">${esc(c.code)}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}
       ${installBtn()}</div>`;
-  } catch (e) { app.innerHTML = `<div class="wrap"><h1>Not found</h1><p class="muted">${esc(e.message)}</p><a href="#/">Home</a></div>`; }
+  } catch (e) { // no connection is not "Not found": say what happened and offer to try again
+    app.innerHTML = e.offline ? `<div class="wrap"><h1>No connection</h1><p class="muted">${esc(e.message)}</p><p><button type="button" class="btn primary" id="retry">Try again</button></p></div>`
+      : `<div class="wrap"><h1>Not found</h1><p class="muted">${esc(e.message === 'Not found' ? 'This page does not exist, or it is not open right now.' : e.message)}</p><a href="#/">Home</a></div>`;
+    if ($('#retry')) $('#retry').onclick = () => route(); }
 }
+// Escape closes a sheet or menu that is open (native pop-ups already do)
+document.addEventListener('keydown', e => { if (e.key !== 'Escape') return;
+  const x = document.querySelector('.asheet .msheet-x, .msheet .msheet-x'); if (x) { x.click(); return; }
+  const open = document.querySelector('[aria-expanded="true"]'); if (open && !document.querySelector('dialog[open]')) open.click(); });
+// Every visible label is tied to its field (a tap on the label lands in the field, and screen readers say its name), and
+// icon-only links get a name. Done once here for every screen, whenever the page changes.
+const nameFields = root => {
+  root.querySelectorAll('label:not([for])').forEach(l => { if (l.querySelector('input, select, textarea')) return;
+    let n = l.nextElementSibling; while (n && n.matches('small, .muted, .hint')) n = n.nextElementSibling;
+    const f = n && (n.matches('input, select, textarea') ? n : n.matches('.row, .search, div') ? n.querySelector('input:not([type=hidden]), select, textarea') : null);
+    if (!f || f.getAttribute('aria-label') || f.labels?.length) return;
+    if (!f.id) f.id = 'fld' + (nameFields.n = (nameFields.n || 0) + 1); l.htmlFor = f.id; });
+  root.querySelectorAll('a.iconbtn:not([aria-label])').forEach(a => a.setAttribute('aria-label', 'Back'));
+  root.querySelectorAll('dialog:not([aria-label]):not([aria-labelledby])').forEach(d => { const h = d.querySelector('h2, h1'); if (h) { if (!h.id) h.id = 'dlgh' + (nameFields.n = (nameFields.n || 0) + 1); d.setAttribute('aria-labelledby', h.id); } });
+};
+new MutationObserver(() => { clearTimeout(nameFields.t); nameFields.t = setTimeout(() => nameFields(document.body), 60); }).observe(document.body, { childList: true, subtree: true });
 // #/install: the full "get the app" page, for a link or a QR code on a notice board
 function installPage() {
   document.body.className = '';
-  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/" onclick="if(history.length>1){history.back();return false}">${I('back')}</a><h1>App &amp; settings</h1></div>
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/" id="insback" aria-label="Back">${I('back')}</a><h1>App &amp; settings</h1></div>
     <div class="card"><div class="idlg-h" style="padding:0 0 10px"><img src="icon-192.png" alt="" width="48" height="48"><div><b>ONE Desk</b><div class="muted small">St. Mary's service desk · free</div></div></div><div id="ig"></div></div></div>`;
+  $('#insback').onclick = e => { if (history.length > 1) { e.preventDefault(); history.back(); } }; // back to where they came from, else the home page
   mountGuide($('#ig'), () => toast('ONE Desk installed. Find it on your home screen.'));
 }
 window.__toast = toast;
@@ -1878,7 +1938,7 @@ function cornerMenu(hash) {
     <div class="corner-menu" role="menu">
       <a href="${signed ? '#/c' : '#/login'}" role="menuitem">${I('user', 18)}<span><b>${signed ? 'Open my desk' : 'Staff sign in'}</b><small>Service providers and admins</small></span></a>
       <a href="#/settings" role="menuitem">${I('settings', 18)}<span><b>App &amp; settings</b><small>Steps for iPhone, Android, Mac or PC</small></span></a>
-      ${canInstall() ? `<a href="#" class="install" role="menuitem" onclick="return false">${I('download', 18)}<span><b>Install app</b><small>Add ONE Desk to this device</small></span></a>` : ''}
+      ${canInstall() ? `<a href="#" class="install" role="menuitem">${I('download', 18)}<span><b>Install app</b><small>Add ONE Desk to this device</small></span></a>` : ''}
     </div>`;
 }
 document.addEventListener('click', e => { const c = document.querySelector('.corner'); if (!c) return;

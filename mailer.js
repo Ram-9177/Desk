@@ -218,12 +218,17 @@ export function nextStep(p) {
     rejected: 'This ticket was not accepted. You can raise a new one any time.' }[p.status] || '';
 }
 
+// The site's public address as email links need it: a plain web address (https://name, with an optional port and folder),
+// without a slash at the end. One typed without http(s):// gets https://. Anything else (spaces, quotes, markup) is not used.
+export const cleanBase = v => { let u = String(v ?? '').trim().replace(/\/+$/, ''); if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return /^https?:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?(\/[a-z0-9._~-]+)*$/i.test(u) ? u : ''; };
 export function mailConfig(defaultBase) {
   const s = getSettings();
   let events = {}; try { events = JSON.parse(s.mail_events || '{}'); } catch { /* keep defaults */ }
   let templates = {}; try { templates = JSON.parse(s.mail_templates || '{}'); } catch { /* keep defaults */ }
   return { templates, url: s.pa_url ?? process.env.PA_EMAIL_FLOW_URL ?? '', key: s.pa_key ?? process.env.PA_EMAIL_FLOW_KEY ?? '',
-    base: s.public_base_url || process.env.PUBLIC_BASE_URL || defaultBase, sending: s.mail_enabled !== '0', events,
+    base: cleanBase(s.public_base_url) || cleanBase(process.env.PUBLIC_BASE_URL) || defaultBase, sending: s.mail_enabled !== '0', events,
     last_ok_at: s.mail_last_ok_at || null };
 }
 export const eventOn = (cfg, key) => cfg.events[key] !== false;
@@ -242,7 +247,7 @@ const WRAP = 'word-break:break-word;overflow-wrap:anywhere'; // a long link wrap
 // The top of every email: the university logo (from the site's public address; it needs https so mail apps load it), then
 // the ONE DESK bar with the campus and the strap line (Email page → Brand).
 export function emailHead(campus) {
-  const br = brandOf(), site = String(getSettings().public_base_url || process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+  const br = brandOf(), site = cleanBase(getSettings().public_base_url) || cleanBase(process.env.PUBLIC_BASE_URL);
   const logo = /^https:\/\//.test(site) || /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(site + '/') ? `${site}/logo.png` : '';
   return `${logo ? `<tr><td style="background:#ffffff;padding:16px 24px 12px"><img src="${esc(logo)}" width="150" alt="St. Mary's Rehabilitation University" style="display:block;width:150px;max-width:150px;height:auto;border:0"></td></tr>` : ''}
 <tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}${br.brand_strap ? `<div style="margin-top:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#f8c77a">${esc(br.brand_strap)}</div>` : ''}</td></tr>`;

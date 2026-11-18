@@ -127,6 +127,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
 -- minutes it has been on hold since then. Empty = since it was raised (or landed from the queue).
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS work_from TEXT;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS work_held INT DEFAULT 0;
+-- Each person on a ticket opens it with their own key. The one who raised it uses the ticket's (tracking_token); someone
+-- who joined it later has one here, so their page shows their own report and not the first person's.
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS token TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_token ON ticket_requestors(token) WHERE token IS NOT NULL;
+-- Sign-in sessions: a session carries this number, and stops working when it changes (password changed or reset, account switched off)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_v INT DEFAULT 0;
 -- When an admin issued the temporary password a new or reset account signs in with: it stops working after 14 days
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_issued_at TEXT;
 -- The password an email carries, kept only until that email is handed over: then it is masked in the stored copy and this is emptied

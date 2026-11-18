@@ -121,7 +121,8 @@ export function openGuideDialog(toast) {
   mountGuide(d.querySelector('.idlg-b'), () => { d.close(); toast?.('ONE Desk installed. Find it on your home screen.'); }, isIOS); // iPhone: its own steps only
 }
 document.addEventListener('click', async e => {
-  if (!e.target.closest('.install')) return;
+  const b = e.target.closest('.install'); if (!b) return;
+  if (b.tagName === 'A') e.preventDefault(); // a link styled as the Install button must not move the page
   if (promptEvt) { await installNow(); return; } // one-tap install (Android, Chrome, Edge); the buttons go once it is installed
   openGuideDialog(window.__toast);
 });
