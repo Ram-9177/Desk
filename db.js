@@ -126,7 +126,7 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS food_location_id TEXT;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS meal TEXT;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS food_category TEXT;
 CREATE INDEX IF NOT EXISTS t_food ON tickets(tenant_id, food_location_id, meal) WHERE meal IS NOT NULL;
--- meals and feedback tags are set by the admin per campus (Food scores → Settings); the four defaults apply until then
+-- meals and feedback tags are set by the admin per campus (Food scores → Settings); breakfast, lunch and dinner apply until then (and Snacks where a campus used it before)
 ALTER TABLE food_feedback DROP CONSTRAINT IF EXISTS food_feedback_meal_check;
 ALTER TABLE meal_windows DROP CONSTRAINT IF EXISTS meal_windows_meal_check;
 CREATE TABLE IF NOT EXISTS food_meals (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, name TEXT NOT NULL,

@@ -2,10 +2,10 @@
 
 Service desk for the St. Mary's Group campuses. Requestors raise and track tickets without logging in; service providers work the tickets within a working-hours SLA; admins set up campuses, services, people and emails.
 
-- **Requestors**: raise a ticket (email required), service-specific questions (Location: Block · Floor · Room; Student: Branch · Student ID · Department), photos, track by ticket number, add notes, reopen within 7 days.
+- **Requestors**: raise a ticket (email required), service-specific questions (Location: Block · Floor · Room; Student: Branch · Student ID · Department), photos, track with the link in any email about the ticket (or its number plus the email it was raised with), add notes, ask to reopen within 7 days.
 - **Service providers**: ticket cards, hold / resume / close / reject / transfer with notes, SLA clock on working hours (09:00–17:00, Mon–Sat by default), hold reasons with their own limits, points.
 - **Admins**: campuses, services with form types and question builder, people (add, reset password, deactivate), SLA & points, attention list, reports, audit log.
-- **Email**: sent through a Power Automate HTTP flow from the Digital Services mailbox, with editable templates per step (progress tracker, ticket details, latest updates).
+- **Email**: sent through a Power Automate HTTP flow from the Digital Services mailbox, with an editable template for each of the 26 steps (progress tracker, ticket details, the latest updates as one joined timeline).
 
 Stack: Node.js 24, Express, PostgreSQL (`pg`), plain JavaScript front end. The database holds everything except uploaded photos, which live in `data/uploads/`. Photos are kept as JPEG, PNG, GIF or WebP so every browser and email app shows them: the app shrinks photos to JPEG (at most 1920 px) on the phone before upload, and the server turns HEIC photos (iPhone and many Android cameras) into JPEG with `heic-decode`, which needs nothing installed on the server. The schema is created automatically on start.
 
@@ -20,7 +20,7 @@ cp .env.example .env      # DATABASE_URL=postgres://localhost/onedesk, SUPER_ADM
 npm start                 # http://localhost:4300
 ```
 
-On the first start with an empty database the server creates the super admin from `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD`. Remove those two lines from `.env` afterwards. (`npm run create-admin` does the same without starting the server.)
+On the first start the server creates the super admin from `SUPER_ADMIN_EMAIL` (and, if given, `SUPER_ADMIN_PASSWORD` as its temporary password; otherwise one is generated, emailed and written to the log). The first sign-in chooses the real password. Remove those two lines from `.env` afterwards. (`npm run add-super-admin` does the same without starting the server, and prints the temporary password.)
 
 ## Deploy (https://stmarys-desk.supercxo.ai)
 
@@ -98,7 +98,7 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 
 ### Add a super admin, or reset a forgotten super admin password
 
-**Built-in owner:** `sriram@smru.edu.in` is always kept an active super admin. On a deploy where that account is missing (or not a super admin), it is created and its temporary password is emailed **and written to the log**; an existing account (e.g. a campus admin) is simply made super admin and keeps its password (`pm2 logs one-desk --lines 30 --nostream`, look for "Temporary password"). It always signs in as super admin. (`OWNER_EMAIL` in `.env` changes or, left empty, turns this off.)
+**Built-in owner:** `sriram@smru.edu.in` is always kept an active super admin. On a deploy where that account is missing (or not a super admin), it is created and its temporary password is emailed **and written to the log**; an existing account (e.g. a campus admin) whose owner chose its password is simply made super admin and keeps that password; an account still on a password somebody else issued (new or reset, never signed in) gets a fresh temporary one by email instead (`pm2 logs one-desk --lines 30 --nostream`, look for "Temporary password"). An account made super admin leaves its teams. It always signs in as super admin. (`OWNER_EMAIL` in `.env` changes or, left empty, turns this off.)
 
 **Quickest, and works even when email doesn't:** on the server,
 
@@ -106,7 +106,7 @@ The server refuses to start with `NODE_ENV=production` unless `JWT_SECRET` is se
 cd ~/one-desk && npm run add-super-admin
 ```
 
-It uses `SUPER_ADMIN_EMAIL` from `.env`, makes that account an active super admin with a fresh temporary password, **prints the password on the screen**, emails it, says whether the email went out (and why not), and lists the last emails sent to that address. Sign in, choose your own password, done.
+It uses the address you give (`npm run add-super-admin -- you@example.com`), else `SUPER_ADMIN_EMAIL` from `.env`, else the built-in owner (not when `OWNER_EMAIL=` is set empty: then it asks for an address). It makes that account an active super admin with a fresh temporary password, **prints the password on the screen**, emails it, says whether the email went out (and why not), and lists the last emails sent to that address. Sign in, choose your own password, done.
 
 Or let the app do it on restart:
 
@@ -117,7 +117,7 @@ cd ~/one-desk && nano .env      # add:  SUPER_ADMIN_EMAIL=you@example.com   (SUP
 pm2 restart one-desk && pm2 logs one-desk --lines 5 --nostream    # expect "Super admin you@example.com: created; the sign-in details were emailed"
 ```
 
-With only the email, a temporary password is generated and emailed (once; later restarts say "already set up"). Forgot it later? Use **Forgot password?** on the sign-in page: a temporary password, valid 1 hour, is emailed (this works for every staff account). With `SUPER_ADMIN_PASSWORD` too, that account becomes a super admin with that password as a **temporary** one: the sign-in details are emailed to it, and the first sign-in must choose a new password (which is emailed too). Nobody else is changed. Each email + password pair is applied once, so later restarts keep the chosen password; change the line to reset it again. (`npm run add-super-admin` with the same two variables does it without a restart.)
+With only the email, a temporary password is generated and emailed (once; later restarts say "already set up"). Forgot it later? Use **Forgot password?** on the sign-in page: a temporary password, valid 1 hour, is emailed (this works for every staff account; one an hour, and asking again does not cancel the one already sent). With `SUPER_ADMIN_PASSWORD` too, that account becomes a super admin with that password as a **temporary** one: the sign-in details are emailed to it, and the first sign-in must choose a new password (which is emailed too). Nobody else is changed. Each email + password pair is applied once, so later restarts keep the chosen password; change the line to reset it again. (`npm run add-super-admin` with the same two variables does it without a restart.)
 
 ## Add a new campus (tenant)
 
@@ -135,7 +135,7 @@ Super admin → **Tenants → Add**: code (e.g. `VJA`), name, slug (e.g. `vijaya
 
 ## Food & catering: feedback or complaint
 
-Set a service's **form type to Food** (Services → Edit). Tapping it then shows two stacked choices on one screen: **Share feedback** (open by default: the day, the meal, stars, quick tags, a review; no ticket, one rating per meal per device a day) and **Report a problem** (a normal ticket; photos optional; the same category at the same mess on the same day joins one ticket). Meals, serving times, feedback tags and messes / canteens are set per campus under Food scores → Meals, places & tags (Breakfast, Lunch, Dinner until then).
+Set a service's **form type to Food** (Services → Edit). Tapping it then shows two stacked choices on one screen: **Share feedback** (open by default: the day, the meal, stars, quick tags, a review; no ticket, one rating per meal per device a day) and **Report a problem** (a normal ticket; photos optional; the same category at the same mess on the same day joins one ticket). Meals, serving times, feedback tags (and which of them are praise) and messes / canteens are set per campus under Food scores → Meals, places & tags (Breakfast, Lunch, Dinner until then; a campus that used Snacks before keeps it). A meal can be rated from the time it is served. One Food team per campus.
 
 - **Food scores** (staff menu; the food team and admins): today's score per meal, trends, top issues, comments, CSV export, the complaints queue, and for admins the messes / canteens and meal times.
 - **Reports** (feedback only) go to the food service's providers at 10:00 PM campus time: daily, weekly on Sunday, monthly on the last day. Charts are PNG images so Outlook shows them. ONE Desk sends them itself through the email connection; set `FOOD_REPORT_AUTOSEND=0` to send them from Power Automate instead.
@@ -143,7 +143,7 @@ Set a service's **form type to Food** (Services → Edit). Tapping it then shows
 
 ## Notice board
 
-Teams post notices for students (Notices in the staff menu): a title, a message, up to 3 files (photos, PDF, Word, Excel; 10 MB each), who it is for, an optional start and end, and an **Important** switch. Campus admins post for any team or the whole campus; a team's providers post for their own team (and its sub-teams). New teams appear in the team list as soon as they are created.
+Teams post notices for students (Notices in the staff menu): a title, a message, up to 3 files (photos, PDF, Word, Excel; 10 MB each), who it is for, an optional start and end, and an **Important** switch. Campus admins post for any team or the whole campus; a team's providers post for their own team (and its sub-teams). New teams appear in the team list as soon as they are created. Word and Excel files are checked (plain documents only, nothing with macros); start and end times are India time; a notice shows only while it is published, inside its dates and its team is active.
 
 - **Campus page**: a Notice board card (important first, then the latest three; "See all" for the rest; an "I'm" filter).
 - **Before a ticket**: when a student picks a team that has a live notice, the notice pops up first with **This answers my question** (no ticket) and **I still need to raise a ticket** (the form). A ticket raised after that carries an internal line "The requester read the notice …".
@@ -151,12 +151,21 @@ Teams post notices for students (Notices in the staff menu): a title, a message,
 
 ## Replies to requesters
 
-Every public reply (a note, work started, on hold, resumed, closed, rejected) is tidied on this server before the requester sees it (`polish.js`: a British English dictionary, short-forms and four safe typing-slip rules; no API, nothing leaves the machine; names, places, codes, emails and links stay as typed), shown to the provider in **Check before sending** with the exact email, and sent inside a Hi / note / Thank you template signed with the provider's name and team. Ready-made sentences per step are edited on the Email page (whole campus or one team). Brand lines (logo, Learn · Live · Grow, the ONE strip, the welcome message) are edited there too.
+Every public reply (a note, work started, on hold, resumed, closed, rejected, moved, reopened) is tidied on this server before the requester sees it (`polish.js`: prepared lists only: short-forms and a table of common typing slips in `typos.json`, capitals at sentence starts, a full stop at the end; no dictionary at run time, no API, nothing leaves the machine; names, capitals, places, codes, emails and links stay as typed), shown to the provider in **Check before sending** with the exact email and how many people get it, and sent inside a Hi / note / Thank you template signed with the provider's name and team. `npm run build-typos` rebuilds `typos.json` from the word list in `tools/build-typos.mjs` (it needs the dev dependencies; the server does not). Ready-made sentences per step are edited on the Email page (whole campus or one team). Brand lines (logo, Learn · Live · Grow, the ONE strip, the welcome message) are edited there too.
 
 ## Morning brief and Fair Score
 
-- **Morning brief** (08:30 campus time, working days): campus admins get the whole campus's counts and open tickets; each provider gets their own team's. "Send this campus's brief now" is on the Email page.
-- **Fair Score** (SLA & points): providers are ranked against their own team's usual pace, on-time rate, reopens and load, so busy and quiet teams compare fairly. Weights, the minimum number of tickets and the windows are set per campus.
+- **Morning brief** (between 08:30 and 11:00 campus time, working days, once a day): campus admins get the whole campus's counts and open tickets; each provider gets their own team's. After a day off it counts "Since Saturday" instead of "Yesterday". "Send this campus's brief now" is on the Email page (campus admins: above their delivery log).
+- **Fair Score** (SLA & points): providers are ranked against their own team's usual pace, on-time rate, reopens and load, so busy and quiet teams compare fairly. A ticket's work time starts when it reached the team that has it (moved in from another team or reopened: the time before is nobody's); evening work counts the minutes it took; a ticket someone raised and closed themselves is left out of Pace. Weights, the minimum number of tickets and the windows are set per campus.
+
+## Emails, privacy and sign-in
+
+- **Joined tickets**: when several people report the same problem at the same place on the same day, it is one ticket. Each person gets emails and a ticket page with their own words and photos; nobody is sent another reporter's student ID, description or photos.
+- **Opening a ticket**: the link in the email (it carries the ticket's key), or Track ticket with the number and the email it was raised with. The number alone opens nothing.
+- **Passwords in emails**: the stored copy of a sign-in email shows dots once the email has been handed over. A temporary password an admin issues works 14 days; "Forgot password?" gives one that works 1 hour.
+- **Sessions** end when the password is changed or reset or the account is switched off. Ten wrong passwords for one account stop that account for 15 minutes.
+- **Email links** use `PUBLIC_BASE_URL` (or the public address saved on the Email page). It is not guessed from visits: set it.
+- Pages are served with a Content-Security-Policy (the app's own scripts only).
 
 ## Tests
 
@@ -164,7 +173,7 @@ Every public reply (a note, work started, on hold, resumed, closed, rejected) is
 npm test
 ```
 
-Needs a local Postgres where you can create databases (default `postgres://localhost/postgres`; override with `TEST_DATABASE_URL`). Starts ONE Desk on a throwaway database, dropped afterwards (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors.
+Needs a local Postgres where you can create databases (default `postgres://localhost/postgres`; override with `TEST_DATABASE_URL`). Starts ONE Desk on a throwaway database, dropped afterwards (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation, notices, food, replies, the morning brief, Fair Score, sign-in rules — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors. About 1,000 checks, 5 minutes.
 
 ## Campus data from files (provision/)
 
