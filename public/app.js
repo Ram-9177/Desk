@@ -966,7 +966,9 @@ function actionSheet(title, rows) {
 }
 
 async function newTicket(main) {
-  const services = (await api('/services')).filter(s => s.is_active);
+  // teams that take tickets: active, and (a sub-team) under an active main team
+  const every = await api('/services'), services = every.filter(s => s.is_active && (!s.parent_id || every.find(p => p.id === s.parent_id)?.is_active));
+  const idem = crypto.randomUUID?.() || String(Date.now()) + Math.random(); // the same form sent twice (a slow line, a second tap) makes one ticket
   if (!services.length) { main.innerHTML = `<div class="empty card">${I('grid', 40)}<p><b>No services on this campus yet.</b></p>
     <p class="muted">A ticket always belongs to a service. ${S.me.user.role === 'provider' ? 'Ask your admin to add one.' : '<a href="#/c/services">Add a service</a> first, then come back here.'}</p></div>`; return; }
   main.innerHTML = `<form id="f" class="card" style="max-width:720px">
@@ -987,7 +989,7 @@ async function newTicket(main) {
   drawCf(); $('#svc').onchange = drawCf;
   $('#f').channel.onchange = e => { const internal = e.target.value === 'internal'; $('#who').style.display = internal ? 'none' : ''; $('#f').email.required = !internal; };
   $('#f').onsubmit = async e => { e.preventDefault();
-    try { const t = await api('/tickets', { method: 'POST', body: { ...formVals(e.target), form_data: collectForm(e.target, svcOf()), files: await readFiles(document.querySelectorAll('.f-nt')) } });
+    try { const t = await api('/tickets', { method: 'POST', body: { ...formVals(e.target), form_data: collectForm(e.target, svcOf()), idempotency_key: idem, files: await readFiles(document.querySelectorAll('.f-nt')) } });
       toast('Created ' + t.ticket_no); location.hash = '#/c/t/' + t.id; } catch (er) { toast(er.message); } };
 }
 
