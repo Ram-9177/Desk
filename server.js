@@ -9,9 +9,9 @@ import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor, goodChipsOf } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME, safeName } from './images.js';
-import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
+import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor, maskSecret, HOW_IT_WORKS } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
+import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES, isEmail } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -56,8 +56,16 @@ const wrap = fn => (req, res, next) => {
 const mw = fn => (req, res, next) => fn(req, res, next).catch(next);
 const audit = async (req, action, entity, entity_id, meta = {}) =>
   await insert('audit_logs', { id: uid(), tenant_id: req.tenantId || null, actor_id: req.user?.id, action, entity, entity_id, meta: JSON.stringify(meta), created_at: now() });
+// A change to a setting of the whole installation (the mail connection, email wording, how duplicates merge): it belongs to no
+// campus, so it is kept apart from every campus's own log (only super admins see it).
+const auditAll = (req, ...a) => audit({ user: req.user }, ...a);
 const req_ = (v, m) => { if (v === undefined || v === null || String(v).trim() === '') throw bad(m); return v; };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const tzOk = tz => { try { new Intl.DateTimeFormat('en', { timeZone: String(tz) }); return typeof tz === 'string' && tz.trim() !== ''; } catch { return false; } };
+// The one address an email goes to: trimmed and lower-cased once; '' when it is not exactly one address.
+const oneEmail = raw => { const e = String(raw ?? '').trim().toLowerCase(); return isEmail(e) ? e : ''; };
+// Text that must stay on one line (a name, a subject): control characters and line breaks become a space.
+const oneLine = (raw, max) => String(raw ?? '').replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeEq = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 // JWT HS256 (minimal)
@@ -104,6 +112,17 @@ const myServiceIds = async (u, tenantId) => isAdmin(u)
 const tenantBySlug = async slug => { const t = await one('SELECT * FROM tenants WHERE slug=? AND is_active=1', slug); if (!t) throw notFound(); return t; };
 const providersFor = async (tenantId, serviceId) => await all(`SELECT u.id,u.name,u.email,u.phone FROM service_members m JOIN users u ON u.id=m.user_id
   WHERE m.tenant_id=? AND m.service_id=? AND u.is_active=1`, tenantId, serviceId);
+// The people who work a team's tickets: its own members. A sub-team with no members of its own is worked by its main team's.
+const handlersOf = async (tenantId, serviceId) => {
+  const own = await providersFor(tenantId, serviceId); if (own.length) return own;
+  const parent = (await one('SELECT parent_id FROM services WHERE id=?', serviceId))?.parent_id;
+  return parent ? await providersFor(tenantId, parent) : [];
+};
+// Who is emailed about a team's ticket: the people who work it. With nobody at all, the campus admins, so no ticket waits unseen.
+const teamEmails = async (tenantId, serviceId) => {
+  const h = await handlersOf(tenantId, serviceId);
+  return (h.length ? h : await all("SELECT email FROM users WHERE tenant_id=? AND is_active=1 AND role='tenant_admin'", tenantId)).map(p => p.email);
+};
 async function targetHours(tenantId, serviceId, priority) {
   const parent = serviceId ? (await one('SELECT parent_id FROM services WHERE id=?', serviceId))?.parent_id : null; // a sub-team uses its main team's SLA when it has none
   const r = await one('SELECT target_hours h FROM sla_policies WHERE tenant_id=? AND service_id=? AND priority=?', tenantId, serviceId, priority)
@@ -124,7 +143,8 @@ async function award(t, userId, points, reason) {
 async function leaveHold(t, ts) {
   const held = workingBetween(await calOf(t.tenant_id), t.hold_started_at, ts);
   if (t.hold_due_at && ts > t.hold_due_at) await award(t, t.hold_by, POINTS.holdBreach, 'Hold ran past its hold SLA');
-  return { held, due: t.due_at ? addWorking(await calOf(t.tenant_id), t.due_at, held) : null }; // a suggestion has no target to move
+  // a suggestion has no target to move; a hold of no working time (put on hold and resumed outside working hours) leaves the target where it is
+  return { held, due: t.due_at ? (held > 0 ? addWorking(await calOf(t.tenant_id), t.due_at, held) : t.due_at) : null };
 }
 
 // Validate and normalise a service's custom form (built in the admin's field builder).
@@ -159,7 +179,7 @@ function buildFormCheck(schema, data = {}, skip = () => false) {
     if (f.required && empty) { missing.push(f.label); errs[f.key] = `Please fill in: ${f.label}`; continue; }
     if (empty) continue;
     const why = f.type === 'number' && isNaN(Number(v)) ? 'must be a number'
-      : f.type === 'email' && !/^\S+@\S+\.\S+$/.test(v) ? 'not a valid email'
+      : f.type === 'email' && !isEmail(String(v).trim()) ? 'not a valid email'
       : f.type === 'select' && !(f.options || []).includes(v) && !isOtherAnswer(f.options, v) ? 'pick one of the options'
       : f.type === 'multi_select' && (!Array.isArray(v) || v.some(x => !(f.options || []).includes(x))) ? 'pick from the options' : '';
     if (why) errs[f.key] = `${f.label}: ${why}`;
@@ -211,14 +231,35 @@ async function notify(t, recipients, key, vars = {}, { hold } = {}) { // hold: w
   const v = { login_link: `${base()}/#/login`, ...vars }, { subject, body } = renderTemplate(cfg, key, v);
   const blocks = Object.fromEntries(BLOCKS.filter(b => v[b]).map(b => [b, v[b]]));
   const html = renderEmail({ subject, body, campus: t.tenant_id ? (await tenantRow(t.tenant_id))?.name : '', blocks, requester: eventByKey(key)?.who === 'Requestor' }), text_body = toText(body, blocks, eventByKey(key)?.who === 'Requestor');
+  // an email that carries a password remembers it only until it is handed over (see scrub)
+  const secret = PW_MAILS.includes(key) ? String(v.password || v.temp_password || '') || null : null;
+  let queued = 0;
   for (const to of [...new Set(recipients.filter(Boolean))]) {
     const id = uid();
     await insert('notifications', { id, tenant_id: t.tenant_id, ticket_id: t.id || null, recipient: to, template_key: key,
-      subject, body, html, text_body, status: hold ? 'logged' : on ? 'queued' : 'skipped',
+      subject, body, html, text_body, secret, status: hold ? 'logged' : on ? 'queued' : 'skipped',
       last_error: hold ? 'Held: account added from provision/ at start-up. Use Resend to send it.' : null, created_at: now() });
-    if (on && !hold) queue.push(id);
+    if (on && !hold) { queue.push(id); queued++; }
   }
+  return queued; // how many are on their way (0: this email is switched off, or held)
 }
+// Emails that carry a password. The stored copy keeps it only while the email may still have to go out: once it is handed
+// over, the password is replaced by dots. A copy that never went is masked when the password in it has stopped working:
+// a "forgot password" one after its hour, an invite or reset once the person has chosen their own password (or the
+// temporary one ran out, TEMP_PW_DAYS after an admin issued it), a "password changed" notice as soon as it is not waiting.
+const PW_MAILS = ['invite', 'password_reset', 'password_forgot', 'password_changed'], TEMP_PW_DAYS = 14;
+const tempPwDead = iso => !!iso && iso < addH(now(), -24 * TEMP_PW_DAYS);
+async function scrub(n) {
+  if (!n?.secret) return;
+  await run('UPDATE notifications SET body=?, html=?, text_body=?, secret=NULL WHERE id=?', maskSecret(n.body, n.secret), maskSecret(n.html, n.secret), maskSecret(n.text_body, n.secret), n.id);
+}
+async function scrubOld() {
+  for (const n of await all(`SELECT n.id, n.body, n.html, n.text_body, n.secret FROM notifications n WHERE n.secret IS NOT NULL AND (n.status='sent'
+    OR (n.template_key='password_forgot' AND n.created_at<?) OR (n.template_key='password_changed' AND n.status<>'queued')
+    OR (n.template_key IN ('invite','password_reset') AND NOT EXISTS (SELECT 1 FROM users u WHERE lower(u.email)=lower(n.recipient) AND u.is_active=1 AND u.must_change_pw=1 AND (u.pw_issued_at IS NULL OR u.pw_issued_at>=?))))
+    LIMIT 500`, addH(now(), -1), addH(now(), -24 * TEMP_PW_DAYS))) await scrub(n);
+}
+setInterval(() => scrubOld().catch(e => console.error('mask passwords', e.message)), 600e3); setTimeout(() => scrubOld().catch(e => console.error('mask passwords', e.message)), 8000);
 // A ticket waiting in its team's daily queue: its place in the line (1 = next), how many wait, and the day it reaches the team.
 async function queueInfo(t) {
   if (!t.queued) return null;
@@ -238,16 +279,18 @@ async function ticketVars(t, extra = {}, sim = null) {
   const tn = await tenantRow(t.tenant_id), svc = await one('SELECT name FROM services WHERE id=?', t.service_id), r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
   const svcRow = await one('SELECT name, form_schema FROM services WHERE id=?', t.service_id), fd = JSON.parse(t.form_data || '{}'), held = t.status === 'hold';
   const answers = fieldsOf(JSON.parse(svcRow?.form_schema || '{}')).filter(f => !f.key.startsWith('loc_')).map(f => [f.label, Array.isArray(fd[f.key]) ? fd[f.key].join(', ') : fd[f.key]]).filter(([, a]) => a !== undefined && a !== '');
-  const provs = await providersFor(t.tenant_id, t.service_id), provNames = provs.map(p => p.name).join(', ');
+  const provs = await handlersOf(t.tenant_id, t.service_id), provNames = provs.map(p => p.name).join(', ');
   const escName = t.escalated_to ? (await one('SELECT name FROM users WHERE id=?', t.escalated_to))?.name || '' : '';
   const q = t.status === 'open' ? await queueInfo(t) : null;
   const sug = t.kind === 'suggestion';
   const progress = { suggestion: sug, ...(q ? { queue_no: q.queue_no, queue_ahead: q.ahead, lands_on: q.lands_on, daily_cap: q.daily_cap } : {}), escalated_to: [...ACTIVE, 'hold'].includes(t.status) ? escName : '', status: t.status, service: svc?.name, due: sug ? '' : fmtIST(t.due_at), reopen_days: tn.reopen_window_days, closed_at: t.closed_at ? fmtIST(t.closed_at) : '',
     hold_reason: held && t.hold_reason ? holdReasons(tn).find(x => x.key === t.hold_reason)?.label || '' : '', resume_by: held && t.hold_due_at ? fmtIST(t.hold_due_at) : '' };
-  const ticket_details = [['Ticket', t.ticket_no], ['Service', svc?.name], ['Subject', t.subject], ['Description', t.description], ['Location', t.location], ...answers,
-    ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)],
-    ...(q ? [['Queue number', `${q.queue_no} · reaches the team on ${q.lands_on}`]] : []), ...(!sug && [...ACTIVE, 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []),
-    ['Handled by', provNames || 'Being assigned']].filter(([, x]) => x !== undefined && x !== null && String(x).trim() !== '').map(([k, x]) => [k, String(x)]);
+  const rows = list => list.filter(([, x]) => x !== undefined && x !== null && String(x).trim() !== '').map(([k, x]) => [k, String(x)]);
+  // the facts every reporter of the ticket shares (see forReporter): the ticket, its place and problem, where it stands
+  const shared = { head: rows([['Ticket', t.ticket_no], ['Service', svc?.name]]), place: rows([['Location', t.location], ['Problem', String(t.problem_key || '').startsWith('other:') ? '' : t.problem_label]]),
+    tail: rows([...(q ? [['Queue number', `${q.queue_no} · reaches the team on ${q.lands_on}`]] : []), ...(!sug && [...ACTIVE, 'hold'].includes(t.status) ? [['Target', fmtIST(t.due_at)]] : []), ['Handled by', provNames || 'Being assigned']]) };
+  const ticket_details = [...shared.head, ...rows([['Subject', t.subject], ['Description', t.description], ['Location', t.location], ...answers,
+    ['Priority', t.priority[0].toUpperCase() + t.priority.slice(1)], ['Raised on', fmtIST(t.created_at)]]), ...shared.tail];
   // photos: the ones sent with the ticket go with its details, later ones with the update they came with
   const files = await all('SELECT event_id, file_name, mime_type, storage_key FROM attachments WHERE ticket_id=? ORDER BY created_at', t.id);
   const pics = id => files.filter(f => f.event_id === id && Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
@@ -259,102 +302,140 @@ async function ticketVars(t, extra = {}, sim = null) {
     note: '#1e4b8f', reopened: '#0E9384', reopen_requested: '#0E9384', reopen_declined: '#667085', transferred: '#6172F3' };
   const evs = [...(sim?.event ? [sim.event] : []), ...await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)];
   const inTeam = new Set(provs.map(p => p.id));
-  const timeline = { more: evs.length > 5, ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`, items: evs.slice(0, 5).map(e => {
+  const timeline = { more: evs.length > 5, ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}?c=${t.tenant_id}`, items: evs.slice(0, 5).map(e => { // ?c=: a super admin lands in the ticket's campus
     const m = JSON.parse(e.meta || '{}'), staff = e.actor_type === 'user', st = e.event_type === 'status_changed';
     const title = { created: 'Ticket received', landed: `Reached the ${e.to_value} team`, escalated: `Escalated to ${e.to_value}`, note: staff ? 'Reply from the team' : 'Note added', reopened: 'Reopened',
       reopen_requested: 'Asked to reopen', reopen_declined: 'Kept closed', transferred: `Moved to the ${e.to_value} team`,
       status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type.replace(/_/g, ' ');
     const auto = /^Escalated automatically: the ticket passed (.+?)\.?$/.exec(e.body || ''); // rows written before the wording changed
     return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), title, tone: e.event_type === 'note' && !staff ? '#0BA5EC' : TONE[st ? e.to_value : e.event_type] || '#1e4b8f',
-      by: staff || e.actor_type === 'requestor' ? { id: e.actor_id || (!staff && e.event_type === 'created' ? t.requestor_id : null), name: e.actor_name || '', requestor: !staff, team: staff && inTeam.has(e.actor_id) ? svc?.name || '' : '' } : null,
+      by: staff || e.actor_type === 'requestor' ? { id: e.actor_id || (staff ? null : t.requestor_id), name: e.actor_name || '', requestor: !staff, team: staff && inTeam.has(e.actor_id) ? svc?.name || '' : '' } : null,
       body: ['created', 'landed'].includes(e.event_type) ? '' : auto ? `The ticket passed ${auto[1]}, so a senior officer is now following it up.` : e.body || '',
       photos: e.event_type === 'created' || !e.id ? [] : pics(e.id) };
   }) };
-  return { progress, ticket_details, timeline, escalated_to_name: escName,
+  return { progress, ticket_details, shared_details: shared, timeline, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
     requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), kind: sug ? 'Suggestion' : 'Ticket', due: sug ? 'No target (suggestion)' : fmtIST(t.due_at),
     providers: provNames, ticket_link: timeline.ticket_link, staff_link: timeline.staff_link,
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, queue_no: q?.queue_no ?? '', lands_on: q?.lands_on || '', queue_note: queueNote(q), ...extra };
 }
-const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' };
+const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' }, UNIVERSITY = "St. Mary's Rehabilitation University";
 // The requestor's step-by-step guide the app serves (public/guide), linked from a requestor's first ticket email.
 const guideLink = kind => ({ kind, url: `${base()}/guide/${kind}.html` });
 const staffVars = async (u, pw) => {
   const svcs = (await all('SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.is_active=1 ORDER BY s.name', u.id)).map(r => r.name);
-  return { staff_name: u.name, staff_email: u.email, temp_password: pw, campus: u.tenant_id ? (await tenantRow(u.tenant_id))?.name : 'ONE Desk', role_name: ROLE_NAMES[u.role] || 'Staff',
-    guide: { kind: 'provider', url: PROVIDER_GUIDE }, // the welcome email links the provider guide
-    services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
+  // each role reads what is true for it: a campus admin gets no "new ticket" emails, a super admin has every campus
+  return { staff_name: u.name, staff_email: u.email, temp_password: pw, campus: u.tenant_id ? (await tenantRow(u.tenant_id))?.name : UNIVERSITY, role_name: ROLE_NAMES[u.role] || 'Staff',
+    how_it_works: HOW_IT_WORKS[u.role] || HOW_IT_WORKS.provider,
+    ...(u.role === 'super_admin' ? {} : { guide: { kind: 'provider', url: PROVIDER_GUIDE } }), // the welcome email links the provider guide (how tickets are worked)
+    services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : u.role === 'super_admin' ? 'All campuses' : 'All services of your campus' };
 };
 const trackUrl = async (t) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${t.tracking_token}`; };
 // Statuses: queued → sent | failed (after 4 tries); 'logged' = no flow connected or sending paused (printed to the server log only).
+const RETRY_MS = [60e3, 300e3, 1800e3], sending = new Set(), waiting = new Set(); // sending: being handed over now · waiting: a retry is timed
+const retryLater = (id, a) => { waiting.add(id); setTimeout(() => { waiting.delete(id); queue.push(id); }, RETRY_MS[Math.min(a, RETRY_MS.length) - 1]); };
 async function sendOne(id) {
-  const n = await one('SELECT * FROM notifications WHERE id=?', id); if (!n || n.status !== 'queued') return;
-  const cfg = mailConfig(BASE);
-  if (!cfg.url || !cfg.sending) {
-    console.log(`✉  ${n.recipient} — ${n.subject}`);
-    return await run("UPDATE notifications SET status='logged', last_error=? WHERE id=?", cfg.url ? 'Sending is paused' : 'No Power Automate flow connected', id);
-  }
-  const campus = n.tenant_id ? (await one('SELECT name FROM tenants WHERE id=?', n.tenant_id))?.name : '';
-  const r = await postToFlow(cfg, { to: n.recipient, subject: n.subject, html: n.html || renderEmail({ subject: n.subject, body: n.body, campus }), text: n.text_body || toText(n.body) });
-  if (r.ok) { await run("UPDATE notifications SET status='sent', sent_at=?, attempts=attempts+1, last_error=NULL WHERE id=?", now(), id); await setSetting('mail_last_ok_at', now()); return; }
-  const a = n.attempts + 1;
-  await run('UPDATE notifications SET attempts=?, last_error=?, status=? WHERE id=?', a, `${r.status || 'network'}: ${r.hint}`, a >= 4 ? 'failed' : 'queued', id);
-  if (a < 4) setTimeout(() => queue.push(id), [60e3, 300e3, 1800e3][a - 1]);
+  if (sending.has(id)) return; // the same email asked for twice (two taps on Resend): it goes once
+  sending.add(id);
+  try {
+    const n = await one('SELECT * FROM notifications WHERE id=?', id); if (!n || n.status !== 'queued') return;
+    const cfg = mailConfig(BASE);
+    if (!cfg.url || !cfg.sending) {
+      console.log(`✉  ${n.recipient} — ${n.subject}`);
+      return await run("UPDATE notifications SET status='logged', last_error=? WHERE id=?", cfg.url ? 'Sending is paused' : 'No Power Automate flow connected', id);
+    }
+    const campus = n.tenant_id ? (await one('SELECT name FROM tenants WHERE id=?', n.tenant_id))?.name : '';
+    const r = await postToFlow(cfg, { to: n.recipient, subject: n.subject, html: n.html || renderEmail({ subject: n.subject, body: n.body, campus }), text: n.text_body || toText(n.body) });
+    if (r.ok) { await run("UPDATE notifications SET status='sent', sent_at=?, attempts=attempts+1, last_error=NULL WHERE id=?", now(), id); await scrub(n); await setSetting('mail_last_ok_at', now()); return; }
+    const a = n.attempts + 1;
+    await run('UPDATE notifications SET attempts=?, last_error=?, status=? WHERE id=?', a, `${r.status || 'network'}: ${r.hint}`, a >= 4 ? 'failed' : 'queued', id);
+    if (a < 4) retryLater(id, a);
+  } catch (e) { // something went wrong on this side (the database, most likely): it counts as a try, so the email is retried or shown as failed, never left waiting unseen
+    console.error('mail', e.message);
+    try {
+      const n = await one('SELECT attempts, status FROM notifications WHERE id=?', id);
+      if (n?.status === 'queued') { const a = n.attempts + 1; await run('UPDATE notifications SET attempts=?, last_error=?, status=? WHERE id=?', a, `server: ${String(e.message).slice(0, 200)}`, a >= 4 ? 'failed' : 'queued', id); if (a < 4) retryLater(id, a); }
+    } catch (e2) { console.error('mail', e2.message); retryLater(id, 1); } // even that failed: try again in a minute
+  } finally { sending.delete(id); }
 }
-setInterval(() => { while (queue.length) sendOne(queue.shift()).catch(e => console.error('mail', e.message)); }, 1000);
-for (const r of await all("SELECT id FROM notifications WHERE status='queued'")) queue.push(r.id); // resume after a restart
+setInterval(() => { while (queue.length) sendOne(queue.shift()); }, 1000);
+// Emails still waiting: after a restart, and every few minutes any that fell out of the line (nothing in memory knows them any more)
+const requeue = async () => { for (const r of await all("SELECT id FROM notifications WHERE status='queued'")) if (!queue.includes(r.id) && !sending.has(r.id) && !waiting.has(r.id)) queue.push(r.id); };
+await requeue(); setInterval(() => requeue().catch(e => console.error('mail', e.message)), 300e3);
 
 // ---------- morning brief (08:30 campus time, working days) ----------
 // Campus admins: counts + every open ticket of the campus, by team. Service providers: the same for the tickets of their
 // own team(s) only (a main team includes its sub-teams). Sent once a day per campus (remembered across restarts);
 // a team with nothing open gets no email. Admins can also send it now from the Email page.
-const DIGEST_MAX = 150; // lines per email; the rest is "and N more"
+const DIGEST_MAX = Number(process.env.BRIEF_MAX_LINES) || 150; // lines per email; the rest is summed up at the end
+// "Yesterday" in the brief is the last working day (and any days off after it): after a weekend it reads "Since Saturday",
+// so what was raised and closed on the last working day and on the days off is never left out.
+function briefSince(tn, day) {
+  const cal = calendar(tn), wdOf = iso => new Date(new Intl.DateTimeFormat('en-CA', { timeZone: cal.tz }).format(new Date(iso)) + 'T12:00:00Z').getUTCDay();
+  let d = localDay(cal.tz, new Date(Date.parse(day.start) - 3600e3).toISOString()), back = 1;
+  while (back < 7 && cal.days.size && !cal.days.has(wdOf(d.start))) { d = localDay(cal.tz, new Date(Date.parse(d.start) - 3600e3).toISOString()); back++; }
+  return { start: d.start, label: back === 1 ? 'Yesterday' : `Since ${new Date(d.start).toLocaleDateString('en-IN', { timeZone: cal.tz, weekday: 'long' })}` };
+}
 async function briefFor(tn, sids) { // sids: null = whole campus
-  const n = now(), day = localDay(tn.timezone || 'Asia/Kolkata', n), yday = localDay(tn.timezone || 'Asia/Kolkata', new Date(Date.parse(day.start) - 3600e3).toISOString());
+  const n = now(), day = localDay(tn.timezone || 'Asia/Kolkata', n), since = briefSince(tn, day);
   const w = `t.tenant_id=?${sids ? ` AND t.service_id IN (${sids.map(() => '?').join()})` : ''}`, a = [tn.id, ...(sids || [])];
   const open = await all(`SELECT t.ticket_no, t.subject, t.status, t.due_at, t.hold_due_at, t.location, t.kind, t.queued, s.name team, t.created_at
     FROM tickets t JOIN services s ON s.id=t.service_id WHERE ${w} AND t.status IN ('open','in_progress','hold') ORDER BY s.name, t.due_at NULLS LAST, t.created_at`, ...a);
-  const y = await one(`SELECT count(*) FILTER (WHERE t.created_at>=? AND t.created_at<?)::int raised, count(*) FILTER (WHERE t.status='closed' AND t.closed_at>=? AND t.closed_at<?)::int closed FROM tickets t WHERE ${w}`, yday.start, yday.next, yday.start, yday.next, ...a);
+  const y = await one(`SELECT count(*) FILTER (WHERE t.created_at>=? AND t.created_at<?)::int raised, count(*) FILTER (WHERE t.status='closed' AND t.closed_at>=? AND t.closed_at<?)::int closed FROM tickets t WHERE ${w}`, since.start, day.start, since.start, day.start, ...a);
   const live = open.filter(t => !t.queued), sug = live.filter(t => t.kind === 'suggestion'), work = live.filter(t => t.kind !== 'suggestion');
+  const stuck = t => t.status === 'hold' && !!t.hold_due_at && t.hold_due_at < n; // on hold past the limit its reason allows
   const group = t => t.status === 'hold' ? 'hold' : !t.due_at ? 'open' : t.due_at < n ? 'overdue' : t.due_at < day.next ? 'today' : 'open';
   const by = { overdue: [], today: [], hold: [], open: [] }; for (const t of work) by[group(t)].push(t);
-  const c = { open: work.filter(t => t.status === 'open').length, in_progress: work.filter(t => t.status === 'in_progress').length, hold: by.hold.length, overdue: by.overdue.length, today: by.today.length,
+  by.hold.sort((x, z) => stuck(z) - stuck(x)); // the ones past their limit first
+  const c = { open: work.filter(t => t.status === 'open').length, in_progress: work.filter(t => t.status === 'in_progress').length, hold: by.hold.length, stuck: by.hold.filter(stuck).length, overdue: by.overdue.length, today: by.today.length,
     queued: open.filter(t => t.queued).length, suggestions: sug.length, raised: y.raised, closed: y.closed };
-  const counts = `${work.length} open · Overdue ${c.overdue} · Due today ${c.today} · In progress ${c.in_progress} · On hold ${c.hold}${c.queued ? ` · In queue ${c.queued}` : ''}${c.suggestions ? ` · Suggestions ${c.suggestions}` : ''}\nYesterday: ${c.raised} raised, ${c.closed} closed`;
-  const line = t => `#${t.ticket_no} · ${t.subject}${t.location ? ` · ${t.location}` : ''}${sids && sids.length < 2 ? '' : ` · ${t.team}`} · ${t.status === 'hold' ? `resume by ${t.hold_due_at ? fmtIST(t.hold_due_at) : '—'}` : t.due_at ? `${t.due_at < n ? 'was due' : 'due'} ${fmtIST(t.due_at)}` : 'no target'}`;
-  const parts = [['overdue', 'Overdue'], ['today', 'Due today'], ['hold', 'On hold'], ['open', 'Other open']].filter(([k]) => by[k].length);
-  let left = DIGEST_MAX; const out = [];
-  for (const [k, label] of parts) { out.push(`\n${label.toUpperCase()} (${by[k].length})`); for (const t of by[k]) { if (left-- > 0) out.push(line(t)); } }
-  if (sug.length) out.push(`\nSUGGESTIONS WAITING (${sug.length})`, ...sug.slice(0, Math.max(0, left)).map(t => `#${t.ticket_no} · ${t.subject} · ${t.team}`));
-  const shown = Math.min(DIGEST_MAX, work.length); if (work.length > shown) out.push(`…and ${work.length - shown} more in ONE Desk.`);
+  const counts = `${work.length} open · Overdue ${c.overdue} · Due today ${c.today} · In progress ${c.in_progress} · On hold ${c.hold}${c.stuck ? ` (${c.stuck} past the hold limit)` : ''}${c.queued ? ` · In queue ${c.queued}` : ''}${c.suggestions ? ` · Suggestions ${c.suggestions}` : ''}\n${since.label}: ${c.raised} raised, ${c.closed} closed`;
+  const line = t => `#${t.ticket_no} · ${t.subject}${t.location ? ` · ${t.location}` : ''}${sids && sids.length < 2 ? '' : ` · ${t.team}`} · ${t.status === 'hold' ? (stuck(t) ? `hold limit passed ${fmtIST(t.hold_due_at)}` : `resume by ${t.hold_due_at ? fmtIST(t.hold_due_at) : '—'}`) : t.due_at ? `${t.due_at < n ? 'was due' : 'due'} ${fmtIST(t.due_at)}` : 'no target'}`;
+  // at most DIGEST_MAX lines in one email: a heading is printed only above lines that are shown, and the rest is summed up at the end
+  let left = DIGEST_MAX; const out = [], rest = [];
+  const add = (label, list, text, noun) => { const show = list.slice(0, left); left -= show.length;
+    if (show.length) out.push(`\n${label.toUpperCase()} (${list.length}${show.length < list.length ? `, first ${show.length} shown` : ''})`, ...show.map(text));
+    if (show.length < list.length) rest.push(`${list.length - show.length} ${noun}`); };
+  for (const [k, label, noun] of [['overdue', 'Overdue', 'overdue'], ['today', 'Due today', 'due today'], ['hold', 'On hold', 'on hold'], ['open', 'Other open', 'other open']]) if (by[k].length) add(label, by[k], line, noun);
+  if (sug.length) add('Suggestions waiting', sug, t => `#${t.ticket_no} · ${t.subject} · ${t.team}`, `suggestion${sug.length === 1 ? '' : 's'}`);
+  if (rest.length) out.push(`\n…and more in ONE Desk: ${rest.join(', ')}.`);
   return { count: work.length, open_text: work.length ? `${work.length} open ticket${work.length === 1 ? '' : 's'}` : 'nothing open', counts, list: out.join('\n') || 'Nothing open. All clear!', any: work.length + sug.length + c.queued + c.raised + c.closed > 0 };
 }
+// Returns { written, sent }: emails written to the log, and how many of them are on their way (0 when this email is switched off).
 async function sendBriefs(tn, { force } = {}) {
   const dayKey = localDay(tn.timezone || 'Asia/Kolkata').start.slice(0, 10), date = new Date().toLocaleDateString('en-IN', { timeZone: tn.timezone || 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short' });
-  let sent = 0;
+  // the day is marked before the first email: whatever goes wrong half-way, nobody gets this morning's brief a second time
+  if (!force) await setSetting('digest:' + tn.id, dayKey);
+  let written = 0, sent = 0;
+  const post = async (u, key, vars) => { try { sent += await notify({ tenant_id: tn.id }, [u.email], key, vars); written++; } catch (e) { console.error('morning brief', tn.code, u.email, e.message); } }; // one person's failure never stops the others
   // campus admins: the whole campus
   const admins = await all("SELECT * FROM users WHERE tenant_id=? AND is_active=1 AND role='tenant_admin'", tn.id);
   if (admins.length) { const b = await briefFor(tn, null);
-    if (b.any || force) for (const u of admins) { await notify({ tenant_id: tn.id }, [u.email], 'digest_admin', { staff_name: u.name, campus: tn.name, date, count: b.count, open_text: b.open_text, counts: b.counts, ticket_list: b.list }); sent++; } }
+    if (b.any || force) for (const u of admins) await post(u, 'digest_admin', { staff_name: u.name, campus: tn.name, date, count: b.count, open_text: b.open_text, counts: b.counts, ticket_list: b.list }); }
   // service providers: their own team(s) only
   for (const u of await all(`SELECT DISTINCT u.* FROM users u JOIN service_members m ON m.user_id=u.id WHERE u.tenant_id=? AND u.is_active=1 AND u.role='provider'`, tn.id)) {
-    const sids = await myServiceIds(u, tn.id); if (!sids.length) continue;
-    const b = await briefFor(tn, sids); if (!b.count && !force) continue;
-    const teams = (await all(`SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.tenant_id=? ORDER BY s.name`, u.id, tn.id)).map(r => r.name);
-    await notify({ tenant_id: tn.id }, [u.email], 'digest', { staff_name: u.name, campus: tn.name, team: teams.join(', ') || 'Your team', date, count: b.count, open_text: b.open_text, counts: b.counts, ticket_list: b.list }); sent++;
+    try {
+      const sids = await myServiceIds(u, tn.id); if (!sids.length) continue;
+      const b = await briefFor(tn, sids); if (!b.count && !force) continue;
+      const teams = (await all(`SELECT s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=? AND s.tenant_id=? ORDER BY s.name`, u.id, tn.id)).map(r => r.name);
+      await post(u, 'digest', { staff_name: u.name, campus: tn.name, team: teams.join(', ') || 'Your team', date, count: b.count, open_text: b.open_text, counts: b.counts, ticket_list: b.list });
+    } catch (e) { console.error('morning brief', tn.code, u.email, e.message); }
   }
-  if (!force) await setSetting('digest:' + tn.id, dayKey);
-  return sent;
+  return { written, sent };
 }
+// Sent between 08:30 and BRIEF_UNTIL campus time. A server that was down all morning does not send "Good morning" in the evening.
+const BRIEF_FROM = '08:30', BRIEF_UNTIL = '11:00';
 async function digest() {
   for (const tn of await all('SELECT * FROM tenants WHERE is_active=1')) {
-    const cal = calendar(tn), hm = new Intl.DateTimeFormat('en-GB', { timeZone: cal.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
-    const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: cal.tz }).format(new Date()), wd = new Date(ymd + 'T12:00:00Z').getUTCDay();
-    if (hm < '08:30' || !cal.days.has(wd) || getSettings()['digest:' + tn.id] === localDay(cal.tz).start.slice(0, 10)) continue;
-    await sendBriefs(tn).catch(e => console.error('morning brief', tn.code, e.message));
+    try { // one campus's trouble (a wrong setting, a database hiccup) never holds up the campuses after it
+      const cal = calendar(tn), hm = new Intl.DateTimeFormat('en-GB', { timeZone: cal.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
+      const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: cal.tz }).format(new Date()), wd = new Date(ymd + 'T12:00:00Z').getUTCDay();
+      if (hm < BRIEF_FROM || hm >= BRIEF_UNTIL || !cal.days.has(wd) || getSettings()['digest:' + tn.id] === localDay(cal.tz).start.slice(0, 10)) continue;
+      await sendBriefs(tn);
+    } catch (e) { console.error('morning brief', tn.code, e.message); }
   }
 }
-setInterval(() => digest().catch(e => console.error('digest', e.message)), 60e3);
+setInterval(() => digest().catch(e => console.error('digest', e.message)), Number(process.env.BRIEF_TICK_MS) || 60e3); // (the tests look every second)
 
 // ---------- escalation ----------
 // A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
@@ -426,7 +507,7 @@ async function releaseQueued() {
     });
     if (!done) continue;
     const v = await ticketVars(t);
-    await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'new_ticket', v);
+    await notify(t, await teamEmails(t.tenant_id, t.service_id), 'new_ticket', v);
     await notifyRequestors(t, 'queue_landed', v);
   }
 }
@@ -469,8 +550,17 @@ async function noticesRead(t, svc, ids) {
 async function createTicket(tenant, b, opts) {
   const svc = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', b.service_id, tenant.id);
   if (!svc) throw notFound();
+  // a name and a subject are one line each (they go into email subjects); the description has a length limit like a note
+  b.name = oneLine(b.name, 120); b.subject = oneLine(b.subject, 200);
   req_(b.name, 'Please fill in your name'); req_(b.subject, 'Please fill in the subject');
-  if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('Please enter a valid email address, so we can send you updates');
+  if (b.description !== undefined && b.description !== null) {
+    if (!['string', 'number'].includes(typeof b.description)) throw bad('The description must be text');
+    b.description = String(b.description).replace(/\u0000/g, '');
+    if (b.description.length > NOTE_MAX) throw bad(`Please keep the description under ${NOTE_MAX.toLocaleString('en-IN')} characters (it has ${b.description.length.toLocaleString('en-IN')}). A photo or a second note can carry the rest.`);
+  }
+  // exactly one address, trimmed and lower-cased once: every email about this ticket goes to it
+  b.email = oneEmail(b.email);
+  if (!b.email) throw bad('Please enter a valid email address, so we can send you updates');
   if (b.requestor_type && !REQUESTOR_TYPES.includes(b.requestor_type)) throw bad('Bad requestor type');
   const schema = JSON.parse(svc.form_schema || '{}'), portal = opts.channel === 'portal';
   // Suggestion box (on the same form): an idea for the team, not a problem; no location, no service questions, no target time
@@ -488,8 +578,9 @@ async function createTicket(tenant, b, opts) {
   }
   if (!opts.food) buildFormCheck(schema, fd, f => (f.key.startsWith('stu_') && !asStudent) || (suggestion && !f.key.startsWith('stu_'))); // a food complaint has its own questions (meal, problem, photo)
   // the form type's answers fill the ticket's location and the requestor's ID / department
-  if (suggestion) { req_(b.description, 'Please write your suggestion'); b.location = b.location ? String(b.location).slice(0, 200) : null; }
-  else if (hasLocation(schema)) b.location = [fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · ');
+  if (b.location !== undefined && b.location !== null) b.location = oneLine(b.location, 200); // one line, like the subject
+  if (suggestion) { req_(b.description, 'Please write your suggestion'); b.location = b.location || null; }
+  else if (hasLocation(schema)) b.location = oneLine([fd.loc_block, fd.loc_floor, fd.loc_room].filter(Boolean).join(' · '), 200);
   else if (isGeneral(schema) && opts.channel !== 'internal') req_(b.location, 'Please fill in the location');
   if (asStudent) Object.assign(b, { identifier: fd.stu_id, department: fd.stu_dept, requestor_type: 'student' });
   if (b.idempotency_key) {
@@ -542,14 +633,13 @@ async function createTicket(tenant, b, opts) {
   }
   if (merged) { // the person gets their own acknowledgement for the ticket they joined; the providers already have it
     const others = merged.count - 1, guide = first ? { guide: guideLink('requestor') } : {};
-    if (merged.added) await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'requestor_note', await ticketVars(t, { note: merged.added, requestor_name: b.name }));
-    if (!merged.again) await notify(t, [b.email || null], 'created', { ...await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), requestor_name: b.name, ...guide });
+    if (merged.added) await notify(t, await teamEmails(t.tenant_id, t.service_id), 'requestor_note', await ticketVars(t, { note: merged.added, requestor_name: b.name }));
+    if (!merged.again) await notify(t, [b.email || null], 'created', { ...await forReporter(t, await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), merged.tr), ...guide });
     return Object.assign(t, { merged: true, affected_count: merged.count });
   }
-  const prov = await providersFor(tenant.id, svc.id);
   const v = await ticketVars(t);
   await notify(t, [b.email || null], 'created', first ? { ...v, guide: guideLink('requestor') } : v);
-  if (!t.queued) await notify(t, prov.map(p => p.email), 'new_ticket', v); // a queued ticket reaches the providers on the day it lands
+  if (!t.queued) await notify(t, await teamEmails(tenant.id, svc.id), 'new_ticket', v); // a queued ticket reaches the providers on the day it lands
   return t;
 }
 
@@ -576,23 +666,41 @@ async function joinTicket(t, r, b, contact, actor, ts) {
       return { ticket: t, again: true, added: words && !told ? words : 'Sent another photo.', count: t.affected_count }; }
     return { ticket: t, again: true, count: t.affected_count };
   }
-  const ev = await addEvent(t, actor, 'merged', { body: `Also reported by ${b.name}${b.description ? `: ${b.description}` : ''}`, internal: true, meta: { contact } });
+  // what this person typed stays with their own report: it is what their emails show (see forReporter)
+  const ev = await addEvent(t, actor, 'merged', { body: `Also reported by ${b.name}${b.description ? `: ${b.description}` : ''}`, internal: true,
+    meta: { contact, subject: String(b.subject || '').slice(0, 200), description: String(b.description || '') } });
   await saveFiles(t, ev, b.files, actor.type);
   const pic = await one('SELECT storage_key FROM attachments WHERE event_id=? ORDER BY created_at LIMIT 1', ev);
-  await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, photo_url: pic ? `/api/files/${pic.storage_key}` : null, event_id: ev, raised_at: ts, is_first: 0 });
+  const tr = await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, photo_url: pic ? `/api/files/${pic.storage_key}` : null, event_id: ev, raised_at: ts, is_first: 0 });
   const { n } = await one('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=?', t.id);
   // more people affected raises the priority; it is never lowered, and a priority a provider set by hand is left alone
   const p = !t.priority_by_staff && RANK[priorityFor(n)] > RANK[t.priority] ? priorityFor(n) : t.priority;
   const due = p === t.priority ? t.due_at : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
   await run('UPDATE tickets SET affected_count=?, priority=?, due_at=?, updated_at=? WHERE id=?', n, p, due, ts, t.id);
   if (p !== t.priority) await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'priority_changed', { from: t.priority, to: p, internal: true, meta: { reason: `${n} people affected` } });
-  return { ticket: { ...t, affected_count: n, priority: p, due_at: due }, again: false, count: n };
+  return { ticket: { ...t, affected_count: n, priority: p, due_at: due }, again: false, count: n, tr };
+}
+// One reporter's own copy of a ticket's email values. The person who raised the ticket gets it as it is. Someone who joined it
+// later (same place, same problem, same day) gets their own words and photos next to the facts everyone shares: the first
+// reporter's student ID, department, description and photos are never sent to them. In "Latest updates" the reader's own
+// steps read "You"; another reporter is not named, and their words and photos are left out.
+async function forReporter(t, v, tr) {
+  const me = tr.requestor_id, tl = v.timeline && { ...v.timeline, reader: me, items: v.timeline.items.map(e => e.by?.requestor && e.by.id !== me
+    ? { ...e, by: { requestor: true, name: 'Someone else who reported this' }, body: '', photos: [] } : e) };
+  const out = { ...v, requestor_name: tr.name, ...(tl ? { timeline: tl } : {}) };
+  if (tr.is_first || !v.shared_details) return out;
+  const ev = tr.event_id ? await one('SELECT body, meta FROM ticket_events WHERE id=?', tr.event_id) : null, m = JSON.parse(ev?.meta || '{}'), lead = `Also reported by ${tr.name}: `;
+  const words = (m.description !== undefined ? String(m.description || '') : String(ev?.body || '').startsWith(lead) ? ev.body.slice(lead.length) : '').trim(); // older reports kept the words in the line only
+  const photos = tr.event_id ? (await all('SELECT file_name, mime_type, storage_key FROM attachments WHERE event_id=? ORDER BY created_at', tr.event_id))
+    .filter(f => Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name })) : [];
+  const s = v.shared_details, subject = String(m.subject || '').trim() || s.place.map(([, x]) => x).reverse().join(' · ') || v.service || 'Your report';
+  return { ...out, subject, description: words, ticket_details: [...s.head, ['Subject', subject], ...(words ? [['Description', words]] : []), ...s.place,
+    ['Raised on', fmtIST(tr.raised_at)], ...s.tail, ...(photos.length ? [['Photos', photos]] : [])] };
 }
 // One email per person who reported the ticket, each greeted by name. A long list goes out after the reply (the outbox sends it).
 async function notifyRequestors(t, key, vars) {
-  const list = await all("SELECT name, contact, requestor_id FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
-  // reader: in "Latest updates" this person's own steps read "You"
-  const send = async () => { for (const r of list) await notify(t, [r.contact], key, { ...vars, requestor_name: r.name, timeline: vars.timeline && { ...vars.timeline, reader: r.requestor_id } }); };
+  const list = await all("SELECT name, contact, requestor_id, is_first, event_id, raised_at FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
+  const send = async () => { for (const r of list) await notify(t, [r.contact], key, await forReporter(t, vars, r)); };
   if (list.length <= 25) return send();
   send().catch(e => console.error('requestor emails', e.message));
 }
@@ -627,7 +735,7 @@ async function publicTicket(t) {
     due_at: t.due_at, created_at: t.created_at, closed_at: t.closed_at, reopen_count: t.reopen_count, service: svc.name,
     hold_label: t.status === 'hold' && t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label : null, hold_due_at: t.status === 'hold' ? t.hold_due_at : null,
     reopen_until: t.status === 'closed' ? addH(t.closed_at, tn.reopen_window_days * 24) : null,
-    providers: tn.show_provider_contact ? (await providersFor(t.tenant_id, t.service_id)).map(p => providerCard(p, r?.requestor_type)) : [],
+    providers: tn.show_provider_contact ? (await handlersOf(t.tenant_id, t.service_id)).map(p => providerCard(p, r?.requestor_type)) : [],
     events: ev.map(e => ({ ...e, actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: att.filter(a => a.event_id === e.id) })) };
 }
 async function findPublic(slug, no, q) {
@@ -654,7 +762,7 @@ P.post('/:slug/tickets', wrap(async req => {
   const type = (await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id))?.requestor_type;
   return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1, kind: t.kind || 'issue',
     queue: t.status === 'open' ? await queueInfo(t) : null,
-    providers: (await providersFor(tn.id, t.service_id)).map(p => { const { email, ...c } = providerCard(p, type); return c; }) };
+    providers: (await handlersOf(tn.id, t.service_id)).map(p => { const { email, ...c } = providerCard(p, type); return c; }) };
 }));
 P.get('/:slug/tickets/:no', wrap(async req => await publicTicket(await findPublic(req.params.slug, req.params.no, req.query))));
 P.post('/:slug/tickets/:no/notes', wrap(async req => {
@@ -664,7 +772,7 @@ P.post('/:slug/tickets/:no/notes', wrap(async req => {
   const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
   await tx(async () => { const ev = await addEvent(t, { type: 'requestor', id: t.requestor_id, name: r.name }, 'note', { body: noteText(req_(req.body.body, 'Write a note')) });
     await saveFiles(t, ev, req.body.files, 'requestor'); await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
-  await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'requestor_note', await ticketVars(t, { note: req.body.body }));
+  await notify(t, await teamEmails(t.tenant_id, t.service_id), 'requestor_note', await ticketVars(t, { note: req.body.body }));
   return await publicTicket(await one('SELECT * FROM tickets WHERE id=?', t.id));
 }));
 P.post('/:slug/tickets/:no/reopen', wrap(async req => {
@@ -687,7 +795,9 @@ const stillAs = r => { if (!r.changes) throw new HttpErr(409, 'BAD_TRANSITION', 
 // Who decides a reopen request: the provider who closed the ticket; if they have left, the service's providers.
 async function reopenDeciders(t) {
   const closer = t.closed_by && await one('SELECT id, name, email FROM users WHERE id=? AND is_active=1', t.closed_by);
-  return closer ? [closer] : await providersFor(t.tenant_id, t.service_id);
+  if (closer) return [closer];
+  const team = await handlersOf(t.tenant_id, t.service_id); // nobody on the team (or its main team): a campus admin decides
+  return team.length ? team : await all("SELECT id, name, email FROM users WHERE tenant_id=? AND is_active=1 AND role='tenant_admin'", t.tenant_id);
 }
 // penalty: the requestor asked for it (the ticket was not fixed), so the closer loses the reopen points
 // internal: the staff member's note is for the team only. The requester still sees that the ticket was reopened, without the note.
@@ -699,7 +809,7 @@ async function doReopen(t, actor, reason, { penalty = false, internal = false, m
     await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: internal ? '' : reason, meta });
     if (internal) await addEvent(t, actor, 'note', { body: reason, internal: true });
   });
-  await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'reopened', await ticketVars(t, { note: reason, actor_name: actor.type === 'requestor' ? `the requestor (${actor.name})` : actor.name }));
+  await notify(t, await teamEmails(t.tenant_id, t.service_id), 'reopened', await ticketVars(t, { note: reason, actor_name: actor.type === 'requestor' ? `the requestor (${actor.name})` : actor.name }));
 }
 // ---------- ONE Desk Bot: answers from the app's own live data (no AI, nothing leaves the server) ----------
 // Requestors (no sign-in) get what their ticket page shows; providers their own services; admins the whole campus.
@@ -713,7 +823,7 @@ async function publicBot(tn, q) {
   if (no) {
     const t = await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no));
     if (!t || t.is_internal) return { text: `I couldn't find ticket ${normNo(no)}. Check the number in your email, it looks like 0042.`, chips: ['Track my ticket', 'How to raise a ticket'] };
-    const svc = await one('SELECT name FROM services WHERE id=?', t.service_id), up = await lastUpdate(t), names = (await providersFor(tn.id, t.service_id)).map(p => p.name.split(' ')[0]).join(', ');
+    const svc = await one('SELECT name FROM services WHERE id=?', t.service_id), up = await lastUpdate(t), names = (await handlersOf(tn.id, t.service_id)).map(p => p.name.split(' ')[0]).join(', ');
     const qi = t.status === 'open' ? await queueInfo(t) : null;
     const when = t.kind === 'suggestion' ? (t.status === 'closed' ? `Your suggestion was closed on ${fmtIST(t.closed_at)}. Thank you!` : `Your suggestion is with the ${svc.name} team. Thank you!`) : qi ? `It is in the ${svc.name} queue: number ${qi.queue_no}, reaching the team on ${qi.lands_on}. Target: ${fmtIST(t.due_at)}.` : ACTIVE.includes(t.status) && t.due_at < now() ? `It is taking longer than planned (the target was ${fmtIST(t.due_at)})${t.escalated_at ? ' and has been escalated for faster help' : ''}. We are sorry for the wait.`
       : t.status === 'hold' ? `It is on hold${t.hold_due_at ? `, expected to resume by ${fmtIST(t.hold_due_at)}` : ''}.` : ACTIVE.includes(t.status) ? `Target: ${fmtIST(t.due_at)}.` : t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}. Not fixed? You can reopen it within ${tn.reopen_window_days} days.` : 'This ticket was not accepted. You can raise a new one.';
@@ -847,6 +957,8 @@ app.post('/api/auth/login', wrap(async req => {
   const own = u && checkPw(req.body.password || '', u.password_hash);
   const temp = u && !own && u.temp_pw_hash && u.temp_pw_expires > now() && checkPw(req.body.password || '', u.temp_pw_hash);
   if (!own && !temp) throw new HttpErr(401, 'UNAUTHORIZED', 'Wrong email or password');
+  // the temporary password an admin issued (new account, reset) works for TEMP_PW_DAYS days
+  if (own && u.must_change_pw && tempPwDead(u.pw_issued_at)) throw new HttpErr(401, 'TEMP_EXPIRED', `This temporary password has run out (it works for ${TEMP_PW_DAYS} days). Tap “Forgot password?” to get a new one by email, or ask your admin to reset it.`);
   // signed in with the emailed temporary password: they must choose a new one now
   if (temp) await run('UPDATE users SET must_change_pw=1 WHERE id=?', u.id);
   if (OWNER && u.email.toLowerCase() === OWNER && (u.role !== 'super_admin' || u.tenant_id)) await run("UPDATE users SET role='super_admin', tenant_id=NULL WHERE id=?", u.id); // the owner signs in as super admin
@@ -858,9 +970,9 @@ app.post('/api/auth/login', wrap(async req => {
 // keeps working until they sign in with the temporary one, so a stranger typing their email can't lock them out.
 // The answer is the same either way, so it doesn't reveal who has an account.
 app.post('/api/auth/forgot', wrap(async req => {
-  const email = String(req.body.email || '').trim().toLowerCase();
+  const email = oneEmail(req.body.email);
   limit('forgot:' + req.ip, 10, 900e3);
-  if (!/^\S+@\S+\.\S+$/.test(email)) throw bad('Enter your email');
+  if (!email) throw bad('Enter your email');
   const msg = { ok: true, message: 'If this email has a ONE Desk account, a temporary password is on its way. It works for 1 hour. Check your spam folder too.' };
   const u = await one('SELECT * FROM users WHERE lower(email)=? AND is_active=1', email); if (!u) return msg;
   try { limit('forgot-u:' + u.id, 3, 3600e3); } catch { return msg; } // at most 3 emails an hour per account
@@ -883,7 +995,7 @@ S.post('/me/password', wrap(async req => {
   if (!checkPw(cur, req.user.password_hash) && !viaTemp) throw bad(req.user.must_change_pw ? 'Temporary password is wrong' : 'Current password is wrong');
   if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) throw bad('Use at least 8 characters with letters and numbers');
   if (checkPw(pw, req.user.password_hash)) throw bad('Pick a password different from the current one');
-  await run('UPDATE users SET password_hash=?, must_change_pw=0, temp_pw_hash=NULL, temp_pw_expires=NULL WHERE id=?', hashPw(pw), req.user.id);
+  await run('UPDATE users SET password_hash=?, must_change_pw=0, temp_pw_hash=NULL, temp_pw_expires=NULL, pw_issued_at=NULL WHERE id=?', hashPw(pw), req.user.id);
   await notify({ tenant_id: req.user.tenant_id }, [req.user.email], 'password_changed', { ...await staffVars(req.user, pw), password: pw });
   await audit(req, 'user.password_changed', 'user', req.user.id, {});
   return { ok: true };
@@ -897,16 +1009,19 @@ S.post('/tenants', role('super_admin'), wrap(async req => {
   if (!/^[a-z0-9-]{2,30}$/.test(slug)) throw bad('Slug: lowercase letters, digits and hyphens, e.g. smru');
   if (await one('SELECT 1 FROM tenants WHERE code=? OR slug=?', code, slug)) throw new HttpErr(409, 'CONFLICT', 'A campus with that code or slug already exists');
   b.code = code; b.slug = slug;
+  if (b.timezone !== undefined && b.timezone !== null && !tzOk(b.timezone)) throw bad('Unknown time zone. Use a name like Asia/Kolkata.');
   const t = await insert('tenants', { id: uid(), code: b.code.toUpperCase(), name: b.name, slug: b.slug.toLowerCase(), timezone: b.timezone || 'Asia/Kolkata',
     show_provider_contact: b.show_provider_contact === false ? 0 : 1, reopen_window_days: Number(b.reopen_window_days) || 7, is_active: 1 });
   for (const [p, h] of Object.entries(DEFAULT_HOURS)) await insert('sla_policies', { id: uid(), tenant_id: t.id, service_id: null, priority: p, target_hours: h });
-  await audit(req, 'tenant.create', 'tenant', t.id, b); return t;
+  await audit({ user: req.user, tenantId: t.id }, 'tenant.create', 'tenant', t.id, b); return t; // in the new campus's own log, not the one that happens to be selected
 }));
 S.patch('/tenants/:id', role('super_admin'), wrap(async req => {
   const b = req.body, t = await one('SELECT * FROM tenants WHERE id=?', req.params.id); if (!t) throw notFound();
+  // a time zone the server does not know would stop every clock of this campus (targets, the morning brief, the food reports)
+  if (b.timezone !== undefined && b.timezone !== null && !tzOk(b.timezone)) throw bad('Unknown time zone. Use a name like Asia/Kolkata.');
   await run('UPDATE tenants SET name=?, timezone=?, show_provider_contact=?, reopen_window_days=?, is_active=? WHERE id=?',
     b.name ?? t.name, b.timezone ?? t.timezone, b.show_provider_contact ?? t.show_provider_contact, b.reopen_window_days ?? t.reopen_window_days, b.is_active ?? t.is_active, t.id);
-  await audit(req, 'tenant.update', 'tenant', t.id, b); return await one('SELECT * FROM tenants WHERE id=?', t.id);
+  await audit({ user: req.user, tenantId: t.id }, 'tenant.update', 'tenant', t.id, b); return await one('SELECT * FROM tenants WHERE id=?', t.id);
 }));
 
 // everything below is tenant scoped
@@ -924,6 +1039,7 @@ async function managed(req) {
 }
 S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body; req_(b.name, 'Name required'); req_(b.email, 'Email required');
+  b.email = String(b.email).trim(); if (!isEmail(b.email)) throw bad('Enter a valid email (one address)'); // the sign-in details go to this address
   const r = b.role === 'tenant_admin' ? 'tenant_admin' : 'provider';
   if (r === 'tenant_admin' && req.user.role !== 'super_admin') throw forbid();
   if (await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', b.email)) throw new HttpErr(409, 'CONFLICT', 'Email already in use');
@@ -933,7 +1049,7 @@ S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
     svcs.push(s.id);
   }
   const pw = tempPw();
-  const u = await insert('users', { id: uid(), tenant_id: req.tenantId, name: b.name, email: String(b.email).trim(), phone: b.phone, role: r, password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+  const u = await insert('users', { id: uid(), tenant_id: req.tenantId, name: b.name, email: String(b.email).trim(), phone: b.phone, role: r, password_hash: hashPw(pw), is_active: 1, must_change_pw: 1, pw_issued_at: now() });
   for (const sid of svcs) await insert('service_members', { id: uid(), tenant_id: req.tenantId, service_id: sid, user_id: u.id, created_at: now() });
   await notify({ tenant_id: req.tenantId }, [u.email], 'invite', await staffVars(u, pw));
   await audit(req, 'user.create', 'user', u.id, { email: u.email, role: r });
@@ -946,7 +1062,7 @@ S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
     if (req.user.role !== 'super_admin' || !['provider', 'tenant_admin'].includes(b.role)) throw forbid();
   }
   const email = b.email ? String(b.email).trim() : u.email;
-  if (!/^\S+@\S+\.\S+$/.test(email)) throw bad('Enter a valid email');
+  if (b.email && !isEmail(email)) throw bad('Enter a valid email (one address)');
   if (email.toLowerCase() !== u.email.toLowerCase() && await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', email)) throw new HttpErr(409, 'CONFLICT', 'Email already in use');
   await run('UPDATE users SET name=?, email=?, phone=?, role=?, is_active=? WHERE id=?', String(b.name ?? u.name).trim() || u.name, email, b.phone ?? u.phone, b.role || u.role, b.is_active ?? u.is_active, u.id);
   if (b.is_active === 0) await run('DELETE FROM service_members WHERE user_id=?', u.id);
@@ -957,7 +1073,7 @@ S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(as
   if (u.id === req.user.id) throw bad('Change your own password from Profile');
   if (!u.is_active) throw bad('Activate this account first');
   const pw = tempPw();
-  await run('UPDATE users SET password_hash=?, must_change_pw=1 WHERE id=?', hashPw(pw), u.id);
+  await run('UPDATE users SET password_hash=?, must_change_pw=1, pw_issued_at=? WHERE id=?', hashPw(pw), now(), u.id);
   await notify({ tenant_id: req.tenantId }, [u.email], 'password_reset', await staffVars(u, pw));
   await audit(req, 'user.reset_password', 'user', u.id, { email: u.email });
   return { temp_password: pw };
@@ -1329,7 +1445,7 @@ S.get('/tickets/:id', wrap(async req => {
     hold_over: t.status === 'hold' && t.hold_due_at && t.hold_due_at < n, hold_reasons: holdReasons(tn),
     escalated_name: t.escalated_to ? (await one('SELECT name FROM users WHERE id=?', t.escalated_to))?.name || null : null,
     service: await one('SELECT id,name,code,form_schema FROM services WHERE id=?', t.service_id),
-    providers: await providersFor(req.tenantId, t.service_id),
+    providers: await handlersOf(req.tenantId, t.service_id),
     requestor: await one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
     requestors: await all('SELECT id, name, contact, raised_at, is_first, event_id, photo_url FROM ticket_requestors WHERE ticket_id=? ORDER BY raised_at', t.id),
     requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
@@ -1403,11 +1519,15 @@ S.post('/tickets/:id/transfer', wrap(async req => {
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
   const ns = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
-  const old = await one('SELECT name FROM services WHERE id=?', t.service_id), oldProv = await providersFor(t.tenant_id, t.service_id);
-  await tx(async () => { await run('UPDATE tickets SET service_id=?, escalated_at=NULL, escalated_to=NULL, updated_at=? WHERE id=?', ns.id, now(), t.id);
+  const old = await one('SELECT name FROM services WHERE id=?', t.service_id), oldTeam = await teamEmails(t.tenant_id, t.service_id), ts = now();
+  // the new team starts with its own full target from now: a ticket that arrives late is not escalated on them a minute later
+  // (and the requester is not sent the "escalated" apology a second time). On hold, the held time is counted from the move.
+  const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, ns.id, t.priority) * 60);
+  await tx(async () => { stillAs(await run('UPDATE tickets SET service_id=?, escalated_at=NULL, escalated_to=NULL, due_at=?, hold_started_at=CASE WHEN status=? THEN ? ELSE hold_started_at END, updated_at=? WHERE id=? AND service_id=? AND status=?',
+      ns.id, due, 'hold', ts, ts, t.id, t.service_id, t.status));
     await addEvent(t, actorOf(req), 'transferred', { from: old.name, to: ns.name, body: note, meta: pub.meta }); });
   const tv = await ticketVars(t, { note, actor_name: req.user.name, from_service: old.name, to_service: ns.name });
-  await notify(t, [...oldProv, ...(await providersFor(t.tenant_id, ns.id))].map(p => p.email), 'transferred', tv);
+  await notify(t, [...oldTeam, ...(await teamEmails(t.tenant_id, ns.id))], 'transferred', tv);
   await notifyRequestors(t, 'transferred_requestor', tv);
   return { ok: true };
 }));
@@ -1464,7 +1584,7 @@ S.post('/tickets/:id/preview', wrap(async req => {
   if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0], hdue = hr ? await dueFrom(t.tenant_id, ts, hr.hours * 60) : null;
     extra = { hold_reason: hr?.label || '', resume_by: hdue ? fmtIST(hdue) : '' }; Object.assign(after, { hold_reason: hr?.key || null, hold_due_at: hdue, hold_started_at: ts }); if (hr) meta.hold_reason = hr.label; }
   else if (to !== 'note') {
-    if (t.status === 'hold') { const cal = await calOf(t.tenant_id); Object.assign(after, { due_at: t.due_at ? addWorking(cal, t.due_at, workingBetween(cal, t.hold_started_at, ts)) : null, hold_reason: null, hold_due_at: null, hold_started_at: null }); }
+    if (t.status === 'hold') { const cal = await calOf(t.tenant_id); const held = workingBetween(cal, t.hold_started_at, ts); Object.assign(after, { due_at: t.due_at ? (held > 0 ? addWorking(cal, t.due_at, held) : t.due_at) : null, hold_reason: null, hold_due_at: null, hold_started_at: null }); }
     if (to === 'closed' || to === 'rejected') after.closed_at = ts;
     if (reopening) Object.assign(after, { closed_at: null, escalated_to: null, due_at: t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, t.priority) * 60) });
   }
@@ -1622,7 +1742,9 @@ S.delete('/notices/:id/files/:key', wrap(async req => { const x = await loadNoti
   await audit(req, 'notice.file_remove', 'notice', x.id, { title: x.title, file: f.file_name }); return { ok: true }; }));
 
 // Send this campus's morning brief now (both kinds, even on a quiet day), e.g. to check how it looks
-S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
+// written: emails put in the log · sent: how many of them are on their way (0 when the brief emails are switched off on the Email page)
+// live: a flow is connected and sending is on, so the queued ones really leave
+S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => { const cfg = mailConfig(BASE); return { ok: true, live: !!cfg.url && cfg.sending, ...await sendBriefs(await tenantRow(req.tenantId), { force: true }) }; }));
 S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
@@ -1650,11 +1772,18 @@ S.get('/attention', role('super_admin', 'tenant_admin'), wrap(async req => ({
   escalated: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.escalated_at IS NOT NULL AND t.status IN ('open','in_progress','hold') ORDER BY t.escalated_at`, req.tenantId),
   stuck_hold: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='hold' AND t.hold_due_at<? ORDER BY t.hold_due_at`, req.tenantId, now()),
   reopen_requests: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='closed' AND t.reopen_requested_at IS NOT NULL ORDER BY t.reopen_requested_at`, req.tenantId),
-  failed_mail: await all("SELECT * FROM notifications WHERE tenant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 50", req.tenantId),
+  // only what the list shows: never the email's text (an invite or a reset carries a password)
+  failed_mail: await all("SELECT id, recipient, subject, template_key, last_error, attempts, created_at, ticket_id FROM notifications WHERE tenant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 50", req.tenantId),
 })));
 S.post('/notifications/:id/resend', role('super_admin', 'tenant_admin'), wrap(async req => {
-  await run("UPDATE notifications SET status='queued', attempts=0 WHERE id=? AND tenant_id=?", req.params.id, req.tenantId); queue.push(req.params.id); return { ok: true };
+  // only an email that did not go out, and only once however often the button is tapped
+  const r = await run("UPDATE notifications SET status='queued', attempts=0, last_error=NULL WHERE id=? AND tenant_id=? AND status IN ('failed','logged','skipped')", req.params.id, req.tenantId);
+  if (r.changes) { queue.push(req.params.id); await resent(req.params.id); }
+  return { ok: true, queued: r.changes ? 1 : 0 };
 }));
+// A sign-in email that goes out again: the 14 days of its temporary password start again from now
+const resent = id => run(`UPDATE users SET pw_issued_at=? WHERE must_change_pw=1 AND pw_issued_at IS NOT NULL
+  AND lower(email)=(SELECT lower(recipient) FROM notifications WHERE id=? AND template_key IN ('invite','password_reset') AND secret IS NOT NULL)`, now(), id);
 S.get('/reports', wrap(async req => {
   // my services' tickets plus any escalated to me
   const sids = await myServiceIds(req.user, req.tenantId);
@@ -1698,10 +1827,10 @@ S.get('/reports', wrap(async req => {
 S.get('/merge-mode', wrap(async () => ({ mode: mergeMode(), modes: MERGE_MODES })));
 S.put('/merge-mode', role('super_admin'), wrap(async req => {
   if (!MERGE_MODES.includes(req.body.mode)) throw bad('Pick silent or confirm');
-  await setSetting('merge_mode', req.body.mode); await audit(req, 'merge.mode', 'setting', 'merge_mode', { mode: req.body.mode }); return { mode: req.body.mode };
+  await setSetting('merge_mode', req.body.mode); await auditAll(req, 'merge.mode', 'setting', 'merge_mode', { mode: req.body.mode }); return { mode: req.body.mode };
 }));
 S.get('/audit', role('super_admin', 'tenant_admin'), wrap(async req =>
-  await all('SELECT a.*, u.name actor FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id WHERE a.tenant_id=? ORDER BY a.created_at DESC LIMIT 200', req.tenantId)));
+  await all(`SELECT a.*, u.name actor FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id WHERE a.tenant_id=?${req.user.role === 'super_admin' ? ' OR a.tenant_id IS NULL' : ''} ORDER BY a.created_at DESC LIMIT 200`, req.tenantId)));
 // group-wide report (super admin; mounted before tenant scope via separate path)
 // ---------- Email page: connection, events, test, delivery log ----------
 const M = express.Router();
@@ -1729,10 +1858,11 @@ M.put('/config', superOnly, wrap(async req => {
   if (b.sending !== undefined) await setSetting('mail_enabled', b.sending ? '1' : '0');
   if (b.brand) for (const k of Object.keys(BRAND_DEFAULTS)) if (b.brand[k] !== undefined) { const v = String(b.brand[k]).replace(/\s+/g, ' ').trim(); if (v.length > 400) throw bad('Each brand line: at most 400 characters'); await setSetting(k, v); }
   if (b.events) await setSetting('mail_events', JSON.stringify({ ...c.events, ...Object.fromEntries(Object.entries(b.events).map(([k, v]) => [k, !!v])) }));
-  await audit(req, 'mail.config', 'settings', null, { ...b, key: b.key ? '(changed)' : undefined }); return { ok: true };
+  // the flow's address and its key open the university's mailbox: the log says that they changed, never what they are
+  await auditAll(req, 'mail.config', 'settings', null, { ...b, key: b.key ? '(changed)' : undefined, url: b.url !== undefined ? '(changed)' : undefined }); return { ok: true };
 }));
 M.post('/test', superOnly, wrap(async req => {
-  const to = String(req.body.to || '').trim(); if (!/^\S+@\S+\.\S+$/.test(to)) throw bad('Enter the email address to send the test to');
+  const to = String(req.body.to || '').trim(); if (!isEmail(to)) throw bad('Enter the email address to send the test to (one address)');
   const c = mailConfig(BASE), cfg = { ...c, url: req.body.url?.trim() || c.url, key: req.body.key?.trim() || c.key };
   // the same kind of buttons real emails carry, so they can be tried in Gmail, Outlook and Yahoo
   const subject = '[ONE Desk] Test email', body = `This is a test from ONE Desk.\nIf you can read this, the Power Automate connection works.\n**Now tap both buttons.** Each should open ONE Desk in your browser.\n`
@@ -1757,7 +1887,7 @@ M.put('/template/:key', superOnly, wrap(async req => {
     all[e.key] = { subject, body };
   }
   await setSetting('mail_templates', JSON.stringify(all));
-  await audit(req, 'mail.template', 'template', e.key, { reset: !all[e.key] }); return { ok: true };
+  await auditAll(req, 'mail.template', 'template', e.key, { reset: !all[e.key] }); return { ok: true };
 }));
 // Preview a template (saved, or the unsaved text from the editor) with sample values.
 M.post('/preview', superOnly, (req, res) => {
@@ -1779,7 +1909,7 @@ M.post('/resend', wrap(async req => {
   let n = 0;
   for (const id of ids) {
     const r = await run(`UPDATE notifications SET status='queued', attempts=0, last_error=NULL WHERE id=? AND status IN ('failed','logged','skipped')${scope}`, id, ...(scope ? [req.user.tenant_id] : []));
-    if (r.changes) { queue.push(id); n++; }
+    if (r.changes) { queue.push(id); n++; await resent(id); }
   }
   return { queued: n };
 }));
@@ -1924,6 +2054,46 @@ if (getSettings().migr_timeline_v1 !== '1') {
     t.body = t.body.includes('\n{{ticket_details}}') ? t.body.replace('\n{{ticket_details}}', '\n{{timeline}}\n{{ticket_details}}') : `${t.body}\n{{timeline}}`; n++; }
   if (n) { await setSetting('mail_templates', JSON.stringify(saved)); console.log(`"Latest updates" added to ${n} saved email template${n === 1 ? '' : 's'}.`); }
   await setSetting('migr_timeline_v1', '1');
+}
+// A campus whose time zone the server does not know (saved before zones were checked) runs on India time, and says so once
+for (const tn of await all('SELECT id, code, timezone FROM tenants')) if (tn.timezone && !tzOk(tn.timezone)) {
+  console.log(`Campus ${tn.code}: unknown time zone "${tn.timezone}", using Asia/Kolkata.`); await run("UPDATE tenants SET timezone='Asia/Kolkata' WHERE id=?", tn.id); }
+// One time: wording fixes for email templates an admin saved earlier (the standard texts already have them)
+if (getSettings().migr_mailtext_v2 !== '1') {
+  let saved = {}; try { saved = JSON.parse(getSettings().mail_templates || '{}') || {}; } catch { saved = {}; }
+  let n = 0; const fix = (k, fn) => { const t = saved[k]; if (typeof t?.body !== 'string') return; const b = fn(t.body); if (b !== t.body) { t.body = b; n++; } };
+  // the provider's note in its highlighted box, like the other emails to requesters
+  for (const k of ['transferred_requestor', 'reopen_accepted', 'reopen_declined']) fix(k, b => b.split('\n').map(l => l.trim() === '{{note}}' ? '> {{note}}' : l).join('\n'));
+  // the reopen offer once: the progress section already says it
+  fix('status_closed', b => b.includes('{{progress}}') ? b.replace('\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.', '') : b);
+  // "How it works" by role, and how long a temporary password works
+  fix('invite', b => b.replace(HOW_IT_WORKS.provider, '{{how_it_works}}'));
+  fix('invite', b => b.includes('14 days') ? b : b.replace('You will be asked to choose your own password the first time you sign in.', 'You will be asked to choose your own password the first time you sign in. The temporary password works for 14 days.'));
+  fix('password_reset', b => b.includes('14 days') ? b : b.replace('You will be asked to choose a new password when you sign in.', 'It works for 14 days. You will be asked to choose a new password when you sign in.'));
+  if (n) { await setSetting('mail_templates', JSON.stringify(saved)); console.log(`Wording brought up to date in ${n} saved email template${n === 1 ? '' : 's'}.`); }
+  await setSetting('migr_mailtext_v2', '1');
+}
+// One time: changes to the mail connection and to email wording were logged under whichever campus was selected. They belong
+// to no campus, and the log never holds the flow's address.
+if (getSettings().migr_audit_all_v1 !== '1') {
+  for (const a of await all("SELECT id, meta FROM audit_logs WHERE action='mail.config' AND meta LIKE '%\"url\"%'")) {
+    try { const m = JSON.parse(a.meta || '{}'); if (m.url !== undefined) { m.url = '(changed)'; await run('UPDATE audit_logs SET meta=? WHERE id=?', JSON.stringify(m), a.id); } } catch { /* not JSON: leave it */ } }
+  await run("UPDATE audit_logs SET tenant_id=NULL WHERE action IN ('mail.config','mail.template','merge.mode')");
+  await setSetting('migr_audit_all_v1', '1');
+}
+// One time: emails sent before passwords were masked. A copy that was handed over, or whose password no longer works, loses it.
+if (getSettings().migr_mask_pw_v1 !== '1') {
+  const dots = '••••••', line = /^(.*password:[ \t]*)(\S.*)$/gim, cell = /(password:<\/span>\s*<b[^>]*>)([^<]*)(<\/b>)/gi;
+  const old = await all(`SELECT n.id, n.body, n.html, n.text_body FROM notifications n WHERE n.template_key IN ('invite','password_reset','password_forgot','password_changed') AND n.secret IS NULL
+    AND (n.status='sent' OR n.template_key IN ('password_forgot','password_changed')
+      OR NOT EXISTS (SELECT 1 FROM users u WHERE lower(u.email)=lower(n.recipient) AND u.is_active=1 AND u.must_change_pw=1))`);
+  let n = 0;
+  for (const m of old) {
+    const body = String(m.body || '').replace(line, `$1${dots}`), html = m.html && m.html.replace(cell, `$1${dots}$3`), text_body = m.text_body && m.text_body.replace(line, `$1${dots}`);
+    if (body !== m.body || html !== m.html || text_body !== m.text_body) { await run('UPDATE notifications SET body=?, html=?, text_body=? WHERE id=?', body, html, text_body, m.id); n++; }
+  }
+  if (n) console.log(`Passwords masked in ${n} stored email${n === 1 ? '' : 's'} that had already gone out.`);
+  await setSetting('migr_mask_pw_v1', '1');
 }
 if (getSettings().migr_food_type_v1 !== '1') {
   for (const s of await all("SELECT id, form_schema FROM services WHERE upper(code)='FOOD' AND form_schema::jsonb->>'form_type' <> 'food' AND NOT EXISTS (SELECT 1 FROM services x WHERE x.tenant_id=services.tenant_id AND x.form_schema::jsonb->>'form_type'='food')")) {

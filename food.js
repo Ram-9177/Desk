@@ -6,6 +6,7 @@ import { one, all, run, insert, uid, now, tx } from './db.js';
 import { dayIn } from './merge.js';
 import { kindOf } from './images.js';
 import { chartPng } from './chart.js';
+import { emailHead } from './mailer.js';
 import { MEALS, DEFAULT_MEALS, MEAL_NAMES, MEAL_COLORS, MEAL_PALETTE, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, DEFAULT_MEAL_WINDOWS, mealAt, foodCategory } from './public/shared.js';
 
 const BACK_DAYS = 6; // ratings for meals up to 6 days back (a week including today)
@@ -349,8 +350,8 @@ export function food(d) {
     }
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:580px;background:#ffffff;border-radius:16px;border:1px solid #eceef5">
-<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK<span style="font-weight:400;opacity:.85"> · ${esc(tn.name)}</span></td></tr>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:580px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
+${emailHead(tn.name)}
 <tr><td style="padding:24px 24px 10px"><div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">${title.toUpperCase()} FOOD FEEDBACK · ${esc(span.toUpperCase())}</div>
 <h1 style="font-size:20px;margin:6px 0 12px">${esc(svc?.name || 'Food service')}</h1>${body}
 <p style="margin:22px 0 8px"><a href="${esc(link)}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">View full report</a></p></td></tr>
@@ -377,14 +378,16 @@ export function food(d) {
   async function sendDue() {
     if (process.env.FOOD_REPORT_AUTOSEND === '0') return;
     for (const tn of await all('SELECT * FROM tenants WHERE is_active=1')) {
-      const tz = tzOf(tn), hm = localHM(tz); if (hm < '22:00' || hm > '22:30') continue;
-      const day = dayIn(tz, now()), dow = new Date(day + 'T12:00:00Z').getUTCDay(), last = addDays(day, 1).slice(8) === '01';
-      for (const period of ['daily', ...(dow === 0 ? ['weekly'] : []), ...(last ? ['monthly'] : [])]) {
-        const k = `food_report:${tn.id}:${period}`; if (getSettings()[k] === day) continue;
-        await d.setSetting(k, day);
-        const r = await buildReport(tn, period, day); if (r.to.length) await sendMail(tn.id, r.to, `food_${period}`, r.subject, r.html, r.text);
-        if (period === 'daily') await d.setSetting(`food_report_at:${tn.id}`, now());
-      }
+      try { // one campus's trouble never holds up the reports of the campuses after it
+        const tz = tzOf(tn), hm = localHM(tz); if (hm < '22:00' || hm > '22:30') continue;
+        const day = dayIn(tz, now()), dow = new Date(day + 'T12:00:00Z').getUTCDay(), last = addDays(day, 1).slice(8) === '01';
+        for (const period of ['daily', ...(dow === 0 ? ['weekly'] : []), ...(last ? ['monthly'] : [])]) {
+          const k = `food_report:${tn.id}:${period}`; if (getSettings()[k] === day) continue;
+          await d.setSetting(k, day);
+          const r = await buildReport(tn, period, day); if (r.to.length) await sendMail(tn.id, r.to, `food_${period}`, r.subject, r.html, r.text);
+          if (period === 'daily') await d.setSetting(`food_report_at:${tn.id}`, now());
+        }
+      } catch (e) { console.error('food report', tn.code, e.message); }
     }
   }
   setInterval(() => sendDue().catch(e => console.error('food report', e.message)), 60e3).unref?.();

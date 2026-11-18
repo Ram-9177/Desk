@@ -123,6 +123,10 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS food_chips TEXT;
 -- Forgot password: a temporary password emailed to the person, good for an hour, next to their own (so nobody is locked out)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
+-- When an admin issued the temporary password a new or reset account signs in with: it stops working after 14 days
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_issued_at TEXT;
+-- The password an email carries, kept only until that email is handed over: then it is masked in the stored copy and this is emptied
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS secret TEXT;
 -- Fair Score settings per campus (weights, minimum tickets, windows); empty = the defaults
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS fair_cfg TEXT;
 -- Ready-made reply sentences per campus, with optional per-team lists: { "*": { step: [..] }, "<service id>": { .. } }

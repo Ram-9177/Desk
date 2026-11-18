@@ -19,7 +19,7 @@ export const VARS = {
   portal_link: 'Campus portal link', note: 'Note / reason typed at this step', actor_name: 'Person who made the change',
   hold_reason: 'Hold reason', resume_by: 'Expected resume time', reopen_days: 'Days allowed to reopen',
   from_service: 'Previous service', to_service: 'New service', staff_name: 'Staff member’s name', staff_email: 'Staff sign-in email',
-  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', password: 'The new password they chose', role_name: 'Staff member’s role', services: 'Services they handle', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
+  escalated_to_name: 'Person the ticket was escalated to', temp_password: 'Temporary password', password: 'The new password they chose', role_name: 'Staff member’s role', services: 'Services they handle', how_it_works: 'What this person does in ONE Desk, by their role (service provider, campus admin, super admin)', login_link: 'ONE Desk sign-in link', count: 'Number of tickets', ticket_list: 'List of tickets',
   progress: 'Block: progress tracker and what happens next', ticket_details: 'Block: all ticket details and form answers', timeline: 'Block: latest updates and notes',
   guide: 'Block: link to the step-by-step guide (a requestor’s first ticket; the provider guide in the welcome email)',
   affected_note: 'When the report joined a ticket others raised the same day: how many others reported it',
@@ -59,7 +59,7 @@ export const MAIL_EVENTS = [
     body: 'Hi {{requestor_name}},\nGood news: work on "{{subject}}" has resumed.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_closed', label: 'Ticket closed', who: 'Requestor', when: 'A provider closes it', vars: [...T, 'note', 'actor_name', 'reopen_days'],
     subject: '[{{ticket_no}}] Your ticket is closed',
-    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'suggestion_closed', label: 'Suggestion closed', who: 'Requestor', when: 'A provider closes a suggestion', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Thank you for your suggestion',
     body: 'Hi {{requestor_name}},\nThank you for your suggestion "{{subject}}". The {{service}} team has gone through it.\n> {{note}}\n[[View your suggestion|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}' },
@@ -74,10 +74,10 @@ export const MAIL_EVENTS = [
     body: '{{actor_name}} asks to reopen "{{subject}}", which you closed.\nReason: {{note}}\nOpen the ticket to accept (it reopens with a fresh target) or decline (it stays closed). You can reply with a note first.\n[[Accept or decline|{{staff_link}}]]\n{{timeline}}' },
   { key: 'reopen_accepted', label: 'Reopen accepted', who: 'Requestor', when: 'The provider accepts their reopen request', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket is reopened',
-    body: 'Hi {{requestor_name}},\n{{actor_name}} accepted your request: "{{subject}}" is open again and the team is on it.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
+    body: 'Hi {{requestor_name}},\n{{actor_name}} accepted your request: "{{subject}}" is open again and the team is on it.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
   { key: 'reopen_declined', label: 'Reopen declined', who: 'Requestor', when: 'The provider declines their reopen request', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] About your reopen request',
-    body: 'Hi {{requestor_name}},\n{{actor_name}} looked at your request to reopen "{{subject}}" and kept it closed:\n{{note}}\nStill a problem? Reply with a note on the ticket, or raise a new ticket.\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
+    body: 'Hi {{requestor_name}},\n{{actor_name}} looked at your request to reopen "{{subject}}" and kept it closed:\n> {{note}}\nStill a problem? Reply with a note on the ticket, or raise a new ticket.\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}' },
   { key: 'reminder', label: 'Reminder', who: 'Provider who set it', when: 'A reminder a provider set on a ticket comes due (the ticket itself does not change)', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Reminder: {{note}}',
     body: 'Hi {{actor_name}},\nYou asked to be reminded about "{{subject}}":\n{{note}}\n{{progress}}\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },
@@ -86,10 +86,10 @@ export const MAIL_EVENTS = [
     body: '{{requestor_name}} added a note to "{{subject}}":\n{{note}}\n[[Open the ticket|{{staff_link}}]]\n{{timeline}}\n{{ticket_details}}' },
   { key: 'transferred', label: 'Ticket transferred', who: 'Old and new service providers', when: 'A ticket moves to another service', vars: [...T, 'note', 'actor_name', 'from_service', 'to_service'],
     subject: '[{{ticket_no}}] Ticket moved to {{to_service}}',
-    body: '"{{subject}}" was moved from {{from_service}} to **{{to_service}}** by {{actor_name}}.\nReason: {{note}}\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}\n{{timeline}}' },
+    body: '"{{subject}}" was moved from {{from_service}} to **{{to_service}}** by {{actor_name}}.\nReason: {{note}}\nNew target: {{due}}\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}\n{{timeline}}' },
   { key: 'transferred_requestor', label: 'Ticket moved to another team', who: 'Requestor', when: 'A ticket moves to another service', vars: [...T, 'note', 'actor_name', 'from_service', 'to_service'],
     subject: '[{{ticket_no}}] Your ticket moved to {{to_service}}',
-    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is now with the **{{to_service}}** team, who can help you best.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is now with the **{{to_service}}** team, who can help you best.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
   { key: 'reopened', label: 'Ticket reopened', who: 'Service providers', when: 'The requestor (or staff) reopens a closed ticket', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Ticket reopened: {{subject}}',
     body: '"{{subject}}" was reopened by {{actor_name}}.\nReason: {{note}}\nNew target: {{due}}\n[[Open the ticket|{{staff_link}}]]\n{{timeline}}\n{{ticket_details}}' },
@@ -99,15 +99,12 @@ export const MAIL_EVENTS = [
   { key: 'escalated_requestor', label: 'Escalation acknowledgement', who: 'Requestor', when: 'Their ticket is escalated', vars: [...T, 'escalated_to_name'],
     subject: '[{{ticket_no}}] We have escalated your ticket',
     body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is taking longer than we planned, so it has been escalated to **{{escalated_to_name}}** for faster help. We are sorry for the wait.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
-  { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: [...STAFF, 'guide'],
+  { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: [...STAFF, 'guide', 'how_it_works'],
     subject: '[ONE Desk] Welcome to ONE Desk, your sign-in details',
     body: 'Hi {{staff_name}},\nWelcome to **ONE Desk**, the service desk of {{campus}}. Students and staff raise their requests here, and you help solve them.\n'
-      + 'Your role: {{role_name}}\nYour services: {{services}}\n**How it works**\n'
-      + '• You get an email when a new ticket arrives in your services. It also shows on your ONE Desk home screen.\n'
-      + '• Open the ticket, choose the status (In progress, On hold, Closed) and add a short note. The requestor is emailed every update.\n'
-      + '• Every ticket has a target time, counted in working hours only. Closing on time earns you points; tickets that miss it are escalated.\n{{guide}}\n'
+      + 'Your role: {{role_name}}\nYour services: {{services}}\n**How it works**\n{{how_it_works}}\n{{guide}}\n'
       + '**Your sign-in details**\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
-      + 'You will be asked to choose your own password the first time you sign in. Please keep these details private.' },
+      + 'You will be asked to choose your own password the first time you sign in. The temporary password works for 14 days. Please keep these details private.' },
   { key: 'password_changed', label: 'Password changed', who: 'Staff member', when: 'They set their own password (first sign-in or Profile)', vars: STAFF_PW,
     subject: '[ONE Desk] Your password was changed',
     body: 'Hi {{staff_name}},\nYour ONE Desk password was changed just now. Here are your sign-in details for your records.\nEmail: {{staff_email}}\nPassword: {{password}}\n[[Sign in to ONE Desk|{{login_link}}]]\n'
@@ -117,7 +114,7 @@ export const MAIL_EVENTS = [
     body: 'Hi {{staff_name}},\nSomeone (hopefully you) asked for a new ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nIt works for 1 hour. Sign in with it and you will be asked to choose a new password.\nDidn’t ask for this? Ignore this email: your current password still works.\n[[Sign in to ONE Desk|{{login_link}}]]' },
   { key: 'password_reset', label: 'Password reset', who: 'Staff member', when: 'An admin resets their password', vars: STAFF,
     subject: '[ONE Desk] Your password was reset',
-    body: 'Hi {{staff_name}},\nAn admin reset your ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nYou will be asked to choose a new password when you sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
+    body: 'Hi {{staff_name}},\nAn admin reset your ONE Desk password.\nEmail: {{staff_email}}\nTemporary password: {{temp_password}}\nIt works for 14 days. You will be asked to choose a new password when you sign in.\n[[Sign in to ONE Desk|{{login_link}}]]' },
   { key: 'digest', label: 'Morning brief: my team (08:30)', who: 'Service providers', when: 'Each working morning at 08:30 campus time, when their team has open tickets', vars: ['staff_name', 'campus', 'team', 'date', 'count', 'open_text', 'counts', 'ticket_list', 'login_link'],
     subject: '[Morning brief] {{team}}: {{open_text}} · {{date}}',
     body: 'Good morning {{staff_name}},\nHere is where **{{team}}** stands this morning.\n{{counts}}\n{{ticket_list}}\n[[Open ONE Desk|{{login_link}}]]' },
@@ -126,14 +123,27 @@ export const MAIL_EVENTS = [
     body: 'Good morning {{staff_name}},\nHere is the whole campus this morning.\n{{counts}}\n{{ticket_list}}\n[[Open ONE Desk|{{login_link}}]]' },
 ];
 export const eventByKey = k => MAIL_EVENTS.find(e => e.key === k);
+// "How it works" in the welcome email, by role: each person reads what is true for them.
+export const HOW_IT_WORKS = {
+  provider: '• You get an email when a new ticket arrives in your services. It also shows on your ONE Desk home screen.\n'
+    + '• Open the ticket, choose the status (In progress, On hold, Closed) and add a short note. The requestor is emailed every update.\n'
+    + '• Every ticket has a target time, counted in working hours only. Closing on time earns you points; tickets that miss it are escalated.',
+  tenant_admin: '• You see every ticket of your campus. The Attention page shows what needs you: overdue and escalated tickets, teams with nobody on them, emails that failed.\n'
+    + '• You add people and teams, and set the target times, working days and hours.\n'
+    + '• Each working morning at 08:30 you get a brief of the whole campus by email.',
+  super_admin: '• You see every campus: switch between them at the top of the screen.\n'
+    + '• You add campuses, campus admins and teams, and set up the Email page (the mail connection and the wording of every email).\n'
+    + '• On a campus with no campus admin, a ticket that misses its target is escalated to you.',
+};
 
 // Sample values for previews on the Email page.
 export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fan not working', description: 'Ceiling fan stopped working this morning.',
   service: 'Electrical', location: 'Hostel H2, room 214', campus: "St. Mary's Rehabilitation University", status: 'Open', priority: 'Medium',
   due: '29 Oct 2026, 3:15 pm', providers: 'Suresh Babu', escalated_to_name: 'Priya Reddy', note: 'The electrician will replace the fan motor.', actor_name: 'Suresh Babu',
   hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, from_service: 'Electrical', to_service: 'IT Support',
-  staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', password: 'MyNewPass2026', role_name: 'Service provider', services: 'Electrical, IT Support', count: 2,
-  ticket_list: '0042 · on hold · Fan not working\n0039 · overdue · Projector not working',
+  team: 'Electrical', date: 'Wed, 28 Oct', open_text: '2 open tickets', counts: '2 open · Overdue 1 · Due today 0 · In progress 0 · On hold 1\nYesterday: 3 raised, 2 closed',
+  how_it_works: HOW_IT_WORKS.provider, staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', password: 'MyNewPass2026', role_name: 'Service provider', services: 'Electrical, IT Support', count: 2,
+  ticket_list: '\nOVERDUE (1)\n#0039 · Projector not working · Block A, room 12 · was due 27 Oct 2026, 5:00 pm\n\nON HOLD (1)\n#0042 · Fan not working · Hostel H2, room 214 · resume by 30 Oct 2026, 3:15 pm',
   progress: { status: 'open', service: 'Electrical', due: '29 Oct 2026, 3:15 pm', hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, closed_at: '28 Oct 2026, 5:40 pm' },
   ticket_details: [['Ticket', '0042'], ['Service', 'Electrical'], ['Subject', 'Fan not working'], ['Description', 'Ceiling fan stopped working this morning.'],
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
@@ -161,15 +171,23 @@ export function fill(tpl, vars) {
     if (names.length && names.every(n => BLOCKS.includes(n) || clean(vars[n]).trim() === '')) return [];
     // a line that is nothing but typed text starts with a no-width mark: it is shown as plain words, whatever it begins with
     const only = /^\s*\{\{\s*(\w+)\s*\}\}\s*$/.exec(line);
-    return [(only && TYPED.has(only[1]) ? '\u200b' : '') + line.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, n) => BLOCKS.includes(n) ? '' : typed(n, vars[n]))];
+    // "Label: {{field}}" is drawn as a label with its value; a sentence that merely starts like one ("Good news: work on …") stays a sentence
+    const sentence = /^[A-Z][A-Za-z ]{1,24}:\s+(?!\{\{)\S/.test(line);
+    return [((only && TYPED.has(only[1])) || sentence ? '\u200b' : '') + line.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, n) => BLOCKS.includes(n) ? '' : typed(n, vars[n]))];
   }).join('\n');
 }
+// The stored copy of an email that carried a password, once it has been handed over: the password is replaced by dots
+// (in the text as typed, as cleaned for the template, and as written into the HTML).
+const escHtml = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+export const maskSecret = (text, pw) => !pw || text == null ? text
+  : [...new Set([pw, clean(pw), escHtml(pw), escHtml(clean(pw))])].sort((a, b) => b.length - a.length).reduce((s, x) => s.split(x).join('••••••'), String(text));
 export const unknownVars = (tpl, allowed) => [...new Set([...String(tpl).matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map(m => m[1]))].filter(n => !allowed.includes(n));
 export const templateFor = (cfg, key) => ({ ...(({ subject, body }) => ({ subject, body }))(eventByKey(key) || {}), ...(cfg.templates[key] || {}) });
 export function renderTemplate(cfg, key, vars) {
   const t = templateFor(cfg, key);
   // sign-off: with no person's name (or when the desk's own account acted) the team signs, once
-  return { subject: fill(t.subject, vars).replace(/\s*[\n\u2028]\s*/g, ' ').replace(/\u200b/g, '').trim().slice(0, 250), body: fill(t.body, vars).replace(/^\*\*\s*(?:ONE DESK)?\s*\*\* · (.+)$/gmi, '**$1**') };
+  // a subject is one line: line breaks and any other control character in a value become a space
+  return { subject: fill(t.subject, vars).replace(/\u200b/g, '').replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/ {2,}/g, ' ').trim().slice(0, 250), body: fill(t.body, vars).replace(/^\*\*\s*(?:ONE DESK)?\s*\*\* · (.+)$/gmi, '**$1**') };
 }
 // Plain-text version: buttons become "label: link", bold markers dropped.
 const STEP_TEXT = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Not accepted' };
@@ -191,12 +209,12 @@ export const toText = (body, blocks = {}, requester = false) => String(body).spl
 export function nextStep(p) {
   const working = p.escalated_to ? `Escalated to ${p.escalated_to}, who is now following it up with the ${p.service} team.` : `The ${p.service} team is working on it. Target: ${p.due}.`;
   if (p.suggestion) return { closed: `Closed${p.closed_at ? ` on ${p.closed_at}` : ''}. Thank you for the suggestion.`, rejected: 'The team could not take this suggestion forward this time.' }[p.status]
-    || `The ${p.service} team will read your suggestion. If they reply, we'll email you.`;
+    || (['in_progress', 'hold'].includes(p.status) ? `The ${p.service} team is looking into your suggestion. If they reply, we'll email you.` : `The ${p.service} team will read your suggestion. If they reply, we'll email you.`);
   if (p.status === 'open' && p.queue_no) return `Today's tickets for the ${p.service} team are full${p.daily_cap ? ` (they take ${p.daily_cap} a day)` : ''}. Your queue number is ${p.queue_no}`
     + `${p.queue_ahead ? `, with ${p.queue_ahead} ticket${p.queue_ahead === 1 ? '' : 's'} ahead of you` : ', you are next'}. It reaches the team on ${p.lands_on}; we'll email you then. Target: ${p.due}.`;
   return { open: p.escalated_to ? working : `The ${p.service} team has received it and will pick it up shortly. Target: ${p.due}.`, in_progress: working,
     hold: `Paused: ${p.hold_reason || 'waiting on something'}.${p.resume_by ? ` Expected to resume by ${p.resume_by}.` : ''} We'll email you when work resumes.`,
-    closed: `Completed${p.closed_at ? ` on ${p.closed_at}` : ''}. Not fixed? You can reopen it within ${p.reopen_days} days.`,
+    closed: `Completed${p.closed_at ? ` on ${p.closed_at}` : ''}. If it is not fixed, you can ask to reopen it within ${p.reopen_days} days.`,
     rejected: 'This ticket was not accepted. You can raise a new one any time.' }[p.status] || '';
 }
 
@@ -221,9 +239,16 @@ export const BRAND_DEFAULTS = {
 };
 export const brandOf = () => { const s = getSettings(); return Object.fromEntries(Object.keys(BRAND_DEFAULTS).map(k => [k, s[k] ?? BRAND_DEFAULTS[k]])); };
 const WRAP = 'word-break:break-word;overflow-wrap:anywhere'; // a long link wraps; it must not make the email wider than a phone
-export function renderEmail({ subject, body, campus, blocks = {}, requester = false }) {
+// The top of every email: the university logo (from the site's public address; it needs https so mail apps load it), then
+// the ONE DESK bar with the campus and the strap line (Email page → Brand).
+export function emailHead(campus) {
   const br = brandOf(), site = String(getSettings().public_base_url || process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
-  const logo = /^https:\/\//.test(site) || /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(site + "/") ? `${site}/logo.png` : ''; // the university logo, from the site's public address (needs https so mail apps load it)
+  const logo = /^https:\/\//.test(site) || /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(site + '/') ? `${site}/logo.png` : '';
+  return `${logo ? `<tr><td style="background:#ffffff;padding:16px 24px 12px"><img src="${esc(logo)}" width="150" alt="St. Mary's Rehabilitation University" style="display:block;width:150px;max-width:150px;height:auto;border:0"></td></tr>` : ''}
+<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}${br.brand_strap ? `<div style="margin-top:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#f8c77a">${esc(br.brand_strap)}</div>` : ''}</td></tr>`;
+}
+export function renderEmail({ subject, body, campus, blocks = {}, requester = false }) {
+  const br = brandOf();
   // "ONE = Own · …": the capitals O, N, E and the first word stand out
   const oneHtml = esc(br.brand_one).replace(/^(ONE)\b/, '<b style="color:#b45309">$1</b>').replace(/\b(Own|Navigate|Ensure)\b/g, m => `<b style="color:#b45309">${m[0]}</b>${m.slice(1)}`);
   const welcomeHtml = esc(br.brand_welcome).replace(/^(.+?[A-Za-z]{4,}[.!?])(?=\s|$)/, '<b style="color:#1e4b8f">$1</b>'); // first sentence in bold ("St." is not an end)
@@ -246,8 +271,7 @@ export function renderEmail({ subject, body, campus, blocks = {}, requester = fa
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;table-layout:fixed;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
-${logo ? `<tr><td style="background:#ffffff;padding:16px 24px 12px"><img src="${esc(logo)}" width="150" alt="St. Mary's Rehabilitation University" style="display:block;width:150px;max-width:150px;height:auto;border:0"></td></tr>` : ''}
-<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}${br.brand_strap ? `<div style="margin-top:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#f8c77a">${esc(br.brand_strap)}</div>` : ''}</td></tr>
+${emailHead(campus)}
 ${requester && br.brand_one ? `<tr><td style="background:#fff8ec;border-bottom:1px solid #fde3b7;padding:9px 24px;font-size:12.5px;line-height:1.5;color:#7a4b05">${oneHtml}</td></tr>` : ''}
 <tr><td style="padding:24px 24px 10px">${ref && !/^(ONE Desk|Digest|Morning brief)$/.test(ref) ? `<div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">TICKET ${esc(ref)}</div>` : ''}
 <h1 style="font-size:20px;line-height:1.3;margin:6px 0 16px">${esc(title)}</h1>${html}</td></tr>

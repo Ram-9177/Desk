@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
+import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt, isEmail } from './shared.js';
 import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
@@ -434,7 +434,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
     e.preventDefault(); const btn = e.target.querySelector('button.primary'); btn.disabled = true; $('#err').textContent = '';
     try {
       const v = formVals(e.target);
-      if (!/^\S+@\S+\.\S+$/.test(v.email || '')) throw new Error('Enter a valid email address so we can send you updates');
+      if (!isEmail(String(v.email || '').trim())) throw new Error('Enter one valid email address so we can send you updates');
       const body = { ...v, service_id: svc.id, form_data: collectForm(e.target, svc), idempotency_key: idem, seen_notices: seenNotices(svc.id), related_ticket_no: related,
         files: await readFiles(document.querySelectorAll('.f-raise')) };
       let r; try { r = await api(`/public/${slug}/tickets`, { method: 'POST', body }); }
@@ -1374,12 +1374,22 @@ async function mailConnect(box, reload) {
     b.disabled = false; };
 }
 
+// The morning brief card (super admins: Emails sent tab · campus admins: above their delivery log) and its "send now" button.
+const briefCard = () => `<div class="card brief-now"><div><b>Morning brief</b><div class="muted small">Every working day at 08:30 campus time: campus admins get the whole campus (counts and every open ticket, by team); each service provider gets only their own team's open tickets.</div></div>
+  <button type="button" class="btn" id="briefNow">${I('send', 16)} Send this campus's brief now</button></div>`;
+const wireBrief = () => { const b = $('#briefNow'); if (!b) return;
+  b.onclick = async () => { b.disabled = true;
+    try { const r = await api('/digest/send', { method: 'POST' }), n = x => `${x} email${x === 1 ? '' : 's'}`;
+      toast(!r.written ? 'Nothing to send: this campus has no campus admin or team member to send the brief to.'
+        : !r.sent ? `${n(r.written)} written to the delivery log, none sent: the morning brief emails are switched off (Email page → Emails sent).`
+        : !r.live ? `${n(r.sent)} written to the delivery log, not sent yet: no email flow is connected, or sending is paused.`
+        : `Morning brief on its way: ${n(r.sent)}. See the delivery log.`, 6000); } catch (er) { toast(er.message); }
+    b.disabled = false; }; };
 async function mailEvents(box) {
   const c = await api('/mail/config');
   box.innerHTML = `<p class="muted small">Every step that sends an email. Each one has its own template: click <b>Edit template</b> to change the subject and message.
     Switch one off and it is recorded as "skipped" in the delivery log instead of being sent.</p>
-    <div class="card brief-now"><div><b>Morning brief</b><div class="muted small">Every working day at 08:30 campus time: campus admins get the whole campus (counts and every open ticket, by team); each service provider gets only their own team's open tickets.</div></div>
-      <button type="button" class="btn" id="briefNow">${I('send', 16)} Send this campus's brief now</button></div>
+    ${briefCard()}
     <form class="card brandf" id="brandF"><b>Brand lines in every email</b><div class="muted small">The header line goes in every email. The ONE strip and the welcome message go in emails to requesters (students, staff, parents…). Leave a box empty to hide that line.</div>
       <label for="b_strap">Header line</label><input id="b_strap" name="brand_strap" maxlength="400" value="${esc(c.brand?.brand_strap ?? '')}">
       <label for="b_one">ONE strip <small>(under the header)</small></label><textarea id="b_one" name="brand_one" rows="2" maxlength="400">${esc(c.brand?.brand_one ?? '')}</textarea>
@@ -1404,7 +1414,7 @@ async function mailEvents(box) {
   if ($('#brandF')) { const bf = $('#brandF');
     bf.onsubmit = async e => { e.preventDefault(); try { await api('/mail/config', { method: 'PUT', body: { brand: { brand_strap: bf.brand_strap.value, brand_one: bf.brand_one.value, brand_welcome: bf.brand_welcome.value } } }); toast('Brand lines saved. Every new email uses them.'); } catch (er) { toast(er.message); } };
     $('#brandDef').onclick = () => { const d = c.brand_defaults || {}; bf.brand_strap.value = d.brand_strap || ''; bf.brand_one.value = d.brand_one || ''; bf.brand_welcome.value = d.brand_welcome || ''; toast('Standard text filled in. Save to use it.'); }; }
-  if ($('#briefNow')) $('#briefNow').onclick = async e => { e.target.disabled = true; try { const r = await api('/digest/send', { method: 'POST' }); toast(`Morning brief sent: ${r.sent} email${r.sent === 1 ? '' : 's'}. See the delivery log.`, 5000); } catch (er) { toast(er.message); } e.target.disabled = false; };
+  wireBrief();
   box.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => templateEditor(c, c.events.find(e => e.key === b.dataset.ed), () => mailEvents(box)));
 }
 
@@ -1419,7 +1429,7 @@ function templateEditor(c, e, done) {
       <div class="muted small" style="margin:10px 0 6px">Click to insert at the cursor:</div>
       <div class="chips">${e.vars.filter(v => !BLOCK_FIELDS.includes(v)).map(v => `<button type="button" class="chip-btn" data-ins="{{${v}}}" title="${esc(c.vars[v] || '')}">${v}</button>`).join('')}</div>
       ${e.vars.some(v => BLOCK_FIELDS.includes(v)) ? `<div class="muted small" style="margin:10px 0 6px">Designed sections (put each on its own line):</div><div class="chips">${BLOCK_FIELDS.filter(v => e.vars.includes(v)).map(v =>
-        `<button type="button" class="chip-btn blk" data-ins="\n{{${v}}}\n" title="${esc(c.vars[v] || '')}">▦ ${{ progress: 'Progress tracker', ticket_details: 'Ticket details', timeline: 'Latest updates' }[v]}</button>`).join('')}</div>` : ''}
+        `<button type="button" class="chip-btn blk" data-ins="\n{{${v}}}\n" title="${esc(c.vars[v] || '')}">▦ ${{ progress: 'Progress tracker', ticket_details: 'Ticket details', timeline: 'Latest updates', guide: 'Guide link' }[v]}</button>`).join('')}</div>` : ''}
       <div class="chips" style="margin-top:8px">${links.length ? `<button type="button" class="chip-btn alt" data-ins="[[Button text|{{${links[0]}}}]]">+ Button</button>` : ''}<button type="button" class="chip-btn alt" data-ins="**bold text**">+ Bold</button></div>
       <div class="muted small" style="margin-top:10px;line-height:1.6"><b>Tips:</b> <code>{{field}}</code> is replaced with the real value · a line whose fields are all empty is left out ·
         <code>[[Text|{{${links[0] || 'login_link'}}}]]</code> on its own line becomes a button · <code>**text**</code> is bold · start the subject with <code>[{{ticket_no}}]</code> so replies thread by ticket.</div>
@@ -1449,7 +1459,7 @@ async function mailLog(box, reload, sa) {
   const st = JSON.parse(sessionStorage.getItem('ml') || '{"status":"all","q":""}');
   const rows = await api(`/mail/log?status=${st.status}&q=${encodeURIComponent(st.q)}`);
   const failed = rows.filter(r => r.status === 'failed' || (r.status === 'logged' && r.template_key !== 'test')).map(r => r.id);
-  box.innerHTML = `<div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="mq" placeholder="Search email address or subject…" value="${esc(st.q)}"></label>
+  box.innerHTML = `${sa ? '' : briefCard()}<div class="filters"><label class="search" style="margin:0">${I('search', 18)}<input id="mq" placeholder="Search email address or subject…" value="${esc(st.q)}"></label>
       ${failed.length ? `<button class="btn primary" id="rall">Send ${failed.length} held or failed</button>` : ''}</div>
     <div class="tabs">${['all', 'sent', 'failed', 'queued', 'skipped', 'logged'].map(k => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}" style="text-transform:capitalize">${k}</button>`).join('')}</div>
     <div class="tblwrap"><table><tr><th>When</th><th>To</th><th>Subject</th>${sa ? '<th>Campus</th>' : ''}<th>Status</th><th></th></tr>
@@ -1464,6 +1474,7 @@ async function mailLog(box, reload, sa) {
   const resend = async ids => { const r = await api('/mail/resend', { method: 'POST', body: { ids } }); toast(`${r.queued} email(s) queued`); setTimeout(() => mailLog(box, reload, sa), 1500); };
   box.querySelectorAll('[data-rs]').forEach(b => b.onclick = () => resend([b.dataset.rs]));
   if ($('#rall')) $('#rall').onclick = () => resend(failed);
+  wireBrief();
 }
 
 function mailGuide(box) {
@@ -1832,7 +1843,9 @@ async function route() {
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
       const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage };
-      if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
+      if (seg[1] === 't') { // a link from an email carries the ticket's campus (?c=): a super admin is switched to it, so the ticket opens
+        if (q.get('c') && q.get('c') !== S.tenant) { S.tenant = q.get('c'); localStorage.setItem('tid', S.tenant); }
+        return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket'); }
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }
     document.body.className = '';

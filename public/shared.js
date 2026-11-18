@@ -21,6 +21,9 @@ export const WHO_FIELDS = {
 export const otherOf = (options = []) => options.find(o => /^other\b/i.test(String(o).trim())) || null;
 export const isOtherAnswer = (options, v) => { const o = otherOf(options); return !!o && typeof v === 'string' && (v === o || v.startsWith(o + ': ')); };
 export const FIELD_TYPES = ['short_text', 'long_text', 'number', 'date', 'select', 'multi_select', 'phone', 'email', 'yes_no'];
+// One email address: exactly one (a list joined by ; or , would be mailed as a list), no spaces or brackets, a domain with a dot.
+export const EMAIL_RE = /^[^\s@;,<>()[\]\\":]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+export const isEmail = v => typeof v === 'string' && v.length <= 254 && EMAIL_RE.test(v);
 // working hours (09:00–17:00 clock): critical 3h, high 5h, medium 8h (1 day), low 24h (3 days)
 export const DEFAULT_HOURS = { critical: 3, high: 5, medium: 8, low: 24 };
 

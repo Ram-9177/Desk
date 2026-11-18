@@ -837,7 +837,7 @@ try {
   const r = await ok('admin sends this campus’s morning brief now', '/digest/send', { token: T.asha, method: 'POST' });
   const mails = await q("SELECT recipient, template_key, subject, body FROM notifications WHERE template_key IN ('digest','digest_admin') ORDER BY created_at DESC LIMIT ?", r.sent);
   const adm = mails.find(m => m.template_key === 'digest_admin' && m.recipient === 'asha@example.com'), mine = mails.find(m => m.template_key === 'digest' && m.recipient === pav.email);
-  check('the campus admin gets the whole campus: counts, then every open ticket by group', !!adm && /\d+ open · Overdue \d+ · Due today \d+/.test(adm.body) && /Yesterday: \d+ raised, \d+ closed/.test(adm.body) && /OVERDUE \(\d+\)/.test(adm.body), adm?.body?.slice(0, 400));
+  check('the campus admin gets the whole campus: counts, then every open ticket by group', !!adm && /\d+ open · Overdue \d+ · Due today \d+/.test(adm.body) && /(Yesterday|Since \w+): \d+ raised, \d+ closed/.test(adm.body) && /OVERDUE \(\d+\)/.test(adm.body), adm?.body?.slice(0, 400));
   const myS = (await q("SELECT m.service_id FROM service_members m WHERE m.user_id=? UNION SELECT s.id FROM services s JOIN service_members m ON m.service_id=s.parent_id WHERE m.user_id=?", pav.id, pav.id)).map(x => x.service_id);
   const other = (await q(`SELECT ticket_no FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress') AND queued=0 AND coalesce(kind,'issue')<>'suggestion' AND NOT (service_id = ANY(?::text[])) LIMIT 1`, tid, myS))[0];
   const own = (await q(`SELECT ticket_no FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress') AND queued=0 AND coalesce(kind,'issue')<>'suggestion' AND service_id = ANY(?::text[]) LIMIT 1`, tid, myS))[0];
@@ -1016,6 +1016,157 @@ try {
   const m4 = await same('closed: the same again', 'closed', { note: 'switch board replaced and tested' }, 'status_closed');
   check('more than 5 updates: the last 5 are shown, with a link to the rest', (m4.html.match(/mso-line-height-rule:exactly/g) || []).length === 5 && m4.html.includes('Showing the last 5 updates') && m4.html.includes('See all on your ticket page') && !m4.html.includes('Ticket received'));
   check('the plain-text version carries the same list', /Latest updates\n.+· Pavan Provider, Electrical team · Resolved: Switch board replaced and tested\./.test(m4.text_body) && /See all updates: http/.test(m4.text_body), m4.text_body.match(/Latest updates[\s\S]{0,300}/)?.[0]); }
+
+  sec('Emails: fixes from the independent audit');
+  { await stop(); await start(); // fresh rate limits
+  const tidA = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, SA = { token: T.sa, tenant: tidA };
+  const mailTo = async (to, key) => (await q('SELECT id, recipient, subject, body, html, text_body, status, secret FROM notifications WHERE recipient=? AND template_key=? ORDER BY created_at DESC LIMIT 1', to, key))[0];
+  const idOf = async no => (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', tidA, no))[0]?.id;
+  // --- two people on one ticket: each reads their own report ---
+  const wtr = await ok('a team with a Location & Student form, with nobody on it yet', '/services', { ...SA, method: 'POST', body: { code: 'WATER', name: 'Water supply',
+    form_schema: { form_type: 'both', lists: { block: ['Main block', 'Hostel block'] }, fields: [{ key: 'issue', label: 'Issue', type: 'select', required: true, options: ['No water', 'Leak'] }] } } });
+  const stu = (n, sid, words, extra = {}) => raise('alpha', { service_id: wtr.id, name: n, email: `${n.toLowerCase()}@join.example.com`, requestor_type: 'student', subject: `${n}: no water`, description: words,
+    form_data: { loc_block: 'Hostel block', loc_floor: '1st floor', loc_room: '118', issue: 'No water', stu_branch: 'BPT', stu_id: sid, stu_dept: 'Physiotherapy' }, ...extra });
+  const pic = n => [{ name: n, type: 'image/png', source: 'gallery', data: PNG }];
+  const j1 = await stu('Divya', '23BPT777', 'No water since morning. Call me on my personal number 9000011111.', { files: pic('tap.png') });
+  const j2 = await stu('Esha', '23BPT888', 'Nothing from the tap in our room either.', { files: pic('mine.png') });
+  const jt = await idOf(j1.data?.ticket_no);
+  const keyOf = async type => (await q('SELECT a.storage_key k FROM attachments a JOIN ticket_events e ON e.id::text=a.event_id::text WHERE a.ticket_id=? AND e.event_type=?', jt, type))[0]?.k;
+  const k1 = await keyOf('created'), k2 = await keyOf('merged');
+  const e1 = await mailTo('divya@join.example.com', 'created'), e2 = await mailTo('esha@join.example.com', 'created');
+  check('a second student reports the same room and problem: one ticket, two people', j2.data?.merged === true && j2.data.ticket_no === j1.data.ticket_no && !!k1 && !!k2 && k1 !== k2, JSON.stringify(j2.data || j2.error));
+  check('the first student’s email shows the ticket as they raised it', /23BPT777/.test(e1.text_body) && /personal number 9000011111/.test(e1.text_body) && e1.html.includes(k1), e1.text_body.slice(0, 300));
+  const all2 = e2.subject + e2.text_body + e2.html;
+  check('the one who joined reads their own words and photo: never the first student’s ID, description or photo', !/23BPT777|9000011111|Divya/.test(all2) && !all2.includes(k1)
+    && e2.text_body.includes('Nothing from the tap in our room either.') && e2.html.includes(k2) && e2.subject.includes('Esha: no water') && /Known issue: 1 other/.test(e2.body) && /Problem: No water/.test(e2.text_body), e2.text_body.slice(0, 600));
+  r = await act(jt, { to: 'in_progress', note: 'The plumber is on the way.', approved: true }, T.asha);
+  const s1 = await mailTo('divya@join.example.com', 'status_in_progress'), s2 = await mailTo('esha@join.example.com', 'status_in_progress');
+  check('…the same in every later update; in “Latest updates” the other person is not named', r.status === 200 && /23BPT777/.test(s1.text_body) && /· You</.test(s1.html) && !/23BPT777|9000011111|Divya/.test(s2.subject + s2.text_body + s2.html)
+    && s2.text_body.includes('Nothing from the tap') && /Hi Esha,/.test(s2.body) && s2.body.includes('"Esha: no water"') && s2.html.includes('Someone else who reported this'), s2.text_body.slice(0, 700));
+  await stu('Divya', '23BPT777', 'Still no water at 6 pm, my roommate is unwell.');
+  await ok('the team replies to everyone on the ticket', `/tickets/${jt}/notes`, { token: T.asha, method: 'POST', body: { body: 'The tanker arrives at 7 pm.', approved: true } });
+  const n1 = await mailTo('divya@join.example.com', 'note'), n2 = await mailTo('esha@join.example.com', 'note');
+  check('one’s own note is shown with its words; another person’s note without their name or their words', n1.html.includes('my roommate is unwell') && !n2.html.includes('roommate') && !n2.html.includes('Divya')
+    && n2.html.includes('Someone else who reported this') && n2.html.includes('The tanker arrives at 7 pm.'), n2.text_body.slice(0, 600));
+  check('a team with nobody on it: the campus admin is told about the new ticket, so it does not wait unseen', (await q("SELECT 1 FROM notifications WHERE ticket_id=? AND template_key='new_ticket' AND recipient='asha@example.com'", jt)).length === 1);
+  // --- one email address, one line, a length limit ---
+  for (const bad of ['one@victims.example.com;two@victims.example.com', 'a@x.example.com,b@y.example.com', 'Dean <dean@x.example.com>', 'a b@x.example.com', 'a@x', 'a@@x.example.com'])
+    await fails(`a ticket for “${bad}” is refused: exactly one address`, '/public/alpha/tickets', { method: 'POST', body: { ...elecBody('Many', bad), phone: '9000077001' } }, 400, 'valid email');
+  const sp = await raise('alpha', elecBody('Spaced', '  Jaya.Spaced@Student.Example.COM '));
+  check('an address typed with capitals and spaces around it is used trimmed and in small letters, from the first email on', sp.status === 200
+    && (await q("SELECT recipient FROM notifications WHERE template_key='created' AND subject LIKE ?", `[${sp.data?.ticket_no}]%`))[0]?.recipient === 'jaya.spaced@student.example.com', JSON.stringify(sp.error || ''));
+  await fails('a staff account for a list of addresses is refused too', '/users', { ...SA, method: 'POST', body: { name: 'List', email: 'a@x.example.com;b@y.example.com' } }, 400, 'one address');
+  await fails('a description over 5,000 characters is refused', '/public/alpha/tickets', { method: 'POST', body: { ...elecBody('Long', 'long@join.example.com'), phone: '9000077002', description: 'x'.repeat(5001) } }, 400, '5,000');
+  const cr = await raise('alpha', { ...elecBody('Ctl', 'ctl@join.example.com'), subject: 'Tap\rBcc: evil@x.example.com\nSecond line' });
+  const crM = await mailTo('ctl@join.example.com', 'created');
+  check('a subject with line breaks or control characters becomes one clean line, in the ticket and in the email subject', cr.status === 200 && crM?.subject === `[${cr.data.ticket_no}] Ticket received: Tap Bcc: evil@x.example.com Second line`, JSON.stringify(crM?.subject));
+  // --- the failed-email list, and Resend ---
+  await run("UPDATE notifications SET status='failed', last_error='test' WHERE id=?", crM.id);
+  const att = (await api('/attention', { token: T.asha })).data.failed_mail.find(m => m.id === crM.id);
+  check('Attention lists a failed email by its subject and address: never its text', !!att && att.subject === crM.subject && !('body' in att) && !('html' in att) && !('text_body' in att) && !('secret' in att), JSON.stringify(Object.keys(att || {})));
+  await run("UPDATE notifications SET status='sent' WHERE id=?", crM.id);
+  const rs = await api(`/notifications/${crM.id}/resend`, { token: T.asha, method: 'POST' });
+  check('an email that already went out is not sent again by Resend', rs.status === 200 && rs.data.queued === 0 && (await q('SELECT status FROM notifications WHERE id=?', crM.id))[0].status === 'sent', JSON.stringify(rs.data));
+  // --- passwords in stored emails ---
+  const cfgWas = (await api('/mail/config', { token: T.sa })).data;
+  await ok('(a mail flow is connected for the next checks)', '/mail/config', { token: T.sa, method: 'PUT', body: { url: FLOW_URL, key: flow.key, sending: true } });
+  const au = (await q("SELECT tenant_id, meta FROM audit_logs WHERE action='mail.config' ORDER BY created_at DESC LIMIT 1"))[0];
+  check('a change to the mail connection is logged for no campus, and without the flow’s address', au.tenant_id === null && !au.meta.includes(FLOW_URL) && /"url":"\(changed\)"/.test(au.meta)
+    && !(await api('/audit', { token: T.asha })).data.some(a => a.action === 'mail.config') && (await api('/audit', SA)).data.some(a => a.action === 'mail.config'), au.meta);
+  const nu = await ok('an admin adds a person to the Water team', '/users', { ...SA, method: 'POST', body: { name: 'Wally Water', email: 'wally@join.example.com', service_ids: [wtr.id] } });
+  const inv = await waitFor(async () => { const m = await mailTo('wally@join.example.com', 'invite'); return m?.status === 'sent' ? m : null; }, 8000);
+  const got = flow.received.find(m => m.to === 'wally@join.example.com' && /Welcome/.test(m.subject));
+  check('the welcome email reaches the person with the temporary password', !!inv && !!got && got.html.includes(nu.temp_password) && got.text.includes(nu.temp_password) && /works for 14 days/.test(got.text));
+  check('…and once it is handed over, the stored copy shows dots instead of the password', !!inv && inv.secret === null && ![inv.body, inv.html, inv.text_body].some(x => x.includes(nu.temp_password)) && inv.body.includes('••••••') && inv.html.includes('••••••'), inv?.body?.slice(-220));
+  const na = await ok('a campus admin is added', '/users', { ...SA, method: 'POST', body: { name: 'Zed Admin', email: 'zed@join.example.com', role: 'tenant_admin' } });
+  const invA = await mailTo('zed@join.example.com', 'invite');
+  check('the welcome email says what is true for each role', /You see every ticket of your campus/.test(invA.body) && !/You get an email when a new ticket arrives/.test(invA.body) && /Your services: All services of your campus/.test(invA.body)
+    && /You get an email when a new ticket arrives in your services/.test(inv.body), invA.body.slice(0, 500));
+  await run('UPDATE users SET pw_issued_at=? WHERE id=?', new Date(Date.now() - 15 * 864e5).toISOString(), nu.id);
+  const exp = await api('/auth/login', { method: 'POST', body: { email: 'wally@join.example.com', password: nu.temp_password } });
+  check('a temporary password an admin issued stops working after 14 days, and says what to do', exp.status === 401 && /14 days/.test(exp.error.message) && /Forgot password/.test(exp.error.message), exp.error?.message);
+  const rp = await ok('the admin resets it', `/users/${nu.id}/reset-password`, { ...SA, method: 'POST' });
+  check('…a reset gives a fresh one that works', !!(await login('wally@join.example.com', rp.temp_password)));
+  // --- a sub-team with no members of its own ---
+  const sub = await ok('a sub-team of Water supply with no members of its own', '/services', { ...SA, method: 'POST', body: { code: 'WTANK', name: 'Water tanks', parent_id: wtr.id, form_schema: { form_type: 'general', fields: [] } } });
+  const sb = await raise('alpha', { service_id: sub.id, name: 'Farid', email: 'farid@join.example.com', subject: 'Tank lid is open', location: 'Roof of block B' }), sbT = await idOf(sb.data?.ticket_no);
+  const sbM = await q("SELECT recipient, text_body FROM notifications WHERE ticket_id=? AND template_key='new_ticket'", sbT);
+  check('its main team’s provider is told about its tickets, and the requester reads who handles it', sbM.some(m => m.recipient === 'wally@join.example.com') && !sbM.some(m => m.recipient === 'asha@example.com')
+    && /Handled by: Wally Water/.test((await mailTo('farid@join.example.com', 'created')).text_body), JSON.stringify(sbM.map(m => m.recipient)));
+  check('the staff link in an email carries the campus, so a super admin lands in the right one', !!sbM[0]?.text_body.includes(`/#/c/t/${sbT}?c=${tidA}`));
+  // --- targets ---
+  const cal = (await q('SELECT work_end, work_days, timezone FROM tenants WHERE id=?', tidA))[0], [eh, em] = String(cal.work_end || '17:00').split(':').map(Number);
+  const endOfDay = new Date(Date.parse(new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10) + 'T00:00:00Z') + (eh * 60 + em - 330) * 6e4).toISOString(); // closing time in India, 3 days on
+  const hz = await raise('alpha', elecBody('Holdz', 'holdz@join.example.com')), hzId = await idOf(hz.data?.ticket_no);
+  await act(hzId, { to: 'in_progress', note: 'Looking at it.', approved: true });
+  await run('UPDATE tickets SET due_at=? WHERE id=?', endOfDay, hzId);
+  await act(hzId, { to: 'hold', hold_reason: 'parts', note: 'Waiting for the part.', approved: true }); r = await act(hzId, { to: 'in_progress', note: 'The part has arrived.', approved: true });
+  check('a ticket put on hold and resumed at once keeps its target (closing time did not become the next morning)', r.status === 200 && (await q('SELECT due_at FROM tickets WHERE id=?', hzId))[0].due_at === endOfDay, (await q('SELECT due_at FROM tickets WHERE id=?', hzId))[0].due_at);
+  await act(hzId, { to: 'closed', note: 'Part fitted and tested.', approved: true });
+  const cl = await mailTo('holdz@join.example.com', 'status_closed');
+  check('the closed email offers the reopen once', (cl.text_body.match(/reopen it within/g) || []).length === 1 && /If it is not fixed, you can ask to reopen it within \d+ days/.test(cl.text_body), cl.text_body.slice(0, 500));
+  const mv = await raise('alpha', elecBody('Movd', 'movd@join.example.com')), mvId = await idOf(mv.data?.ticket_no);
+  await run("UPDATE tickets SET due_at=?, escalated_at=?, escalated_to=(SELECT id FROM users WHERE email='asha@example.com') WHERE id=?", new Date(Date.now() - 3 * 864e5).toISOString(), new Date(Date.now() - 2 * 864e5).toISOString(), mvId);
+  await ok('an overdue, escalated ticket is moved to another team', `/tickets/${mvId}/transfer`, { token: T.pavan, method: 'POST', body: { service_id: wtr.id, note: 'This is a water problem.', approved: true } });
+  const moved = (await q('SELECT due_at, escalated_at, service_id FROM tickets WHERE id=?', mvId))[0];
+  check('…the new team starts with its own full target: it is not escalated on them a minute later', moved.service_id === wtr.id && moved.escalated_at === null && moved.due_at > new Date().toISOString(), JSON.stringify(moved));
+  check('…both teams are told, with the new target', /New target: /.test((await mailTo('wally@join.example.com', 'transferred'))?.text_body || '') && !!(await mailTo('pavan@example.com', 'transferred')));
+  // --- wording ---
+  const pv = async key => (await api('/mail/preview', { token: T.sa, method: 'POST', body: { key } })).data;
+  const pvD = await pv('digest'), pvO = await pv('status_open'), pvT = await pv('transferred_requestor');
+  check('the morning brief previews with a subject, the team and the counts', /\[Morning brief\] Electrical: 2 open tickets · /.test(pvD.subject) && pvD.html.includes('Overdue 1') && pvD.html.includes('OVERDUE (1)'), pvD.subject);
+  check('“Good news: work on … has resumed.” is drawn as a sentence, not as a label and its value', !/color:#8b8fa8">Good news:/.test(pvO.html) && pvO.html.includes('Good news: work on'), pvO.html.match(/Good news[\s\S]{0,120}/)?.[0]);
+  check('the provider’s note sits in its box in the “moved to another team” email too', /border-left:4px solid #1D4ED8/.test(pvT.html));
+  await fails('a campus cannot be given a time zone that does not exist', `/tenants/${tidA}`, { ...SA, method: 'PATCH', body: { timezone: 'Asia/Calcuta' } }, 400, 'time zone');
+  // --- an email that has not gone out keeps its password until that password stops working ---
+  await ok('(sending is paused)', '/mail/config', { token: T.sa, method: 'PUT', body: { sending: false } });
+  const rp2 = await ok('the admin resets the password while emails are paused', `/users/${nu.id}/reset-password`, { ...SA, method: 'POST' });
+  const held = await waitFor(async () => { const m = await mailTo('wally@join.example.com', 'password_reset'); return m?.status === 'logged' ? m : null; }, 8000);
+  check('the copy that is still waiting keeps the password, so it can be sent later', !!held && held.secret === rp2.temp_password && held.body.includes(rp2.temp_password), JSON.stringify(held?.status));
+  const wt = await login('wally@join.example.com', rp2.temp_password);
+  await ok('the person signs in and chooses their own password', '/me/password', { token: wt, method: 'POST', body: { current: rp2.temp_password, password: 'Wally2026okay' } });
+  // --- morning brief: once a day, in the morning only, whatever goes wrong ---
+  await run(`CREATE OR REPLACE FUNCTION brief_fail() RETURNS trigger AS $$ BEGIN IF NEW.recipient = 'pavan@example.com' AND NEW.template_key = 'digest' THEN RAISE EXCEPTION 'simulated failure while writing one brief'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql`);
+  await run('CREATE TRIGGER brief_fail BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION brief_fail()');
+  const zoneAt = h => { const o = ((h - new Date().getUTCHours() + 36) % 24) - 12; return o === 0 ? 'Etc/GMT' : `Etc/GMT${o > 0 ? '-' : '+'}${Math.abs(o)}`; }; // a zone where it is h o'clock now
+  const briefs = async since => q("SELECT recipient, template_key, body FROM notifications WHERE tenant_id=? AND template_key IN ('digest','digest_admin') AND created_at>? ORDER BY created_at", tidA, since);
+  const mark = async () => (await q('SELECT value FROM app_settings WHERE key=?', 'digest:' + tidA))[0]?.value;
+  await run("UPDATE tenants SET timezone=?, work_days='0,1,2,3,4,5,6' WHERE id=?", zoneAt(9), tidA); await run('DELETE FROM app_settings WHERE key=?', 'digest:' + tidA);
+  let t0 = new Date().toISOString(); await stop(); await start({ BRIEF_TICK_MS: '1000', BRIEF_MAX_LINES: '3' });
+  await waitFor(mark, 12000); await sleep(3500); // …and three more looks after the day was marked
+  const b1 = await briefs(t0), cnt = (to, k) => b1.filter(m => m.recipient === to && m.template_key === k).length;
+  check('at 9 in the morning the brief goes out once; one person’s failure neither stops the others nor repeats theirs', !!(await mark()) && cnt('asha@example.com', 'digest_admin') === 1 && cnt('wally@join.example.com', 'digest') === 1 && cnt('pavan@example.com', 'digest') === 0,
+    JSON.stringify(b1.map(m => m.recipient)));
+  const ab = b1.find(m => m.recipient === 'asha@example.com')?.body || '', heads = ab.split('\n').map((l, i, a) => [l, a[i + 1] || '']).filter(([l]) => /^[A-Z][A-Z ]+ \(\d+/.test(l));
+  check('a list longer than the limit: a heading only above lines that are shown, the rest summed up at the end', heads.length >= 1 && heads.every(([, nx]) => nx.startsWith('#')) && /first \d+ shown\)/.test(ab) && /…and more in ONE Desk: \d+ /.test(ab)
+    && ab.split('\n').filter(l => l.startsWith('#')).length === 3, ab.slice(0, 700));
+  const swept = await waitFor(async () => { const m = (await q('SELECT body, html, secret FROM notifications WHERE id=?', held.id))[0]; return m.secret === null ? m : null; }, 14000);
+  check('once the person has chosen their own password, the waiting copy of the old one is masked', !!swept && !swept.body.includes(rp2.temp_password) && swept.body.includes('••••••') && !swept.html.includes(rp2.temp_password));
+  check('…and their own new password is not kept in the stored “password changed” notice', !(await mailTo('wally@join.example.com', 'password_changed')).body.includes('Wally2026okay'));
+  await run('UPDATE tenants SET timezone=? WHERE id=?', zoneAt(15), tidA); await run('DELETE FROM app_settings WHERE key=?', 'digest:' + tidA);
+  t0 = new Date().toISOString(); await stop(); await start({ BRIEF_TICK_MS: '1000' }); await sleep(4000);
+  check('a server that comes up in the afternoon does not send “Good morning”', (await briefs(t0)).length === 0 && !(await mark()), JSON.stringify((await briefs(t0)).map(m => m.recipient)));
+  await run('DROP TRIGGER brief_fail ON notifications'); await run('DROP FUNCTION brief_fail()');
+  // the day before a day off: "Since <day>" covers the last working day and the day off
+  const ist = d => new Date(d).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'long' }), wdNo = d => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].indexOf(ist(d));
+  await run('UPDATE tenants SET timezone=?, work_days=? WHERE id=?', 'Asia/Kolkata', [0, 1, 2, 3, 4, 5, 6].filter(d => d !== wdNo(Date.now() - 864e5)).join(','), tidA);
+  await stop(); await start();
+  await run('UPDATE tickets SET created_at=? WHERE id=?', new Date(Date.now() - 2 * 864e5).toISOString(), sbT);
+  await act(sbT, { to: 'hold', hold_reason: 'parts', note: 'Waiting for a new lid.', approved: true }, T.asha); await run('UPDATE tickets SET hold_due_at=? WHERE id=?', new Date(Date.now() - 864e5).toISOString(), sbT);
+  t0 = new Date().toISOString(); const d1 = await ok('the admin sends the brief now', '/digest/send', { token: T.asha, method: 'POST' });
+  const ab2 = (await briefs(t0)).find(m => m.recipient === 'asha@example.com')?.body || '', since = new RegExp(`Since ${ist(Date.now() - 2 * 864e5)}: (\\d+) raised, \\d+ closed`).exec(ab2);
+  check('after a day off the brief counts from the last working day (“Since …”), not an empty “Yesterday”', !!since && Number(since[1]) >= 1 && !/Yesterday:/.test(ab2), ab2.slice(0, 300));
+  check('a hold that ran past its limit is said so and counted', /\(\d+ past the hold limit\)/.test(ab2) && /Tank lid is open.* · hold limit passed /.test(ab2), ab2.match(/ON HOLD[\s\S]{0,300}/)?.[0]);
+  check('“send now” says how many are really on their way', d1.sent >= 2 && d1.written === d1.sent && d1.live === false, JSON.stringify(d1));
+  await ok('(the brief emails are switched off)', '/mail/config', { token: T.sa, method: 'PUT', body: { events: { digest: false, digest_admin: false } } });
+  const d2 = await ok('the admin sends it again', '/digest/send', { token: T.asha, method: 'POST' });
+  check('…with the brief switched off: written to the log, none sent', d2.sent === 0 && d2.written >= 2, JSON.stringify(d2));
+  // put things back as the other checks expect them
+  await ok('(the brief emails are switched on again)', '/mail/config', { token: T.sa, method: 'PUT', body: { events: { digest: true, digest_admin: true }, url: cfgWas.url || '', sending: cfgWas.sending } });
+  await run('UPDATE tenants SET timezone=?, work_days=? WHERE id=?', cal.timezone, cal.work_days, tidA);
+  for (const id of [na.id, nu.id]) await ok('(the extra accounts are switched off)', `/users/${id}`, { ...SA, method: 'PATCH', body: { is_active: 0 } });
+  for (const id of [sub.id, wtr.id]) await ok('(the extra teams are switched off)', `/services/${id}`, { ...SA, method: 'PATCH', body: { is_active: 0 } });
+  await stop(); await start(); }
 
   sec('Notice board: team notices, pop-up before raising, permissions');
   { const tid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, elec = (await q("SELECT id FROM services WHERE code='ELEC' AND tenant_id=?", tid))[0].id;
@@ -1341,6 +1492,7 @@ try {
   const daily = (await (await rep('daily')).json()).data;
   check('daily report: score per meal, ratings chart, top issues, comments, link, sent to the food providers', !daily.empty && daily.to.includes('pavan@example.com') && /Score per meal/.test(daily.html)
     && /\/api\/food-chart\/[^"]+\.png/.test(daily.html) && /Top 3 issues/.test(daily.html) && /Rice was cold/.test(daily.html) && /View full report/.test(daily.html), daily.subject);
+  check('the food report carries the same header as every email: the logo and the “Learn · Live · Grow” line', daily.html.includes('Learn · Live · Grow') && /<img src="[^"]+\/logo\.png"/.test(daily.html), daily.html.slice(0, 900));
   const png = await fetch(APP + daily.html.match(/\/api\/food-chart\/[^"]+\.png/)[0]);
   check('charts are real PNG images (for Outlook)', png.status === 200 && png.headers.get('content-type') === 'image/png' && (await png.arrayBuffer()).byteLength > 200);
   check('a tampered chart link is refused', (await fetch(APP + daily.html.match(/\/api\/food-chart\/[^"]+\.png/)[0].replace(/\.[^.]+\.png$/, '.AAAAAAAAAAAAAAAAAAAAAA.png'))).status === 404);
@@ -1406,7 +1558,7 @@ try {
   await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1, alpha: ids.alpha, beta: ids.beta });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1477,6 +1629,12 @@ async function uiSmoke(tok, id) {
     await visit('admin reports', '/c/reports', tok.asha, '.kpi2');
     await visit('admin audit', '/c/audit', tok.asha, '#main table');
     await visit('super admin email page', '/c/email', tok.sa, '#cf [name=url]');
+    await visit('campus admin: the Email page has the morning brief card and its “send now” button', '/c/email', tok.asha, '#briefNow');
+    // a staff link from an email (it carries the campus) opens the ticket for a super admin who had another campus selected
+    await js(`localStorage.clear(); sessionStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.sa)}); localStorage.setItem('tid', ${JSON.stringify(id.beta)});`);
+    await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/t/${id.t1}?c=${id.alpha}` });
+    let opened = false; for (let i = 0; i < 24 && !opened; i++) { await sleep(250); opened = await js(`return !!document.querySelector('#act #to') && localStorage.getItem('tid') === ${JSON.stringify(id.alpha)};`).catch(() => false); }
+    check('a super admin with another campus selected: the ticket link from an email switches to the ticket’s campus and opens it', opened);
     await visit('super admin tenants', '/c/tenants', tok.sa, '#main table');
     // the guide inside the app: Voice on/off, a close button back to the app, and Start opens step 1 with room around the outline
     errors.length = 0; await send('Page.navigate', { url: `${APP}/guide/requestor.html` });
