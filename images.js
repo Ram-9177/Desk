@@ -27,6 +27,19 @@ export function kindOf(b) {
   return null;
 }
 
+// Documents a notice may carry (decided by the bytes; the name only tells Word from Excel in the old formats)
+export const DOC_MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  doc: 'application/msword', xls: 'application/vnd.ms-excel' };
+export function docKindOf(b, name = '') {
+  const k = kindOf(b); if (k) return k;
+  if (!b || b.length < 8) return null;
+  if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) { // a zip: Office Open XML says which inside
+    if (b.includes('vbaProject.bin')) return null; // macro-enabled files are refused: students download these
+    return b.includes('word/document') ? 'docx' : b.includes('xl/workbook') ? 'xlsx' : null; }
+  if (b.readUInt32BE(0) === 0xd0cf11e0 && b.readUInt32BE(4) === 0xa1b11ae1) return /\.xls$/i.test(name) ? 'xls' : /\.doc$/i.test(name) ? 'doc' : null; // old Word / Excel
+  return null;
+}
+
 // HEIC → JPEG, at most `max` pixels on the long side (phone photos are 3000–8000 px; 1920 shows the problem clearly)
 export async function heicToJpeg(buf, max = 1920) {
   const { width, height, data } = await decodeHeic({ buffer: buf });

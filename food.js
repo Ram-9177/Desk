@@ -136,7 +136,7 @@ export function food(d) {
       identifier: str(b.identifier, 60) || null, department: str(b.department, 80) || null,
       subject: `${foodCategory(b.category)} · ${ml.name}${loc ? ' · ' + loc.name : ''}`, description, location: loc?.name || 'Food service',
       form_data: { food_category: b.category, food_category_label: foodCategory(b.category), meal, meal_label: ml.name, food_location: loc?.name || '' },
-      files, idempotency_key: b.idempotency_key, merge: b.merge }, { channel: 'portal', actor: { type: 'requestor', name: str(b.name, 80) }, food: true });
+      files, idempotency_key: b.idempotency_key, merge: b.merge, seen_notices: b.seen_notices }, { channel: 'portal', actor: { type: 'requestor', name: str(b.name, 80) }, food: true });
     await run('UPDATE tickets SET food_location_id=?, meal=?, food_category=? WHERE id=? AND meal IS NULL', loc?.id || null, meal, b.category, t.id);
     return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1 };
   }));

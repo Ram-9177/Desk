@@ -135,11 +135,28 @@ Super admin → **Tenants → Add**: code (e.g. `VJA`), name, slug (e.g. `vijaya
 
 ## Food & catering: feedback or complaint
 
-Set a service's **form type to Food** (Services → Edit). Students then choose **Rate your meal** (feedback: stars, quick chips, a comment; no ticket, one rating per meal per device a day) or **Report a serious problem** (a normal ticket with a required photo; the same category at the same mess on the same day joins one ticket). Before a complaint is sent the form asks "Does this need action right now?"; "No" saves it as feedback instead.
+Set a service's **form type to Food** (Services → Edit). Tapping it then shows two stacked choices on one screen: **Share feedback** (open by default: the day, the meal, stars, quick tags, a review; no ticket, one rating per meal per device a day) and **Report a problem** (a normal ticket; photos optional; the same category at the same mess on the same day joins one ticket). Meals, serving times, feedback tags and messes / canteens are set per campus under Food scores → Meals, places & tags (Breakfast, Lunch, Dinner until then).
 
 - **Food scores** (staff menu; the food team and admins): today's score per meal, trends, top issues, comments, CSV export, the complaints queue, and for admins the messes / canteens and meal times.
 - **Reports** (feedback only) go to the food service's providers at 10:00 PM campus time: daily, weekly on Sunday, monthly on the last day. Charts are PNG images so Outlook shows them. ONE Desk sends them itself through the email connection; set `FOOD_REPORT_AUTOSEND=0` to send them from Power Automate instead.
 - **Report endpoints** for Power Automate: `GET /api/reports/food/daily|weekly|monthly?tenant=<slug>&format=json` with the header `X-Report-Key: <FOOD_REPORT_KEY>` return `{ to, subject, html }` (without `format=json`: the HTML itself). Set `FOOD_REPORT_KEY` (a long random value) in `.env`; without it the endpoints answer 503.
+
+## Notice board
+
+Teams post notices for students (Notices in the staff menu): a title, a message, up to 3 files (photos, PDF, Word, Excel; 10 MB each), who it is for, an optional start and end, and an **Important** switch. Campus admins post for any team or the whole campus; a team's providers post for their own team (and its sub-teams). New teams appear in the team list as soon as they are created.
+
+- **Campus page**: a Notice board card (important first, then the latest three; "See all" for the rest; an "I'm" filter).
+- **Before a ticket**: when a student picks a team that has a live notice, the notice pops up first with **This answers my question** (no ticket) and **I still need to raise a ticket** (the form). A ticket raised after that carries an internal line "The requester read the notice …".
+- Each notice counts how often it was seen, how many found their answer, and how many raised a ticket anyway.
+
+## Replies to requesters
+
+Every public reply (a note, work started, on hold, resumed, closed, rejected) is tidied on this server before the requester sees it (`polish.js`: a British English dictionary, short-forms and four safe typing-slip rules; no API, nothing leaves the machine; names, places, codes, emails and links stay as typed), shown to the provider in **Check before sending** with the exact email, and sent inside a Hi / note / Thank you template signed with the provider's name and team. Ready-made sentences per step are edited on the Email page (whole campus or one team). Brand lines (logo, Learn · Live · Grow, the ONE strip, the welcome message) are edited there too.
+
+## Morning brief and Fair Score
+
+- **Morning brief** (08:30 campus time, working days): campus admins get the whole campus's counts and open tickets; each provider gets their own team's. "Send this campus's brief now" is on the Email page.
+- **Fair Score** (SLA & points): providers are ranked against their own team's usual pace, on-time rate, reopens and load, so busy and quiet teams compare fairly. Weights, the minimum number of tickets and the windows are set per campus.
 
 ## Tests
 

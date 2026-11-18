@@ -18,7 +18,7 @@ const priorityTag = (p, asPill = false) => `<span class="ptag pr-${p} ${asPill ?
 // Requester-type badge: Student is plain white; faculty, staff, parent and visitor each have their own colour, for a quick visual identity
 const rtBadge = t => t ? `<span class="rtb rt-${esc(t)}">${esc(cap(t))}</span>` : '';
 // CardHeading: 28px icon tile + title
-const TONE = { clock: 'amber', bell: 'amber', alarm: 'amber', cpause: 'amber', star: 'amber', utensils: 'amber', user: 'blue', history: 'blue', file: 'blue', mail: 'blue', home: 'blue', chart: 'blue', ticket: 'blue',
+const TONE = { notice: 'amber', clock: 'amber', bell: 'amber', alarm: 'amber', cpause: 'amber', star: 'amber', utensils: 'amber', user: 'blue', history: 'blue', file: 'blue', mail: 'blue', home: 'blue', chart: 'blue', ticket: 'blue',
   users: 'violet', grid: 'violet', building: 'violet', settings: 'slate', download: 'green', pencil: 'green', ccheck: 'green', shield: 'green', check: 'green', flag: 'rose', calert: 'rose', alert: 'rose', swap: 'teal', eye: 'teal', copy: 'slate', plus: 'blue' };
 const tile = (icon, size = 16) => `<span class="tile t-${TONE[icon] || 'slate'}">${I(icon, size)}</span>`;
 const cardHeading = (icon, title) => `<div class="chead">${tile(icon)}<span>${title}</span></div>`;
@@ -44,6 +44,7 @@ const I = (n, s = 20) => `<svg aria-hidden="true" width="${s}" height="${s}" vie
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>', eyeoff: '<path d="M9.9 4.2A10 10 0 0 1 12 4c6.500 0 10 8 10 8a13 13 0 0 1-1.700 2.700M6.600 6.600A13 13 0 0 0 2 12s3.500 8 10 8a10 10 0 0 0 5.400-1.600M2 2l20 20M9.900 9.900a3 3 0 1 0 4.200 4.200"/>',
   swap: '<path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4"/>', file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6M16 13H8M16 17H8M10 9H8"/>',
   history: '<path d="M3 12a9 9 0 1 0 9-9 9.700 9.700 0 0 0-6.700 2.700L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>', pencil: '<path d="M17 3a2.800 2.800 0 1 1 4 4L7.500 20.500 2 22l1.500-5.500Z"/><path d="m15 5 4 4"/>',
+  notice: '<path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1zM15 8.5a4.5 4.5 0 0 1 0 7M18 5.5a8.5 8.5 0 0 1 0 13"/>',
   pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>', phone: '<path d="M22 16.900v3a2 2 0 0 1-2.200 2 19.800 19.800 0 0 1-8.600-3.100 19.500 19.500 0 0 1-6-6A19.800 19.800 0 0 1 2.100 4.200 2 2 0 0 1 4.100 2h3a2 2 0 0 1 2 1.700c.1 1 .4 1.900.7 2.800a2 2 0 0 1-.500 2.100L8.100 9.900a16 16 0 0 0 6 6l1.300-1.300a2 2 0 0 1 2.100-.400c.9.300 1.800.6 2.800.7a2 2 0 0 1 1.700 2Z"/>',
   idea: '<path d="M9 18h6M10 22h4M15.1 14c.2-1 .7-1.700 1.400-2.500A6 6 0 1 0 7.500 11.500c.7.700 1.200 1.500 1.400 2.500"/>',
   star: '<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1z"/>', filter: '<path d="M22 3H2l8 9.5V19l4 2v-8.500z"/>',
@@ -176,6 +177,67 @@ const collectForm = (form, svc) => {
   return fd;
 };
 
+// ================= NOTICE BOARD (public) =================
+const NB_AUD = [['all', 'All'], ['student', 'Student'], ['faculty', 'Faculty'], ['staff', 'Staff'], ['parent', 'Parent'], ['visitor', 'Visitor']];
+const nbFor = v => { try { if (v !== undefined) localStorage.setItem('nb-for', v); return localStorage.getItem('nb-for') || 'all'; } catch { return 'all'; } };
+const seenNotices = sid => { try { return JSON.parse(sessionStorage.getItem('ng:' + sid) || '[]'); } catch { return []; } };
+const ntTags = n => `${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>`;
+const ntWhen = n => `${shortDate(n.starts_at || n.created_at)}${n.ends_at ? ` · until ${shortDate(n.ends_at)}` : ''}`;
+const ntFiles = n => n.files.length ? ` · 📎 ${n.files.length === 1 ? esc(n.files[0].name) : `${n.files.length} files`}` : '';
+const ntRow = (slug, n) => `<a class="ntrow ${n.important ? 'imp' : ''}" href="#/d/${slug}/notices/${n.id}"><div>${ntTags(n)}<b>${esc(n.title)}</b><div class="muted small">${ntWhen(n)}${ntFiles(n)}</div></div><span class="chev">${I('chev', 18)}</span></a>`;
+const ntBody = n => `<div class="ntbody">${esc(n.body || '').replace(/\n/g, '<br>')}</div>
+  ${n.files.filter(f => /^image\//.test(f.type)).map(f => `<a href="${f.url}" target="_blank" rel="noopener"><img class="ntimg" src="${f.url}" alt="${esc(f.name)}"></a>`).join('')}
+  ${n.files.filter(f => !/^image\//.test(f.type)).map(f => `<a class="ntfile" href="${f.url}" target="_blank" rel="noopener"><span class="ft ${/pdf/.test(f.type) ? 'pdf' : /sheet|excel/.test(f.type) ? 'xls' : 'doc'}">${/pdf/.test(f.type) ? 'PDF' : /sheet|excel/.test(f.type) ? 'XLS' : 'DOC'}</span><span>${esc(f.name)}</span><span class="muted small">${Math.max(1, Math.round(f.size / 1024))} KB</span></a>`).join('')}`;
+// the card on the campus page: important ones, then the latest; 3 rows, the rest under "See all" (Raise a ticket stays in view)
+async function noticeBoard(slug, box) {
+  if (!box) return; let list; try { list = await api(`/public/${slug}/notices?for=${nbFor()}`); } catch { return; }
+  const all_ = await api(`/public/${slug}/notices`).catch(() => list);
+  if (!all_.length) { box.innerHTML = ''; return; }
+  const show = [...list.filter(n => n.important), ...list.filter(n => !n.important)].slice(0, 3);
+  box.innerHTML = `<section class="card nboard" aria-labelledby="nbT"><div class="nb-h"><b id="nbT">${tile('notice', 16)} Notice board</b><a href="#/d/${slug}/notices" class="small">See all (${list.length}) ›</a></div>
+    <div class="nbchips" role="radiogroup" aria-label="Notices for">${NB_AUD.map(([k, l]) => `<button type="button" role="radio" aria-checked="${nbFor() === k}" class="${nbFor() === k ? 'on' : ''}" data-for="${k}">${l}</button>`).join('')}</div>
+    ${show.map(n => ntRow(slug, n)).join('') || '<p class="muted small" style="margin:6px 0 0">No notices for this group right now.</p>'}</section>`;
+  box.querySelectorAll('[data-for]').forEach(b => b.onclick = () => { nbFor(b.dataset.for); noticeBoard(slug, box); });
+}
+async function noticesPage(slug, id) {
+  document.body.className = '';
+  if (id) { const n = await api(`/public/${slug}/notices/${id}`).catch(() => null);
+    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/notices" aria-label="Back">${I('back')}</a><h1>Notice</h1></div>
+      ${n ? `<article class="card ntcard ${n.important ? 'imp' : ''}">${ntTags(n)}<h2>${esc(n.title)}</h2><div class="muted small">Posted by ${esc(n.posted_by || n.team)} · ${ntWhen(n)}</div>${ntBody(n)}</article>
+        <a class="btn" href="#/d/${slug}/raise" style="width:100%">Still need help? Raise a ticket</a>` : '<div class="card"><p>This notice has ended or was removed.</p></div>'}</div>`;
+    if (n) api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: [n.id] } }).catch(() => {});
+    return; }
+  const list = await api(`/public/${slug}/notices?for=${nbFor()}`);
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Notice board</h1></div>
+    <div class="nbchips" role="radiogroup" aria-label="Notices for">${NB_AUD.map(([k, l]) => `<button type="button" role="radio" aria-checked="${nbFor() === k}" class="${nbFor() === k ? 'on' : ''}" data-for="${k}">${l}</button>`).join('')}</div>
+    <div class="card nboard">${list.map(n => ntRow(slug, n)).join('') || '<p class="muted">No notices right now.</p>'}</div></div>`;
+  app.querySelectorAll('[data-for]').forEach(b => b.onclick = () => { nbFor(b.dataset.for); noticesPage(slug); });
+}
+// Before raising a ticket for a team: its live notices pop up. "This answers my question" → no ticket (counted);
+// "I still need to raise a ticket" → the form, and the ticket records which notices were read.
+async function noticeGate(slug, svc) {
+  let list; try { list = await api(`/public/${slug}/notices/for/${svc.id}`); } catch { return true; }
+  if (!list.length || list.every(n => seenNotices(svc.id).includes(n.id))) return true;
+  app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1></div></div>`;
+  api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: list.map(n => n.id) } }).catch(() => {});
+  return new Promise(resolve => {
+    const d = document.createElement('dialog'); d.className = 'sheet ngate';
+    d.innerHTML = `<div class="pv-h"><div class="muted small" style="font-weight:600">Before you raise a ticket</div><button type="button" class="msheet-x" data-a="back" aria-label="Close">${I('x', 20)}</button></div><h2>The ${esc(svc.name)} team has ${list.length === 1 ? 'a notice' : list.length + ' notices'} for you</h2>
+      ${list.map(n => `<article class="ntcard ${n.important ? 'imp' : ''}">${ntTags(n)}<h3>${esc(n.title)}</h3>${ntBody(n)}<div class="muted small" style="margin-top:6px">Posted by ${esc(n.posted_by || n.team)} · ${ntWhen(n)}</div></article>`).join('')}
+      <button type="button" class="btn ok big" data-a="answered">${I('check', 18)} This answers my question</button>
+      <button type="button" class="btn primary big" data-a="raise">I still need to raise a ticket</button>
+      <p class="muted small" style="text-align:center;margin:8px 0 0">If you raise one, the team sees that you read ${list.length === 1 ? 'this notice' : 'these notices'}.</p>`;
+    document.body.append(d); d.showModal();
+    const h = d.querySelector('h2'); h.tabIndex = -1; h.focus(); // read out the heading first; no button is pre-selected
+    const done = async a => { d.close(); d.remove();
+      if (a === 'answered') { api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: list.map(n => n.id), outcome: 'answered' } }).catch(() => {}); toast('Glad that helped!'); location.hash = `#/d/${slug}`; return resolve(false); }
+      if (a === 'back') { location.hash = `#/d/${slug}/raise`; return resolve(false); }
+      try { sessionStorage.setItem('ng:' + svc.id, JSON.stringify(list.map(n => n.id))); } catch { /* fine */ }
+      resolve(true); };
+    d.querySelectorAll('[data-a]').forEach(b => b.onclick = () => done(b.dataset.a)); d.oncancel = e => { e.preventDefault(); done('back'); };
+  });
+}
+
 // ================= PUBLIC =================
 async function portal(slug, q, view, code) {
   document.body.className = '';
@@ -191,6 +253,7 @@ async function portal(slug, q, view, code) {
         <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}</div>`;
     if (!q.get('direct')) return;
   }
+  if (pick && !(await noticeGate(slug, pick))) return; // the team's notices first; "This answers my question" ends here
   if (pick && isFood(pick.form_schema)) return foodScreens(slug, tenant, pick, q.get('flow'));
   if (pick) return raiseForm(slug, tenant, pick, null, 'issue'); // other teams: straight to the problem form (feedback and suggestions are a Food thing)
   if (view !== 'raise') {
@@ -199,10 +262,11 @@ async function portal(slug, q, view, code) {
     app.innerHTML = `<div class="wrap hero"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
       ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with voice in English or తెలుగు.')}
+      <div id="nboard"></div>
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
       ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
-    wireGuide('guide-seen', route);
+    wireGuide('guide-seen', route); noticeBoard(slug, $('#nboard'));
     return;
   }
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Raise a ticket</h1></div>
@@ -282,7 +346,7 @@ async function foodScreens(slug, tenant, svc, flow) {
     $('#toRate').onclick = () => { foodCarry({ location_id: fm.location_id?.value, meal: fm.meal.value, comment: fm.description.value.trim().slice(0, 300) }); location.hash = `${base}?flow=rate`; };
     fm.onsubmit = async e => { e.preventDefault(); const btn = fm.querySelector('button.primary'); $('#err').textContent = '';
       const v = { location_id: fm.location_id?.value || null, meal: fm.meal.value, category: fm.category.value, description: fm.description.value.trim(), name: fm.name.value.trim(),
-        requestor_type: fm.requestor_type.value, email: fm.email.value.trim(), phone: fm.phone.value.trim(), website: fm.website.value, idempotency_key: idem };
+        requestor_type: fm.requestor_type.value, email: fm.email.value.trim(), phone: fm.phone.value.trim(), website: fm.website.value, idempotency_key: idem, seen_notices: seenNotices(svc.id) };
       btn.disabled = true;
       try {
         const body = { ...v, files: await readFiles(document.querySelectorAll('.f-food')) };
@@ -350,7 +414,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
     try {
       const v = formVals(e.target);
       if (!/^\S+@\S+\.\S+$/.test(v.email || '')) throw new Error('Enter a valid email address so we can send you updates');
-      const body = { ...v, service_id: svc.id, form_data: collectForm(e.target, svc), idempotency_key: idem, related_ticket_no: related,
+      const body = { ...v, service_id: svc.id, form_data: collectForm(e.target, svc), idempotency_key: idem, seen_notices: seenNotices(svc.id), related_ticket_no: related,
         files: await readFiles(document.querySelectorAll('.f-raise')) };
       let r; try { r = await api(`/public/${slug}/tickets`, { method: 'POST', body }); }
       catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; // confirm mode: the person says whether it is the same issue
@@ -464,7 +528,7 @@ async function shell(active, render, title) {
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
-  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], admin && ['c/services', 'Services', 'grid'],
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
@@ -486,7 +550,7 @@ async function shell(active, render, title) {
     <nav class="bnav" aria-label="Primary">${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
-      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
+      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
   app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
   if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
     mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
@@ -681,7 +745,7 @@ async function workspace(main, id, { admin }) {
   document.body.classList.add('on-ticket'); // phones: this page has its own app bar and bottom action bar
   const meta = e => { try { return JSON.parse(e.meta || '{}'); } catch { return {}; } };
   const stName = v => (STATUS_INFO[v] || [v])[0];
-  const evLabel = e => ({ escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
+  const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
     reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
     priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
@@ -1521,6 +1585,68 @@ async function foodPage(main, { admin }) {
   try { await draw(); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
+// ================= NOTICES (staff): create, edit, publish, end, delete =================
+const NT_STATES = [['live', 'Live'], ['scheduled', 'Scheduled'], ['draft', 'Drafts'], ['ended', 'Ended']];
+const toLocalInput = iso => { if (!iso) return ''; const d = new Date(iso), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+const fileB64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); });
+async function noticesAdmin(main) {
+  const st = { tab: sessionStorage.getItem('ntab') || 'live' };
+  const draw = async () => {
+    const d = await api('/notices'), by = Object.fromEntries(NT_STATES.map(([k]) => [k, d.notices.filter(n => n.state === k).sort((x, y) => y.important - x.important)])); // important first, then the latest change
+    main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">${d.can_campus ? 'You can post notices for any team or the whole campus.' : `You can post notices for: <b>${esc(d.teams.map(t => t.name).join(', ') || 'no team yet')}</b>.`} Students see them on the campus page, and a team's notice pops up before they raise a ticket for that team.</span>
+      ${d.teams.length || d.can_campus ? `<button class="btn primary" id="ntNew">${I('plus', 18)} New notice</button>` : ''}</div>
+      <div class="tabs">${NT_STATES.map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}${by[k].length ? ` <span class="cnt">${by[k].length}</span>` : ''}</button>`).join('')}</div>
+      <div class="ntlist">${by[st.tab].map(n => `<div class="card ntadm ${n.important ? 'imp' : ''}">${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>
+        <h3>${esc(n.title)}</h3><div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · from ${shortDate(n.starts_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
+        <div class="muted small" style="margin-top:4px">👁 Seen ${n.views} · <b style="color:var(--ok)">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
+        <div class="ntacts"><button class="btn" data-ed="${n.id}">${I('pencil', 15)} Edit</button>
+          ${n.state === 'draft' ? `<button class="btn primary" data-pub="${n.id}">Publish</button>` : n.state === 'live' ? `<button class="btn" data-end="${n.id}">End now</button>`
+            : n.state === 'scheduled' ? `<button class="btn" data-undo="${n.id}">Move to drafts</button>` : `<button class="btn" data-again="${n.id}">Show again</button>`}
+          <button class="btn danger" data-del="${n.id}">Delete</button></div></div>`).join('') || `<div class="empty card"><p class="muted">No ${NT_STATES.find(x => x[0] === st.tab)[1].toLowerCase()} notices.</p></div>`}</div>`;
+    main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; sessionStorage.setItem('ntab', st.tab); draw(); });
+    if ($('#ntNew')) $('#ntNew').onclick = () => noticeEditor(d, null, draw);
+    main.querySelectorAll('[data-ed]').forEach(b => b.onclick = async () => noticeEditor(d, await api('/notices/' + b.dataset.ed), draw));
+    const act = async (id, body, msg) => { try { await api('/notices/' + id, { method: 'PATCH', body }); toast(msg); draw(); } catch (er) { toast(er.message); } };
+    main.querySelectorAll('[data-pub]').forEach(b => b.onclick = () => act(b.dataset.pub, { status: 'published' }, 'Published'));
+    main.querySelectorAll('[data-end]').forEach(b => b.onclick = () => act(b.dataset.end, { end_now: true }, 'Ended: students no longer see it'));
+    main.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => act(b.dataset.undo, { status: 'draft' }, 'Moved to drafts'));
+    main.querySelectorAll('[data-again]').forEach(b => b.onclick = () => act(b.dataset.again, { ends_at: '', status: 'published' }, 'Showing again (no end date)'));
+    main.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const n = d.notices.find(x => x.id === b.dataset.del);
+      const dd = dlg(`<h2>Delete this notice?</h2><p class="muted">"${esc(n.title)}" disappears for students right away. This can't be undone.</p>`, async () => { await api('/notices/' + n.id, { method: 'DELETE' }); toast('Notice deleted'); draw(); });
+      const ok = dd.querySelector('button[value=ok]'); ok.textContent = 'Delete'; ok.classList.add('danger-solid'); });
+  };
+  await draw();
+}
+function noticeEditor(d, n, done) {
+  const aud = [['all', 'Everyone'], ['student', 'Students'], ['faculty', 'Faculty'], ['staff', 'Staff'], ['parent', 'Parents'], ['visitor', 'Visitors']];
+  const files = n?.files || [];
+  // main teams first, each followed by its sub-teams; a sub-team whose main team is not in the list stands alone
+  const mains = d.teams.filter(t => !t.parent_id || !d.teams.some(x => x.id === t.parent_id));
+  const teams = mains.flatMap(t => [t, ...d.teams.filter(x => x.parent_id === t.id).map(x => ({ ...x, sub: true }))]);
+  const dd = dlg(`<h2>${n ? 'Edit notice' : 'New notice'}</h2>
+    <label>Team</label><select name="service_id">${d.can_campus ? `<option value="" ${n && !n.service_id ? 'selected' : ''}>Whole campus</option>` : ''}${teams.map(t => `<option value="${t.id}" ${n?.service_id === t.id ? 'selected' : ''}>${t.sub ? '— ' : ''}${esc(t.name)}</option>`).join('')}</select>
+    <div class="muted small">A team's notice pops up when a student starts a ticket for that team (and its sub-teams).</div>
+    <label>Title</label><input name="title" required maxlength="120" value="${esc(n?.title || '')}" placeholder="e.g. Ground is wet: play not allowed today">
+    <label>Message</label><textarea name="body" rows="4" maxlength="3000" placeholder="What students need to know, and what to do instead">${esc(n?.body || '')}</textarea>
+    <label>Files <small>(photo, PDF, Word, Excel · up to 3, 10 MB each)</small></label>
+    <div id="ntf">${files.map(f => `<div class="ntfrow" data-key="${esc(f.url.split('/').pop())}"><span>${esc(f.name)}</span><button type="button" class="linkbtn" data-rmf>Remove</button></div>`).join('')}</div>
+    <input type="file" id="ntin" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,application/pdf">
+    <label>For</label><select name="audience">${aud.map(([k, l]) => `<option value="${k}" ${(n?.audience || 'all') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <div class="row"><div><label>Show from <small>(empty = now)</small></label><input type="datetime-local" name="starts_at" value="${toLocalInput(n?.starts_at)}"></div><div><label>Until <small>(empty = no end)</small></label><input type="datetime-local" name="ends_at" value="${toLocalInput(n?.ends_at)}"></div></div>
+    <label class="chk ntimp"><input type="checkbox" name="important" ${n?.important ? 'checked' : ''}> <span><b>Important</b>: pinned on top and highlighted</span></label>
+    <label class="chk"><input type="checkbox" name="publish" ${!n || n.status === 'published' ? 'checked' : ''}> Publish (untick to keep it as a draft)</label>`,
+    async f => { const el = f.elements;
+      const body = { service_id: el.service_id.value, title: el.title.value, body: el.body.value, audience: el.audience.value, important: el.important.checked,
+        starts_at: el.starts_at.value ? new Date(el.starts_at.value).toISOString() : '', ends_at: el.ends_at.value ? new Date(el.ends_at.value).toISOString() : '', status: el.publish.checked ? 'published' : 'draft' };
+      const id = n ? (await api('/notices/' + n.id, { method: 'PATCH', body }), n.id) : (await api('/notices', { method: 'POST', body })).id;
+      for (const key of removed) await api(`/notices/${id}/files/${key}`, { method: 'DELETE' });
+      for (const file of [...$('#ntin').files]) { if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} is over 10 MB`); await api(`/notices/${id}/files`, { method: 'POST', body: { name: file.name, data: await fileB64(file) } }); }
+      toast(body.status === 'published' ? 'Notice published' : 'Saved as draft'); done(); });
+  dd.style.maxWidth = '640px'; const removed = [];
+  dd.querySelectorAll('[data-rmf]').forEach(b => b.onclick = () => { const r = b.closest('.ntfrow'); removed.push(r.dataset.key); r.remove(); });
+  dd.querySelector('button[value=ok]').textContent = n ? 'Save notice' : 'Create notice';
+}
+
 async function profile(main) {
   const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
   const mine = u.role === 'provider' ? svcs.filter(s => s.members.some(m => m.id === u.id)) : svcs;
@@ -1585,12 +1711,13 @@ async function route() {
   try {
     if (seg[0] === 'd' && seg[2] === 't') return await ticketPage(seg[1], seg[3], q);
     if (seg[0] === 'd' && seg[2] === 'track') return await track(seg[1]);
+    if (seg[0] === 'd' && seg[2] === 'notices') return await noticesPage(seg[1], seg[3]);
     if (seg[0] === 'd') return await portal(seg[1], q, seg[2], seg[3] && decodeURIComponent(seg[3]));
     if (seg[0] === 'login') return login();
     if (seg[0] === 'install' || seg[0] === 'settings') return installPage();
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
-      const map = { c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage };
+      const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage };
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }

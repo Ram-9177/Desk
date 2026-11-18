@@ -8,7 +8,7 @@ import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
-import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
+import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
@@ -503,6 +503,11 @@ async function createTicket(tenant, b, opts) {
     await insert('ticket_requestors', { id: uid(), ticket_id: t.id, requestor_id: r.id, name: b.name, contact, raised_at: ts, is_first: 1 });
     const ev = await addEvent(t, opts.actor, 'created', { to: svc.name, meta: b.related_ticket_no ? { related_ticket_no: b.related_ticket_no } : {} });
     await saveFiles(t, ev, b.files, opts.actor.type);
+    // the team's notices the requester read before raising it: noted for the team (internal) and counted on the notice
+    const seen = Array.isArray(b.seen_notices) ? [...new Set(b.seen_notices.map(String))].slice(0, 10) : [];
+    for (const nid of seen) { const nt = await one('SELECT id, title FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', nid, t.tenant_id); if (!nt) continue;
+      await run('UPDATE notices SET raised=raised+1 WHERE id=?', nt.id);
+      await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'notice_seen', { body: `The requester read the notice "${nt.title}" and still raised this ticket.`, internal: true, meta: { notice_id: nt.id } }); }
     return t;
   }); } catch (e) { // the same submission arriving twice at once: the unique index keeps one, return it
     const ex = e.code === '23505' && b.idempotency_key && await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
@@ -703,7 +708,53 @@ P.post('/:slug/bot', wrap(async req => {
   return await publicBot(tn, String(req.body.q || '').slice(0, 300));
 }));
 
+// ---------- notice board (public side) ----------
+// A notice belongs to a team (service) or the whole campus. Live = published, started, not ended, not deleted.
+const NOTICE_AUD = ['all', 'student', 'faculty', 'staff', 'parent', 'visitor'];
+const liveNotice = n => `${n}.deleted_at IS NULL AND ${n}.status='published' AND (${n}.starts_at IS NULL OR ${n}.starts_at<=?) AND (${n}.ends_at IS NULL OR ${n}.ends_at>?)`;
+const noticesOut = async rows => { // what the public sees of each notice, with its files (one query for all of them)
+  if (!rows.length) return [];
+  const files = await all('SELECT notice_id, file_name, mime_type, size_bytes, storage_key FROM notice_files WHERE notice_id = ANY(?::text[]) ORDER BY created_at', rows.map(r => r.id));
+  return rows.map(n => ({ id: n.id, title: n.title, body: n.body, audience: n.audience, important: !!n.important, starts_at: n.starts_at, ends_at: n.ends_at,
+    team: n.team || 'Whole campus', service_id: n.service_id, posted_by: n.created_by_name, created_at: n.created_at,
+    files: files.filter(f => f.notice_id === n.id).map(f => ({ name: f.file_name, type: f.mime_type, size: f.size_bytes, url: `/api/notice-files/${f.storage_key}` })) }));
+};
+const noticeOut = async n => (await noticesOut([n]))[0];
+// the board: every live notice of the campus (optionally only those for one group of people), important first
+P.get('/:slug/notices', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug), n = now(), aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null;
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
+    ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 100`, tn.id, n, n, ...(aud ? [aud] : []));
+  return noticesOut(rows);
+}));
+// before raising a ticket for a team: its live notices (a sub-team also shows its main team's)
+P.get('/:slug/notices/for/:serviceId', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}
+    ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n);
+  return noticesOut(rows);
+}));
+P.get('/:slug/notices/:id', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug), n = now();
+  const r = await one(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, req.params.id, tn.id, n, n);
+  if (!r) throw notFound(); return noticeOut(r);
+}));
+// counts for the team: shown (views), "This answers my question" (answered); "raised" is counted when the ticket is made
+P.post('/:slug/notices/seen', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug); limit('nseen:' + req.ip, 300);
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).slice(0, 10).map(String), col = req.body.outcome === 'answered' ? 'answered' : 'views';
+  for (const id of ids) await run(`UPDATE notices SET ${col}=${col}+1 WHERE id=? AND tenant_id=?`, id, tn.id);
+  return { ok: true };
+}));
+
 app.use('/api/public', P);
+app.get('/api/notice-files/:key', mw(async (req, res) => {
+  const f = await one('SELECT f.* FROM notice_files f JOIN notices x ON x.id=f.notice_id WHERE f.storage_key=? AND x.deleted_at IS NULL', req.params.key);
+  if (!f) return res.status(404).end();
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=86400' });
+  if (!Object.values(SHOWN).includes(f.mime_type) && f.mime_type !== 'application/pdf') res.attachment(f.file_name); // Word and Excel download
+  res.type(f.mime_type).sendFile(path.resolve(UPLOAD_DIR, f.storage_key));
+}));
 app.get('/api/files/:key', mw(async (req, res) => {
   const a = await one('SELECT * FROM attachments WHERE storage_key=?', req.params.key);
   if (!a) return res.status(404).end();
@@ -1362,6 +1413,67 @@ S.put('/reply-phrases', role('super_admin', 'tenant_admin'), wrap(async req => {
   await run('UPDATE tenants SET reply_phrases=? WHERE id=?', JSON.stringify(p), req.tenantId);
   await audit(req, 'reply_phrases.update', 'tenant', req.tenantId, { scope }); return { ok: true };
 }));
+// ---------- notice board (staff side) ----------
+// Admins: notices for any team or the whole campus. A team's providers: notices for their own team(s) (a main team's
+// providers also for its sub-teams). Create, edit, publish, end, delete; files one at a time (images, PDF, Word, Excel).
+const noticeTeams = async req => isAdmin(req.user) ? (await all('SELECT id FROM services WHERE tenant_id=?', req.tenantId)).map(r => r.id) : await myServiceIds(req.user, req.tenantId);
+const canNotice = async (req, serviceId) => serviceId ? (await noticeTeams(req)).includes(serviceId) : isAdmin(req.user);
+const loadNotice = async req => { const x = await one('SELECT * FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', req.params.id, req.tenantId);
+  if (!x || !await canNotice(req, x.service_id)) throw notFound(); return x; };
+const noticeBody = async (req, b, cur = {}) => {
+  const typed = String(b.title ?? cur.title ?? '').trim().replace(/\s+/g, ' '); if (!typed) throw bad('Write a title'); if (typed.length > 120) throw bad('Title: at most 120 characters');
+  const title = /[.!?]$/.test(typed) ? polish(typed).text : polish(typed).text.replace(/\.$/, ''); // tidied like a reply; a title keeps no full stop of ours
+  const body = String(b.body ?? cur.body ?? '').trim(); if (body.length > 3000) throw bad('Message: at most 3000 characters');
+  const service_id = b.service_id === undefined ? cur.service_id ?? null : b.service_id || null;
+  if (service_id && !await one('SELECT 1 AS x FROM services WHERE id=? AND tenant_id=?', service_id, req.tenantId)) throw notFound();
+  if (!await canNotice(req, service_id)) throw new HttpErr(403, 'FORBIDDEN', service_id ? 'You can post notices only for your own team' : 'Only admins post notices for the whole campus');
+  const audience = NOTICE_AUD.includes(b.audience ?? cur.audience) ? (b.audience ?? cur.audience) : 'all';
+  const iso = (v, label) => { if (v === '' || v == null) return null; const d = new Date(v); if (isNaN(d)) throw bad(`${label}: pick a date and time`); return d.toISOString(); };
+  const starts_at = b.starts_at === undefined ? cur.starts_at ?? null : iso(b.starts_at, 'Show from'), ends_at = b.ends_at === undefined ? cur.ends_at ?? null : iso(b.ends_at, 'Until');
+  if (starts_at && ends_at && ends_at <= starts_at) throw bad('Until must be after Show from');
+  const status = ['draft', 'published'].includes(b.status) ? b.status : cur.status || 'draft';
+  return { title, body: polish(body).text, service_id, audience, important: (b.important ?? cur.important) ? 1 : 0, starts_at, ends_at, status };
+};
+S.get('/notices', wrap(async req => {
+  const teams = await noticeTeams(req), n = now(), admin = isAdmin(req.user);
+  const rows = await all(`SELECT x.*, s.name team, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files FROM notices x LEFT JOIN services s ON s.id=x.service_id
+    WHERE x.tenant_id=? AND x.deleted_at IS NULL AND (${admin ? 'TRUE' : 'FALSE'} OR x.service_id = ANY(?::text[])) ORDER BY coalesce(x.updated_at, x.created_at) DESC LIMIT 300`, req.tenantId, teams);
+  const stateOf = x => x.status === 'draft' ? 'draft' : x.ends_at && x.ends_at <= n ? 'ended' : x.starts_at && x.starts_at > n ? 'scheduled' : 'live';
+  const svcs = await all(`SELECT id, name, parent_id FROM services WHERE tenant_id=? AND is_active=1 ${admin ? '' : 'AND id = ANY(?::text[])'} ORDER BY sort_order, name`, req.tenantId, ...(admin ? [] : [teams]));
+  return { can_campus: admin, teams: svcs, notices: rows.map(x => ({ ...x, team: x.team || 'Whole campus', important: !!x.important, state: stateOf(x) })) };
+}));
+S.get('/notices/:id', wrap(async req => { const x = await loadNotice(req); return { ...await noticeOut({ ...x, team: (await one('SELECT name FROM services WHERE id=?', x.service_id))?.name }), status: x.status, views: x.views, answered: x.answered, raised: x.raised }; }));
+S.post('/notices', wrap(async req => {
+  const v = await noticeBody(req, req.body || {}), ts = now();
+  const x = await insert('notices', { id: uid(), tenant_id: req.tenantId, ...v, created_by: req.user.id, created_by_name: req.user.name, updated_by_name: req.user.name, created_at: ts, updated_at: ts });
+  await audit(req, 'notice.create', 'notice', x.id, { title: v.title, service_id: v.service_id }); return { id: x.id };
+}));
+S.patch('/notices/:id', wrap(async req => {
+  const cur = await loadNotice(req), b = { ...req.body };
+  if (b.end_now) b.ends_at = now();
+  const v = await noticeBody(req, b, cur);
+  await run('UPDATE notices SET title=?, body=?, service_id=?, audience=?, important=?, starts_at=?, ends_at=?, status=?, updated_by_name=?, updated_at=? WHERE id=?',
+    v.title, v.body, v.service_id, v.audience, v.important, v.starts_at, v.ends_at, v.status, req.user.name, now(), cur.id);
+  await audit(req, 'notice.update', 'notice', cur.id, { title: v.title, status: v.status }); return { ok: true };
+}));
+S.delete('/notices/:id', wrap(async req => { const x = await loadNotice(req); await run('UPDATE notices SET deleted_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id);
+  await audit(req, 'notice.delete', 'notice', x.id, { title: x.title }); return { ok: true }; }));
+// one file per request (up to 10 MB): images (HEIC becomes JPEG), PDF, Word, Excel; at most 3 per notice
+S.post('/notices/:id/files', wrap(async req => {
+  const x = await loadNotice(req), f = req.body || {};
+  if ((await one('SELECT count(*)::int n FROM notice_files WHERE notice_id=?', x.id)).n >= 3) throw bad('At most 3 files per notice');
+  let buf = Buffer.from(String(f.data || '').split(',').pop(), 'base64'), name = String(f.name || 'file').slice(0, 120), kind = docKindOf(buf, name);
+  if (!kind || ['tiff', 'bmp', 'avif'].includes(kind)) throw bad('Only photos, PDF, Word or Excel files');
+  if (buf.length > 10 * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${name} is too large: each file must be under 10 MB`);
+  if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; name = name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.jpg'; } catch { throw bad('This photo could not be read. Try a JPEG or PNG.'); }
+  const key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
+  fs.writeFileSync(path.join(UPLOAD_DIR, key), buf);
+  await insert('notice_files', { id: uid(), tenant_id: req.tenantId, notice_id: x.id, file_name: name, mime_type: MIME[kind] || DOC_MIME[kind], size_bytes: buf.length, storage_key: key, created_at: now() });
+  await run('UPDATE notices SET updated_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id); return { ok: true };
+}));
+S.delete('/notices/:id/files/:key', wrap(async req => { const x = await loadNotice(req);
+  await run('DELETE FROM notice_files WHERE notice_id=? AND storage_key=?', x.id, req.params.key); return { ok: true }; }));
+
 // Send this campus's morning brief now (both kinds, even on a quiet day), e.g. to check how it looks
 S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
 S.post('/tickets/:id/priority', wrap(async req => {

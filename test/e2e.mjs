@@ -675,7 +675,7 @@ try {
   const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id }, aid = A.tenant;
   const pavanId = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id;
   await ok('Pavan has a mobile number', `/users/${pavanId}`, { ...A, method: 'PATCH', body: { phone: '9000055555' } });
-  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND (queue_day=current_date OR (queue_day IS NULL AND created_date=current_date))", ids.elec))[0];
+  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND (queue_day=(now() AT TIME ZONE 'Asia/Kolkata')::date OR (queue_day IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date))", ids.elec))[0];
   await ok('admin sets Electrical to take today’s tickets + 2 a day', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: today + 2 } });
   await fails('tickets a day must be a whole number', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: -3 } }, 400);
   check('the service shows its daily limit', (await api('/services', A)).data.find(x => x.id === ids.elec)?.daily_cap === today + 2);
@@ -838,15 +838,19 @@ try {
   check('the preview is the real email: Hi name, the note, Thank you and the provider’s name', /Hi /.test(pv.html) && pv.html.includes('Tube light choke is damaged') && /Thank you,/.test(pv.html) && pv.html.includes('Pavan Provider') && /ONE DESK/.test(pv.html));
   const keep = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'Mail sent to Abc.Xyz@college.edu.in, see https://erp.example.com/fee?id=7' } })).data;
   check('emails and links are left exactly as typed', keep.text.includes('Abc.Xyz@college.edu.in') && keep.text.includes('https://erp.example.com/fee?id=7'), keep.text);
+  const nm = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'devi madam and suresh garu will visit r block tommorow. rani, priya, anil reddy and sita informed, contact HR or IT dept. 40 wat bulb fixd in room r 12' } })).data;
+  check('names, places and abbreviations are never “corrected” (Devi, Rani, Priya, Reddy, R block, HR)', nm.text === 'Devi madam and suresh garu will visit r block tomorrow. Rani, priya, anil reddy and sita informed, contact HR or IT department. 40 wat bulb fixed in room R 12.', nm.text);
+  const ac = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to: 'note', note: 'wifi router in pg hostel wing c replaced, pls check ur id. WATER PROBLEM IN BLOCK A SOLVED' } })).data;
+  check('campus abbreviations and block letters shown the usual way', ac.text === 'Wi-Fi router in PG hostel wing C replaced, please check your ID. WATER PROBLEM IN BLOCK A SOLVED.', ac.text);
   await ok('a note sent without the preview is still tidied for the requester', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'we r checking the mcb now' } });
   const ev1 = (await q("SELECT body, meta FROM ticket_events WHERE ticket_id=? AND event_type='note' ORDER BY id DESC LIMIT 1", tk.id))[0];
-  check('…stored clean, the provider’s original kept for staff only', ev1.body === 'We are checking the mcb now.' && JSON.parse(ev1.meta).original === 'we r checking the mcb now', JSON.stringify(ev1));
+  check('…stored clean, the provider’s original kept for staff only', ev1.body === 'We are checking the MCB now.' && JSON.parse(ev1.meta).original === 'we r checking the mcb now', JSON.stringify(ev1));
   await ok('a note approved in the preview is sent exactly as approved', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'ok sir, done', approved: true } });
   check('…as approved', (await q("SELECT body FROM ticket_events WHERE ticket_id=? AND event_type='note' ORDER BY id DESC LIMIT 1", tk.id))[0].body === 'ok sir, done');
   const slug = (await q('SELECT slug FROM tenants WHERE id=?', tk.tenant_id))[0].slug, pub = (await api(`/public/${slug}/tickets/${tk.ticket_no}`)).data;
-  check('the requester’s ticket page shows only the tidied text, never the original', JSON.stringify(pub).includes('We are checking the mcb now.') && !JSON.stringify(pub).includes('we r checking'));
+  check('the requester’s ticket page shows only the tidied text, never the original', JSON.stringify(pub).includes('We are checking the MCB now.') && !JSON.stringify(pub).includes('we r checking'));
   const mail = (await q("SELECT body FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 2", tk.id)).map(x => x.body).join('\n');
-  check('the email: Hi, the note, Thank you and the provider’s name and team', mail.includes('We are checking the mcb now.') && /Thank you,\n\*\*Pavan Provider\*\* · Electrical team/.test(mail), mail.slice(0, 300));
+  check('the email: Hi, the note, Thank you and the provider’s name and team', mail.includes('We are checking the MCB now.') && /Thank you,\n\*\*Pavan Provider\*\* · Electrical team/.test(mail), mail.slice(0, 300));
   const ph = (await api('/reply-phrases?service=' + (await q("SELECT id FROM services WHERE code='ELEC' LIMIT 1"))[0].id, { token: T.pavan })).data;
   check('ready-made sentences for every step', ['in_progress', 'hold', 'open', 'closed', 'rejected', 'note'].every(k => ph.phrases[k].length >= 3));
   await fails('a provider can’t change them', '/reply-phrases', { token: T.pavan, method: 'PUT', body: { phrases: { closed: ['x'] } } }, 403);
@@ -863,6 +867,49 @@ try {
   await ok('another note', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Checked again.', approved: true } });
   check('…and the next email uses it', (await q("SELECT html FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 1", tk.id))[0].html.includes('Test line.'));
   await ok('(back to the standard text)', '/mail/config', { token: T.sa, method: 'PUT', body: { brand: { brand_welcome: "Welcome to ONE DESK, St. Mary's own student service centre. We are always working to elevate your academic and learning experience, and to help every student grow into a life-ready professional." } } }); }
+
+  sec('Notice board: team notices, pop-up before raising, permissions');
+  { const tid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, elec = (await q("SELECT id FROM services WHERE code='ELEC' AND tenant_id=?", tid))[0].id;
+  const other = (await q("SELECT id FROM services WHERE tenant_id=? AND id<>? AND parent_id IS NULL AND id NOT IN (SELECT service_id FROM service_members WHERE user_id=(SELECT id FROM users WHERE email='pavan@example.com')) LIMIT 1", tid, elec))[0].id;
+  const nt = await ok('a provider posts a notice for their own team', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'power cut in block a til 4pm', body: 'Generator work. Power back by 4 pm.', important: true, status: 'published' } });
+  await fails('…but not for another team', '/notices', { token: T.pavan, method: 'POST', body: { service_id: other, title: 'x', status: 'published' } }, 403);
+  await fails('…and not for the whole campus', '/notices', { token: T.pavan, method: 'POST', body: { service_id: '', title: 'x', status: 'published' } }, 403);
+  const camp = await ok('an admin posts one for the whole campus, for students', '/notices', { token: T.asha, method: 'POST', body: { title: 'Fee last date 30 Nov', body: 'Pay at the accounts office.', audience: 'student', status: 'published' } });
+  const draft = await ok('a draft', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elec, title: 'Draft notice', status: 'draft' } });
+  const PDF = 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF').toString('base64');
+  await ok('a PDF attached', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'schedule.pdf', data: PDF } });
+  await fails('not other kinds of files', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'run.exe', data: 'data:application/octet-stream;base64,' + Buffer.from('MZ' + 'x'.repeat(40)).toString('base64') } }, 400);
+  const board = (await api('/public/alpha/notices')).data;
+  check('the board: live notices only, the important one first', board[0].id === nt.id && board[0].important === true && board.some(x => x.id === camp.id), JSON.stringify(board.map(x => x.title)));
+  check('…drafts never show; files can be opened', !board.some(x => x.id === draft.id) && board.find(x => x.id === nt.id).files[0].name === 'schedule.pdf' && (await fetch(API.replace('/api', '') + board.find(x => x.id === nt.id).files[0].url)).status === 200);
+  check('“for Faculty” hides the students-only notice', !(await api('/public/alpha/notices?for=faculty')).data.some(x => x.id === camp.id) && (await api('/public/alpha/notices?for=student')).data.some(x => x.id === camp.id));
+  const pop = (await api(`/public/alpha/notices/for/${elec}`)).data;
+  check('raising for Electrical: its notice pops up (not the whole-campus one)', pop.length === 1 && pop[0].id === nt.id);
+  await api('/public/alpha/notices/seen', { method: 'POST', body: { ids: [nt.id] } }); await api('/public/alpha/notices/seen', { method: 'POST', body: { ids: [nt.id], outcome: 'answered' } });
+  const tk = await api('/public/alpha/tickets', { method: 'POST', body: { service_id: elec, name: 'Nia', email: 'nia@notice.example.com', phone: '9000088881', requestor_type: 'student', identifier: 'S9', department: 'BPT', subject: 'Fan not working', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Notice room 7', issue: 'Fan' }, seen_notices: [nt.id] } });
+  const tid2 = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', tk.data?.ticket_no, tid))[0]?.id;
+  check('a ticket raised after reading it says so (for the team only)', !!tid2 && (await q("SELECT is_internal FROM ticket_events WHERE ticket_id=? AND event_type='notice_seen'", tid2))[0]?.is_internal === 1, JSON.stringify(tk.error || ''));
+  const n1 = (await api('/notices/' + nt.id, { token: T.pavan })).data;
+  check('the team sees the counts: seen, found their answer, raised anyway', n1.views === 1 && n1.answered === 1 && n1.raised === 1, JSON.stringify([n1.views, n1.answered, n1.raised]));
+  check('the title is tidied like a reply (no full stop added)', (await api('/notices/' + nt.id, { token: T.pavan })).data.title === 'Power cut in block a till 4pm', (await api('/notices/' + nt.id, { token: T.pavan })).data.title);
+  const zip = (inner) => 'data:application/octet-stream;base64,' + Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('x'.repeat(30) + inner + 'y'.repeat(30))]).toString('base64');
+  await ok('a Word file attached', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'circular.docx', data: zip('word/document.xml') } });
+  await ok('an Excel file attached', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'timetable.xlsx', data: zip('xl/workbook.xml') } });
+  await fails('at most 3 files', `/notices/${nt.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'more.pdf', data: PDF } }, 400, 'at most 3');
+  await fails('macro-enabled Office files are refused', `/notices/${draft.id}/files`, { token: T.pavan, method: 'POST', body: { name: 'macro.docm', data: zip('word/document.xml word/vbaProject.bin') } }, 400);
+  const nf = (await api('/public/alpha/notices/' + nt.id)).data.files;
+  check('Word and Excel download with their own type', nf.length === 3 && /wordprocessingml/.test(nf[1].type) && /spreadsheetml/.test(nf[2].type) && /attachment/.test((await fetch(API.replace('/api', '') + nf[1].url)).headers.get('content-disposition') || ''));
+  const newTeam = await ok('a new team is created', '/services', { token: T.sa, tenant: tid, method: 'POST', body: { code: 'NEWDEPT', name: 'New Department', form_schema: { form_type: 'general', fields: [] } } });
+  check('…and it is in the notice team list straight away (admin), not for a provider outside it', (await api('/notices', { token: T.asha })).data.teams.some(x => x.id === newTeam.id) && !(await api('/notices', { token: T.pavan })).data.teams.some(x => x.id === newTeam.id));
+  const later = await ok('a notice scheduled for tomorrow', '/notices', { token: T.asha, method: 'POST', body: { service_id: newTeam.id, title: 'Opens tomorrow', starts_at: new Date(Date.now() + 864e5).toISOString(), status: 'published' } });
+  check('scheduled: listed for staff as scheduled, not yet on the board', (await api('/notices', { token: T.asha })).data.notices.find(x => x.id === later.id)?.state === 'scheduled' && !(await api('/public/alpha/notices')).data.some(x => x.id === later.id));
+  await fails('Until must be after Show from', '/notices/' + later.id, { token: T.asha, method: 'PATCH', body: { ends_at: new Date().toISOString() } }, 400);
+  await ok('end it now', '/notices/' + nt.id, { token: T.pavan, method: 'PATCH', body: { end_now: true } });
+  check('an ended notice leaves the board and the pop-up', !(await api('/public/alpha/notices')).data.some(x => x.id === nt.id) && !(await api(`/public/alpha/notices/for/${elec}`)).data.length);
+  check('the list for a provider: only their teams', (await api('/notices', { token: T.pavan })).data.notices.every(x => x.service_id === elec) && (await api('/notices', { token: T.asha })).data.notices.some(x => x.id === camp.id));
+  await fails('a provider can’t delete the campus notice', '/notices/' + camp.id, { token: T.pavan, method: 'DELETE' }, 404);
+  await ok('the admin deletes it', '/notices/' + camp.id, { token: T.asha, method: 'DELETE' });
+  check('deleted: gone for everyone', !(await api('/public/alpha/notices')).data.some(x => x.id === camp.id)); }
 
   sec('Forgot password: a temporary password by email');
   { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
@@ -1270,6 +1317,30 @@ async function uiSmoke(tok, id) {
     check(`a ${(fs.statSync(bigFile).size / 1048576).toFixed(1)} MB phone photo goes up shrunk: JPEG, at most 1920 px, under 1.5 MB`, raised && bigUp?.mime_type === 'image/jpeg' && Math.max(dims.width, dims.height) <= 1920 && bigUp.size_bytes < 1.5e6,
       JSON.stringify({ raised, bigUp: bigUp && { size: bigUp.size_bytes, w: dims.width, h: dims.height } }) + errors.join(' | ').slice(0, 200));
     check('a HEIC picked in Chrome goes up as it is and comes back a JPEG', up.some(a => a.file_name === 'photo.jpg' && a.mime_type === 'image/jpeg'), JSON.stringify(up.map(a => [a.file_name, a.mime_type])));
+    // notice board: the card on the campus page, and the team's notice before a ticket
+    const examId = (await q("SELECT id FROM services WHERE code='EXAM' AND tenant_id=(SELECT id FROM tenants WHERE slug='alpha')"))[0].id;
+    const uiN = (await api('/notices', { token: tok.asha, method: 'POST', body: { service_id: examId, title: 'Hall tickets from Monday', body: 'Collect them at the exam cell from Monday.', important: true, status: 'published' } })).data;
+    await visit('campus page with the notice board', '/d/alpha', null, '.nboard .ntrow');
+    check('the notice board shows the notice, important on top, with its team', await js(`const r = document.querySelector('.nboard .ntrow'); return r.classList.contains('imp') && /Hall tickets from Monday/.test(r.textContent) && /Examination/i.test(r.textContent)`));
+    await visit('raising for that team: its notice pops up first', '/d/alpha/raise/EXAM', null, 'dialog.ngate');
+    check('the pop-up: the notice, “This answers my question” and “I still need to raise a ticket”', await js(`const d = document.querySelector('dialog.ngate');
+      return /Hall tickets from Monday/.test(d.textContent) && !!d.querySelector('[data-a=answered]') && !!d.querySelector('[data-a=raise]') && !document.querySelector('#f')`));
+    check('“I still need to raise a ticket” opens the form', await js(`document.querySelector('dialog.ngate [data-a=raise]').click(); await new Promise(r => setTimeout(r, 1500));
+      return !document.querySelector('dialog.ngate') && !!document.querySelector('#f [name=fd_stu_id]')`));
+    await js(`const f = document.querySelector('#f');
+      for (let pass = 0; pass < 2; pass++) for (const el of f.querySelectorAll('input[required], select[required], textarea[required]')) {
+        if (el.offsetParent === null || el.type === 'file') continue;
+        if (el.tagName === 'SELECT') { if (!el.value) { el.value = [...el.options].find(o => o.value && !/^other/i.test(o.value))?.value || ''; el.dispatchEvent(new Event('change', { bubbles: true })); } }
+        else if (!el.value) el.value = el.type === 'email' ? 'notice-ui@example.com' : el.name === 'phone' ? '9000066001' : 'Notice test';
+      }
+      f.requestSubmit();`);
+    let raisedN = false; for (let i = 0; i < 60 && !raisedN; i++) { await sleep(250); raisedN = await js(`return !!document.querySelector('.stub .no');`).catch(() => false); }
+    const seenEv = await q("SELECT e.body, e.is_internal FROM ticket_events e JOIN tickets t ON t.id=e.ticket_id JOIN requestors r ON r.id=t.requestor_id WHERE r.email='notice-ui@example.com' AND e.event_type='notice_seen'");
+    check('the ticket records that the requester read the notice (staff only), and the notice counts it', raisedN && seenEv.length === 1 && seenEv[0].is_internal === 1 && /Hall tickets from Monday/.test(seenEv[0].body)
+      && (await q('SELECT views, raised FROM notices WHERE id=?', uiN.id))[0].raised === 1, JSON.stringify({ raisedN, seenEv }) + errors.join(' | ').slice(0, 200));
+    await visit('staff Notices page', '/c/notices', tok.pavan, '#main .tabs');
+    check('a provider outside the team sees no notices of that team and can post for their own', await js(`return !/Hall tickets from Monday/.test(document.querySelector('#main').textContent) && !!document.querySelector('#ntNew')`));
+    await api('/notices/' + uiN.id, { token: tok.asha, method: 'DELETE' });
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }
 }

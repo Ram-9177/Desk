@@ -795,3 +795,23 @@ dialog.prev{width:min(640px,96vw);max-height:92vh;overflow:auto;padding:18px}
 .pv-acts{display:flex;gap:8px;margin-top:12px;position:sticky;bottom:-18px;background:#fff;padding:10px 0 4px}.pv-acts .btn{flex:1}.pv-acts .primary{flex:2}
 .typed{margin-top:4px;font-style:italic}
 .brandf{margin:10px 0 14px}
+/* Notice board */
+.nboard{padding:14px 16px}.nb-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.nb-h b{display:flex;align-items:center;gap:8px;font-size:15px}
+.nbchips{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}.nbchips button{font:inherit;font-size:12.5px;padding:5px 11px;border-radius:99px;border:1px solid var(--input-border);background:var(--surface);color:var(--text-2);cursor:pointer}
+.nbchips button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.ntrow{display:flex;gap:10px;align-items:center;padding:10px 4px;border-top:1px solid var(--divider);color:var(--text);text-decoration:none}.ntrow:first-of-type{border-top:0}
+.ntrow>div{flex:1;min-width:0}.ntrow b{display:block;margin-top:3px;font-weight:600}.ntrow .chev{color:var(--chevron)}
+.ntrow.imp{background:var(--pa-sun);border:1px solid var(--pa-sun-b);border-radius:12px;padding:10px 12px;margin-bottom:6px}
+.ntag{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:99px;text-transform:uppercase;letter-spacing:.04em;background:var(--pa-blue);color:var(--accent)}.ntag.imp{background:#F79009;color:#fff}
+.ntcard{border:1px solid var(--border);border-radius:14px;padding:14px;margin:10px 0;background:var(--surface)}.ntcard.imp{background:var(--pa-sun);border-color:var(--pa-sun-b)}
+.ntcard h2,.ntcard h3{margin:6px 0 4px;font-size:17px}.ntbody{margin-top:8px;color:var(--text-2);line-height:1.55}
+.ntimg{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-top:10px}
+.ntfile{display:flex;gap:10px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin-top:8px;color:var(--text);text-decoration:none;background:#fff}.ntfile span:nth-child(2){flex:1;font-weight:500;overflow-wrap:anywhere}
+.ntfile .ft{font-size:10px;font-weight:700;color:#fff;border-radius:5px;padding:3px 6px}.ft.pdf{background:#D92D20}.ft.xls{background:#079455}.ft.doc{background:#1570EF}
+dialog.ngate{width:min(520px,96vw);max-height:92vh;overflow:auto}dialog.ngate h2{margin:2px 0 10px;font-size:19px}
+.btn.ok{background:#ECFDF3;border-color:#ABEFC6;color:#067647}.ngate .btn{width:100%;margin-top:8px}
+.ntadm h3{margin:6px 0 2px;font-size:16px}.ntadm.imp{border-color:var(--pa-sun-b);background:var(--pa-sun)}.ntacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.ntacts .btn{min-height:38px;padding:6px 14px;font-size:13px}
+.ntfrow{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px}
+.ntimp{background:var(--pa-sun);border:1px solid var(--pa-sun-b);border-radius:10px;padding:10px 12px;margin-top:12px}
+dialog.ngate h2:focus{outline:none}
+dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;background:#F2F4F7;color:var(--text-2);display:grid;place-items:center;cursor:pointer}dialog .msheet-x:hover{background:#E4E7EC}

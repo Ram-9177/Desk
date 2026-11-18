@@ -127,6 +127,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS fair_cfg TEXT;
 -- Ready-made reply sentences per campus, with optional per-team lists: { "*": { step: [..] }, "<service id>": { .. } }
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS reply_phrases TEXT;
+-- Notice board: notices by a team (service) or the whole campus (service_id NULL), shown on the student home page and
+-- before a ticket is raised for that team. Files: images, PDF, Word, Excel.
+CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), service_id TEXT REFERENCES services(id),
+  title TEXT NOT NULL, body TEXT, audience TEXT DEFAULT 'all', important INT DEFAULT 0, status TEXT DEFAULT 'draft', starts_at TEXT, ends_at TEXT,
+  views INT DEFAULT 0, answered INT DEFAULT 0, raised INT DEFAULT 0, created_by TEXT, created_by_name TEXT, updated_by_name TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+CREATE INDEX IF NOT EXISTS notices_live ON notices (tenant_id, status, starts_at) WHERE deleted_at IS NULL;
+CREATE TABLE IF NOT EXISTS notice_files (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, notice_id TEXT NOT NULL REFERENCES notices(id), file_name TEXT, mime_type TEXT, size_bytes INT, storage_key TEXT UNIQUE, created_at TEXT);
 -- the ticket history and the points ledger are append-only
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;
