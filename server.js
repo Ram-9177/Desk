@@ -232,16 +232,21 @@ async function addEvent(t, actor, type, o = {}) {
 }
 
 // files arrive as [{name, type, data(base64 dataURL), source}]
+const TICKET_FILES = ['jpeg', 'png', 'gif', 'webp', 'heic', 'pdf'];
 async function saveFiles(t, eventId, files = [], byType) {
   if (!Array.isArray(files)) return;
   if (files.length > MAX_FILES) throw bad(`You can attach at most ${MAX_FILES} photos or files`);
   for (const f of files) {
+    if (!f || typeof f !== 'object' || typeof f.data !== 'string') throw bad('Only photos or PDF files');
     // the bytes decide what a file is (not its name or the browser's word); HEIC photos become JPEG, so every browser and email app shows them
     let buf = Buffer.from(String(f.data).split(',').pop(), 'base64'), kind = kindOf(buf), name = String(f.name || 'file').slice(0, 120);
-    if (!kind) throw bad('Only photos or PDF files');
+    // photos and PDFs only. A file that merely starts like a TIFF, BMP or AVIF used to be kept and offered for download under
+    // whatever name it came with (timetable.html, fix.bat): those kinds are not taken any more.
+    if (!kind || !TICKET_FILES.includes(kind)) throw bad('Only photos (JPG, PNG, GIF, WebP, HEIC) or PDF files');
     const max = kind === 'heic' ? 12 : 5; // the app shrinks other photos on the phone; HEIC is shrunk here
     if (buf.length > max * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${name} is too large: each file must be under ${max} MB`);
-    if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; name = name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.jpg'; } catch (e) { console.error(`photo ${name}: ${e.message}`); }
+    if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; } catch (e) { console.error(`photo ${name}: ${e.message}`); }
+    name = safeName(name, kind); // the name always ends the way the file really is (photo.jpg, never photo.jpg.exe)
     const key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
     fs.writeFileSync(path.join(UPLOAD_DIR, key), buf);
     await insert('attachments', { id: uid(), tenant_id: t.tenant_id, ticket_id: t.id, event_id: eventId, uploaded_by_type: byType,
@@ -363,8 +368,10 @@ const staffVars = async (u, pw) => {
 const newKey = () => crypto.randomBytes(24).toString('base64url');
 async function reporterKey(t, tr) {
   if (!tr || tr.is_first) return t.tracking_token;
+  if (!tr.id) throw new Error('reporter row without its id'); // never hand a joiner the first reporter's key by falling back
   if (!tr.token) { await run('UPDATE ticket_requestors SET token=? WHERE id=? AND token IS NULL', newKey(), tr.id); tr.token = (await one('SELECT token FROM ticket_requestors WHERE id=?', tr.id))?.token; }
-  return tr.token || t.tracking_token;
+  if (!tr.token) throw new Error('no key for this reporter');
+  return tr.token;
 }
 const trackUrl = async (t, tr = null) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${await reporterKey(t, tr)}`; };
 // Statuses: queued → sent | failed (after 4 tries); 'logged' = no flow connected or sending paused (printed to the server log only).
@@ -647,7 +654,8 @@ async function createTicket(tenant, b, opts) {
     const m = mergeable && await findMatch(tenant, svc.id, lkey, prob, day);
     if (m) {
       if (mergeMode() === 'confirm' && b.merge !== 'yes') // the form asks "Same issue?" first
-        throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `Ticket ${m.ticket_no} already exists for this problem.`, { ticket_no: m.ticket_no, subject: m.subject, affected_count: m.affected_count });
+        throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `Ticket ${m.ticket_no} already exists for this problem.`, { ticket_no: m.ticket_no, affected_count: m.affected_count,
+          subject: [String(m.problem_key || '').startsWith('other:') ? '' : m.problem_label, m.location].filter(Boolean).join(' · ') || 'The same problem at the same place' }); // the shared facts, never the first person's own words
       merged = await joinTicket(m, r, b, contact, opts.actor, ts);
       if (!merged.again) await noticesRead(merged.ticket, svc, b.seen_notices); // a report that joins an existing ticket counts too
       return merged.ticket;
@@ -675,7 +683,9 @@ async function createTicket(tenant, b, opts) {
     const others = merged.count - 1, guide = first ? { guide: guideLink('requestor') } : {};
     if (merged.added) await notify(t, await teamEmails(t.tenant_id, t.service_id), 'requestor_note', await ticketVars(t, { note: merged.added, requestor_name: b.name }));
     if (!merged.again) await notify(t, [b.email || null], 'created', { ...await forReporter(t, await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), merged.tr), ...guide });
-    return Object.assign(t, { merged: true, affected_count: merged.count, my_key: await reporterKey(t, merged.tr) }); // the key of the person who just reported, not the first person's
+    // someone who joins for the first time gets the key of their own (new) report. A report that repeats one already on the
+    // ticket gets none: the key of that report belongs to whoever raised it first, and typing an email does not prove it is yours
+    return Object.assign(t, { merged: true, again: !!merged.again, affected_count: merged.count, my_key: merged.again ? null : await reporterKey(t, merged.tr) });
   }
   const v = await ticketVars(t);
   await notify(t, [b.email || null], 'created', first ? { ...v, guide: guideLink('requestor') } : v);
@@ -747,7 +757,7 @@ async function forReporter(t, v, tr) {
 }
 // One email per person who reported the ticket, each greeted by name. A long list goes out after the reply (the outbox sends it).
 async function notifyRequestors(t, key, vars) {
-  const list = await all("SELECT name, contact, requestor_id, is_first, event_id, raised_at FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
+  const list = await all("SELECT * FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id); // whole rows: each person's own key is in theirs
   const send = async () => { for (const r of list) await notify(t, [r.contact], key, await forReporter(t, vars, r)); };
   if (list.length <= 25) return send();
   send().catch(e => console.error('requestor emails', e.message));
@@ -780,9 +790,13 @@ async function publicTicket(t) {
   const rows = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_id,actor_name,created_at FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
   const att = await all('SELECT event_id,file_name,mime_type,storage_key,source,stamped_at FROM attachments WHERE ticket_id=?', t.id);
   const r = await one('SELECT requestor_type FROM requestors WHERE id=?', me);
+  const known = new Set((await all('SELECT requestor_id FROM ticket_requestors WHERE ticket_id=?', t.id)).map(x => x.requestor_id));
   const ev = rows.map(({ actor_id, ...e }) => {
-    const theirs = e.actor_type === 'requestor' && (actor_id || t.requestor_id) !== me; // typed or sent by another person on this ticket
-    return theirs ? { ...e, actor_name: OTHER_REPORTER, body: '', files: [] } : { ...e, actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: att.filter(a => a.event_id === e.id) }; });
+    // typed or sent by another person on this ticket (an old step with no known author is the first reporter's)
+    const theirs = e.actor_type === 'requestor' && (actor_id && known.has(actor_id) ? actor_id : t.requestor_id) !== me;
+    if (theirs) return { ...e, actor_name: OTHER_REPORTER, body: '', files: [] };
+    // "created" carries the first report's photos, also when staff typed it in for a walk-in: not for someone who joined
+    return { ...e, actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: t.viewer && e.event_type === 'created' ? [] : att.filter(a => a.event_id === e.id) }; });
   // someone who joined: their own report sits where they made it
   if (own) { const at = t.viewer.raised_at, i = ev.findIndex(e => e.created_at > at);
     ev.splice(i < 0 ? ev.length : i, 0, { id: `own-${t.viewer.id}`, event_type: 'joined', from_value: null, to_value: null, body: own.words, actor_type: 'requestor', actor_name: 'You', created_at: at, files: own.files }); }
@@ -793,7 +807,8 @@ async function publicTicket(t) {
     due_at: t.due_at, created_at: t.created_at, closed_at: t.closed_at, reopen_count: t.reopen_count, service: svc.name,
     hold_label: t.status === 'hold' && t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label : null, hold_due_at: t.status === 'hold' ? t.hold_due_at : null,
     reopen_until: t.status === 'closed' ? addH(t.closed_at, tn.reopen_window_days * 24) : null,
-    providers: tn.show_provider_contact ? (await handlersOf(t.tenant_id, t.service_id)).map(p => providerCard(p, r?.requestor_type)) : [],
+    // the page shows a provider's name (and, to staff and visitors, the phone): the email address stays out of the browser
+    providers: tn.show_provider_contact ? (await handlersOf(t.tenant_id, t.service_id)).map(p => { const { email, ...c } = providerCard(p, r?.requestor_type); return c; }) : [],
     events: ev };
 }
 // A ticket opens for the person who has its key: the key is in the link of every email about it and on the screen shown after
@@ -803,7 +818,7 @@ const TICKET_NO = /^[A-Za-z0-9-]{1,20}$/;
 async function findPublic(slug, no, q) {
   const tn = await tenantBySlug(slug);
   const t = TICKET_NO.test(String(no)) ? await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
-  const k = typeof q?.k === 'string' ? q.k : ''; if (!t || !k) throw notFound();
+  const k = typeof q?.k === 'string' && /^[A-Za-z0-9_-]{16,80}$/.test(q.k) ? q.k : ''; if (!t || !k) throw notFound(); // (an odd key never reaches the database, so it reads like any wrong key)
   if (t.tracking_token && safeEq(k, t.tracking_token)) return t; // the person who raised it
   const viewer = await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND token=? AND is_first=0', t.id, k); // someone who joined it
   if (!viewer) throw notFound();
@@ -827,25 +842,33 @@ P.post('/:slug/tickets', wrap(async req => {
   limit('ip:' + req.ip, 300); limit('c:' + (b.email || b.phone || ''), 12); // a hostel on one campus Wi-Fi shares one address
   const t = await createTicket(tn, b, { channel: 'portal', actor: { type: 'requestor', name: b.name } });
   const type = (await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id))?.requestor_type;
-  return { ticket_no: t.ticket_no, tracking_token: t.my_key || t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1, kind: t.kind || 'issue',
+  return { ticket_no: t.ticket_no, tracking_token: t.merged ? t.my_key : t.tracking_token, again: !!t.again, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1, kind: t.kind || 'issue',
     queue: t.status === 'open' ? await queueInfo(t) : null,
     providers: (await handlersOf(tn.id, t.service_id)).map(p => { const { email, ...c } = providerCard(p, type); return c; }) };
 }));
 P.get('/:slug/tickets/:no', wrap(async req => await publicTicket(await findPublic(req.params.slug, req.params.no, req.query))));
-// "Track ticket": the number and the email it was raised with give the key (the page then opens like the link in the email).
-// The answer is the same for a wrong number and a wrong email, and tries are limited, so it cannot be used to guess either.
-P.post('/:slug/tickets/:no/open', wrap(async req => {
+// "Track ticket" by number: where the ticket stands, and nothing anybody typed (what the help chat says too).
+P.get('/:slug/tickets/:no/status', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug), no = String(req.params.no); limit('tstat:' + req.ip, 600);
+  const t = TICKET_NO.test(no) ? await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
+  if (!t || t.is_internal) throw notFound(); // a request between staff is not on the public side at all
+  return { ticket_no: t.ticket_no, status: t.status, kind: t.kind || 'issue', service: (await one('SELECT name FROM services WHERE id=?', t.service_id))?.name || '',
+    created_at: t.created_at, due_at: t.due_at, closed_at: t.closed_at, queue: t.status === 'open' ? await queueInfo(t) : null,
+    hold_due_at: t.status === 'hold' ? t.hold_due_at : null, escalated: !!t.escalated_at && [...ACTIVE, 'hold'].includes(t.status), affected_count: t.affected_count || 1 };
+}));
+// The full ticket opens with its key only. Someone who has the number but not the link asks for the link here: it is
+// emailed to the address when (and only when) that address is on the ticket. The answer is always the same and comes
+// before any look-up, so neither a number nor an email can be found out by trying; the key never goes to the browser.
+P.post('/:slug/tickets/:no/link', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), no = String(req.params.no), email = oneEmail(req.body.email);
-  // tries are counted per address (a whole hostel may share one), per ticket and per email: neither the number nor the
-  // email can be found by trying many of the other
-  limit('open:' + req.ip, 300);
-  if (!allow(`open-t:${tn.id}:${normNo(no).slice(0, 20)}`, 20) || (email && !allow(`open-e:${tn.id}:${email}`, 15)))
-    throw new HttpErr(429, 'RATE_LIMIT', 'Too many tries. Please wait an hour, or open the ticket from the link in your email.');
-  const t = email && TICKET_NO.test(no) ? await one('SELECT id, tracking_token, requestor_id FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
-  const tr = t && await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND lower(contact)=? ORDER BY is_first DESC LIMIT 1', t.id, email);
-  const first = t && !tr && await one('SELECT 1 AS x FROM requestors WHERE id=? AND lower(email)=?', t.requestor_id, email); // tickets older than the list of reporters
-  if ((!tr && !first) || !t.tracking_token) throw new HttpErr(404, 'NOT_FOUND', 'We could not find a ticket with that number and email. Check both, or open it from the link in your email.');
-  return { ticket_no: normNo(no), k: await reporterKey(t, tr) };
+  limit('tlink:' + req.ip, 120);
+  (async () => {
+    const t = email && TICKET_NO.test(no) ? await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
+    const tr = t && !t.is_internal ? await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND lower(contact)=? ORDER BY is_first DESC LIMIT 1', t.id, email) : null;
+    // at most 3 links an hour to one address and 6 an hour for one ticket, counted only when one is really sent: no inbox can be flooded
+    if (tr && allow(`tlink-e:${tn.id}:${email}`, 3) && allow(`tlink-t:${t.id}`, 6)) await notify(t, [tr.contact], 'ticket_link', await forReporter(t, await ticketVars(t), tr));
+  })().catch(e => console.error('ticket link', e.message));
+  return { ok: true, message: 'If that email is on this ticket, the link to open it is on its way there. Check your inbox, and the spam folder.' };
 }));
 P.post('/:slug/tickets/:no/notes', wrap(async req => {
   const t = await findPublic(req.params.slug, req.params.no, req.body);
@@ -917,14 +940,14 @@ async function publicBot(tn, q) {
   if (said(q, /\b(food|meal|mess|canteen|breakfast|lunch|snacks|dinner|rate|rating)/)) { const fs = await foodService(tn.id);
     if (fs) return { text: 'For food you can do two things:\n• Share feedback: pick the day and meal, give stars and a short review. It goes to the kitchen team\'s report; no ticket.\n• Report a problem (insect, spoiled food, hygiene, billing, staff behaviour): this raises a ticket you can track. A photo helps but is not needed.',
       items: [{ title: 'Share feedback', href: `#/d/${tn.slug}/raise/${fs.code}?flow=rate` }, { title: 'Report a problem', href: `#/d/${tn.slug}/raise/${fs.code}?flow=report` }] }; }
-  if (said(q, /\b(track|status|where|find|check|my ticket)/)) return { text: 'Type your ticket number, for example 0042. You find it on the screen after raising and in every email.' };
+  if (said(q, /\b(track|status|where|find|check|my ticket)/)) return { text: 'Type your ticket number, for example 0042, and I will tell you where it stands. You find the number on the screen after raising and in every email. To read the replies or add a note, tap the button in any email about the ticket.' };
   if (said(q, /\b(raise|new|complain|report|problem|broken|not working|issue)/)) return { text: 'To raise a ticket:\n1. Pick the team that can help.\n2. Fill in your details, where the problem is and what happened.\n3. Add up to 4 photos if you like, then tap Raise ticket.\nYou get a ticket number straight away, and an email at every step. No login needed.', items: [raiseLink, { title: 'Step-by-step guide (2 min, with voice)', href: 'guide/requestor.html' }] };
   if (said(q, /\b(team|service|which|who can|department)/)) {
     const svcs = await all(`SELECT code, name, description FROM services s WHERE s.tenant_id=? AND ${OPEN_TEAM('s')} ORDER BY sort_order, name`, tn.id);
     return { text: `${svcs.length} teams can help at ${tn.name}. Tap one to raise a ticket with it.`, items: svcs.map(s => ({ title: s.name, sub: s.description || '', href: `#/d/${tn.slug}/raise/${s.code}` })) };
   }
   if (said(q, /\b(limit|how many|per day|a day)/)) { const l = dailyLimits(tn); return { text: `Each email can raise ${l.student} tickets a day (faculty ${l.faculty}, staff ${l.staff}). After that, the form tells you when you can raise the next one. For something urgent, add a note to one of today's tickets.` }; }
-  if (said(q, /\b(reopen|again|not fixed)/)) return { text: `If a closed ticket is not fixed, open it (type its number here) and tap Reopen. You can reopen within ${tn.reopen_window_days} days of closing; after that, raise a new ticket.` };
+  if (said(q, /\b(reopen|again|not fixed)/)) return { text: `If a closed ticket is not fixed, open it from the button in its email ("View or reopen your ticket") and ask to reopen it, with a line on what is still wrong. You can ask within ${tn.reopen_window_days} days of closing; after that, raise a new ticket.` };
   if (said(q, /\b(photo|image|picture|camera|attach)/)) return { text: 'You can add up to 4 photos from the camera or gallery, in any format, including iPhone HEIC. Big photos are made smaller on your phone before they upload.' };
   if (said(q, /\b(time|long|when|soon|sla|hours|target)/)) {
     const h = (await Promise.all(PRIORITIES.map(p => targetHours(tn.id, null, p)))).sort((a, b) => a - b);
@@ -1595,7 +1618,9 @@ S.get('/tickets/:id', wrap(async req => {
     providers: await handlersOf(req.tenantId, t.service_id),
     requestor: await one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
     requestors: await all('SELECT id, name, contact, raised_at, is_first, event_id, photo_url FROM ticket_requestors WHERE ticket_id=? ORDER BY raised_at', t.id),
-    requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
+    // the requester's other tickets: only those this person may open (a Wellness request is not a line on an Electrical provider's screen)
+    requestor_history: await (async () => { const mine = await myServiceIds(req.user, req.tenantId);
+      return mine.length ? all(`SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? AND tenant_id=? AND service_id IN (${mine.map(() => '?').join()}) ORDER BY created_at DESC LIMIT 5`, t.requestor_id, t.id, req.tenantId, ...mine) : []; })(),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),
     reminders: await all('SELECT id, remind_at, note, fired_at FROM ticket_reminders WHERE ticket_id=? AND user_id=? AND done_at IS NULL ORDER BY remind_at', t.id, req.user.id),
@@ -2249,6 +2274,31 @@ if (getSettings().migr_audit_all_v1 !== '1') {
     try { const m = JSON.parse(a.meta || '{}'); if (m.url !== undefined) { m.url = '(changed)'; await run('UPDATE audit_logs SET meta=? WHERE id=?', JSON.stringify(m), a.id); } } catch { /* not JSON: leave it */ } }
   await run("UPDATE audit_logs SET tenant_id=NULL WHERE action IN ('mail.config','mail.template','merge.mode')");
   await setSetting('migr_audit_all_v1', '1');
+}
+// One time: a ticket that several people reported used to have one key for all of them, and that key is in every email they
+// were sent. Each such ticket gets a new key: the button in an old email then leads to Track ticket, where each person is
+// sent the link to their own page (the first reporter's next email carries the new key).
+if (getSettings().migr_keys_v1 !== '1') {
+  const shared = await all('SELECT DISTINCT ticket_id id FROM ticket_requestors WHERE is_first=0');
+  for (const x of shared) await run('UPDATE tickets SET tracking_token=? WHERE id=?', newKey(), x.id);
+  if (shared.length) console.log(`New keys for ${shared.length} ticket${shared.length === 1 ? '' : 's'} that several people reported: each person now opens their own page.`);
+  await setSetting('migr_keys_v1', '1');
+}
+// One time: the old rule also matched a requester by phone number, so two people who typed the same number became one record
+// (the second one's name and email on the first one's tickets). Each such ticket goes back to a record of the person who raised it.
+if (getSettings().migr_requestors_v1 !== '1') {
+  let n = 0;
+  try {
+    for (const x of await all(`SELECT t.id, t.tenant_id, tr.id tr_id, tr.name, tr.contact, r.requestor_type FROM tickets t JOIN ticket_requestors tr ON tr.ticket_id=t.id AND tr.is_first=1
+      JOIN requestors r ON r.id=t.requestor_id WHERE tr.contact LIKE '%@%' AND lower(tr.contact)<>lower(coalesce(r.email,''))`)) {
+      const email = String(x.contact).trim().toLowerCase();
+      const own = await one('SELECT id FROM requestors WHERE tenant_id=? AND lower(email)=?', x.tenant_id, email)
+        || await insert('requestors', { id: uid(), tenant_id: x.tenant_id, name: x.name, email, phone: null, requestor_type: x.requestor_type });
+      await run('UPDATE tickets SET requestor_id=? WHERE id=?', own.id, x.id); await run('UPDATE ticket_requestors SET requestor_id=? WHERE id=?', own.id, x.tr_id); n++;
+    }
+    if (n) console.log(`${n} ticket${n === 1 ? ' was' : 's were'} given back to the record of the person who raised ${n === 1 ? 'it' : 'them'} (two people had shared one record through the same phone number).`);
+  } catch (e) { console.error('Requester records check skipped:', e.message); }
+  await setSetting('migr_requestors_v1', '1');
 }
 // One time: emails sent before passwords were masked. A copy that was handed over, or whose password no longer works, loses it.
 if (getSettings().migr_mask_pw_v1 !== '1') {

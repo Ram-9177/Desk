@@ -2,7 +2,7 @@
 
 Service desk for the St. Mary's Group campuses. Requestors raise and track tickets without logging in; service providers work the tickets within a working-hours SLA; admins set up campuses, services, people and emails.
 
-- **Requestors**: raise a ticket (email required), service-specific questions (Location: Block · Floor · Room; Student: Branch · Student ID · Department), photos, track with the link in any email about the ticket (or its number plus the email it was raised with), add notes, ask to reopen within 7 days.
+- **Requestors**: raise a ticket (email required), service-specific questions (Location: Block · Floor · Room; Student: Branch · Student ID · Department), photos, track by ticket number (where it stands), open the full ticket with the link in any email about it (Track ticket sends a new link to the email on the ticket), add notes, ask to reopen within 7 days.
 - **Service providers**: ticket cards, hold / resume / close / reject / transfer with notes, SLA clock on working hours (09:00–17:00, Mon–Sat by default), hold reasons with their own limits, points.
 - **Admins**: campuses, services with form types and question builder, people (add, reset password, deactivate), SLA & points, attention list, reports, audit log.
 - **Email**: sent through a Power Automate HTTP flow from the Digital Services mailbox, with an editable template for each of the 26 steps (progress tracker, ticket details, the latest updates as one joined timeline).
@@ -161,7 +161,7 @@ Every public reply (a note, work started, on hold, resumed, closed, rejected, mo
 ## Emails, privacy and sign-in
 
 - **Joined tickets**: when several people report the same problem at the same place on the same day, it is one ticket. Each person gets emails and a ticket page with their own words and photos; nobody is sent another reporter's student ID, description or photos.
-- **Opening a ticket**: the link in the email (it carries the ticket's key), or Track ticket with the number and the email it was raised with. The number alone opens nothing.
+- **Opening a ticket**: the link in the email carries the ticket's key and opens the full ticket. Track ticket with the number alone shows where the ticket stands (status, team, target: nothing anybody typed); typing the email as well sends a new link to that address when it is on the ticket. The key never comes back to the browser for a number and an email, so nobody's ticket can be read by trying numbers or emails.
 - **Passwords in emails**: the stored copy of a sign-in email shows dots once the email has been handed over. A temporary password an admin issues works 14 days; "Forgot password?" gives one that works 1 hour.
 - **Sessions** end when the password is changed or reset or the account is switched off. Ten wrong passwords for one account stop that account for 15 minutes.
 - **Email links** use `PUBLIC_BASE_URL` (or the public address saved on the Email page). It is not guessed from visits: set it.

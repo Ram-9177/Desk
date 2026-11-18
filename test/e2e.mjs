@@ -240,11 +240,27 @@ try {
   await fails('…a note cannot be added without the key', '/public/alpha/tickets/0001/notes', { method: 'POST', nokey: true, body: { body: 'from a stranger' } }, 404);
   await fails('…nor a reopen asked for', '/public/alpha/tickets/0001/reopen', { method: 'POST', nokey: true, body: { reason: 'from a stranger' } }, 404);
   check('with the key from the email link it opens', (await api(`/public/alpha/tickets/0001?k=${key1}`)).data?.ticket_no === '0001');
-  const op = (email, no = '0001') => api(`/public/alpha/tickets/${no}/open`, { method: 'POST', body: { email } });
-  const o1 = await op('  R1@Example.com '), o2 = await op('someone.else@example.com'), o3 = await op('r1@example.com', '0099');
-  check('Track ticket: the number and the email it was raised with give the key', o1.status === 200 && o1.data.k === key1 && o1.data.ticket_no === '0001', JSON.stringify(o1.error || o1.data));
-  check('…another email, or a number that does not exist, get the same plain answer', o2.status === 404 && o3.status === 404 && o2.error.message === o3.error.message && /number and email/.test(o2.error.message), JSON.stringify([o2.error, o3.error]));
-  await fails('…and the email must be one address', '/public/alpha/tickets/0001/open', { method: 'POST', body: { email: 'r1@example.com;x@y.example.com' } }, 404);
+  // Track ticket: the number says where the ticket stands; the full ticket opens only from a link sent to the email on it
+  const stt = (await api('/public/alpha/tickets/1/status')).data;
+  check('the number alone shows where the ticket stands: status, team, target; nothing anybody typed', stt?.ticket_no === '0001' && stt.status === 'open' && stt.service === 'Electrical' && !!stt.due_at
+    && !/Ria|r1@example|Room 214|Ticket from|Something is broken/.test(JSON.stringify(stt)), JSON.stringify(stt));
+  await fails('…a number that does not exist says so', '/public/alpha/tickets/0099/status', {}, 404);
+  const lk = email => api('/public/alpha/tickets/0001/link', { method: 'POST', body: { email } }), linkMails = () => q("SELECT recipient, text_body FROM notifications WHERE template_key='ticket_link' ORDER BY created_at");
+  const l1 = await lk('  R1@Example.com '), l2 = await lk('someone.else@example.com'), l3 = await api('/public/alpha/tickets/0099/link', { method: 'POST', body: { email: 'r1@example.com' } });
+  const lm = await waitFor(async () => { const m = await linkMails(); return m.length ? m : null; });
+  check('typing the email on the ticket sends the link to that address: the key never comes back to the browser', l1.status === 200 && !('k' in l1.data) && !JSON.stringify(l1.data).includes(key1)
+    && lm?.length === 1 && lm[0].recipient === 'r1@example.com' && lm[0].text_body.includes(`/#/d/alpha/t/0001?k=${key1}`), JSON.stringify([l1.data, lm?.map(m => m.recipient)]));
+  check('…another email, or a number that does not exist, get the very same answer and no email', l2.status === 200 && l3.status === 200 && l2.data.message === l1.data.message && l3.data.message === l1.data.message && (await linkMails()).length === 1);
+  await lk('r1@example.com'); await lk('r1@example.com'); await lk('r1@example.com'); await lk('r1@example.com'); await sleep(600);
+  check('…and at most 3 links an hour go to one address (nobody’s inbox can be flooded)', (await linkMails()).length === 3, String((await linkMails()).length));
+  const oldWay = await api('/public/alpha/tickets/0001/open', { method: 'POST', body: { email: 'r1@example.com' } });
+  check('the old way in (number + email answering the key) is gone', oldWay.status >= 400 && !JSON.stringify(oldWay).includes(key1), String(oldWay.status));
+  await fails('an oddly shaped key reads like any wrong key', '/public/alpha/tickets/0001?k=%00', {}, 404);
+  await fails('a file that is not a file answers plainly (it used to answer 500)', '/public/beta/tickets/0001/notes', { method: 'POST', body: { body: 'x', files: [null] } }, 400, 'photos');
+  const tif = 'data:image/tiff;base64,' + Buffer.from('II*\0<script>alert(1)</script>' + 'x'.repeat(40), 'latin1').toString('base64');
+  await fails('a file that only starts like a TIFF is not taken (it was kept and offered as “evil.html”)', '/public/beta/tickets/0001/notes', { method: 'POST', body: { body: 'see file', files: [{ name: 'evil.html', data: tif }] } }, 400, 'photos');
+  await ok('a photo sent under a misleading name', '/public/beta/tickets/0001/notes', { method: 'POST', body: { body: 'photo of the gate', files: [{ name: 'invoice.pdf.exe', type: 'image/png', source: 'gallery', data: PNG }] } });
+  check('…is kept under a name that ends the way the file really is', (await q("SELECT file_name FROM attachments WHERE ticket_id=(SELECT id FROM tickets WHERE ticket_no='0001' AND tenant_id=?) ORDER BY created_at DESC LIMIT 1", beta.id))[0].file_name === 'invoice.pdf.png');
   await fails('a ticket number with odd characters is simply not found (it used to answer 500)', '/public/alpha/tickets/%00?k=x', {}, 404);
   const pn = await ok('requestor adds a note', '/public/alpha/tickets/0001/notes', { method: 'POST', body: { body: 'It sparks when switched on.' } });
   check('note appears on the public timeline', pn.events.some(e => e.event_type === 'note'));
@@ -397,7 +413,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('26 email steps listed, none connected yet', cfg0.events.length === 26 && !cfg0.url);
+  check('27 email steps listed, none connected yet', cfg0.events.length === 27 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -694,7 +710,8 @@ try {
   await ok('super admin switches to confirm mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'confirm' } });
   await fails('a tenant admin cannot switch it', '/merge-mode', { token: T.asha, method: 'PUT', body: { mode: 'silent' } }, 403);
   const ask = await dup('Dupv', '301');
-  check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.ticket_no === bt[0].ticket_no, JSON.stringify(ask.error));
+  check('confirm mode: a match is offered first ("Same issue?"), by the problem and the place: never the first person’s own words', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.ticket_no === bt[0].ticket_no
+    && ask.error.details.subject === 'Fan · Hostel block · 2nd floor · 301' && !/Ticket from/.test(JSON.stringify(ask.error)), JSON.stringify(ask.error));
   const no = (await dup('Dupv', '301', { merge: 'no' })).data, yes = (await dup('Dupw', '301', { merge: 'yes' })).data;
   check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no === bt[0].ticket_no);
   await ok('back to silent mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'silent' } });
@@ -1149,7 +1166,15 @@ try {
   // the ticket page is each person's own too
   const kd = j1.data.tracking_token, ke = j2.data.tracking_token, pd = (await api(`/public/alpha/tickets/${j1.data.ticket_no}?k=${kd}`)).data, pe = (await api(`/public/alpha/tickets/${j1.data.ticket_no}?k=${ke}`)).data;
   const sd = JSON.stringify(pd), se = JSON.stringify(pe);
-  check('each person on the ticket has their own key', !!kd && !!ke && kd !== ke && (await api(`/public/alpha/tickets/${j1.data.ticket_no}/open`, { method: 'POST', body: { email: 'esha@join.example.com' } })).data?.k === ke);
+  const keyIn = m => /[?&]k=([A-Za-z0-9_-]+)/.exec(m?.html || '')?.[1];
+  check('each person on the ticket has their own key, and every email to them carries THEIR key (the later ones too)', !!kd && !!ke && kd !== ke
+    && keyIn(e1) === kd && keyIn(s1) === kd && keyIn(n1) === kd && keyIn(e2) === ke && keyIn(s2) === ke && keyIn(n2) === ke
+    && !n2.html.includes(kd) && !n2.text_body.includes(kd) && !s2.html.includes(kd), JSON.stringify([keyIn(e2) === ke, keyIn(s2) === ke, keyIn(n2) === ke]));
+  await api(`/public/alpha/tickets/${j1.data.ticket_no}/link`, { method: 'POST', body: { email: 'esha@join.example.com' } });
+  const jl = await waitFor(() => mailTo('esha@join.example.com', 'ticket_link'));
+  check('…and Track ticket sends each person the link to their own page', keyIn(jl) === ke && !jl.html.includes(kd) && jl.subject.includes(j1.data.ticket_no), jl?.subject);
+  const ag = await stu('Divya', '23BPT777', 'Third time: still no water.');
+  check('a report that repeats one already on the ticket is added to it, but no key is handed out on the screen (typing an email does not prove it is yours)', ag.status === 200 && ag.data.again === true && ag.data.tracking_token === null && ag.data.ticket_no === j1.data.ticket_no, JSON.stringify(ag.data));
   check('the one who joined sees their own report on the ticket page: never the first person’s words, photos or notes', pe.subject === 'Esha: no water' && se.includes('Nothing from the tap in our room either.') && se.includes(k2)
     && !/9000011111|roommate|Divya/.test(se) && !se.includes(k1) && pe.events.some(e => e.event_type === 'joined') && se.includes('The tanker arrives at 7 pm.'), se.slice(0, 600));
   check('…and the first person does not see theirs', sd.includes('my roommate is unwell') && sd.includes(k1) && !sd.includes('Nothing from the tap') && !sd.includes(k2) && !/Esha/.test(sd), sd.slice(0, 400));
@@ -1203,6 +1228,24 @@ try {
   check('its main team’s provider is told about its tickets, and the requester reads who handles it', sbM.some(m => m.recipient === 'wally@join.example.com') && !sbM.some(m => m.recipient === 'asha@example.com')
     && /Handled by: Wally Water/.test((await mailTo('farid@join.example.com', 'created')).text_body), JSON.stringify(sbM.map(m => m.recipient)));
   check('the staff link in an email carries the campus, so a super admin lands in the right one', !!sbM[0]?.text_body.includes(`/#/c/t/${sbT}?c=${tidA}`));
+  // --- tickets staff raised, and requests between staff, on the public side ---
+  const room77 = { loc_block: 'Main block', loc_floor: '1st floor', loc_room: '77', issue: 'Leak' };
+  const wk = await ok('staff log a walk-in for the Water team, with the caller’s photo', '/tickets', { ...SA, method: 'POST', body: { channel: 'walk_in', service_id: wtr.id, name: 'Wendy Walkin', email: 'wendy@join.example.com', phone: '9000077010', requestor_type: 'staff',
+    identifier: 'S9', department: 'Admin', subject: 'Walk-in: tap broken', description: 'Tap broken in the staff room.', form_data: room77, files: pic('wendy-tap.png') } });
+  const wkKey = (await q('SELECT storage_key k FROM attachments WHERE ticket_id=?', wk.id))[0]?.k;
+  const jay = await raise('alpha', { service_id: wtr.id, name: 'Jay', email: 'jay@join.example.com', requestor_type: 'staff', subject: 'Jay: tap', description: 'The tap is broken for me too.', form_data: room77 });
+  const jayPage = jay.data?.merged ? (await api(`/public/alpha/tickets/${jay.data.ticket_no}?k=${jay.data.tracking_token}`)).data : null;
+  check('someone who joins a ticket staff typed in for a caller does not see the caller’s photo', !!wkKey && jay.data?.ticket_no === wk.ticket_no && !!jayPage && !JSON.stringify(jayPage).includes(wkKey) && !/Wendy|staff room/.test(JSON.stringify(jayPage))
+    && jayPage.events.some(e => e.event_type === 'joined'), JSON.stringify(jay.data || jay.error));
+  const itn = await ok('a request between staff (Internal)', '/tickets', { token: T.pavan, method: 'POST', body: { channel: 'internal', service_id: ids.trans, subject: 'Internal: fuel theft suspected', description: 'Do not tell students.' } });
+  const before2 = (await q("SELECT count(*)::int n FROM notifications WHERE template_key='ticket_link'"))[0].n;
+  const il = await api(`/public/alpha/tickets/${itn.ticket_no}/link`, { method: 'POST', body: { email: 'pavan@example.com' } }); await sleep(500);
+  check('…is not on the public side at all: no status by its number, no link sent for its number and the staff member’s email', (await api(`/public/alpha/tickets/${itn.ticket_no}/status`)).status === 404 && il.status === 200
+    && (await q("SELECT count(*)::int n FROM notifications WHERE template_key='ticket_link'"))[0].n === before2 && /couldn't find/.test((await api('/public/alpha/bot', { method: 'POST', body: { q: itn.ticket_no } })).data.text));
+  check('the requester’s page gives a provider’s name, never the email address', (pp => pp.providers.length > 0 && pp.providers.every(x => x.name && !('email' in x)))((await api('/public/alpha/tickets/0001')).data));
+  const dv = await raise('alpha', elecBody('Divya', 'divya@join.example.com')), dvId = await idOf(dv.data?.ticket_no);
+  const hist = async tok => ((await api(`/tickets/${dvId}`, tok)).data.requestor_history || []).map(h => h.ticket_no);
+  check('a provider sees a requester’s other tickets only where they may open them (not another team’s)', !(await hist({ token: T.pavan })).includes(j1.data.ticket_no) && (await hist({ token: T.asha })).includes(j1.data.ticket_no), JSON.stringify([await hist({ token: T.pavan }), await hist({ token: T.asha })]));
   // --- targets ---
   const cal = (await q('SELECT work_end, work_days, timezone FROM tenants WHERE id=?', tidA))[0], [eh, em] = String(cal.work_end || '17:00').split(':').map(Number);
   const endOfDay = new Date(Date.parse(new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10) + 'T00:00:00Z') + (eh * 60 + em - 330) * 6e4).toISOString(); // closing time in India, 3 days on
@@ -1506,6 +1549,9 @@ try {
   const ct = (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, c1?.ticket_no))[0];
   check('a complaint is a normal ticket for the food service, with location, meal and category', ct?.service_id === fsvc.id && ct.meal === 'lunch' && ct.food_category === 'insect' && ct.food_location_id === L1 && ct.subject.includes('Insect'), JSON.stringify(c1));
   check('the same problem at the same mess today joins that ticket', c2?.ticket_no === c1.ticket_no && c2.merged && c2.affected_count === 2);
+  const c2page = (await api(`/public/alpha/tickets/${c2.ticket_no}?k=${c2.tracking_token}`)).data;
+  check('…and the second person is handed the key of their OWN report, not the first person’s', !!c2.tracking_token && c2.tracking_token !== c1.tracking_token && c1.tracking_token === ct.tracking_token
+    && c2page?.events.some(e => e.event_type === 'joined') && !c2page.events.some(e => e.event_type === 'created' && e.files?.length), JSON.stringify([c2.tracking_token === c1.tracking_token, c2page?.events.map(e => e.event_type)]));
   const c3 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fc', { category: 'other', files: PNGF }) })).data, c4 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fd', { category: 'other', files: PNGF }) })).data;
   check('"Something else" complaints never merge', c3.ticket_no !== c4.ticket_no && !c4.merged);
   check('the requestor gets the usual acknowledgement email', (await q("SELECT 1 FROM notifications WHERE template_key='created' AND ticket_id=? AND recipient='fa@food.example.com'", ct.id)).length === 1);
@@ -1702,9 +1748,22 @@ try {
   await stop(); const sm = await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
   const tpl = async () => JSON.parse((await q("SELECT value FROM app_settings WHERE key='mail_templates'"))[0].value);
   check('saved templates get “Latest updates” once (before the ticket details, or at the end); others are untouched', (await tpl()).status_in_progress.body === 'Hi {{requestor_name}},\nWe started.\n{{timeline}}\n{{ticket_details}}' && (await tpl()).status_rejected.body === 'Sorry.\n{{timeline}}' && (await tpl()).note.body === 'Plain note.' && /added to 2 saved email templates/.test(sm.out()), JSON.stringify(await tpl()));
-  await run("UPDATE app_settings SET value=? WHERE key='mail_templates'", JSON.stringify({ status_rejected: { subject: '[{{ticket_no}}] No', body: 'Sorry, no timeline here.' } }));
-  await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
+  await run("UPDATE app_settings SET value=? WHERE key='mail_templates'", JSON.stringify({ status_rejected: { subject: '[{{ticket_no}}] No', body: 'Sorry, no timeline here.' },
+    transferred_requestor: { subject: 'Moved', body: 'Hi {{requestor_name}},\nMoved.\n{{note}}\n{{progress}}' }, reminder: { subject: '[{{ticket_no}}] Reminder: {{note}}', body: 'Hi,\n{{note}}\n{{progress}}\n[[Open the ticket|{{staff_link}}]]' },
+    status_closed: { subject: 'Closed', body: 'Hi,\nDone.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}' }, note: { subject: 'x', body: 'My own wording.\n{{note}}' } }));
+  // …a ticket several people reported (one key for all of them, in all their old emails), and two people who had become one record through a shared phone number
+  const shared = (await q("SELECT t.id, t.tracking_token FROM tickets t WHERE EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id=t.id AND x.is_first=0) LIMIT 1"))[0];
+  const alone = (await q("SELECT t.id, t.tracking_token, t.requestor_id, tr.contact FROM tickets t JOIN ticket_requestors tr ON tr.ticket_id=t.id AND tr.is_first=1 WHERE NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id=t.id AND x.is_first=0) AND tr.contact LIKE '%@%' ORDER BY t.created_at LIMIT 1"))[0];
+  await run("UPDATE requestors SET name='Took Over', email='took.over@example.com' WHERE id=?", alone.requestor_id);
+  await run("DELETE FROM app_settings WHERE key IN ('migr_keys_v1','migr_requestors_v1','migr_mailtext_v2')");
+  await stop(); const sk = await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
   check('…and never again: an admin who takes the block out keeps it out', (await tpl()).status_rejected.body === 'Sorry, no timeline here.');
+  const tw = await tpl();
+  check('saved templates get the wording fixes once: the note in its box, the reminder’s note out of the subject, the reopen offer once; an admin’s own lines are left alone', tw.transferred_requestor.body === 'Hi {{requestor_name}},\nMoved.\n> {{note}}\n{{progress}}'
+    && tw.reminder.subject === '[{{ticket_no}}] Reminder: {{subject}}' && tw.reminder.body.includes('Status: {{status}}') && !tw.reminder.body.includes('{{progress}}') && !tw.status_closed.body.includes('Still not fixed') && tw.note.body === 'My own wording.\n{{note}}', JSON.stringify(tw));
+  const shared2 = (await q('SELECT tracking_token FROM tickets WHERE id=?', shared.id))[0], alone2 = (await q('SELECT t.tracking_token, r.email, r.id FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.id=?', alone.id))[0];
+  check('a ticket several people reported gets a new key once (old emails then lead each person to their own page); other tickets keep theirs', shared2.tracking_token !== shared.tracking_token && alone2.tracking_token === alone.tracking_token && /New keys for \d+ ticket/.test(sk.out()), sk.out().slice(-400));
+  check('a ticket whose requester record had been taken over through a shared phone number goes back to the person who raised it', alone2.email === alone.contact.toLowerCase() && alone2.id !== alone.requestor_id && /given back to the record/.test(sk.out()), JSON.stringify(alone2));
   if (tplBefore === undefined) await run("DELETE FROM app_settings WHERE key='mail_templates'"); else await run("UPDATE app_settings SET value=? WHERE key='mail_templates'", tplBefore);
   await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
 
@@ -1767,10 +1826,11 @@ async function uiSmoke(tok, id) {
     await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
     await visit('requestor ticket page (from the link in their email)', `/d/alpha/t/0001?k=${id.k1}`, null, '.stamps li');
-    await visit('a ticket link without its key asks for the email it was raised with, the number already filled in', '/d/alpha/t/0001', null, '#f #trem');
-    check('…typing that email opens the ticket', await js(`document.querySelector('#trem').value = 'r1@example.com'; document.querySelector('#f button').click();
-      for (let i = 0; i < 30 && !document.querySelector('.stamps li'); i++) await new Promise(r => setTimeout(r, 150));
-      return !!document.querySelector('.stamps li') && /[?&]k=/.test(location.hash) && document.querySelector('#trno') === null;`));
+    await visit('a ticket link without its key shows where the ticket stands, the number already filled in', '/d/alpha/t/0001', null, '#trres .stub');
+    check('…nothing anybody typed is on that screen', await js(`const t = document.querySelector('#trres').textContent; return /Electrical/.test(t) && !/Ria|Room 214|Ticket from/.test(t) && document.querySelector('#trno').value === '0001';`));
+    check('…and typing the email on the ticket sends the link there (the ticket does not open from the number and an email)', await js(`document.querySelector('#trem').value = 'r1@example.com'; document.querySelector('#f button').click();
+      for (let i = 0; i < 30 && !/Check your email/.test(document.querySelector('#trres')?.textContent || ''); i++) await new Promise(r => setTimeout(r, 150));
+      return /Check your email/.test(document.querySelector('#trres').textContent) && !/[?&]k=/.test(location.hash) && !document.querySelector('.stamps li');`));
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
     check('staff screens offer no guide card (the guide is for requestors)', !(await js("return !!document.querySelector('.guidecard')")));

@@ -170,7 +170,8 @@ export function food(d) {
       form_data: { food_category: b.category, food_category_label: foodCategory(b.category), meal, meal_label: ml.name, food_location: loc?.name || '' },
       files, idempotency_key: b.idempotency_key, merge: b.merge, seen_notices: b.seen_notices }, { channel: 'portal', actor: { type: 'requestor', name: str(b.name, 80) }, food: true });
     await run('UPDATE tickets SET food_location_id=?, meal=?, food_category=? WHERE id=? AND meal IS NULL', loc?.id || null, meal, b.category, t.id);
-    return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1,
+    // the key of this person's own report (never the first reporter's; none for a report that repeats one already on the ticket)
+    return { ticket_no: t.ticket_no, tracking_token: t.merged ? t.my_key : t.tracking_token, again: !!t.again, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1,
       queue: t.status === 'open' ? await queueInfo(t) : null }; // waiting in the team's daily queue: the screen says so, like any other ticket
   }));
 

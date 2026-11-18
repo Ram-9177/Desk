@@ -85,8 +85,11 @@ async function api(path, { method = 'GET', body, raw, quiet } = {}) {
   try {
     let r;
     // no answer at all is a connection problem, and is said so (not "Not found", not "No ticket with that number")
-    try { r = await fetch('/api' + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined }); }
-    catch { const e = new Error(navigator.onLine === false ? 'You are offline. Check your connection and try again.' : 'Could not reach ONE Desk. Check your connection and try again.'); e.offline = true; throw e; }
+    // …and a request that hangs is given up after a while (longer when photos travel with it), so nothing waits for ever
+    const payload = body ? JSON.stringify(body) : undefined, stop = new AbortController(), timer = setTimeout(() => stop.abort(), payload && payload.length > 200000 ? 180000 : 45000);
+    try { r = await fetch('/api' + path, { method, headers: h, body: payload, signal: stop.signal }); }
+    catch { const e = new Error(navigator.onLine === false ? 'You are offline. Check your connection and try again.' : stop.signal.aborted ? 'This is taking too long. Check your connection and try again.' : 'Could not reach ONE Desk. Check your connection and try again.'); e.offline = true; throw e; }
+    finally { clearTimeout(timer); }
     if (raw) return r;
     const j = await r.json().catch(() => ({}));
     if (r.status === 401 && S.token && !path.startsWith('/auth')) { logout(true); throw new Error('Session expired'); }
@@ -96,10 +99,13 @@ async function api(path, { method = 'GET', body, raw, quiet } = {}) {
 }
 // A form is sent once. While its save (or any other save from this page) is on its way, another tap on its button is
 // ignored: it used to save twice (two tickets, two notes, two emails). The form frees itself when the save has answered.
+// (preparing = photos being shrunk and read before the save starts: that can take seconds on a phone, and counts too.)
+let preparing = 0;
 document.addEventListener('submit', e => { const f = e.target; if (!(f instanceof HTMLFormElement) || f.dataset.fast !== undefined) return;
-  if (saving > 0 || f.dataset.sending) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  if (f.dataset.sending) { e.preventDefault(); e.stopImmediatePropagation(); return; } // a second tap on the same form
+  if (saving > 0 || preparing > 0) { e.preventDefault(); e.stopImmediatePropagation(); toast('Still saving the last thing… one moment, then tap again.'); return; } // another save is on its way: say so, never swallow the tap in silence
   f.dataset.sending = '1'; const t0 = Date.now();
-  const free = () => { if (!document.contains(f) || (saving === 0 && Date.now() - t0 >= 800) || Date.now() - t0 > 90000) delete f.dataset.sending; else setTimeout(free, 150); };
+  const free = () => { if (!document.contains(f) || (saving === 0 && preparing === 0 && Date.now() - t0 >= 800) || Date.now() - t0 > 200000) delete f.dataset.sending; else setTimeout(free, 150); };
   setTimeout(free, 150); }, true);
 // Photos go up as JPEG, at most 1920 px on the long side: a phone's 5–12 MB picture becomes a few hundred KB, and every
 // browser and email app can show it. What this browser can't open (HEIC in Chrome, say) goes up as it is; the server turns it into JPEG.
@@ -115,6 +121,7 @@ const shrinkPhoto = async f => {
 };
 const readFiles = async (inputs) => {
   const out = []; let total = 0;
+  preparing++; try {
   for (const inp of inputs) for (const f0 of inp.files) {
     const pic = /^image\//.test(f0.type) || /\.(heic|heif|avif|webp|bmp|tiff?)$/i.test(f0.name), f = pic ? await shrinkPhoto(f0) : f0;
     const heic = f === f0 && (/\.(heic|heif)$/i.test(f0.name) || /^image\/hei[cf]/.test(f0.type)), max = heic ? 12 : 5; // the server shrinks HEIC
@@ -124,6 +131,7 @@ const readFiles = async (inputs) => {
   }
   if (out.length > MAX_FILES) throw new Error(`You can attach at most ${MAX_FILES} photos. Please remove ${out.length - MAX_FILES}.`);
   return out;
+  } finally { preparing--; }
 };
 const fileButtons = (id) => `<div class="files">
   <label class="btn">${I('camera', 22)}Camera<input hidden type="file" accept="image/*" capture="environment" multiple data-source="camera" class="f-${id}"></label>
@@ -388,13 +396,11 @@ async function foodScreens(slug, tenant, svc, flow) {
         const body = { ...v, files: await readFiles(document.querySelectorAll('.f-food')) };
         let r; try { r = await api(`/public/${slug}/food/complaint`, { method: 'POST', body }); }
         catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; r = await api(`/public/${slug}/food/complaint`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
-        const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
         app.innerHTML = `<div class="wrap">${head('Ticket raised', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-          <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+          <div class="muted">${r.again ? 'This is already on your ticket. Its number is' : r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
           ${r.merged ? knownIssue(r.affected_count) : ''}${r.queue ? queueBox(r.queue) : `<p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>`}
-          <p class="muted small" style="margin:14px 0 30px">We also emailed these details to you.</p>
-          <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Track status</a></div></div></div>`;
-        $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
+          ${ticketLinks(slug, r, true)}</div></div>`;
+        wireTicketLinks(slug, r);
       } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
     return;
   }
@@ -455,16 +461,14 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
       let r; try { r = await api(`/public/${slug}/tickets`, { method: 'POST', body }); }
       catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; // confirm mode: the person says whether it is the same issue
         r = await api(`/public/${slug}/tickets`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
-      const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
       app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>${r.kind === 'suggestion' ? 'Suggestion sent' : 'Ticket raised'}</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I(r.kind === 'suggestion' ? 'idea' : 'check', 28)}</span>
-        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : r.again ? 'This is already on your ticket. Its number is' : r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
         <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
         ${r.merged ? knownIssue(r.affected_count) : ''}${queueBox(r.queue)}
         <p>${r.kind === 'suggestion' ? `It went to the ${esc(svc.name)} team. If they reply, we'll email you.` : `${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b>`}</p>
         ${r.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone && v.requestor_type !== 'student' ? ' · ' + esc(p.phone) : ''}</span>`).join('')}
-        <p class="muted small" style="margin:14px 0 30px">${v.email ? 'We also emailed these details to you.' : 'Save this link — it is your key to the ticket.'}</p>
-        <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Open ticket</a></div></div></div>`;
-      $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
+        ${ticketLinks(slug, r)}</div></div>`;
+      wireTicketLinks(slug, r);
       $('#cpn').onclick = () => navigator.clipboard.writeText(r.ticket_no).then(() => toast('Number copied'), () => toast(r.ticket_no));
     } catch (er) {
       if (er.code === 'DAILY_LIMIT') $('#err').innerHTML = `<div class="limitbox">${I('clock', 22)}<div><b>Daily ticket limit reached</b><div>${esc(cap(er.message.replace(/^Daily limit reached: /, '')))}</div></div></div>`;
@@ -473,21 +477,41 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
   };
 }
 
-// Track a ticket: its number and the email it was raised with. (The link in any email about the ticket opens it directly.)
-// no: a number already known (a ticket link without its key, or the bot's "Open ticket"), filled in for the person.
-async function track(slug, no = '') {
+// The buttons under "Ticket raised". The person who just raised (or joined) a ticket gets the link to their own page.
+// A report that repeats one already on the ticket gets no link here (typing an email does not prove it is yours): the
+// link is in the emails about that ticket.
+const ticketLinks = (slug, r, food) => r.tracking_token
+  ? `<p class="muted small" style="margin:14px 0 30px">We also emailed these details to you. The link below is your key to the ticket: keep it to yourself.</p>
+    <div class="row"><button type="button" class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" id="opn" href="#/d/${slug}/t/${r.ticket_no}?k=${encodeURIComponent(r.tracking_token)}">${food ? 'Track status' : 'Open ticket'}</a></div>`
+  : `<p class="muted small" style="margin:14px 0 30px">What you added has gone to the team. Open the ticket from the link in the emails about it, or use Track ticket.</p>
+    <div class="row"><a class="btn primary" href="#/d/${slug}/track">${I('search', 18)} Track ticket</a></div>`;
+const wireTicketLinks = (slug, r) => { if ($('#cp')) $('#cp').onclick = () => navigator.clipboard.writeText(`${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${encodeURIComponent(r.tracking_token)}`).then(() => toast('Link copied')); };
+// Track a ticket. The number shows where it stands (nothing anybody typed). The full ticket (notes, replies, photos) opens
+// only with its own link: the one in every email about it, or a new one sent to the email the ticket was raised with.
+// no: a number already known (a link without its key, the help chat's "Open ticket"); why: a line said first.
+async function track(slug, no = '', why = '') {
   document.body.className = '';
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Track a ticket</h1></div><form id="f" class="card">
-    <p class="muted small" style="margin-top:0">${no ? 'To open this ticket, enter the email you raised it with.' : 'Enter the ticket number and the email you raised it with.'} The link in any email about the ticket opens it directly.</p>
-    <label for="trno">Ticket number</label><input id="trno" name="no" required placeholder="0001" inputmode="numeric" class="mono" maxlength="20" value="${esc(/^[A-Za-z0-9-]{1,20}$/.test(no) ? no : '')}">
-    <label for="trem">Your email <small>(the one you raised it with)</small></label><input id="trem" name="email" type="email" required autocomplete="email" placeholder="you@example.com" maxlength="254">
-    <div class="err" id="err" role="alert"></div><p><button class="btn primary big">${I('search')} Find my ticket</button></p></form></div>`;
-  if (no) $('#trem').focus();
-  $('#f').onsubmit = async e => { e.preventDefault(); const v = formVals(e.target), btn = e.target.querySelector('button'); btn.disabled = true; $('#err').textContent = '';
-    try { const r = await api(`/public/${slug}/tickets/${encodeURIComponent(v.no.trim())}/open`, { method: 'POST', body: { email: v.email } });
-      const to = `#/d/${slug}/t/${r.ticket_no}?k=${encodeURIComponent(r.k)}`;
-      if (location.hash === to) route(); else location.hash = to;
-    } catch (er) { $('#err').textContent = er.message; btn.disabled = false; } };
+    ${why ? `<div class="limitbox" style="margin-top:0">${I('alert', 22)}<div>${esc(why)}</div></div>` : ''}
+    <label for="trno" style="margin-top:0">Ticket number</label><input id="trno" name="no" required placeholder="0001" inputmode="numeric" class="mono" maxlength="20" value="${esc(/^[A-Za-z0-9-]{1,20}$/.test(no) ? no : '')}">
+    <label for="trem">Your email <small>(to get the link that opens the full ticket)</small></label><input id="trem" name="email" type="email" autocomplete="email" placeholder="the email you raised it with" maxlength="254">
+    <div class="err" id="err" role="alert"></div><p><button class="btn primary big">${I('search')} Find my ticket</button></p>
+    <p class="muted small" style="margin-bottom:0">The number shows where the ticket stands. To read the replies or add a note, open it from the link in any email about it, or type your email here and we will send you the link.</p></form><div id="trres"></div></div>`;
+  const find = async () => { const f = $('#f'), n = f.no.value.trim(), email = f.email.value.trim(), btn = f.querySelector('button'); btn.disabled = true; $('#err').textContent = ''; $('#trres').innerHTML = '';
+    try {
+      let st; try { st = await api(`/public/${slug}/tickets/${encodeURIComponent(n)}/status`); }
+      catch (er) { throw er.status === 404 ? new Error('No ticket with that number. Check it in your email: it looks like 0042.') : er; }
+      const sug = st.kind === 'suggestion', where = sug ? (st.status === 'closed' ? 'Suggestion closed' : 'Suggestion received') : st.queue ? `In the queue · number ${st.queue.queue_no}` : STATUS_WORDS[st.status];
+      const when = sug ? '' : st.queue ? `Reaches the team on ${esc(st.queue.lands_on)}` : ACTIVE.includes(st.status) ? `Target by ${fmt(st.due_at)}${st.escalated ? ' · escalated for faster help' : ''}` : st.status === 'hold' ? (st.hold_due_at ? `Expected to resume by ${fmt(st.hold_due_at)}` : '') : st.closed_at ? fmt(st.closed_at) : '';
+      let sent = ''; if (email) sent = (await api(`/public/${slug}/tickets/${encodeURIComponent(n)}/link`, { method: 'POST', body: { email } })).message;
+      $('#trres').innerHTML = `<div class="stub left" style="margin-top:14px"><div class="mono muted small">${esc(st.ticket_no)}</div><h2 style="margin:4px 0 2px;font-size:20px">${esc(st.service)} ${pill(st.status)}</h2>
+        ${knownIssue(st.affected_count)}<div class="progress card" style="margin-top:12px;box-shadow:none"><div><b>${esc(where)}</b><div class="muted small">${when}</div></div></div>
+        ${sent ? `<div class="slabox" style="background:var(--ok-2);color:var(--ok);margin-top:12px">${I('mail', 20)}<div><b>Check your email</b><div class="small">${esc(sent)}</div></div></div>`
+          : `<p class="muted small" style="margin:12px 0 0">To read the replies or add a note, type your email above and tap Find my ticket again: we will send you the link.</p>`}</div>`;
+    } catch (er) { $('#err').textContent = er.message; }
+    btn.disabled = false; };
+  $('#f').onsubmit = e => { e.preventDefault(); find(); };
+  if (no && $('#trno').value) find(); // a link that came without its key: where the ticket stands shows at once
 }
 
 // A team that takes N tickets a day: past that, the ticket waits in the team's queue with a number and the day it reaches them
@@ -506,7 +530,11 @@ async function ticketPage(slug, no, q) {
   const key = q.get('k') ? { k: q.get('k') } : {};
   const qs = new URLSearchParams(key).toString();
   let t;
-  try { if (!key.k) throw new Error('no key'); t = await api(`/public/${slug}/tickets/${encodeURIComponent(no)}?${qs}`); } catch { return track(slug, no); } // without its key a ticket opens with the number and the email
+  try { if (!key.k) throw Object.assign(new Error('no key'), { status: 404 }); t = await api(`/public/${slug}/tickets/${encodeURIComponent(no)}?${qs}`); }
+  catch (er) { // a connection problem is said as one (with Try again); a link that does not open the ticket leads to Track, and says so
+    if (er.offline || (er.status && er.status !== 404)) { app.innerHTML = `<div class="wrap"><h1>${er.offline ? 'No connection' : 'Please try again'}</h1><p class="muted">${esc(er.message)}</p><p><button type="button" class="btn primary" id="retry">Try again</button></p></div>`;
+      $('#retry').onclick = () => route(); return; }
+    return track(slug, no, key.k ? 'This link did not open the ticket: it may be an old one. Type your email below and we will send you a new link.' : ''); }
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
