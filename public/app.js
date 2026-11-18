@@ -1278,6 +1278,11 @@ async function mailEvents(box) {
     Switch one off and it is recorded as "skipped" in the delivery log instead of being sent.</p>
     <div class="card brief-now"><div><b>Morning brief</b><div class="muted small">Every working day at 08:30 campus time: campus admins get the whole campus (counts and every open ticket, by team); each service provider gets only their own team's open tickets.</div></div>
       <button type="button" class="btn" id="briefNow">${I('send', 16)} Send this campus's brief now</button></div>
+    <form class="card brandf" id="brandF"><b>Brand lines in every email</b><div class="muted small">The header line goes in every email. The ONE strip and the welcome message go in emails to requesters (students, staff, parents…). Leave a box empty to hide that line.</div>
+      <label for="b_strap">Header line</label><input id="b_strap" name="brand_strap" maxlength="400" value="${esc(c.brand?.brand_strap ?? '')}">
+      <label for="b_one">ONE strip <small>(under the header)</small></label><textarea id="b_one" name="brand_one" rows="2" maxlength="400">${esc(c.brand?.brand_one ?? '')}</textarea>
+      <label for="b_wel">Welcome message <small>(at the bottom)</small></label><textarea id="b_wel" name="brand_welcome" rows="3" maxlength="400">${esc(c.brand?.brand_welcome ?? '')}</textarea>
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn primary" style="flex:0 0 auto">Save brand lines</button><button type="button" class="btn" id="brandDef" style="flex:0 0 auto">Use the standard text</button></div></form>
     <div class="card brief-now"><div><b>Ready-made reply sentences</b><div class="muted small">Sentences providers tap to answer in good English, for each step (work started, on hold, closed…). Set them for the whole campus, or differently for one team.</div></div>
       <button type="button" class="btn" id="phrEdit">${I('pencil', 16)} Edit sentences</button></div>
     <div class="tlist">${c.events.map(e => `<div class="trow" style="cursor:default"><label class="switch" title="Send this email"><input type="checkbox" data-ev="${e.key}" ${e.on ? 'checked' : ''}></label>
@@ -1294,6 +1299,9 @@ async function mailEvents(box) {
       <iframe style="width:100%;height:440px;border:1px solid var(--line);border-radius:12px;margin-top:10px"></iframe><p class="row"><button class="btn primary" value="ok">Close</button></p></form>`;
     document.body.append(d); d.querySelector('iframe').srcdoc = r.html; d.showModal(); d.onclose = () => d.remove(); });
   if ($('#phrEdit')) $('#phrEdit').onclick = () => phraseEditor();
+  if ($('#brandF')) { const bf = $('#brandF');
+    bf.onsubmit = async e => { e.preventDefault(); try { await api('/mail/config', { method: 'PUT', body: { brand: { brand_strap: bf.brand_strap.value, brand_one: bf.brand_one.value, brand_welcome: bf.brand_welcome.value } } }); toast('Brand lines saved. Every new email uses them.'); } catch (er) { toast(er.message); } };
+    $('#brandDef').onclick = () => { const d = c.brand_defaults || {}; bf.brand_strap.value = d.brand_strap || ''; bf.brand_one.value = d.brand_one || ''; bf.brand_welcome.value = d.brand_welcome || ''; toast('Standard text filled in. Save to use it.'); }; }
   if ($('#briefNow')) $('#briefNow').onclick = async e => { e.target.disabled = true; try { const r = await api('/digest/send', { method: 'POST' }); toast(`Morning brief sent: ${r.sent} email${r.sent === 1 ? '' : 's'}. See the delivery log.`, 5000); } catch (er) { toast(er.message); } e.target.disabled = false; };
   box.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => templateEditor(c, c.events.find(e => e.key === b.dataset.ed), () => mailEvents(box)));
 }

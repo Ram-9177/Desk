@@ -50,22 +50,22 @@ export const MAIL_EVENTS = [
     body: 'A new ticket has arrived in **{{service}}**. Target: {{due}}.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },
   { key: 'status_in_progress', label: 'Work started', who: 'Requestor', when: 'A provider starts working on it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Work has started on your ticket',
-    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". We have started working on it.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". We have started working on it.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
   { key: 'status_hold', label: 'Ticket on hold', who: 'Requestor', when: 'A provider puts it on hold', vars: [...T, 'note', 'actor_name', 'hold_reason', 'resume_by'],
     subject: '[{{ticket_no}}] Your ticket is on hold',
-    body: 'Hi {{requestor_name}},\nThank you for your patience. Your ticket "{{subject}}" is on hold for a short while ({{hold_reason}}); we will resume by {{resume_by}}.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for your patience. Your ticket "{{subject}}" is on hold for a short while ({{hold_reason}}); we will resume by {{resume_by}}.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_open', label: 'Work resumed', who: 'Requestor', when: 'A hold ends', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Work has resumed on your ticket',
-    body: 'Hi {{requestor_name}},\nGood news: work on "{{subject}}" has resumed.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nGood news: work on "{{subject}}" has resumed.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_closed', label: 'Ticket closed', who: 'Requestor', when: 'A provider closes it', vars: [...T, 'note', 'actor_name', 'reopen_days'],
     subject: '[{{ticket_no}}] Your ticket is closed',
-    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n{{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_rejected', label: 'Ticket rejected', who: 'Requestor', when: 'A provider rejects it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket could not be accepted',
-    body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n{{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n> {{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
   { key: 'note', label: 'Update from the provider', who: 'Requestor', when: 'A provider adds a public note', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] New update on your ticket',
-    body: 'Hi {{requestor_name}},\nHere is an update on "{{subject}}".\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}' },
+    body: 'Hi {{requestor_name}},\nHere is an update on "{{subject}}".\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}' },
   { key: 'reopen_requested', label: 'Reopen requested', who: 'Provider who closed it', when: 'The requestor asks to reopen a closed ticket (they accept or decline)', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Reopen requested: {{subject}}',
     body: '{{actor_name}} asks to reopen "{{subject}}", which you closed.\nReason: {{note}}\nOpen the ticket to accept (it reopens with a fresh target) or decline (it stays closed). You can reply with a note first.\n[[Accept or decline|{{staff_link}}]]\n{{timeline}}' },
@@ -194,7 +194,20 @@ export const eventOn = (cfg, key) => cfg.events[key] !== false;
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // Branded, email-client-safe HTML (tables + inline styles). Lines ending in a link become a button.
-export function renderEmail({ subject, body, campus, blocks = {} }) {
+// Brand lines in every email (Email page → Brand): a strap under the header for everyone; for requesters also the
+// ONE strip and the welcome message at the bottom. Empty = not shown.
+export const BRAND_DEFAULTS = {
+  brand_strap: 'Learn · Live · Grow',
+  brand_one: 'ONE = Own · Navigate · Ensure. We own your request, navigate it to the right team, and ensure it is resolved.',
+  brand_welcome: "Welcome to ONE DESK, St. Mary's own student service centre. We are always working to elevate your academic and learning experience, and to help every student grow into a life-ready professional.",
+};
+export const brandOf = () => { const s = getSettings(); return Object.fromEntries(Object.keys(BRAND_DEFAULTS).map(k => [k, s[k] ?? BRAND_DEFAULTS[k]])); };
+export function renderEmail({ subject, body, campus, blocks = {}, requester = false }) {
+  const br = brandOf(), site = String(getSettings().public_base_url || process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+  const logo = /^https:\/\//.test(site) || /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(site + "/") ? `${site}/logo.png` : ''; // the university logo, from the site's public address (needs https so mail apps load it)
+  // "ONE = Own · …": the capitals O, N, E and the first word stand out
+  const oneHtml = esc(br.brand_one).replace(/^(ONE)\b/, '<b style="color:#b45309">$1</b>').replace(/\b(Own|Navigate|Ensure)\b/g, m => `<b style="color:#b45309">${m[0]}</b>${m.slice(1)}`);
+  const welcomeHtml = esc(br.brand_welcome).replace(/^(.+?[A-Za-z]{4,}[.!?])(?=\s|$)/, '<b style="color:#1e4b8f">$1</b>'); // first sentence in bold ("St." is not an end)
   const m = /^\[([^\]]+)\]\s*(.*)$/.exec(subject || ''), ref = m?.[1], title = m ? m[2] : subject;
   const bold = h => h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
   // [[Text|link]] inside a sentence becomes a plain link (alone on its line it is a button)
@@ -204,6 +217,8 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
     if (blk && BLOCKS.includes(blk)) return blocks[blk] ? BLOCK_HTML[blk](blocks[blk]) : '';
     const btn = /^\s*\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]\s*$/.exec(line);
     if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
+    const q = /^\s*&gt;\s?(.*)$/.exec(esc(line)); // "> text": the provider's note, in a highlighted box
+    if (q) return q[1].trim() ? `<div style="margin:12px 0 14px;padding:12px 14px;background:#EEF4FF;border-left:4px solid #1D4ED8;border-radius:0 10px 10px 0;line-height:1.55">${links(bold(q[1]))}</div>` : '';
     const kv = /^([A-Z][A-Za-z ]{1,24}):\s+(.+)$/.exec(line);
     if (kv) return `<p style="margin:6px 0"><span style="color:#8b8fa8">${esc(kv[1])}:</span> <b${/password|ticket/i.test(kv[1]) ? ' style="font-family:Consolas,monospace;font-size:16px"' : ''}>${bold(esc(kv[2]))}</b></p>`;
     return `<p style="margin:0 0 10px;line-height:1.55">${links(bold(esc(line)))}</p>`;
@@ -211,9 +226,12 @@ export function renderEmail({ subject, body, campus, blocks = {} }) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f3f4fb;font-family:'Segoe UI',Arial,sans-serif;color:#1c1d2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4fb;padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eceef5">
-<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}</td></tr>
+${logo ? `<tr><td style="background:#ffffff;padding:16px 24px 12px"><img src="${esc(logo)}" width="150" alt="St. Mary's Rehabilitation University" style="display:block;width:150px;max-width:150px;height:auto;border:0"></td></tr>` : ''}
+<tr><td style="background:#1e4b8f;padding:18px 24px;color:#ffffff;font-size:16px;font-weight:700;border-bottom:4px solid #f29a1f">ONE DESK${campus ? `<span style="font-weight:400;opacity:.85"> · ${esc(campus)}</span>` : ''}${br.brand_strap ? `<div style="margin-top:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#f8c77a">${esc(br.brand_strap)}</div>` : ''}</td></tr>
+${requester && br.brand_one ? `<tr><td style="background:#fff8ec;border-bottom:1px solid #fde3b7;padding:9px 24px;font-size:12.5px;line-height:1.5;color:#7a4b05">${oneHtml}</td></tr>` : ''}
 <tr><td style="padding:24px 24px 10px">${ref && !/^(ONE Desk|Digest|Morning brief)$/.test(ref) ? `<div style="font:700 12px Consolas,monospace;color:#8b8fa8;letter-spacing:.5px">TICKET ${esc(ref)}</div>` : ''}
 <h1 style="font-size:20px;line-height:1.3;margin:6px 0 16px">${esc(title)}</h1>${html}</td></tr>
+${requester && br.brand_welcome ? `<tr><td style="padding:6px 24px 18px"><div style="padding:14px 16px;border-radius:12px;background:#f6f7fb;border:1px solid #eceef5;font-size:13px;line-height:1.55;color:#475467">${welcomeHtml}</div></td></tr>` : ''}
 <tr><td style="padding:14px 24px;background:#fafbfe;color:#8b8fa8;font-size:12px;line-height:1.5">Automated message from the St. Mary's Group service desk. Please don't reply to this email; use the ticket link to add a note.</td></tr>
 </table></td></tr></table></body></html>`;
 }

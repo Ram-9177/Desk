@@ -794,3 +794,4 @@ dialog.prev{width:min(640px,96vw);max-height:92vh;overflow:auto;padding:18px}
 .pv-mail iframe{width:100%;height:440px;border:0;display:block;background:#f3f4fb}
 .pv-acts{display:flex;gap:8px;margin-top:12px;position:sticky;bottom:-18px;background:#fff;padding:10px 0 4px}.pv-acts .btn{flex:1}.pv-acts .primary{flex:2}
 .typed{margin-top:4px;font-style:italic}
+.brandf{margin:10px 0 14px}

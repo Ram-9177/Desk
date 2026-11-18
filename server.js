@@ -9,7 +9,7 @@ import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME } from './images.js';
-import { PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
+import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
 
@@ -204,7 +204,7 @@ async function notify(t, recipients, key, vars = {}, { hold } = {}) { // hold: w
   if (eventByKey(key)?.who === 'Requestor') vars = forRequestor(vars); // the priority is the team's own call: requestors never see it
   const v = { login_link: `${base()}/#/login`, ...vars }, { subject, body } = renderTemplate(cfg, key, v);
   const blocks = Object.fromEntries(BLOCKS.filter(b => v[b]).map(b => [b, v[b]]));
-  const html = renderEmail({ subject, body, campus: t.tenant_id ? (await tenantRow(t.tenant_id))?.name : '', blocks }), text_body = toText(body, blocks);
+  const html = renderEmail({ subject, body, campus: t.tenant_id ? (await tenantRow(t.tenant_id))?.name : '', blocks, requester: eventByKey(key)?.who === 'Requestor' }), text_body = toText(body, blocks);
   for (const to of [...new Set(recipients.filter(Boolean))]) {
     const id = uid();
     await insert('notifications', { id, tenant_id: t.tenant_id, ticket_id: t.id || null, recipient: to, template_key: key,
@@ -1333,7 +1333,7 @@ S.post('/tickets/:id/preview', wrap(async req => {
   const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }) });
   const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name;
   const { subject, body } = renderTemplate(cfg, key, v), blocks = Object.fromEntries(BLOCKS.filter(x => v[x]).map(x => [x, v[x]]));
-  return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || '', subject, html: renderEmail({ subject, body, campus: tn.name, blocks }), sends: !!rq?.email && eventOn(cfg, key) };
+  return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || '', subject, html: renderEmail({ subject, body, campus: tn.name, blocks, requester: true }), sends: !!rq?.email && eventOn(cfg, key) };
 }));
 // ---------- ready-made reply sentences (good English with one tap), per campus and optionally per team ----------
 const REPLY_STEPS = { in_progress: 'Work started', hold: 'On hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected', note: 'Reply / update' };
@@ -1453,7 +1453,7 @@ const maskKey = k => k ? '•'.repeat(Math.max(0, Math.min(12, k.length - 4))) +
 M.get('/config', superOnly, wrap(async () => {
   const c = mailConfig(BASE);
   const stats = Object.fromEntries((await all("SELECT status, count(*) n FROM notifications WHERE created_at >= ? GROUP BY status", addH(now(), -24 * 7))).map(r => [r.status, r.n]));
-  return { url: c.url, key_masked: maskKey(c.key), has_key: !!c.key, base: c.base, sending: c.sending, last_ok_at: c.last_ok_at, stats,
+  return { brand: brandOf(), brand_defaults: BRAND_DEFAULTS, url: c.url, key_masked: maskKey(c.key), has_key: !!c.key, base: c.base, sending: c.sending, last_ok_at: c.last_ok_at, stats,
     vars: VARS, events: MAIL_EVENTS.map(e => ({ key: e.key, label: e.label, who: e.who, when: e.when, on: eventOn(c, e.key), vars: e.vars,
       ...templateFor(c, e.key), default_subject: e.subject, default_body: e.body, custom: !!c.templates[e.key] })) };
 }));
@@ -1468,6 +1468,7 @@ M.put('/config', superOnly, wrap(async req => {
   if (b.key) { if (String(b.key).length < 16) throw bad('Use a secret key of at least 16 characters'); await setSetting('pa_key', String(b.key).trim()); }
   if (b.base !== undefined) { const u = String(b.base).trim().replace(/\/+$/, ''); if (!/^https?:\/\/\S+$/.test(u)) throw bad('The public address must start with http:// or https://'); await setSetting('public_base_url', u); }
   if (b.sending !== undefined) await setSetting('mail_enabled', b.sending ? '1' : '0');
+  if (b.brand) for (const k of Object.keys(BRAND_DEFAULTS)) if (b.brand[k] !== undefined) { const v = String(b.brand[k]).replace(/\s+/g, ' ').trim(); if (v.length > 400) throw bad('Each brand line: at most 400 characters'); await setSetting(k, v); }
   if (b.events) await setSetting('mail_events', JSON.stringify({ ...c.events, ...Object.fromEntries(Object.entries(b.events).map(([k, v]) => [k, !!v])) }));
   await audit(req, 'mail.config', 'settings', null, { ...b, key: b.key ? '(changed)' : undefined }); return { ok: true };
 }));
@@ -1504,7 +1505,7 @@ M.post('/preview', superOnly, (req, res) => {
   const e = eventByKey(req.body.key); if (!e) return res.status(404).end();
   const t = { ...templateFor(mailConfig(BASE), e.key), ...(req.body.subject != null ? { subject: req.body.subject } : {}), ...(req.body.body != null ? { body: req.body.body } : {}) };
   const sv = sampleVars(base(), e.key), r = renderTemplate({ templates: { [e.key]: t } }, e.key, sv);
-  res.json({ data: { subject: r.subject, html: renderEmail({ subject: r.subject, body: r.body, campus: SAMPLE_CAMPUS, blocks: sv }), unknown: unknownVars(t.subject + '\n' + t.body, e.vars) } });
+  res.json({ data: { subject: r.subject, html: renderEmail({ subject: r.subject, body: r.body, campus: SAMPLE_CAMPUS, blocks: sv, requester: e.who === 'Requestor' }), unknown: unknownVars(t.subject + '\n' + t.body, e.vars) } });
 });
 M.get('/log', wrap(async req => {
   const w = [], a = [];

@@ -854,7 +854,15 @@ try {
   await ok('admin sets Electrical’s own closing sentences (tidied on save)', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: elec, phrases: { closed: ['fuse replaced, power is back', 'MCB reset done'] } } });
   const ph2 = (await api('/reply-phrases?service=' + elec, { token: T.pavan })).data;
   check('the team sees its own list; other steps fall back to the campus list', ph2.phrases.closed[0] === 'Fuse replaced, power is back.' && ph2.phrases.hold.length >= 3, JSON.stringify(ph2.phrases.closed));
-  await ok('back to the campus list', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: elec, reset: true } }); }
+  await ok('back to the campus list', '/reply-phrases', { token: T.asha, method: 'PUT', body: { scope: elec, reset: true } });
+  const rq = (await q("SELECT html FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 1", tk.id))[0].html;
+  const st = (await q("SELECT html FROM notifications WHERE template_key='new_ticket' ORDER BY created_at DESC LIMIT 1"))[0].html;
+  check('requester emails carry the brand: Learn · Live · Grow, the ONE strip and the welcome message', rq.includes('Learn · Live · Grow') && /Own<\/b>|>O<\/b>wn/.test(rq) && rq.includes('elevate your academic and learning experience'));
+  check('staff emails carry only the header line', st.includes('Learn · Live · Grow') && !st.includes('elevate your academic') && !st.includes('navigate it to the right team'));
+  await ok('the super admin edits the welcome message', '/mail/config', { token: T.sa, method: 'PUT', body: { brand: { brand_welcome: 'Welcome to ONE DESK. Test line.' } } });
+  await ok('another note', `/tickets/${tk.id}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Checked again.', approved: true } });
+  check('…and the next email uses it', (await q("SELECT html FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 1", tk.id))[0].html.includes('Test line.'));
+  await ok('(back to the standard text)', '/mail/config', { token: T.sa, method: 'PUT', body: { brand: { brand_welcome: "Welcome to ONE DESK, St. Mary's own student service centre. We are always working to elevate your academic and learning experience, and to help every student grow into a life-ready professional." } } }); }
 
   sec('Forgot password: a temporary password by email');
   { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
