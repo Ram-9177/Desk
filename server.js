@@ -204,7 +204,7 @@ async function notify(t, recipients, key, vars = {}, { hold } = {}) { // hold: w
   if (eventByKey(key)?.who === 'Requestor') vars = forRequestor(vars); // the priority is the team's own call: requestors never see it
   const v = { login_link: `${base()}/#/login`, ...vars }, { subject, body } = renderTemplate(cfg, key, v);
   const blocks = Object.fromEntries(BLOCKS.filter(b => v[b]).map(b => [b, v[b]]));
-  const html = renderEmail({ subject, body, campus: t.tenant_id ? (await tenantRow(t.tenant_id))?.name : '', blocks, requester: eventByKey(key)?.who === 'Requestor' }), text_body = toText(body, blocks);
+  const html = renderEmail({ subject, body, campus: t.tenant_id ? (await tenantRow(t.tenant_id))?.name : '', blocks, requester: eventByKey(key)?.who === 'Requestor' }), text_body = toText(body, blocks, eventByKey(key)?.who === 'Requestor');
   for (const to of [...new Set(recipients.filter(Boolean))]) {
     const id = uid();
     await insert('notifications', { id, tenant_id: t.tenant_id, ticket_id: t.id || null, recipient: to, template_key: key,
@@ -225,12 +225,14 @@ async function queueInfo(t) {
 const queueNote = q => q ? `${q.service} takes ${q.daily_cap} tickets a day and today's are full, so your ticket is in the queue. Queue number: ${q.queue_no}`
   + ` (${q.ahead ? `${q.ahead} ticket${q.ahead === 1 ? '' : 's'} ahead of you` : 'you are next'}). It reaches the team on ${q.lands_on}.` : '';
 // Everything a ticket email can show; `extra` adds the values for one step (note, hold reason…).
-async function ticketVars(t, extra = {}) {
+// sim = { ticket, event }: a change that is about to happen (the reply preview shows the email as it will be once it is saved)
+async function ticketVars(t, extra = {}, sim = null) {
   t = await one('SELECT * FROM tickets WHERE id=?', t.id) || t;
+  if (sim?.ticket) t = { ...t, ...sim.ticket };
   const tn = await tenantRow(t.tenant_id), svc = await one('SELECT name FROM services WHERE id=?', t.service_id), r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
   const svcRow = await one('SELECT name, form_schema FROM services WHERE id=?', t.service_id), fd = JSON.parse(t.form_data || '{}'), held = t.status === 'hold';
   const answers = fieldsOf(JSON.parse(svcRow?.form_schema || '{}')).filter(f => !f.key.startsWith('loc_')).map(f => [f.label, Array.isArray(fd[f.key]) ? fd[f.key].join(', ') : fd[f.key]]).filter(([, a]) => a !== undefined && a !== '');
-  const provNames = (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', ');
+  const provs = await providersFor(t.tenant_id, t.service_id), provNames = provs.map(p => p.name).join(', ');
   const escName = t.escalated_to ? (await one('SELECT name FROM users WHERE id=?', t.escalated_to))?.name || '' : '';
   const q = t.status === 'open' ? await queueInfo(t) : null;
   const sug = t.kind === 'suggestion';
@@ -245,18 +247,27 @@ async function ticketVars(t, extra = {}) {
   const pics = id => files.filter(f => f.event_id === id && Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
   const first = await one("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='created' ORDER BY id LIMIT 1", t.id);
   if (first && pics(first.id).length) ticket_details.push(['Photos', pics(first.id)]);
-  const SW = { hold: 'Put on hold', in_progress: 'Work started', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
-  const timeline = (await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)).map(e => {
-    const m = JSON.parse(e.meta || '{}'), who = e.actor_name || '';
-    const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', landed: `Reached the ${e.to_value} team`, note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
-      status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
-    return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), label, body: e.body || '',
-      photos: e.event_type === 'created' ? [] : pics(e.id) };
-  });
+  // Latest updates: the last 5 the requester may see, newest first. Each says who did it, what happened (coloured by step) and the note.
+  const SW = { hold: 'On hold', in_progress: 'Work started', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
+  const TONE = { created: '#17B26A', landed: '#2E90FA', escalated: '#D92D20', hold: '#F79009', in_progress: '#7A5AF8', open: '#7A5AF8', closed: '#039855', rejected: '#667085',
+    note: '#1e4b8f', reopened: '#0E9384', reopen_requested: '#0E9384', reopen_declined: '#667085', transferred: '#6172F3' };
+  const evs = [...(sim?.event ? [sim.event] : []), ...await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)];
+  const inTeam = new Set(provs.map(p => p.id));
+  const timeline = { more: evs.length > 5, ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`, items: evs.slice(0, 5).map(e => {
+    const m = JSON.parse(e.meta || '{}'), staff = e.actor_type === 'user', st = e.event_type === 'status_changed';
+    const title = { created: 'Ticket received', landed: `Reached the ${e.to_value} team`, escalated: `Escalated to ${e.to_value}`, note: staff ? 'Reply from the team' : 'Note added', reopened: 'Reopened',
+      reopen_requested: 'Asked to reopen', reopen_declined: 'Kept closed', transferred: `Moved to the ${e.to_value} team`,
+      status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type.replace(/_/g, ' ');
+    const auto = /^Escalated automatically: the ticket passed (.+?)\.?$/.exec(e.body || ''); // rows written before the wording changed
+    return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), title, tone: e.event_type === 'note' && !staff ? '#0BA5EC' : TONE[st ? e.to_value : e.event_type] || '#1e4b8f',
+      by: staff || e.actor_type === 'requestor' ? { id: e.actor_id || (!staff && e.event_type === 'created' ? t.requestor_id : null), name: e.actor_name || '', requestor: !staff, team: staff && inTeam.has(e.actor_id) ? svc?.name || '' : '' } : null,
+      body: ['created', 'landed'].includes(e.event_type) ? '' : auto ? `The ticket passed ${auto[1]}, so a senior officer is now following it up.` : e.body || '',
+      photos: e.event_type === 'created' || !e.id ? [] : pics(e.id) };
+  }) };
   return { progress, ticket_details, timeline, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
     requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), kind: sug ? 'Suggestion' : 'Ticket', due: sug ? 'No target (suggestion)' : fmtIST(t.due_at),
-    providers: (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', '), ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
+    providers: provNames, ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, queue_no: q?.queue_no ?? '', lands_on: q?.lands_on || '', queue_note: queueNote(q), ...extra };
 }
 const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' };
@@ -363,7 +374,7 @@ async function escalate(t) {
   const ts = now(), missed = t.status === 'hold' ? `its hold limit of ${fmtIST(t.hold_due_at)}` : `its target of ${fmtIST(t.due_at)}`;
   const done = await tx(async () => {
     if (!(await run('UPDATE tickets SET escalated_at=?, escalated_to=?, updated_at=? WHERE id=? AND escalated_at IS NULL', ts, target.id, ts, t.id)).changes) return false;
-    await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'escalated', { to: officers.length ? officers.map(o => o.name).join(', ') : target.name, body: `Escalated automatically: the ticket passed ${missed}.` });
+    await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'escalated', { to: officers.length ? officers.map(o => o.name).join(', ') : target.name, body: `The ticket passed ${missed}, so a senior officer is now following it up.` });
     return true;
   });
   if (!done) return;
@@ -554,8 +565,9 @@ async function joinTicket(t, r, b, contact, actor, ts) {
 }
 // One email per person who reported the ticket, each greeted by name. A long list goes out after the reply (the outbox sends it).
 async function notifyRequestors(t, key, vars) {
-  const list = await all("SELECT name, contact FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
-  const send = async () => { for (const r of list) await notify(t, [r.contact], key, { ...vars, requestor_name: r.name }); };
+  const list = await all("SELECT name, contact, requestor_id FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
+  // reader: in "Latest updates" this person's own steps read "You"
+  const send = async () => { for (const r of list) await notify(t, [r.contact], key, { ...vars, requestor_name: r.name, timeline: vars.timeline && { ...vars.timeline, reader: r.requestor_id } }); };
   if (list.length <= 25) return send();
   send().catch(e => console.error('requestor emails', e.message));
 }
@@ -987,11 +999,20 @@ S.delete('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req =>
   if (n) throw new HttpErr(409, 'IN_USE', `${s.name} has ${n} ticket${n === 1 ? '' : 's'}, so it can't be deleted. Deactivate it instead: it leaves the portal and its tickets stay.`);
   const subs = await all('SELECT name FROM services WHERE parent_id=?', s.id);
   if (subs.length) throw new HttpErr(409, 'IN_USE', `${s.name} has sub-teams (${subs.map(x => x.name).join(', ')}). Move or delete them first.`);
+  // the team's notices (and their files) go with it: a notice belongs to its team
+  const files = await all('SELECT f.storage_key FROM notice_files f JOIN notices x ON x.id=f.notice_id WHERE x.service_id=?', s.id);
+  const notices = (await one('SELECT count(*)::int n FROM notices WHERE service_id=? AND deleted_at IS NULL', s.id)).n;
   await tx(async () => {
+    await run('DELETE FROM notice_files WHERE notice_id IN (SELECT id FROM notices WHERE service_id=?)', s.id);
+    await run('DELETE FROM notices WHERE service_id=?', s.id);
     for (const t of ['service_members', 'service_escalations', 'sla_policies']) await run(`DELETE FROM ${t} WHERE service_id=?`, s.id);
     await run('DELETE FROM services WHERE id=?', s.id);
+    // ready-made reply sentences saved for this team
+    const tn = await one('SELECT reply_phrases FROM tenants WHERE id=?', req.tenantId), p = phrasesOf(tn || {});
+    if (p[s.id]) { delete p[s.id]; await run('UPDATE tenants SET reply_phrases=? WHERE id=?', JSON.stringify(p), req.tenantId); }
   });
-  await audit(req, 'service.delete', 'service', s.id, { code: s.code, name: s.name }); return { ok: true };
+  for (const f of files) fs.rm(path.join(UPLOAD_DIR, f.storage_key), { force: true }, () => {});
+  await audit(req, 'service.delete', 'service', s.id, { code: s.code, name: s.name, notices }); return { ok: true, notices };
 }));
 S.put('/services/:id/members', role('super_admin', 'tenant_admin'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
@@ -1379,10 +1400,18 @@ S.post('/tickets/:id/preview', wrap(async req => {
   const fixed = b.text_as_is ? { text: String(raw).trim(), changes: [] } : polish(raw, { keep: await keepWords(t) });
   const to = b.to === t.status || !b.to ? 'note' : b.to;
   const key = to === 'note' ? 'note' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
+  // the ticket and its newest update as they will be once this is saved, so the progress tracker and "Latest updates" match the real email
+  const ts = now(), after = { status: to === 'note' ? t.status : to }, meta = {};
   let extra = {};
-  if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0]; extra = { hold_reason: hr?.label || '', resume_by: hr ? fmtIST(await dueFrom(t.tenant_id, now(), hr.hours * 60)) : '' }; }
-  const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }) });
-  const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name;
+  if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0], hdue = hr ? await dueFrom(t.tenant_id, ts, hr.hours * 60) : null;
+    extra = { hold_reason: hr?.label || '', resume_by: hdue ? fmtIST(hdue) : '' }; Object.assign(after, { hold_reason: hr?.key || null, hold_due_at: hdue, hold_started_at: ts }); if (hr) meta.hold_reason = hr.label; }
+  else if (to !== 'note') {
+    if (t.status === 'hold') { const cal = await calOf(t.tenant_id); Object.assign(after, { due_at: t.due_at ? addWorking(cal, t.due_at, workingBetween(cal, t.hold_started_at, ts)) : null, hold_reason: null, hold_due_at: null, hold_started_at: null }); }
+    if (to === 'closed' || to === 'rejected') after.closed_at = ts;
+  }
+  const event = { event_type: to === 'note' ? 'note' : 'status_changed', from_value: t.status, to_value: to === 'note' ? null : to, actor_type: 'user', actor_id: req.user.id, actor_name: req.user.name, body: fixed.text, meta: JSON.stringify(meta), created_at: ts };
+  const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }, { ticket: after, event }) });
+  const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name; v.timeline = { ...v.timeline, reader: t.requestor_id };
   const { subject, body } = renderTemplate(cfg, key, v), blocks = Object.fromEntries(BLOCKS.filter(x => v[x]).map(x => [x, v[x]]));
   return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || '', subject, html: renderEmail({ subject, body, campus: tn.name, blocks, requester: true }), sends: !!rq?.email && eventOn(cfg, key) };
 }));

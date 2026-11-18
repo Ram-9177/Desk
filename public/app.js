@@ -992,7 +992,7 @@ async function services(main) {
       async () => { await api('/services/' + s.id, { method: 'PATCH', body: { is_active: off ? 0 : 1 } }); toast(off ? 'Service deactivated' : 'Service activated'); services(main); })
       .querySelector('button[value=ok]').textContent = off ? 'Deactivate' : 'Activate'; });
   main.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const s = svcs.find(x => x.id === b.dataset.del);
-    const d = dlg(`<h2>Delete ${esc(s.name)}?</h2><p class="muted">This removes the service, its providers list, escalation officers and SLA for good. Only a service that never had a ticket can be deleted; otherwise deactivate it.</p>`,
+    const d = dlg(`<h2>Delete ${esc(s.name)}?</h2><p class="muted">This removes the service, its providers list, escalation officers, SLA and notices for good. Only a service that never had a ticket can be deleted; otherwise deactivate it.</p>`,
       async () => { await api('/services/' + s.id, { method: 'DELETE' }); toast('Service deleted'); services(main); });
     const ok = d.querySelector('button[value=ok]'); ok.textContent = 'Delete'; ok.classList.add('danger-solid'); });
   main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => {

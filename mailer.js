@@ -44,13 +44,13 @@ export const MAIL_EVENTS = [
     body: 'Hi {{requestor_name}},\nThank you, we have received your request for the {{service}} team. You don\'t need to do anything else.\n**{{affected_note}}**\n**{{queue_note}}**\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}\n{{guide}}' },
   { key: 'queue_landed', label: 'Ticket reached the team (from the queue)', who: 'Requestor', when: 'A ticket that waited in the team’s daily queue reaches the team', vars: T,
     subject: '[{{ticket_no}}] Your ticket has reached the {{service}} team',
-    body: 'Hi {{requestor_name}},\nYour wait in the queue is over: "{{subject}}" is now with the **{{service}}** team, who will pick it up shortly.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nYour wait in the queue is over: "{{subject}}" is now with the **{{service}}** team, who will pick it up shortly.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
   { key: 'new_ticket', label: 'New ticket in the queue', who: 'Service providers', when: 'A ticket arrives in their service', vars: T,
     subject: '[{{ticket_no}}] New ticket: {{subject}}',
     body: 'A new ticket has arrived in **{{service}}**. Target: {{due}}.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}' },
   { key: 'status_in_progress', label: 'Work started', who: 'Requestor', when: 'A provider starts working on it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Work has started on your ticket',
-    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". We have started working on it.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". We have started working on it.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_hold', label: 'Ticket on hold', who: 'Requestor', when: 'A provider puts it on hold', vars: [...T, 'note', 'actor_name', 'hold_reason', 'resume_by'],
     subject: '[{{ticket_no}}] Your ticket is on hold',
     body: 'Hi {{requestor_name}},\nThank you for your patience. Your ticket "{{subject}}" is on hold for a short while ({{hold_reason}}); we will resume by {{resume_by}}.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
@@ -62,7 +62,7 @@ export const MAIL_EVENTS = [
     body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'status_rejected', label: 'Ticket rejected', who: 'Requestor', when: 'A provider rejects it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket could not be accepted',
-    body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n> {{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n> {{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
   { key: 'note', label: 'Update from the provider', who: 'Requestor', when: 'A provider adds a public note', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] New update on your ticket',
     body: 'Hi {{requestor_name}},\nHere is an update on "{{subject}}".\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}' },
@@ -86,7 +86,7 @@ export const MAIL_EVENTS = [
     body: '"{{subject}}" was moved from {{from_service}} to **{{to_service}}** by {{actor_name}}.\nReason: {{note}}\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}\n{{timeline}}' },
   { key: 'transferred_requestor', label: 'Ticket moved to another team', who: 'Requestor', when: 'A ticket moves to another service', vars: [...T, 'note', 'actor_name', 'from_service', 'to_service'],
     subject: '[{{ticket_no}}] Your ticket moved to {{to_service}}',
-    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is now with the **{{to_service}}** team, who can help you best.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is now with the **{{to_service}}** team, who can help you best.\n{{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
   { key: 'reopened', label: 'Ticket reopened', who: 'Service providers', when: 'The requestor (or staff) reopens a closed ticket', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Ticket reopened: {{subject}}',
     body: '"{{subject}}" was reopened by {{actor_name}}.\nReason: {{note}}\nNew target: {{due}}\n[[Open the ticket|{{staff_link}}]]\n{{timeline}}\n{{ticket_details}}' },
@@ -95,7 +95,7 @@ export const MAIL_EVENTS = [
     body: 'This ticket has been escalated to **{{escalated_to_name}}**.\n{{note}}\nPlease take it forward and update the requestor.\n[[Open the ticket|{{staff_link}}]]\n{{ticket_details}}\n{{timeline}}' },
   { key: 'escalated_requestor', label: 'Escalation acknowledgement', who: 'Requestor', when: 'Their ticket is escalated', vars: [...T, 'escalated_to_name'],
     subject: '[{{ticket_no}}] We have escalated your ticket',
-    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is taking longer than we planned, so it has been escalated to **{{escalated_to_name}}** for faster help. We are sorry for the wait.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{ticket_details}}' },
+    body: 'Hi {{requestor_name}},\nYour ticket "{{subject}}" is taking longer than we planned, so it has been escalated to **{{escalated_to_name}}** for faster help. We are sorry for the wait.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\n{{timeline}}\n{{ticket_details}}' },
   { key: 'invite', label: 'New staff account', who: 'New staff member', when: 'An admin adds a person', vars: [...STAFF, 'guide'],
     subject: '[ONE Desk] Welcome to ONE Desk, your sign-in details',
     body: 'Hi {{staff_name}},\nWelcome to **ONE Desk**, the service desk of {{campus}}. Students and staff raise their requests here, and you help solve them.\n'
@@ -134,7 +134,10 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
   progress: { status: 'open', service: 'Electrical', due: '29 Oct 2026, 3:15 pm', hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, closed_at: '28 Oct 2026, 5:40 pm' },
   ticket_details: [['Ticket', '0042'], ['Service', 'Electrical'], ['Subject', 'Fan not working'], ['Description', 'Ceiling fan stopped working this morning.'],
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
-  timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
+  timeline: { more: false, reader: 'sample', items: [
+    { at: '28 Oct, 11:20 am', title: 'Work started', tone: '#7A5AF8', by: { name: 'Suresh Babu', team: 'Electrical' }, body: 'The electrician will replace the fan motor.' },
+    { at: '28 Oct, 9:20 am', title: 'Reached the Electrical team', tone: '#2E90FA', by: null, body: '' },
+    { at: '28 Oct, 9:05 am', title: 'Ticket received', tone: '#17B26A', by: { id: 'sample', name: 'Meena', requestor: true }, body: '' }] } };
 // Preview the progress block in the state that matches the email.
 const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', reopen_requested: 'closed', reopen_declined: 'closed', reopen_accepted: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
 const sampleAll = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: key === 'invite' ? { kind: 'provider', url: PROVIDER_GUIDE } : { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
@@ -160,11 +163,16 @@ export function renderTemplate(cfg, key, vars) {
 }
 // Plain-text version: buttons become "label: link", bold markers dropped.
 const STEP_TEXT = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Not accepted' };
-export const toText = (body, blocks = {}) => String(body).split('\n').map(line => {
+// "Latest updates": who did a step. The reader's own steps read "You"; a provider is shown with the team.
+const tlWho = (tl, e, requester) => !e.by ? '' : requester && e.by.requestor && tl.reader && e.by.id === tl.reader ? 'You' : [e.by.name, e.by.team && `${e.by.team} team`].filter(Boolean).join(', ');
+const tlItems = tl => Array.isArray(tl) ? tl : tl?.items || [];
+export const toText = (body, blocks = {}, requester = false) => String(body).split('\n').map(line => {
   const b = /^\s*\{\{(\w+)\}\}\s*$/.exec(line)?.[1];
   if (b === 'progress' && blocks.progress) return `Status: ${STEP_TEXT[blocks.progress.status] || blocks.progress.status}. ${nextStep(blocks.progress)}`;
   if (b === 'ticket_details' && blocks.ticket_details) return '\nTicket details\n' + blocks.ticket_details.map(([k, v]) => `${k}: ${Array.isArray(v) ? v.map(p => p.url).join(' ') : v}`).join('\n');
-  if (b === 'timeline' && blocks.timeline) return '\nLatest updates\n' + blocks.timeline.map(e => `${e.at} · ${e.label}${e.body ? `: ${e.body}` : ''}${e.photos?.length ? `\nPhotos: ${e.photos.map(p => p.url).join(' ')}` : ''}`).join('\n');
+  if (b === 'timeline' && blocks.timeline) { const tl = blocks.timeline, link = requester ? tl.ticket_link : tl.staff_link;
+    return '\nLatest updates\n' + tlItems(tl).map(e => `${[e.at, tlWho(tl, e, requester)].filter(Boolean).join(' · ')} · ${e.title || e.label}${e.body ? `: ${e.body}` : ''}${e.photos?.length ? `\nPhotos: ${e.photos.map(p => p.url).join(' ')}` : ''}`).join('\n')
+      + (tl.more && link ? `\nSee all updates: ${link}` : ''); }
   if (b === 'guide' && blocks.guide) { const c = GUIDE_COPY[blocks.guide.kind] || GUIDE_COPY.requestor; return `\n${c.title}${/[?.!]$/.test(c.title) ? '' : '.'} ${c.label}: ${blocks.guide.url}`; }
   if (b && BLOCKS.includes(b)) return '';
   return line.replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$1: $2').replace(/\*\*(.+?)\*\*/g, '$1');
@@ -214,7 +222,7 @@ export function renderEmail({ subject, body, campus, blocks = {}, requester = fa
   const links = h => h.replace(/\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]/g, '<a href="$2" style="color:#1e4b8f;font-weight:700;text-decoration:underline">$1</a>');
   const html = String(body || '').split('\n').filter(l => l.trim()).map(line => {
     const blk = /^\s*\{\{(\w+)\}\}\s*$/.exec(line)?.[1];
-    if (blk && BLOCKS.includes(blk)) return blocks[blk] ? BLOCK_HTML[blk](blocks[blk]) : '';
+    if (blk && BLOCKS.includes(blk)) return blocks[blk] ? BLOCK_HTML[blk](blocks[blk], requester) : '';
     const btn = /^\s*\[\[([^|\]]+)\|\s*(https?:\/\/[^\]\s]+)\s*\]\]\s*$/.exec(line);
     if (btn) return `<p style="margin:18px 0 8px"><a href="${esc(btn[2])}" style="display:inline-block;background:#1e4b8f;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">${esc(btn[1])}</a></p>`;
     const q = /^\s*&gt;\s?(.*)$/.exec(esc(line)); // "> text": the provider's note, in a highlighted box
@@ -274,11 +282,21 @@ const BLOCK_HTML = {
       <div style="font-size:14px;color:#3a3b4f;line-height:1.5;margin:4px 0 12px">${esc(c.text)}</div>
       <a href="${esc(g.url)}" style="display:inline-block;background:#f29a1f;color:#1c1d2e;text-decoration:none;font-weight:700;padding:10px 18px;border-radius:10px">${esc(c.label)}</a></td></tr></table>`;
   },
-  timeline(items) {
-    return `${sectionTitle('Latest updates')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${items.map(e =>
-      `<tr><td valign="top" style="width:14px;padding-top:6px"><div style="width:10px;height:10px;border-radius:50%;background:#1e4b8f"></div></td>
-       <td style="padding:0 0 14px 10px;border-left:0"><div style="font-size:12px;color:#8b8fa8">${esc(e.at)}</div><div style="font-size:14px;font-weight:700;color:#1c1d2e">${esc(e.label)}</div>
-       ${e.body ? `<div style="font-size:14px;color:#3a3b4f;line-height:1.5;margin-top:2px">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}${e.photos?.length ? `<div style="margin-top:6px">${photosHtml(e.photos)}</div>` : ''}</td></tr>`).join('')}</table>`;
+  // Latest updates: one joined line, newest first, a dot coloured by step, who did it, and the note in a soft box.
+  // Mail apps without CSS gradients (classic Outlook) show the same rows without the joining line.
+  timeline(tl, requester) {
+    const items = tlItems(tl), n = items.length; if (!n) return '';
+    const line = 'linear-gradient(90deg,rgba(228,231,236,0) 8px,#E4E7EC 8px,#E4E7EC 10px,rgba(228,231,236,0) 10px)';
+    // the line runs from the first dot to the last one: it starts under the newest dot and stops at the oldest
+    const rail = i => n === 1 ? '' : `background-image:${line};background-repeat:no-repeat;background-position:0 ${i ? 0 : 10}px;background-size:18px ${i === n - 1 ? '10px' : '100%'};`;
+    const link = requester ? tl.ticket_link : tl.staff_link;
+    const latest = '<span style="display:inline-block;margin-left:6px;padding:0 8px;border-radius:99px;background:#EEF4FF;color:#1D4ED8;font-size:11px;line-height:17px;font-weight:700">Latest</span>';
+    return `${sectionTitle('Latest updates')}<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${items.map((e, i) =>
+      `<tr><td valign="top" width="18" style="width:18px;${rail(i)}"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td width="10" height="10" bgcolor="${esc(e.tone || '#1e4b8f')}" style="width:10px;height:10px;border:4px solid #ffffff;border-radius:50%;font-size:1px;line-height:10px;mso-line-height-rule:exactly">&nbsp;</td></tr></table></td>
+       <td valign="top" style="padding:0 0 ${i === n - 1 ? 2 : 16}px 10px"><div style="font-size:12.5px;line-height:18px;color:#8b8fa8">${esc([e.at, tlWho(tl, e, requester)].filter(Boolean).join(' · '))}${i === 0 && n > 1 ? latest : ''}</div>
+       <div style="font-size:14.5px;line-height:1.4;font-weight:700;color:#1c1d2e">${esc(e.title || e.label)}</div>
+       ${e.body ? `<div style="margin-top:6px;padding:8px 12px;background:#f6f7fb;border-radius:10px;font-size:14px;line-height:1.5;color:#344054">${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}${e.photos?.length ? `<div style="margin-top:6px">${photosHtml(e.photos)}</div>` : ''}</td></tr>`).join('')}</table>
+      ${tl.more && link ? `<p style="margin:10px 0 0;font-size:12.5px;line-height:1.5;color:#8b8fa8">Showing the last ${n} updates · <a href="${esc(link)}" style="color:#1e4b8f;font-weight:700;text-decoration:underline">See all on ${requester ? 'your ticket page' : 'the ticket'}</a></p>` : ''}`;
   },
 };
 

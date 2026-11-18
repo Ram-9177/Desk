@@ -868,6 +868,29 @@ try {
   check('…and the next email uses it', (await q("SELECT html FROM notifications WHERE ticket_id=? AND template_key='note' ORDER BY created_at DESC LIMIT 1", tk.id))[0].html.includes('Test line.'));
   await ok('(back to the standard text)', '/mail/config', { token: T.sa, method: 'PUT', body: { brand: { brand_welcome: "Welcome to ONE DESK, St. Mary's own student service centre. We are always working to elevate your academic and learning experience, and to help every student grow into a life-ready professional." } } }); }
 
+  sec('Emails: “Latest updates” as one joined timeline; the preview is the email that goes out');
+  { const TO = 'tara@tl.example.com', tl = await raise('alpha', { service_id: ids.elec, name: 'Tara', email: TO, requestor_type: 'student', subject: 'Switch board sparking', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Timeline room 3', issue: 'Fan' } });
+  const tk = (await q("SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=(SELECT id FROM tenants WHERE slug='alpha')", tl.data?.ticket_no))[0];
+  check('a ticket to follow', !!tk, JSON.stringify(tl.error || ''));
+  // times are compared by shape: the preview is built a moment before the email, so a minute can tick over between the two
+  const norm = h => String(h || '').replace(/\d{1,2}:\d{2}\s?[ap]m/gi, 'TIME').replace(/\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*( \d{4})?/g, 'DAY');
+  const differs = (a, b) => { let i = 0; while (i < a.length && a[i] === b[i]) i++; return `${a.slice(Math.max(0, i - 80), i + 80)} ≠ ${b.slice(Math.max(0, i - 80), i + 80)}`; };
+  const mailOf = async (key, to) => (await q('SELECT html, text_body FROM notifications WHERE ticket_id=? AND template_key=? AND recipient=? ORDER BY created_at DESC LIMIT 1', tk.id, key, to))[0];
+  const same = async (name, to, body, key) => { const pv = (await api(`/tickets/${tk.id}/preview`, { token: T.pavan, method: 'POST', body: { to, ...body } })).data;
+    const r = await act(tk.id, { to, ...body, note: pv.text, approved: true }), m = await mailOf(key, TO);
+    check(name, r.status === 200 && !!m && norm(m.html) === norm(pv.html), r.status === 200 && m ? differs(norm(m.html), norm(pv.html)) : `${r.status} ${r.error?.message || 'no email'}`); return m; };
+  const m1 = await same('work started: the preview and the email that goes out are the same', 'in_progress', { note: 'our technician is on the way' }, 'status_in_progress');
+  check('…newest first with a “Latest” tag, who did it with the team, the note in its box', m1.html.indexOf('Work started') < m1.html.indexOf('Ticket received') && m1.html.includes('>Latest<') && m1.html.includes('Pavan Provider, Electrical team') && m1.html.includes('Our technician is on the way.'));
+  check('…the requester’s own step reads “You”', /· You</.test(m1.html) && !/· Tara</.test(m1.html), m1.html.match(/Latest updates[\s\S]{0,400}/)?.[0]);
+  await same('on hold: the preview shows the hold, its reason and the resume time, as the email does', 'hold', { note: 'parts ordered', hold_reason: 'parts' }, 'status_hold');
+  await same('resumed: the same again, with the moved target', 'in_progress', { note: 'parts arrived, work resumed' }, 'status_open');
+  await ok('the requester adds a note', `/public/alpha/tickets/${tl.data.ticket_no}/notes`, { method: 'POST', body: { body: 'Please come after 4 pm.' } });
+  const st = await mailOf('requestor_note', 'pavan@example.com');
+  check('the team’s email names the requester (no “You”) and colours each step', /· Tara</.test(st.html) && !/· You</.test(st.html) && st.html.includes('bgcolor="#F79009"') && st.html.includes('bgcolor="#7A5AF8"'), st.html.match(/Latest updates[\s\S]{0,300}/)?.[0]);
+  const m4 = await same('closed: the same again', 'closed', { note: 'switch board replaced and tested' }, 'status_closed');
+  check('more than 5 updates: the last 5 are shown, with a link to the rest', (m4.html.match(/mso-line-height-rule:exactly/g) || []).length === 5 && m4.html.includes('Showing the last 5 updates') && m4.html.includes('See all on your ticket page') && !m4.html.includes('Ticket received'));
+  check('the plain-text version carries the same list', /Latest updates\n.+· Pavan Provider, Electrical team · Resolved: Switch board replaced and tested\./.test(m4.text_body) && /See all updates: http/.test(m4.text_body), m4.text_body.match(/Latest updates[\s\S]{0,300}/)?.[0]); }
+
   sec('Notice board: team notices, pop-up before raising, permissions');
   { const tid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, elec = (await q("SELECT id FROM services WHERE code='ELEC' AND tenant_id=?", tid))[0].id;
   const other = (await q("SELECT id FROM services WHERE tenant_id=? AND id<>? AND parent_id IS NULL AND id NOT IN (SELECT service_id FROM service_members WHERE user_id=(SELECT id FROM users WHERE email='pavan@example.com')) LIMIT 1", tid, elec))[0].id;
@@ -909,7 +932,11 @@ try {
   check('the list for a provider: only their teams', (await api('/notices', { token: T.pavan })).data.notices.every(x => x.service_id === elec) && (await api('/notices', { token: T.asha })).data.notices.some(x => x.id === camp.id));
   await fails('a provider can’t delete the campus notice', '/notices/' + camp.id, { token: T.pavan, method: 'DELETE' }, 404);
   await ok('the admin deletes it', '/notices/' + camp.id, { token: T.asha, method: 'DELETE' });
-  check('deleted: gone for everyone', !(await api('/public/alpha/notices')).data.some(x => x.id === camp.id)); }
+  check('deleted: gone for everyone', !(await api('/public/alpha/notices')).data.some(x => x.id === camp.id));
+  const nd = await ok('a file on the new team’s notice', `/notices/${later.id}/files`, { token: T.asha, method: 'POST', body: { name: 'plan.pdf', data: PDF } });
+  await ok('a team with notices (and no tickets) can be deleted', '/services/' + newTeam.id, { token: T.sa, tenant: tid, method: 'DELETE' });
+  check('…its notices and their files go with it; the notice list still loads', !(await q('SELECT 1 FROM notices WHERE service_id=?', newTeam.id)).length && !(await q('SELECT 1 FROM notice_files WHERE notice_id=?', later.id)).length
+    && (await api('/notices', { token: T.asha })).status === 200 && !(await api('/notices', { token: T.asha })).data.teams.some(x => x.id === newTeam.id), JSON.stringify(nd || '')); }
 
   sec('Forgot password: a temporary password by email');
   { const pav = (await q("SELECT email FROM users WHERE email LIKE 'pavan%' LIMIT 1"))[0].email, mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
