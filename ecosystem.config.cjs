@@ -9,6 +9,7 @@ module.exports = {
     instances: 1,
     max_memory_restart: '400M', // t3.micro has 1 GB shared with Postgres and nginx
     kill_timeout: 10000, // the server needs up to 8 s to finish requests and close the pool on SIGTERM
+    exp_backoff_restart_delay: 200, // a failed start (the database not up yet after a reboot) is retried with growing pauses, never given up on
     time: true,
   }],
 };

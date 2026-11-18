@@ -11,8 +11,20 @@ pg.types.setTypeParser(1082, v => v); // DATE stays 'YYYY-MM-DD', not a JS Date 
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://localhost/onedesk', max: 10 });
 pool.on('error', e => console.error('postgres idle client', e.message));
 
+// After a reboot the app may start before Postgres is ready: wait for it (about a minute) instead of exiting at once.
+async function firstClient() {
+  for (let i = 0; ; i++) {
+    try { return await pool.connect(); }
+    catch (e) { if (i >= 30 || !/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|57P03|starting up|timeout/i.test(`${e.code} ${e.message}`)) throw e;
+      if (!i) console.log('Waiting for the database to accept connections…'); await new Promise(r => setTimeout(r, 2000)); }
+  }
+}
+// The tables are created and brought up to date here. One process at a time: the server starting and a helper script
+// (npm run add-super-admin) run it too, and two at once used to deadlock each other and requests in flight.
+const boot = await firstClient();
+await boot.query('SELECT pg_advisory_lock(746100)');
 // Timestamps are ISO-8601 text (as before), so string comparisons like due_at < now() keep working.
-await pool.query(`
+try { await boot.query(`
 CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, slug TEXT UNIQUE NOT NULL,
   timezone TEXT DEFAULT 'Asia/Kolkata', show_provider_contact INT DEFAULT 1, reopen_window_days INT DEFAULT 7, is_active INT DEFAULT 1,
   work_start TEXT DEFAULT '09:00', work_end TEXT DEFAULT '17:00', work_days TEXT DEFAULT '1,2,3,4,5,6', hold_reasons TEXT,
@@ -158,7 +170,14 @@ CREATE OR REPLACE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END $$;
 CREATE OR REPLACE TRIGGER ev_no_change BEFORE UPDATE OR DELETE ON ticket_events FOR EACH ROW EXECUTE FUNCTION append_only();
 CREATE OR REPLACE TRIGGER pp_no_upd BEFORE UPDATE ON provider_points FOR EACH ROW EXECUTE FUNCTION append_only();
-`);
+-- look-ups that used to read whole tables: a person's closed tickets (points, Fair Score), a ticket's files, a notice's files
+CREATE INDEX IF NOT EXISTS t_closed_by ON tickets (closed_by) WHERE status='closed';
+CREATE INDEX IF NOT EXISTS att_ticket ON attachments (ticket_id);
+CREATE INDEX IF NOT EXISTS att_key ON attachments (storage_key);
+CREATE INDEX IF NOT EXISTS nf_notice ON notice_files (notice_id);
+CREATE INDEX IF NOT EXISTS ntf_ticket ON notifications (ticket_id);
+CREATE INDEX IF NOT EXISTS ntf_queue ON notifications (status) WHERE status='queued';
+`); } finally { await boot.query('SELECT pg_advisory_unlock(746100)').catch(() => {}); boot.release(); }
 
 // "Other" problems are matched by similarity with pg_trgm when it can be enabled (a trusted extension the database owner may add)
 export const trgm = await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm').then(() => true, e => { console.error('pg_trgm not available, using the built-in similarity:', e.message); return false; });
@@ -176,13 +195,22 @@ export const run = async (sql, ...a) => ({ changes: (await query(sql, a)).rowCou
 export async function tx(fn) {
   if (txClient.getStore()) return fn(); // already inside a transaction
   const c = await pool.connect();
+  // a connection that drops in the middle of a transaction (Postgres restarted, a backend ended) must fail this one
+  // request, not the whole server: without a listener Node treats the client's 'error' event as fatal
+  let lost = null; const onLost = e => { lost = e; console.error('postgres connection lost in a transaction:', e.message); };
+  c.on('error', onLost); c.afterCommit = [];
   try {
     await c.query('BEGIN');
     const r = await txClient.run(c, fn);
-    await c.query('COMMIT'); return r;
+    await c.query('COMMIT');
+    for (const f of c.afterCommit) { try { f(); } catch (e) { console.error('after commit', e.message); } }
+    return r;
   } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; }
-  finally { c.release(); }
+  finally { c.removeListener('error', onLost); delete c.afterCommit; c.release(lost || undefined); } // a broken connection is thrown away, not reused
 }
+// Run fn once the surrounding transaction has been saved (at once when there is none): for things that must not happen for
+// work that was rolled back, or before the rows exist for others (handing a new email to the sender).
+export const afterCommit = fn => { const c = txClient.getStore(); if (c?.afterCommit) c.afterCommit.push(fn); else fn(); };
 // returns the stored row, including defaults and generated ids
 export const insert = (table, row) => {
   const k = Object.keys(row);

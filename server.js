@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
+import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm, afterCommit } from './db.js';
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor, goodChipsOf } from './food.js';
@@ -63,6 +63,10 @@ const wrap = fn => (req, res, next) => {
 const mw = fn => (req, res, next) => fn(req, res, next).catch(next);
 const audit = async (req, action, entity, entity_id, meta = {}) =>
   await insert('audit_logs', { id: uid(), tenant_id: req.tenantId || null, actor_id: req.user?.id, action, entity, entity_id, meta: JSON.stringify(meta), created_at: now() });
+// The jobs that run every minute (escalations, the queue, reminders, the morning brief). None starts once the server is
+// closing, and closing waits for the one that is running: a restart in the middle of a job used to lose its emails.
+let closing = false, jobsRunning = 0;
+const job = (name, fn) => async () => { if (closing) return; jobsRunning++; try { await fn(); } catch (e) { console.error(name, e.message); } finally { jobsRunning--; } };
 // The Fair Score board is asked for often (Home, Reports, the profile, the bot) and costs a pass over every closed ticket: one
 // answer per campus is kept for a minute, and dropped at once when a ticket, the points, the people or the settings change.
 const fairKept = new Map(), FAIR_KEEP_MS = 60e3;
@@ -90,13 +94,14 @@ const verify = t => { const [h, b, s] = (t || '').split('.'); if (!s) return nul
 // in-memory rate limiter
 const hits = new Map();
 function limit(key, max, ms = 3600e3) {
+  key = String(key).slice(0, 200); // never keep more than a line per key, whatever was typed
   const t = Date.now(), arr = (hits.get(key) || []).filter(x => t - x < ms);
   if (arr.length >= max) throw new HttpErr(429, 'RATE_LIMIT', 'Too many requests, try again later');
   arr.push(t); hits.set(key, arr);
 }
 // wrong tries (a password): looked at before the check, counted only when the try was wrong
-const tooMany = (key, max, ms = 900e3) => (hits.get(key) || []).filter(x => Date.now() - x < ms).length >= max;
-const strike = key => { const arr = hits.get(key) || []; arr.push(Date.now()); hits.set(key, arr.slice(-50)); };
+const tooMany = (key, max, ms = 900e3) => (hits.get(String(key).slice(0, 200)) || []).filter(x => Date.now() - x < ms).length >= max;
+const strike = key => { key = String(key).slice(0, 200); const arr = hits.get(key) || []; arr.push(Date.now()); hits.set(key, arr.slice(-50)); };
 // for counters: past the limit the hit is simply not counted (the page must not break)
 const allow = (key, max, ms) => { try { limit(key, max, ms); return true; } catch { return false; } };
 // drop keys idle for over an hour (the longest window) so the map doesn't grow forever
@@ -262,7 +267,7 @@ async function notify(t, recipients, key, vars = {}, { hold } = {}) { // hold: w
     await insert('notifications', { id, tenant_id: t.tenant_id, ticket_id: t.id || null, recipient: to, template_key: key,
       subject, body, html, text_body, secret, status: hold ? 'logged' : on ? 'queued' : 'skipped',
       last_error: hold ? 'Held: account added from provision/ at start-up. Use Resend to send it.' : null, created_at: now() });
-    if (on && !hold) { queue.push(id); queued++; }
+    if (on && !hold) { afterCommit(() => queue.push(id)); queued++; } // inside a transaction the sender must not look before the row is there
   }
   return queued; // how many are on their way (0: this email is switched off, or held)
 }
@@ -466,7 +471,7 @@ async function digest() {
     } catch (e) { console.error('morning brief', tn.code, e.message); }
   }
 }
-setInterval(() => digest().catch(e => console.error('digest', e.message)), Number(process.env.BRIEF_TICK_MS) || 60e3); // (the tests look every second)
+setInterval(job('digest', digest), Number(process.env.BRIEF_TICK_MS) || 60e3); // (the tests look every second)
 
 // ---------- escalation ----------
 // A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
@@ -509,7 +514,7 @@ async function runEscalations() {
     for (const t of due) { try { const at = escalationDue(t, tn, hrs[t.service_id] ?? null); if (at && at <= n) await escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
   }
 }
-const escalations = () => runEscalations().catch(e => console.error('escalation', e.message));
+const escalations = job('escalation', runEscalations);
 setInterval(escalations, 60e3); setTimeout(escalations, 3000);
 
 // ---------- team daily intake (Services → Tickets a day) ----------
@@ -545,16 +550,18 @@ async function releaseQueued() {
 // due reminders: email the provider once; they stay on Home until marked done
 async function fireReminders() {
   for (const m of await all('SELECT m.*, u.email, u.name, u.is_active FROM ticket_reminders m JOIN users u ON u.id=m.user_id WHERE m.fired_at IS NULL AND m.done_at IS NULL AND m.remind_at<=? ORDER BY m.remind_at LIMIT 500', now())) {
-    if (!(await run('UPDATE ticket_reminders SET fired_at=? WHERE id=? AND fired_at IS NULL', now(), m.id)).changes) continue;
-    const t = await one('SELECT * FROM tickets WHERE id=?', m.ticket_id); if (!t || !m.is_active) continue;
-    // the ticket moved to a team this person is not in (or they left the team): they can no longer open it, so its details are not mailed to them
-    if (!(await canOpen(await one('SELECT * FROM users WHERE id=?', m.user_id), t))) { await run('UPDATE ticket_reminders SET done_at=? WHERE id=?', now(), m.id); continue; }
-    await notify(t, [m.email], 'reminder', await ticketVars(t, { note: m.note, actor_name: m.name }));
+    await tx(async () => { // the mark and the email are saved together: a restart in between can neither lose the reminder nor send it twice
+      if (!(await run('UPDATE ticket_reminders SET fired_at=? WHERE id=? AND fired_at IS NULL', now(), m.id)).changes) return;
+      const t = await one('SELECT * FROM tickets WHERE id=?', m.ticket_id); if (!t || !m.is_active) return;
+      // the ticket moved to a team this person is not in (or they left the team): they can no longer open it, so its details are not mailed to them
+      if (!(await canOpen(await one('SELECT * FROM users WHERE id=?', m.user_id), t))) { await run('UPDATE ticket_reminders SET done_at=? WHERE id=?', now(), m.id); return; }
+      await notify(t, [m.email], 'reminder', await ticketVars(t, { note: m.note, actor_name: m.name }));
+    });
   }
 }
-const reminders = () => fireReminders().catch(e => console.error('reminders', e.message));
+const reminders = job('reminders', fireReminders);
 setInterval(reminders, 60e3); setTimeout(reminders, 5000);
-const releases = () => releaseQueued().catch(e => console.error('queue', e.message));
+const releases = job('queue', releaseQueued);
 setInterval(releases, 60e3); setTimeout(releases, 4000);
 
 // ---------- ticket creation (shared by portal and staff) ----------
@@ -2253,11 +2260,18 @@ if (getSettings().migr_mask_pw_v1 !== '1') {
   if (n) console.log(`Passwords masked in ${n} stored email${n === 1 ? '' : 's'} that had already gone out.`);
   await setSetting('migr_mask_pw_v1', '1');
 }
-if (getSettings().migr_food_type_v1 !== '1') {
-  for (const s of await all("SELECT id, form_schema FROM services WHERE upper(code)='FOOD' AND form_schema::jsonb->>'form_type' <> 'food' AND NOT EXISTS (SELECT 1 FROM services x WHERE x.tenant_id=services.tenant_id AND x.form_schema::jsonb->>'form_type'='food')")) {
-    const f = JSON.parse(s.form_schema || '{}'); await run('UPDATE services SET form_schema=? WHERE id=?', JSON.stringify({ ...f, form_type: 'food', icon: 'utensils' }), s.id);
-    console.log('Food service switched to the Food form (Share feedback / Report a problem).'); }
-  await setSetting('migr_food_type_v1', '1');
+// One time (again): a team coded FOOD whose form had no type at all was missed the first time; a form that is not readable is skipped, never fatal
+if (getSettings().migr_food_type_v2 !== '1') {
+  try {
+    const typeOf = x => { try { return JSON.parse(x.form_schema || '{}')?.form_type || ''; } catch { return null; } }, ranBefore = getSettings().migr_food_type_v1 === '1';
+    const svcs = await all('SELECT id, tenant_id, code, form_schema FROM services');
+    for (const x of svcs.filter(v => String(v.code || '').toUpperCase() === 'FOOD')) {
+      const ft = typeOf(x); if (ft === null || ft === 'food' || (ranBefore && ft !== '') || svcs.some(o => o.tenant_id === x.tenant_id && typeOf(o) === 'food')) continue; // ranBefore: only what the first run missed
+      await run('UPDATE services SET form_schema=? WHERE id=?', JSON.stringify({ ...JSON.parse(x.form_schema || '{}'), form_type: 'food', icon: 'utensils' }), x.id);
+      console.log('Food service switched to the Food form (Share feedback / Report a problem).'); }
+    await setSetting('migr_food_type_v1', '1');
+  } catch (e) { console.error('Food form check skipped:', e.message); }
+  await setSetting('migr_food_type_v2', '1');
 }
 
 const server = app.listen(PORT, process.env.HOST, () => console.log(`ONE Desk on http://${process.env.HOST || 'localhost'}:${PORT}`));
@@ -2279,7 +2293,11 @@ const server = app.listen(PORT, process.env.HOST, () => console.log(`ONE Desk on
 })().catch(e => console.error('photo conversion', e.message));
 // pm2 stop / restart send SIGTERM: finish in-flight requests, then close the Postgres pool
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => {
+  if (closing) return; closing = true;
   console.log(`${sig}: shutting down`);
-  server.close(() => pool.end().finally(() => process.exit(0)));
+  const idle = async () => { for (let i = 0; i < 60 && jobsRunning > 0; i++) await new Promise(r => setTimeout(r, 100)); }; // let the running minute job finish (up to 6 s)
+  server.close(() => idle().then(() => pool.end()).finally(() => process.exit(0)));
   setTimeout(() => process.exit(1), 8000).unref();
 });
+// A promise nobody waited for that fails must not take the whole desk down: it is logged, and the server carries on
+process.on('unhandledRejection', e => console.error('unhandled rejection:', e?.stack || e));

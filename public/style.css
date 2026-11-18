@@ -826,3 +826,16 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .scrollx{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px}.scrollx table{min-width:520px}
 .tagc.good{background:var(--pa-mint);border-color:var(--pa-mint-b)}.tagc button.tg-gd{font:inherit;font-size:11px;line-height:1.4;width:auto;height:24px;display:inline-block;white-space:nowrap;border:1px solid var(--border);background:#fff;border-radius:99px;padding:0 9px;margin:0 2px;cursor:pointer;color:var(--text-2)}.tagc.good button.tg-gd{color:#067647;border-color:#ABEFC6}
 @media (max-width:767px){.fchart text{font-size:20px}}
+/* ---- fixes from the independent audit (screens) ---- */
+/* a long word without spaces (a file name, a code) wraps instead of pushing the page sideways */
+.stub,.stub h2,.tk-title h1,.tk-sub,.ntcard,.ngate,.evtext,.tm b,.trow .sub,.att-row b,.psub{overflow-wrap:anywhere;word-break:break-word}
+.tk-title{min-width:0}.tk-title>div{min-width:0}
+/* tablet widths: the header row scrolls sideways when it is full, and says so with a fade at its right edge */
+@media (min-width:768px) and (max-width:1040px){.top nav{mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);padding-right:24px}
+  .top-in{gap:12px;padding:0 16px}#tsw{max-width:150px}}
+/* finger-sized targets on phones */
+@media (max-width:767px){#forgot.linkbtn{min-height:44px;padding:0 12px}.nb-h a{display:inline-flex;align-items:center;min-height:44px;padding:0 4px}.nbchips button{min-height:44px;padding:8px 15px}}
+/* empty rating stars can be seen before they are tapped */
+.stars span{color:#98a2b3}.stars label:hover~label span{color:#98a2b3!important}
+/* a form that is being sent shows it */
+form[data-sending] button.primary,form[data-sending] button.dark,form[data-sending] button.danger{opacity:.65;cursor:progress}

@@ -20,11 +20,13 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 export const mealWindows = async tid => ({ ...DEFAULT_MEAL_WINDOWS,
   ...Object.fromEntries((await all('SELECT meal, start_time, end_time FROM meal_windows WHERE tenant_id=?', tid)).map(r => [r.meal, [r.start_time, r.end_time]])) });
-// The campus's meals, in serving order: [{ key, name, color, start, end, active }]. Until the admin saves their own, the four defaults
-// (with any older meal_windows times). all: include switched-off meals (old ratings keep their name).
+// The campus's meals, in serving order: [{ key, name, color, start, end, active }]. Until the admin saves their own: breakfast,
+// lunch and dinner, with any times saved earlier; and Snacks too on a campus that used it before meals became editable (it
+// has a saved time or ratings for it), so an upgrade never takes a meal away. all: include switched-off meals (old ratings keep their name).
 export async function mealsOf(tid, all_ = false) {
   let rows = await all('SELECT key, name, color, start_time, end_time, active FROM food_meals WHERE tenant_id=? ORDER BY sort_order, start_time', tid);
-  if (!rows.length) { const w = await mealWindows(tid); rows = DEFAULT_MEALS.map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m], start_time: w[m][0], end_time: w[m][1], active: 1 })); }
+  if (!rows.length) { const w = await mealWindows(tid), had = new Set((await all('SELECT meal FROM meal_windows WHERE tenant_id=? UNION SELECT meal FROM food_feedback WHERE tenant_id=?', tid, tid)).map(r => r.meal));
+    rows = MEALS.filter(m => DEFAULT_MEALS.includes(m) || had.has(m)).map(m => ({ key: m, name: MEAL_NAMES[m], color: MEAL_COLORS[m], start_time: w[m][0], end_time: w[m][1], active: 1 })); }
   return rows.filter(r => all_ || r.active).map((r, i) => ({ key: r.key, name: r.name, color: r.color || MEAL_PALETTE[i % MEAL_PALETTE.length], start: r.start_time, end: r.end_time, active: !!r.active }));
 }
 // The meals a summary shows: the active ones, plus any switched-off meal that still has feedback in it
