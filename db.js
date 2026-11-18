@@ -127,6 +127,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS fair_cfg TEXT;
 -- Ready-made reply sentences per campus, with optional per-team lists: { "*": { step: [..] }, "<service id>": { .. } }
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS reply_phrases TEXT;
+-- Which of the campus's feedback tags are praise (the rest are counted as issues on the kitchen dashboard and in its reports)
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS food_chips_good TEXT;
 -- Notice board: notices by a team (service) or the whole campus (service_id NULL), shown on the student home page and
 -- before a ticket is raised for that team. Files: images, PDF, Word, Excel.
 CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), service_id TEXT REFERENCES services(id),

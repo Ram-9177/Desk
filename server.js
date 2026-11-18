@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { polish } from './polish.js';
-import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
+import { food, foodService, feedbackIn, summarize, mealsFor, goodChipsOf } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME, safeName } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
@@ -505,8 +505,10 @@ async function createTicket(tenant, b, opts) {
     // every report for this place today waits its turn here, so 200 at once still make one ticket
     if (mergeable) await one('SELECT pg_advisory_xact_lock(hashtext(?)) AS x', `${tenant.id}|${svc.id}|${lkey}|${day}`);
     const email = b.email ? String(b.email).toLowerCase().trim() : null, phone = b.phone ? String(b.phone).trim() : null, contact = email || phone;
-    let r = (email && await one('SELECT * FROM requestors WHERE tenant_id=? AND lower(email)=?', tenant.id, email))
-      || (phone && await one('SELECT * FROM requestors WHERE tenant_id=? AND phone=?', tenant.id, phone));
+    // a person is found by their email; by phone only when no email was given. A phone number someone else also typed
+    // must never hand that person's record (and the name on their older tickets) to the new person.
+    let r = email ? await one('SELECT * FROM requestors WHERE tenant_id=? AND lower(email)=?', tenant.id, email)
+      : phone ? await one('SELECT * FROM requestors WHERE tenant_id=? AND phone=?', tenant.id, phone) : null;
     first = !r || !(await one('SELECT 1 AS x FROM ticket_requestors WHERE requestor_id=? LIMIT 1', r.id));
     if (r) await run('UPDATE requestors SET name=?, email=coalesce(?,email), phone=coalesce(?,phone), requestor_type=coalesce(?,requestor_type), identifier=coalesce(?,identifier), department=coalesce(?,department) WHERE id=?',
       b.name, email, phone, b.requestor_type || null, b.identifier || null, b.department || null, r.id);
@@ -540,6 +542,7 @@ async function createTicket(tenant, b, opts) {
   }
   if (merged) { // the person gets their own acknowledgement for the ticket they joined; the providers already have it
     const others = merged.count - 1, guide = first ? { guide: guideLink('requestor') } : {};
+    if (merged.added) await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'requestor_note', await ticketVars(t, { note: merged.added, requestor_name: b.name }));
     if (!merged.again) await notify(t, [b.email || null], 'created', { ...await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), requestor_name: b.name, ...guide });
     return Object.assign(t, { merged: true, affected_count: merged.count });
   }
@@ -564,7 +567,15 @@ async function findMatch(tn, svcId, lkey, prob, day) {
 }
 // A later report of the same problem: one more requestor (and their photos) on the ticket. The same person never counts twice.
 async function joinTicket(t, r, b, contact, actor, ts) {
-  if (await one('SELECT 1 AS x FROM ticket_requestors WHERE ticket_id=? AND contact=?', t.id, contact)) return { ticket: t, again: true, count: t.affected_count };
+  if (await one('SELECT 1 AS x FROM ticket_requestors WHERE ticket_id=? AND contact=?', t.id, contact)) {
+    // the same person reports it again: what is new (other words, a photo) is added as their note, never dropped
+    const words = String(b.description || '').trim().slice(0, 5000), files = Array.isArray(b.files) ? b.files.filter(Boolean) : [];
+    const told = words && (words === String(t.description || '').trim() || (await all("SELECT body FROM ticket_events WHERE ticket_id=? AND event_type IN ('merged','note')", t.id)).some(e => String(e.body || '').includes(words)));
+    if ((words && !told) || files.length) { const ev = await addEvent(t, { ...actor, id: r.id }, 'note', { body: words && !told ? `Reported again: ${words}` : 'Sent another photo.' });
+      await saveFiles(t, ev, files, actor.type); await run('UPDATE tickets SET updated_at=? WHERE id=?', ts, t.id);
+      return { ticket: t, again: true, added: words && !told ? words : 'Sent another photo.', count: t.affected_count }; }
+    return { ticket: t, again: true, count: t.affected_count };
+  }
   const ev = await addEvent(t, actor, 'merged', { body: `Also reported by ${b.name}${b.description ? `: ${b.description}` : ''}`, internal: true, meta: { contact } });
   await saveFiles(t, ev, b.files, actor.type);
   const pic = await one('SELECT storage_key FROM attachments WHERE event_id=? ORDER BY created_at LIMIT 1', ev);
@@ -711,8 +722,8 @@ async function publicBot(tn, q) {
       items: [{ title: `Open ticket ${t.ticket_no}`, href: `#/d/${tn.slug}/t/${t.ticket_no}` }], chips: ['Reopen a ticket', 'How long will it take?'] };
   }
   if (said(q, /\b(food|meal|mess|canteen|breakfast|lunch|snacks|dinner|rate|rating)/)) { const fs = await foodService(tn.id);
-    if (fs) return { text: 'For food you can do two things:\n• Rate your meal: stars and a quick note. It goes to the kitchen team\'s report tonight; no ticket.\n• Report a serious problem (insect, spoiled food, hygiene, billing, staff behaviour): this raises a ticket and needs a photo.',
-      items: [{ title: 'Rate your meal', href: `#/d/${tn.slug}/raise/${fs.code}?flow=rate` }, { title: 'Report a serious problem', href: `#/d/${tn.slug}/raise/${fs.code}?flow=report` }] }; }
+    if (fs) return { text: 'For food you can do two things:\n• Share feedback: pick the day and meal, give stars and a short review. It goes to the kitchen team\'s report; no ticket.\n• Report a problem (insect, spoiled food, hygiene, billing, staff behaviour): this raises a ticket you can track. A photo helps but is not needed.',
+      items: [{ title: 'Share feedback', href: `#/d/${tn.slug}/raise/${fs.code}?flow=rate` }, { title: 'Report a problem', href: `#/d/${tn.slug}/raise/${fs.code}?flow=report` }] }; }
   if (said(q, /\b(track|status|where|find|check|my ticket)/)) return { text: 'Type your ticket number, for example 0042. You find it on the screen after raising and in every email.' };
   if (said(q, /\b(raise|new|complain|report|problem|broken|not working|issue)/)) return { text: 'To raise a ticket:\n1. Pick the team that can help.\n2. Fill in your details, where the problem is and what happened.\n3. Add up to 4 photos if you like, then tap Raise ticket.\nYou get a ticket number straight away, and an email at every step. No login needed.', items: [raiseLink, { title: 'Step-by-step guide (2 min, with voice)', href: 'guide/requestor.html' }] };
   if (said(q, /\b(team|service|which|who can|department)/)) {
@@ -996,11 +1007,16 @@ S.get('/services', wrap(async req => Promise.all((await all('SELECT * FROM servi
     escalation_users: await escalationOfficers(s.id),
     escalation_user: s.escalation_user_id ? await one('SELECT id, name FROM users WHERE id=? AND is_active=1', s.escalation_user_id) || null : null,
     sla: Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id=?', req.tenantId, s.id)).map(x => [x.priority, x.target_hours])) })))));
+// One Food team per campus: the two cards, the kitchen dashboard and the food reports all belong to "the" Food team
+const oneFoodTeam = async (req, schema, active, selfId) => { if (schema?.form_type !== 'food' || !Number(active)) return;
+  const o = await one(`SELECT name FROM services WHERE tenant_id=? AND is_active=1 AND id<>? AND form_schema::jsonb->>'form_type'='food' LIMIT 1`, req.tenantId, selfId || '');
+  if (o) throw bad(`This campus already has a Food team (${o.name}). There can be only one: change that team, or deactivate it first.`); };
 S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body; req_(b.code, 'Code required'); req_(b.name, 'Name required');
   b.code = String(b.code).trim().toUpperCase();
   if (!/^[A-Z0-9-]{2,12}$/.test(b.code)) throw bad('Code: 2–12 letters or digits (no spaces), e.g. ADM');
   if (await one('SELECT 1 FROM services WHERE tenant_id=? AND code=?', req.tenantId, b.code)) throw new HttpErr(409, 'CONFLICT', 'Code exists');
+  await oneFoodTeam(req, cleanSchema(b.form_schema), 1, null);
   const s = await insert('services', { id: uid(), tenant_id: req.tenantId, code: b.code, name: b.name, description: b.description,
     form_schema: JSON.stringify(cleanSchema(b.form_schema)), is_active: 1, sort_order: Number(b.sort_order) || 0, escalation_user_id: await escalationUser(req, b.escalation_user_id),
     daily_cap: dailyCap(b.daily_cap), parent_id: await parentTeam(req, b.parent_id, null), escalate_after_hours: escHours(b.escalate_after_hours) });
@@ -1012,6 +1028,7 @@ S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
 S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const b = req.body;
+  await oneFoodTeam(req, b.form_schema ? cleanSchema(b.form_schema) : JSON.parse(s.form_schema || '{}'), b.is_active ?? s.is_active, s.id);
   await run('UPDATE services SET name=?, description=?, form_schema=?, is_active=?, sort_order=? WHERE id=?', b.name ?? s.name, b.description ?? s.description,
     b.form_schema ? JSON.stringify(cleanSchema(b.form_schema)) : s.form_schema, b.is_active ?? s.is_active, b.sort_order ?? s.sort_order, s.id);
   if (b.escalation_user_id !== undefined && !Array.isArray(b.escalation_user_ids)) await setEscalations(req, s.id, [b.escalation_user_id]);
@@ -1130,9 +1147,10 @@ async function staffBot(req, q) {
     const fs = await foodService(tid);
     if (!fs || !sids.includes(fs.id)) return { text: 'Food scores are for the food team and admins.', chips };
     const day = dayIn(tn.timezone || 'Asia/Kolkata', n), rows_ = await feedbackIn(tid, day, day), sum = summarize(rows_, day, day, await mealsFor(tid, rows_));
+    const good = new Set(goodChipsOf(tn)), issues_ = sum.chips.filter(c => !good.has(c.chip)); // praise ("Good food") is not an issue
     const open = (await one(`SELECT count(*)::int c FROM tickets WHERE service_id=? AND status IN ('open','in_progress','hold')`, fs.id)).c;
     return { text: sum.total ? `Food today: ${sum.avg ?? '—'} ★ from ${sum.rated} rating${sum.rated === 1 ? '' : 's'}.\n${sum.keys.map(m => `${sum.name[m]}: ${sum.per_meal[m].avg == null ? 'no ratings' : sum.per_meal[m].avg + ' ★ (' + sum.per_meal[m].count + ')'}`).join('\n')}`
-        + `${sum.chips.length ? `\nTop issues: ${sum.chips.slice(0, 3).map(c => `${c.chip} ${c.count}`).join(', ')}` : ''}\nOpen complaints: ${open}.` : `No meal ratings yet today. Open complaints: ${open}.`,
+        + `${issues_.length ? `\nTop issues: ${issues_.slice(0, 3).map(c => `${c.chip} ${c.count}`).join(', ')}` : ''}\nOpen complaints: ${open}.` : `No meal ratings yet today. Open complaints: ${open}.`,
       items: [{ title: 'Open Food scores', href: '#/c/food' }] }; }
   if (said(q, /hold|paused|waiting/)) { const rows = await list("t.status='hold'", [], 't.hold_due_at');
     return { text: rows.length ? `${await count("t.status='hold'")} on hold. Resume these when you can:` : 'Nothing is on hold.', items: items(rows).map((x, i) => ({ ...x, sub: `${x.sub}${rows[i].hold_due_at ? ` · resume by ${fmtIST(rows[i].hold_due_at)}` : ''}` })) }; }
@@ -1772,7 +1790,7 @@ app.get('/api/group/report', auth, role('super_admin'), wrap(async () =>
     FROM tenants tn LEFT JOIN tickets t ON t.tenant_id=tn.id GROUP BY tn.id ORDER BY tn.name`, now())));
 
 // Food & catering: rate a meal (feedback) or report a problem (ticket); kitchen dashboard; scheduled reports (food.js)
-food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicket, tenantRow, base, SECRET, getSettings, setSetting, providersFor,
+food({ app, P, S, wrap, bad, notFound, HttpErr, limit, allow, tenantBySlug, createTicket, tenantRow, base, SECRET, getSettings, setSetting, providersFor, queueInfo, audit,
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 app.use('/api', S);

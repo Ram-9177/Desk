@@ -306,7 +306,7 @@ async function foodScreens(slug, tenant, svc, flow) {
   const f = await api(`/public/${slug}/food`), base = `#/d/${slug}/raise/${encodeURIComponent(svc.code)}`, ML = f.meal_list || [], mName = k => ML.find(m => m.key === k)?.name || MEAL_NAMES[k] || k;
   const head = (title, back) => `<div class="head"><a class="iconbtn" href="${back}" aria-label="Back">${I('back')}</a><h1>${title}</h1></div>`;
   const where = (sel = {}) => `<div class="row">${f.locations.length ? `<div><label>Mess / canteen</label><select name="location_id" required><option value="">Choose…</option>${f.locations.map(l => `<option value="${l.id}" ${l.id === sel.location_id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>` : ''}
-    <div><label>Meal</label><select name="meal" required>${ML.map(m => `<option value="${m.key}" ${m.key === (sel.meal || mealAt(f.windows, nowHM())) ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div></div>`;
+    <div><label>Meal</label><select name="meal" required>${ML.map(m => `<option value="${m.key}" ${m.key === (sel.meal || f.meal_now || mealAt(f.windows, nowHM())) ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div></div>`;
   const locOnly = (sel = {}) => f.locations.length ? `<label>Mess / canteen</label><select name="location_id" required><option value="">Choose…</option>${f.locations.map(l => `<option value="${l.id}" ${l.id === sel.location_id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>` : '';
   const dayName = ymd => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
   const dayBack = n => { const d = new Date(f.today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
@@ -320,12 +320,12 @@ async function foodScreens(slug, tenant, svc, flow) {
     const fm = $('#f'); foodCarry({ location_id: fm?.location_id?.value, meal: fm?.meal?.value }); location.replace(`${base}?flow=${r.value}`); });
   if (flow === 'rate') { // ---------- Flow A: Rate your meal ----------
     const c = foodCarry();
-    const mnow = c.meal || mealAt(f.windows, nowHM());
+    const mnow = c.meal || f.meal_now || mealAt(f.windows, nowHM()), dnow = f.day_now || f.today; // before the day's first meal is served the form starts on yesterday's last meal
     app.innerHTML = `<div class="wrap">${head(esc(svc.name), `#/d/${slug}/raise`)}${kindCards('rate')}<form id="f" class="card food-form">
       <input class="hp" name="website" tabindex="-1" autocomplete="off">
       <label>Which day?</label><div class="whochips fpick" role="radiogroup" aria-label="Which day?">
-        <label><input type="radio" name="dayk" value="${f.today}" checked><span class="rtb">Today<small>${dayName(f.today)}</small></span></label>
-        <label><input type="radio" name="dayk" value="${dayBack(1)}"><span class="rtb">Yesterday<small>${dayName(dayBack(1))}</small></span></label>
+        <label><input type="radio" name="dayk" value="${f.today}" ${dnow === f.today ? 'checked' : ''}><span class="rtb">Today<small>${dayName(f.today)}</small></span></label>
+        <label><input type="radio" name="dayk" value="${dayBack(1)}" ${dnow === f.today ? '' : 'checked'}><span class="rtb">Yesterday<small>${dayName(dayBack(1))}</small></span></label>
         <label><input type="radio" name="dayk" value="pick"><span class="rtb">Earlier<small>Pick a date</small></span></label></div>
       <div id="dpick" hidden><label for="pday">Date</label><input type="date" id="pday" name="pday" min="${dayBack(f.back_days ?? 6)}" max="${dayBack(2)}"></div>
       <label for="fmeal">Which meal?</label><select id="fmeal" name="meal" required>${ML.map(m => `<option value="${m.key}" ${m.key === mnow ? 'selected' : ''}>${esc(m.name)} (${m.start}–${m.end})</option>`).join('')}</select>
@@ -353,7 +353,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <input class="hp" name="website" tabindex="-1" autocomplete="off">
       ${where(c)}
       <label>What is the problem?</label><div class="fcats">${FOOD_CATEGORIES.map(([k, l]) => `<label><input type="radio" name="category" value="${k}" required><span>${esc(l)}</span></label>`).join('')}</div>
-      <div class="limitbox" id="else" hidden>${I('alert', 22)}<div><b>Taste, quantity or cold food?</b><div>Share feedback instead. The kitchen team sees it tonight.</div>
+      <div class="limitbox" id="else" hidden>${I('alert', 22)}<div><b>Taste, quantity or cold food?</b><div>Share feedback instead. It goes to the kitchen team's report.</div>
         <button type="button" class="btn soft" id="toRate" style="margin-top:8px">${I('star', 16)} Switch to feedback</button></div></div>
       <label>Describe what happened</label><textarea name="description" required maxlength="2000" placeholder="What, where and when">${esc(c.description || '')}</textarea>
       <label>Photos <small>(optional, up to 4: camera or gallery)</small></label>${fileButtons('food')}
@@ -376,7 +376,7 @@ async function foodScreens(slug, tenant, svc, flow) {
         const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
         app.innerHTML = `<div class="wrap">${head('Ticket raised', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
           <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
-          ${r.merged ? knownIssue(r.affected_count) : ''}<p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>
+          ${r.merged ? knownIssue(r.affected_count) : ''}${r.queue ? queueBox(r.queue) : `<p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>`}
           <p class="muted small" style="margin:14px 0 30px">We also emailed these details to you.</p>
           <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Track status</a></div></div></div>`;
         $('#cp').onclick = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'));
@@ -517,7 +517,7 @@ async function ticketPage(slug, no, q) {
 // ================= STAFF =================
 // After signing in again, staff return to the screen they were opening (a ticket from an email button), not always Home.
 function logout(expired) { if (expired && location.hash.startsWith('#/c')) sessionStorage.setItem('after-login', location.hash);
-  localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; location.hash = '#/login'; }
+  localStorage.removeItem('tok'); localStorage.removeItem('tid'); S.token = S.me = null; S.foodFor = S.foodOk = S.bell = undefined; location.hash = '#/login'; }
 function login() {
   if (S.token && location.hash.startsWith('#/login')) return location.replace('#/c'); // already signed in (e.g. the Sign in button in an email)
   document.body.className = 'console';
@@ -1498,7 +1498,7 @@ const legendHtml = meals => `<div class="flegend">${meals.map(m => `<span><i sty
 async function mealView(main, tabs, st, rng, back, onTab) {
   const f = { stars: 0, written: false }, rows = [];
   let d;
-  const fetchPage = async off => { const qs = new URLSearchParams({ meal: st.meal, from: rng.from, to: rng.to, offset: off, ...(rng.location ? { location: rng.location } : {}), ...(f.stars ? { stars: f.stars } : {}), ...(f.written ? { written: 1 } : {}) });
+  const fetchPage = async off => { const qs = new URLSearchParams({ meal: st.meal, from: rng.from, to: rng.to, offset: off, ...(off && rows.length ? { after: rows.at(-1).id } : {}), ...(rng.location ? { location: rng.location } : {}), ...(f.stars ? { stars: f.stars } : {}), ...(f.written ? { written: 1 } : {}) });
     d = await api('/food/meal?' + qs); if (!off) rows.length = 0; rows.push(...d.rows); };
   const day = ymd => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
   const paint = () => { const s = d.summary, x = s.per_meal[d.meal.key], dist = s.rating_counts[d.meal.key], happy = x.count ? Math.round(100 * (dist[3] + dist[4]) / x.count) : null;
@@ -1523,16 +1523,21 @@ async function mealView(main, tabs, st, rng, back, onTab) {
   };
   await fetchPage(0); paint();
 }
-const tagChip = c => `<span class="tagc" data-tag="${esc(c)}"><button type="button" class="tg-mv" data-l aria-label="Move ${esc(c)} left">‹</button><b>${esc(c)}</b><button type="button" class="tg-mv" data-r aria-label="Move ${esc(c)} right">›</button><button type="button" class="tg-x" data-x aria-label="Remove ${esc(c)}">${I('x', 14)}</button></span>`;
+const tagChip = (c, good) => `<span class="tagc ${good ? 'good' : ''}" data-tag="${esc(c)}"><button type="button" class="tg-mv" data-l aria-label="Move ${esc(c)} left">‹</button><b>${esc(c)}</b><button type="button" class="tg-gd" data-g aria-pressed="${good ? 'true' : 'false'}" title="Praise or issue?">${good ? '👍 praise' : 'issue'}</button><button type="button" class="tg-mv" data-r aria-label="Move ${esc(c)} right">›</button><button type="button" class="tg-x" data-x aria-label="Remove ${esc(c)}">${I('x', 14)}</button></span>`;
 async function foodPage(main, { admin }) {
-  const st = JSON.parse(sessionStorage.getItem('foodf') || '{"tab":"scores","range":"week"}'), q = new URLSearchParams(location.hash.split('?')[1] || '');
-  if (q.get('from')) Object.assign(st, { range: 'custom', from: q.get('from'), to: q.get('to') || q.get('from'), tab: 'scores' });
-  const save = () => sessionStorage.setItem('foodf', JSON.stringify(st));
+  // what was chosen (tab, dates, mess, opened meal) is kept per campus: another campus has other messes and meals
+  const KEY = 'foodf:' + (S.tenant || ''), read = () => { try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch { return null; } };
+  const st = read() || { tab: 'scores', range: 'week' }, q = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (q.get('from')) { Object.assign(st, { range: 'custom', from: q.get('from'), to: q.get('to') || q.get('from'), tab: 'scores' }); delete st.meal; } // a report link opens the overview for its dates
+  const save = () => { try { sessionStorage.setItem(KEY, JSON.stringify(st)); } catch { /* kept for this visit only */ } };
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()), back = n => { const d = new Date(today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
   const span = () => st.range === 'day' ? [today, today] : st.range === 'week' ? [back(6), today] : st.range === 'month' ? [back(29), today] : [st.from || back(6), st.to || today];
   const draw = async () => {
     const [from, to] = span(), qs = new URLSearchParams({ from, to, ...(st.location ? { location: st.location } : {}) }).toString();
-    const d = await api('/food/dashboard?' + qs), t = d.today, pr = d.period, ML = d.meals, mName = k => ML.find(m => m.key === k)?.name || k;
+    const d = await api('/food/dashboard?' + qs), t = d.today, pr = d.period, ML = d.meals, mName = k => ML.find(m => m.key === k)?.name || k, good = new Set(d.good_chips || []);
+    // a mess or meal remembered from before that this campus does not have (any more) is dropped
+    if (st.location && !d.locations.some(l => l.id === st.location)) { delete st.location; save(); return draw(); }
+    if (st.meal && !ML.some(m => m.key === st.meal)) { delete st.meal; save(); }
     const tabs = `<div class="tabs">${[['scores', 'Feedback & Scores'], ['complaints', `Complaints${d.complaints ? ` (${d.complaints})` : ''}`], ...(admin ? [['settings', 'Meals, places & tags']] : [])].map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
     if (st.tab === 'complaints') {
       const [rows, services] = await Promise.all([api(`/tickets?service=${d.service.id}&status=all`), api('/services')]);
@@ -1540,14 +1545,14 @@ async function foodPage(main, { admin }) {
       main.querySelectorAll('.tcard').forEach(c => c.onclick = () => location.hash = '#/c/t/' + c.dataset.id);
     } else if (st.tab === 'settings') {
       const fs = await api('/food/settings');
-      const mealRow = (m = {}) => `<div class="mealrow" data-key="${esc(m.key || '')}"><input name="mname" value="${esc(m.name || '')}" placeholder="e.g. Brunch" required aria-label="Meal name">
+      const mealRow = (m = {}) => `<div class="mealrow" data-key="${esc(m.key || '')}"><input name="mname" value="${esc(m.name || '')}" placeholder="e.g. Brunch" required maxlength="40" aria-label="Meal name">
           <input type="time" name="mstart" value="${m.start || '12:00'}" required aria-label="From"><input type="time" name="mend" value="${m.end || '13:00'}" required aria-label="To">
           <label class="chk"><input type="checkbox" name="mact" ${m.active === false ? '' : 'checked'}> Shown</label><button type="button" class="iconbtn mdel" aria-label="Remove meal">${I('x', 16)}</button></div>`;
-      main.innerHTML = `${tabs}<form id="fset" class="card" style="max-width:720px"><b>Meals</b><div class="muted small">The meals students pick when they share feedback or report a problem, with their serving times (campus time). The form starts on the meal being served, or the one just finished. Untick or remove a meal to hide it; its old ratings stay in the reports.</div>
+      main.innerHTML = `${tabs}<form id="fset" class="card" style="max-width:720px"><b>Meals</b><div class="muted small">The meals students pick when they share feedback or report a problem, with their serving times (campus time). The form starts on the meal being served, or the one just finished. Meals are listed in serving order (by their From time). Untick a meal to hide it; removing one deletes it if it was never rated, otherwise it is hidden and its old ratings stay in the reports.</div>
         <div class="mealhd muted small"><span>Name</span><span>From</span><span>To</span><span></span><span></span></div><div id="meals">${fs.meals.map(mealRow).join('')}</div>
         <p><button type="button" class="btn soft" id="addmeal">${I('plus', 16)} Add meal</button></p>
-        <b style="display:block;margin-top:18px">Feedback tags</b><div class="muted small">The “What stood out?” choices students tap on the feedback form. Add your own, remove the ones you don't want, and use ‹ › to set the order. Up to 20.</div>
-        <div class="tagedit" id="tags">${fs.chips.map(c => tagChip(c)).join('')}</div>
+        <b style="display:block;margin-top:18px">Feedback tags</b><div class="muted small">The “What stood out?” choices students tap on the feedback form. Add your own, remove the ones you don't want, and use ‹ › to set the order. Up to 20. Tap <b>issue</b> on a tag that is praise (Tasty, Good food): praise is not counted under “Needs attention” or “Top issues”.</div>
+        <div class="tagedit" id="tags">${fs.chips.map(c => tagChip(c, (fs.good_chips || []).includes(c))).join('')}</div>
         <div class="tagadd"><input id="tagnew" maxlength="30" placeholder="New tag, e.g. Too spicy" aria-label="New tag"><button type="button" class="btn soft" id="tagaddb">${I('plus', 16)} Add tag</button></div>
         <div class="muted small" id="tagn"></div>
         <b style="display:block;margin-top:18px">Messes and canteens</b><div class="muted small">Students pick one when they share feedback or report. Untick to hide one without losing its history.</div>
@@ -1557,6 +1562,7 @@ async function foodPage(main, { admin }) {
       // feedback tags: add (button or Enter), remove (×), move left/right; at most 20, 30 characters each
       const tagsSync = () => { const n = main.querySelectorAll('#tags .tagc').length; $('#tagn').textContent = `${n} of 20 tags · shown on the form in this order`; $('#tagaddb').disabled = n >= 20;
         main.querySelectorAll('#tags .tagc').forEach(t => { t.querySelector('[data-x]').onclick = () => { t.remove(); tagsSync(); };
+          t.querySelector('[data-g]').onclick = e => { const on = !t.classList.contains('good'); t.classList.toggle('good', on); e.currentTarget.textContent = on ? '👍 praise' : 'issue'; e.currentTarget.setAttribute('aria-pressed', on); };
           t.querySelector('[data-l]').onclick = () => { if (t.previousElementSibling) t.parentNode.insertBefore(t, t.previousElementSibling); tagsSync(); };
           t.querySelector('[data-r]').onclick = () => { if (t.nextElementSibling) t.parentNode.insertBefore(t.nextElementSibling, t); tagsSync(); }; }); };
       const addTag = () => { const v = $('#tagnew').value.trim().replace(/\s+/g, ' ');
@@ -1570,21 +1576,28 @@ async function foodPage(main, { admin }) {
       $('#fset').onsubmit = async e => { e.preventDefault(); const f = e.target;
         try { await api('/food/settings', { method: 'PUT', body: { locations: [...f.querySelectorAll('.locrow')].map(r => ({ id: r.dataset.id || undefined, name: r.querySelector('[name=lname]').value, active: r.querySelector('[name=lact]').checked })),
           meals: [...f.querySelectorAll('.mealrow')].map(r => ({ key: r.dataset.key || undefined, name: r.querySelector('[name=mname]').value, start: r.querySelector('[name=mstart]').value, end: r.querySelector('[name=mend]').value, active: r.querySelector('[name=mact]').checked })),
-          chips: [...f.querySelectorAll('#tags .tagc')].map(x => x.dataset.tag) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
+          chips: [...f.querySelectorAll('#tags .tagc')].map(x => x.dataset.tag), good_chips: [...f.querySelectorAll('#tags .tagc.good')].map(x => x.dataset.tag) } }); toast('Saved'); draw(); } catch (er) { $('#ferr').textContent = er.message; } };
     } else if (st.meal) { await mealView(main, tabs, st, { from, to, location: st.location }, () => { delete st.meal; save(); draw(); }, t => { st.tab = t; delete st.meal; save(); draw(); }); return;
     } else {
       // the split: overall feedback, each meal on its own, then complaints (tickets) apart
       const sum = a => a.reduce((x, y) => x + y, 0), dist = ML.reduce((acc, m) => acc.map((v, i) => v + (pr.rating_counts[m.key]?.[i] || 0)), [0, 0, 0, 0, 0]);
       const happy = pr.rated ? Math.round(100 * (dist[3] + dist[4]) / pr.rated) : null, pct = (n, t) => t ? Math.round(100 * n / t) : 0;
       const distBars = d => { const t = sum(d); return `<div class="sdist">${[4, 3, 2, 1, 0].map(i => `<div><span>${i + 1}★</span><i><b style="width:${pct(d[i], t)}%;background:${['#D92D20', '#F79009', '#FDB022', '#66C61C', '#17B26A'][i]}"></b></i><em>${d[i]}</em></div>`).join('')}</div>`; };
-      const rated = ML.filter(m => pr.per_meal[m.key].count), worst = rated.slice().sort((x, y) => pr.per_meal[x.key].avg - pr.per_meal[y.key].avg)[0];
-      const tip = worst && pr.per_meal[worst.key].avg < 3.5 ? `<div class="ftip">${I('alert', 16)}<span><b>Needs attention: ${esc(worst.name)}</b> · ${pr.per_meal[worst.key].avg.toFixed(1)} ★${pr.per_meal[worst.key].chips.filter(c => !/^Good/.test(c.chip))[0] ? `, mostly “${esc(pr.per_meal[worst.key].chips.filter(c => !/^Good/.test(c.chip))[0].chip)}”` : ''}</span></div>` : '';
-      const mealCard = m => { const x = pr.per_meal[m.key], d = pr.rating_counts[m.key] || [0, 0, 0, 0, 0];
-        return `<div class="card fmeal" style="--mc:${m.color}" data-meal="${esc(m.key)}" role="button" tabindex="0" aria-label="See all ${esc(m.name)} feedback"><div class="fm-h"><span><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</span><span class="muted small">${x.count} feedback · ${pct(x.count, pr.rated)}%</span></div>
+      // Needs attention: every meal whose average (not the rounded one) is under 3.5, worst first. With enough ratings in
+      // the period a meal needs at least 5 to be named, so one unhappy rating does not put a meal on the list.
+      const few = pr.rated < 20 ? 1 : 5, low = ML.filter(m => pr.per_meal[m.key].count >= few && (pr.per_meal[m.key].mean ?? pr.per_meal[m.key].avg) < 3.5).sort((x, y) => (pr.per_meal[x.key].mean ?? pr.per_meal[x.key].avg) - (pr.per_meal[y.key].mean ?? pr.per_meal[y.key].avg));
+      const tip = low.length ? `<div class="ftip">${I('alert', 16)}<span><b>Needs attention:</b> ${low.map(m => { const x = pr.per_meal[m.key], issue = x.chips.find(c => !good.has(c.chip));
+        return `<b>${esc(m.name)}</b> ${x.avg.toFixed(1)} ★ from ${x.count} rating${x.count === 1 ? '' : 's'}${issue ? `, mostly “${esc(issue.chip)}”` : ''}`; }).join(' · ')}</span></div>` : '';
+      // each meal's share of the ratings; the shares add up to 100 (the largest remainders get the spare points) and a small one reads "<1%"
+      const share = (() => { const raw = ML.map(m => pr.rated ? 100 * pr.per_meal[m.key].count / pr.rated : 0), fl = raw.map(Math.floor); let spare = pr.rated ? 100 - sum(fl) : 0;
+        raw.map((v, i) => [v - fl[i], i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (spare-- > 0) fl[i]++; });
+        return Object.fromEntries(ML.map((m, i) => [m.key, pr.per_meal[m.key].count && !fl[i] ? '<1%' : fl[i] + '%'])); })();
+      const mealCard = m => { const x = pr.per_meal[m.key], d = pr.rating_counts[m.key] || [0, 0, 0, 0, 0], n = x.entries ?? x.count;
+        return `<div class="card fmeal" style="--mc:${m.color}" data-meal="${esc(m.key)}" role="button" tabindex="0" aria-label="See all ${esc(m.name)} feedback"><div class="fm-h"><span><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</span><span class="muted small">${x.count} rating${x.count === 1 ? '' : 's'} · ${share[m.key]}</span></div>
           <b class="fm-avg ${x.avg != null && x.avg < 3 ? 'hot' : ''}">${x.avg == null ? '—' : x.avg.toFixed(1) + ' ★'}</b>${distBars(d)}
           <div class="fm-tags">${x.chips.map(c => `<span class="plate">${esc(c.chip)} ${c.count}</span>`).join('') || '<span class="muted small">No tags yet</span>'}</div>
           ${x.keywords?.length ? `<div class="fm-kw"><span class="muted small">In reviews:</span> ${x.keywords.slice(0, 3).map(k => `<b>“${esc(k.word)}”</b> ${k.count}`).join(' · ')}</div>` : ''}
-          <div class="fm-more">See all ${x.count} feedback ${I('chev', 14)}</div></div>`; };
+          <div class="fm-more">See all ${n} ${n === 1 ? 'entry' : 'entries'} ${I('chev', 14)}</div></div>`; };
       const cs = d.complaint_split;
       main.innerHTML = `${tabs}
         <div class="filters" style="margin-top:4px"><select id="frange">${[['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['custom', 'Custom dates']].map(([k, l]) => `<option value="${k}" ${st.range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -1599,19 +1612,22 @@ async function foodPage(main, { admin }) {
           ${pr.keywords.length ? `<div class="kwcloud">${pr.keywords.map((k, i) => `<button type="button" class="kw" data-kw="${i}" style="--w:${Math.round(13 + 9 * k.count / pr.keywords[0].count)}px">${esc(k.word)} <span>${k.count}</span></button>`).join('')}</div>
           <div class="kwex muted small" id="kwex">Tap a word to read what students wrote.</div>` : '<p class="muted small" style="margin:6px 0 0">No written reviews in this period.</p>'}</div>
         <div class="fsec-h"><h2>Complaints</h2><span class="muted small">Problems reported as tickets · handled one by one in the Complaints tab</span></div>
-        <div class="card fcomp"><div class="fc-n"><div><b>${cs.total}</b><span>raised</span></div><div><b class="${cs.open ? 'hot' : ''}">${cs.open}</b><span>still open</span></div><div><b>${cs.closed}</b><span>closed</span></div>
+        <div class="card fcomp"><div class="fc-n"><div><b>${cs.total}</b><span>raised</span></div><div><b class="${cs.open ? 'hot' : ''}">${cs.open}</b><span>still open</span></div><div><b>${cs.closed}</b><span>closed</span></div>${cs.rejected ? `<div><b>${cs.rejected}</b><span>not accepted</span></div>` : ''}
           <button type="button" class="btn soft" data-t="complaints">Open complaints ${I('chev', 16)}</button></div>
           ${cs.total ? `<div class="two"><div><div class="slabel">By problem</div>${hbars(cs.by_category.map(c => [c.label, c.count]), () => 'var(--danger)')}</div><div><div class="slabel">By meal</div>${hbars(cs.by_meal.map(c => [c.label, c.count]), l => ML.find(m => m.name === l)?.color || 'var(--st-neutral)')}</div></div>` : '<p class="muted small" style="margin:8px 0 0">No complaints in this period.</p>'}</div>
         <div class="fsec-h"><h2>Trends and comments</h2></div>
         <div class="card"><b>Average score per meal</b> <span class="muted small">${pr.days[0]} → ${pr.days.at(-1)} · ${pr.rated} ratings · overall ${pr.avg == null ? '—' : pr.avg.toFixed(1) + ' ★'}</span>${svgLine(pr.days, pr.series, ML)}${legendHtml(ML)}</div>
-        <div class="card"><b>By day and meal</b> <span class="muted small">average stars (number of ratings), newest day first</span><div class="tblbox"><table class="rtable dmgrid"><thead><tr><th>Day</th>${ML.map(m => `<th><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</th>`).join('')}</tr></thead>
+        <div class="card"><b>By day and meal</b> <span class="muted small">average stars (number of ratings), newest day first</span><div class="scrollx"><table class="rtable dmgrid"><thead><tr><th>Day</th>${ML.map(m => `<th><i class="mdot" style="background:${m.color}"></i>${esc(m.name)}</th>`).join('')}</tr></thead>
           <tbody>${pr.days.slice().reverse().slice(0, 31).map(dy => { const i = pr.days.indexOf(dy); return `<tr><td>${new Date(dy + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</td>${ML.map(m => { const v = pr.series[m.key][i], n = pr.counts[m.key][i];
             return `<td class="${v == null ? 'muted' : v < 3 ? 'hot' : ''}">${v == null ? '—' : `${v.toFixed(1)} ★ <span class="muted small">(${n})</span>`}</td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div></div>
         <div class="two"><div class="card"><b>Ratings per meal</b>${hbars(ML.map(m => [m.name, pr.per_meal[m.key].count]), l => ML.find(m => m.name === l)?.color)}</div>
-          <div class="card"><b>Top issues</b>${hbars(pr.chips.map(c => [c.chip, c.count]), l => l.startsWith('Good') ? 'var(--ok)' : 'var(--warn)')}</div></div>
+          <div class="card"><b>Tags picked</b> <span class="muted small">issues in amber, praise in green</span>${hbars(pr.chips.map(c => [c.chip, c.count]), l => good.has(l) ? 'var(--ok)' : 'var(--warn)')}</div></div>
         <div class="card"><b>Latest comments</b>${pr.comments.map(c => `<div class="brow"><div><div>“${esc(c.comment)}”</div><div class="muted small">${fmt(c.at)} · ${esc(c.meal_name || mName(c.meal))}${c.meal_date ? ' of ' + esc(c.meal_date) : ''}${c.rating ? ' · ' + c.rating + ' ★' : ''}${c.location ? ' · ' + esc(c.location) : ''}${c.name ? ' · ' + esc(c.name) : ''}${c.converted ? ' · <i>sent as feedback instead of a complaint</i>' : ''}</div></div></div>`).join('') || '<p class="muted small">No comments in this period.</p>'}</div>`;
       $('#frange').onchange = e => { st.range = e.target.value; save(); draw(); };
-      if ($('#ffrom')) $('#ffrom').onchange = $('#fto').onchange = () => { st.from = $('#ffrom').value; st.to = $('#fto').value; save(); draw(); };
+      if ($('#ffrom')) $('#ffrom').onchange = $('#fto').onchange = () => { let a = $('#ffrom').value || from, b2 = $('#fto').value || to;
+        if (a > b2) { [a, b2] = [b2, a]; toast('From was after To, so the two dates were swapped'); }
+        if ((new Date(b2) - new Date(a)) / 864e5 > 400) return toast('Pick dates at most 400 days apart');
+        st.from = a; st.to = b2; save(); draw(); };
       $('#floc').onchange = e => { st.location = e.target.value; save(); draw(); };
       $('#fcsv').onclick = async () => { const r = await api('/food/feedback.csv?' + qs, { raw: true }), a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = `food-feedback-${from}-to-${to}.csv`; a.click(); };
     }
@@ -1621,7 +1637,10 @@ async function foodPage(main, { admin }) {
       main.querySelectorAll('[data-kw]').forEach(x => x.classList.toggle('on', x === b));
       $('#kwex').innerHTML = `<b>“${esc(k.word)}”</b> in ${k.count} review${k.count === 1 ? '' : 's'}${k.examples.map(e => `<div class="brow"><div>“${esc(e.comment)}”<div class="muted small">${esc(mName(e.meal))}${e.rating ? ' · ' + e.rating + ' ★' : ''}</div></div></div>`).join('')}`; });
   };
-  try { await draw(); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  try { await draw(); } catch (e) {
+    if (st.range !== 'week' || st.location || st.meal || st.tab !== 'scores') { Object.keys(st).forEach(k => delete st[k]); Object.assign(st, { tab: 'scores', range: 'week' }); save();
+      try { await draw(); toast(e.message); return; } catch (e2) { e = e2; } }
+    main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
 // ================= NOTICES (staff): create, edit, publish, end, delete =================

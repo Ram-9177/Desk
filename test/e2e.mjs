@@ -390,9 +390,11 @@ try {
   check('key stored masked, status connected', cfg1.has_key && cfg1.key_masked.endsWith(flow.key.slice(-4)) && cfg1.url === FLOW_URL);
   check('saved key can be copied by the super admin', (await api('/mail/key', { token: T.sa })).data.key === flow.key);
   const tst2 = await ok('test send with the right key', '/mail/test', { token: T.sa, method: 'POST', body: { to: 'me@example.com' } });
-  check('flow accepted it', tst2.ok === true && tst2.status === 200 && flow.received.at(-1)?.to === 'me@example.com' && /Test email/.test(flow.received.at(-1)?.subject));
-  check('the test email carries real buttons to try: Sign in and the guide', flow.received.at(-1)?.html.includes(`href="${APP}/#/login"`) && flow.received.at(-1)?.html.includes(`href="${APP}/guide/requestor.html"`)
-    && flow.received.at(-1)?.text.includes(`Sign in to ONE Desk: ${APP}/#/login`));
+  // (found by its address, not "the last one received": an email queued a moment earlier may reach the flow right after it)
+  const tmail = flow.received.filter(m => m.to === 'me@example.com' && /Test email/.test(m.subject)).at(-1);
+  check('flow accepted it', tst2.ok === true && tst2.status === 200 && !!tmail);
+  check('the test email carries real buttons to try: Sign in and the guide', tmail?.html.includes(`href="${APP}/#/login"`) && tmail?.html.includes(`href="${APP}/guide/requestor.html"`)
+    && tmail?.text.includes(`Sign in to ONE Desk: ${APP}/#/login`));
   flow.received.length = 0;
   r = await raise('alpha', elecBody('Mail', 'r8@example.com')); const noM = r.data.ticket_no;
   const sent = await waitFor(async () => { const m = await mailsFor(noM); return m.length >= 2 && m.every(x => x.status === 'sent') ? m : null; });
@@ -1189,7 +1191,8 @@ try {
   const fsvc = await ok('a Food service (form type Food)', '/services', { ...A, method: 'POST', body: { code: 'FOODX', name: 'Food & Catering', form_schema: { form_type: 'food', fields: [] } } });
   await ok('the kitchen provider', `/services/${fsvc.id}/members`, { ...A, method: 'PUT', body: { user_ids: [pavanId] } });
   await fails('meal times must be HH:MM, start before end', '/food/settings', { ...A, method: 'PUT', body: { windows: { lunch: ['15:00', '12:00'] } } }, 400);
-  await ok('admin adds messes and meal times', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ name: 'Boys mess' }, { name: 'Girls mess' }], windows: { dinner: ['19:00', '22:00'] } } });
+  // every meal starts at midnight here, so the checks below can rate "today's" meals whatever the clock says (a meal not served yet cannot be rated: tested further down)
+  await ok('admin adds messes and meal times', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ name: 'Boys mess' }, { name: 'Girls mess' }], windows: { breakfast: ['00:00', '10:30'], lunch: ['00:00', '15:00'], dinner: ['00:00', '22:00'] } } });
   await fails('a provider cannot change them', '/food/settings', { token: T.pavan, method: 'PUT', body: { locations: [] } }, 403);
   const fi = await ok('the food screens’ data', '/public/alpha/food');
   check('locations, meal times, chips and categories for the forms', fi.locations.length === 2 && fi.windows.dinner[1] === '22:00' && fi.meals.join() === 'breakfast,lunch,dinner' && fi.chips.includes('Cold food') && fi.categories.length === 7 && fi.meals.includes(fi.meal_now));
@@ -1197,7 +1200,7 @@ try {
   let r = await fb({ location_id: L1, meal: 'lunch' });
   check('a rating needs stars', r.status === 400 && /stars/.test(r.error.message));
   r = await fb({ location_id: L1, meal: 'lunch', rating: 2, chips: ['Cold food', 'Taste'], comment: 'Rice was cold' }, 'dev-once-0001');
-  check('feedback saved, anonymous, no ticket', r.status === 200 && /Executive Chef tonight/.test(r.data.message) && (await q("SELECT count(*)::int n FROM tickets WHERE service_id=?", fsvc.id))[0].n === 0);
+  check('feedback saved, anonymous, no ticket', r.status === 200 && /goes to the kitchen team/.test(r.data.message) && (await q("SELECT count(*)::int n FROM tickets WHERE service_id=?", fsvc.id))[0].n === 0);
   r = await fb({ location_id: L1, meal: 'lunch', rating: 4 }, 'dev-once-0001');
   check('one rating per meal per device a day', r.status === 409 && /already rated lunch/.test(r.error.message));
   check('unknown chips are refused', (await fb({ location_id: L1, meal: 'lunch', rating: 3, chips: ['Bad vibes'] })).status === 400);
@@ -1233,7 +1236,7 @@ try {
   check('settings list the three default meals (Breakfast, Lunch, Dinner) and tags', before.meals.length === 3 && before.chips.includes('Cold food'));
   await fails('a meal needs a name', '/food/settings', { ...A, method: 'PUT', body: { meals: [{ name: '', start: '08:00', end: '09:00' }] } }, 400);
   await ok('admin adds Brunch, switches off Dinner and sets their own tags', '/food/settings', { ...A, method: 'PUT', body: {
-    meals: [...before.meals.map(m => ({ ...m, active: m.key !== 'dinner' })), { name: 'Brunch', start: '10:30', end: '11:30' }], chips: ['Tasty', 'Too oily', 'Small portion'] } });
+    meals: [...before.meals.map(m => ({ ...m, active: m.key !== 'dinner' })), { name: 'Brunch', start: '00:00', end: '11:30' }], chips: ['Tasty', 'Too oily', 'Small portion'] } });
   const pf2 = (await api('/public/alpha/food')).data;
   check('the form now offers Brunch and not Dinner, with the new tags', pf2.meals.includes('brunch') && !pf2.meals.includes('dinner') && pf2.meal_list.find(m => m.key === 'brunch').name === 'Brunch' && pf2.chips.join() === 'Tasty,Too oily,Small portion');
   check('a switched-off meal can’t be rated', (await fb({ location_id: L1, meal: 'dinner', rating: 4 })).status === 400);
@@ -1252,7 +1255,86 @@ try {
   check('back to three meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,dinner');
   const cs = dsh.complaint_split;
   check('the kitchen sees complaints apart from feedback: total, open, by problem and by meal', cs.total >= 1 && cs.open >= 1 && cs.by_category.length >= 1 && cs.by_meal.reduce((x, y) => x + y.count, 0) === cs.total, JSON.stringify(cs)); }
-  check('CSV export', /meal_date,meal,location,rating/.test(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()));
+  // the export: meal names, a campus-time column, and nothing a spreadsheet would run as a formula
+  const pf = (await api('/public/alpha/food')).data, dback = n => { const d = new Date(pf.today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
+  await fb({ location_id: L1, meal: 'breakfast', rating: 3, comment: '=HYPERLINK("http://attacker.example","menu")', name: '@SUM(1+1)' }, 'dev-csv-0001');
+  const csvB = Buffer.from(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).arrayBuffer()), csvF = csvB.toString('utf8');
+  check('CSV export: the meal by its name, typed text that looks like a formula made plain text, readable in Excel', csvB[0] === 0xef && csvB[1] === 0xbb && csvB[2] === 0xbf && csvF.slice(1).startsWith('meal_date,meal,meal_key,location,rating') && /"Breakfast","breakfast"/.test(csvF)
+    && csvF.includes(`"'=HYPERLINK(""http://attacker.example"",""menu"")"`) && csvF.includes(`"'@SUM(1+1)"`) && /sent_at_campus_time/.test(csvF), csvF.slice(0, 200));
+  // what may be rated, and by whom
+  check('wrong kinds of values are refused, not guessed at (stars as true or a list, a review that is not text, 30 February)', (await fb({ location_id: L1, meal: 'lunch', rating: true })).status === 400 && (await fb({ location_id: L1, meal: 'lunch', rating: [5] })).status === 400
+    && (await fb({ location_id: L1, meal: 'lunch', rating: 4, comment: { a: 1 } })).status === 400 && (await fb({ location_id: L1, meal: 'lunch', rating: 4, meal_date: pf.today.slice(0, 5) + '02-30' })).status === 400);
+  const noKey = b => api('/public/alpha/food/feedback', { method: 'POST', body: b });
+  const nk1 = await noKey({ location_id: L2, meal: 'breakfast', rating: 1 }), nk2 = await noKey({ location_id: L2, meal: 'breakfast', rating: 1 });
+  check('leaving the device key out does not allow rating one meal again and again', nk1.status === 200 && nk2.status === 409, `${nk1.status} ${nk2.status}`);
+  const hNow = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
+  if (hNow < 21) { // a meal that starts two hours from now (not possible to set up in the last hours of the day)
+    const cur = (await api('/food/settings', A)).data.meals;
+    await ok('a meal that is served later today', '/food/settings', { ...A, method: 'PUT', body: { meals: [...cur, { name: 'Late snack', start: `${String(hNow + 2).padStart(2, '0')}:00`, end: '23:59' }] } });
+    const lateR = await fb({ location_id: L1, meal: 'late_snack', rating: 4 }), ydayR = await fb({ location_id: L1, meal: 'late_snack', rating: 4, meal_date: dback(1) });
+    check('a meal of today that has not been served yet cannot be rated; yesterday’s can', lateR.status === 400 && /not been served yet/.test(lateR.error.message) && ydayR.status === 200, JSON.stringify(lateR.error));
+    await ok('(that meal is removed: it has a rating, so it is switched off and keeps its name)', '/food/settings', { ...A, method: 'PUT', body: { meals: cur } });
+    check('…a removed meal that was rated stays, switched off; the form no longer offers it', (await api('/food/settings', A)).data.meals.some(m => m.key === 'late_snack' && !m.active) && !(await api('/public/alpha/food')).data.meals.includes('late_snack'));
+  } else check('(a meal not served yet cannot be rated: not checked in the last hours of the day)', true);
+  const cur2 = (await api('/food/settings', A)).data.meals;
+  await ok('a meal added by mistake', '/food/settings', { ...A, method: 'PUT', body: { meals: [...cur2, { name: 'Brekfast typo', start: '00:00', end: '09:00' }] } });
+  await ok('…and removed again', '/food/settings', { ...A, method: 'PUT', body: { meals: cur2 } });
+  check('a removed meal that was never rated is deleted for good', !(await api('/food/settings', A)).data.meals.some(m => /typo/.test(m.name)));
+  const twoCol = (await api('/food/settings', A)).data.meals.filter(m => m.active).map(m => m.color);
+  check('every meal has its own colour', new Set(twoCol).size === twoCol.length, twoCol.join());
+  // settings are saved all together or not at all
+  const tagsBefore = (await api('/food/settings', A)).data.chips;
+  await fails('a save with one wrong part is refused as a whole', '/food/settings', { ...A, method: 'PUT', body: { chips: ['Only this'], locations: [{ name: 'Same' }, { name: 'same' }] } }, 400, 'same name');
+  check('…nothing of it was saved', (await api('/food/settings', A)).data.chips.join() === tagsBefore.join());
+  await fails('odd values are refused, not saved as “[object Object]”', '/food/settings', { ...A, method: 'PUT', body: { meals: [{ name: {}, start: '08:00', end: '09:00' }] } }, 400);
+  await fails('…', '/food/settings', { ...A, method: 'PUT', body: { meals: [null] } }, 400);
+  await ok('two messes swap names in one save', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ id: L1, name: 'Girls mess' }, { id: L2, name: 'Boys mess' }] } });
+  await ok('(and back)', '/food/settings', { ...A, method: 'PUT', body: { locations: [{ id: L1, name: 'Boys mess' }, { id: L2, name: 'Girls mess' }] } });
+  check('…and the change is in the audit trail', (await q("SELECT count(*)::int n FROM audit_logs WHERE action='food.settings'"))[0].n >= 3);
+  // praise is not an issue
+  await ok('the admin marks which tags are praise', '/food/settings', { ...A, method: 'PUT', body: { chips: [...tagsBefore.filter(c => c !== 'Tasty'), 'Tasty'], good_chips: ['Tasty', 'Good food 👍'] } });
+  for (const i of [1, 2, 3]) await fb({ location_id: L1, meal: 'breakfast', rating: 5, chips: ['Tasty'] }, 'dev-good-' + i);
+  const dg = (await api('/food/dashboard', { token: T.pavan })).data, repG = (await (await fetch(`${API}/reports/food/daily?tenant=alpha&format=json`, { headers: { 'x-report-key': 'food-report-key-0123456789' } })).json()).data;
+  check('the dashboard knows which tags are praise; the daily email’s “Top 3 issues” leaves them out', dg.good_chips.includes('Tasty') && dg.period.chips.some(c => c.chip === 'Tasty') && !/<li>Tasty/.test(repG.html.match(/Top 3 issues[\s\S]*?<\/ol>|Top 3 issues[\s\S]*?No issues tagged/)?.[0] || 'x<li>Tasty')
+    && !/<li>Good food/.test(repG.html.match(/Top 3 issues[\s\S]*?<\/ol>|Top 3 issues[\s\S]*?No issues tagged/)?.[0] || ''), repG.html.match(/Top 3 issues[\s\S]{0,300}/)?.[0]);
+  await ok('(tags back to the standard ones)', '/food/settings', { ...A, method: 'PUT', body: { chips: tagsBefore } });
+  // a rating that comes in late for an earlier day is in the next daily report
+  await run("INSERT INTO food_feedback (id, tenant_id, location_id, meal, rating, chips, comment, meal_date, created_at) VALUES (gen_random_uuid()::text, ?, ?, 'dinner', 2, '{}', 'Late night rating for yesterday dinner', ?, ?)", aid, L1, dback(1), new Date().toISOString());
+  const repL = (await (await fetch(`${API}/reports/food/daily?tenant=alpha&format=json`, { headers: { 'x-report-key': 'food-report-key-0123456789' } })).json()).data;
+  check('…listed under “Came in since the last report, for earlier days”', /Came in since the last report, for earlier days/.test(repL.html) && /Late night rating for yesterday dinner/.test(repL.html));
+  // dates
+  await fails('a range of more than 400 days is refused with a clear message', '/food/dashboard?from=2024-01-01&to=2026-01-01', { token: T.pavan }, 400, '400 days');
+  // one meal's page: the next page starts after the last row shown, also when new feedback arrived meanwhile
+  for (let i = 0; i < 55; i++) await run("INSERT INTO food_feedback (id, tenant_id, location_id, meal, rating, chips, meal_date, created_at) VALUES (gen_random_uuid()::text, ?, ?, 'lunch', 4, '{}', ?, ?)", aid, L1, pf.today, new Date(Date.now() - 60000 - i * 1000).toISOString());
+  const pg1 = (await api('/food/meal?meal=lunch', { token: T.pavan })).data;
+  await fb({ location_id: L2, meal: 'lunch', rating: 5 }, 'dev-page-new1');
+  const pg2 = (await api(`/food/meal?meal=lunch&offset=50&after=${pg1.rows.at(-1).id}`, { token: T.pavan })).data;
+  check('“Show more” repeats no row when a new rating arrived in between', pg1.rows.length === 50 && pg2.rows.length > 0 && !pg2.rows.some(r => pg1.rows.some(x => x.id === r.id)), `${pg1.rows.length} ${pg2.rows.length}`);
+  // complaints: what joins a ticket and what does not
+  const cmp = o => api('/public/alpha/food/complaint', { method: 'POST', body: { location_id: L2, meal: 'breakfast', category: 'spoiled', description: 'Stale bread at breakfast', name: 'Cmp', email: 'cmp@food.example.com', phone: '9000044451', requestor_type: 'student', ...o } });
+  const k1 = await cmp({}), k2 = await cmp({ meal: 'dinner', description: 'Stale curry at dinner' });
+  check('the same person, another meal the same day: a second ticket (it used to be dropped without a word)', k1.status === 200 && k2.status === 200 && !k2.data.merged && k2.data.ticket_no !== k1.data.ticket_no, JSON.stringify(k2.data || k2.error));
+  const k3 = await cmp({ description: 'More stale bread, see the photo', files: PNGF }), k1id = (await q('SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, k1.data.ticket_no))[0].id;
+  check('the same person reporting the same problem again: the new words and photo are added and the kitchen is told', k3.data?.merged && (await q("SELECT body FROM ticket_events WHERE ticket_id=? AND event_type='note'", k1id)).some(e => e.body === 'Reported again: More stale bread, see the photo')
+    && (await q('SELECT count(*)::int n FROM attachments WHERE ticket_id=?', k1id))[0].n === 1 && (await q("SELECT count(*)::int n FROM notifications WHERE ticket_id=? AND template_key='requestor_note'", k1id))[0].n >= 1, JSON.stringify(k3.data || k3.error));
+  const k4 = await cmp({ name: 'Other', email: 'other@food.example.com', phone: '9000044452' });
+  check('another person, the same problem at the same meal and mess: one ticket', k4.data?.merged && k4.data.ticket_no === k1.data.ticket_no);
+  const b1 = await cmp({ category: 'billing', meal: 'lunch', description: 'Lunch coupon charged twice', name: 'Rao', email: 'rao@food.example.com', phone: '9000044453' }), b2 = await cmp({ category: 'billing', meal: 'lunch', description: 'Mess card debited for a meal I did not take', name: 'Charan', email: 'charan@food.example.com', phone: '9000044454' });
+  check('billing and staff-behaviour complaints are personal: never joined to someone else’s ticket', b1.status === 200 && b2.status === 200 && !b2.data.merged && b1.data.ticket_no !== b2.data.ticket_no);
+  // one person is one email: a phone number someone else typed never hands over their record
+  const rq0 = (await q("SELECT id, name, email FROM requestors WHERE tenant_id=? AND lower(email)='rao@food.example.com'", aid))[0];
+  await cmp({ category: 'other', meal: 'lunch', description: 'Another matter', name: 'Anil Kumar', email: 'anil@food.example.com', phone: '9000044453' });
+  const rq1 = (await q('SELECT name, email FROM requestors WHERE id=?', rq0.id))[0];
+  check('a new person who types a phone number already on file gets their own record; the other person’s name and email stay', rq1.name === 'Rao' && rq1.email === 'rao@food.example.com' && (await q("SELECT count(*)::int n FROM requestors WHERE tenant_id=? AND lower(email)='anil@food.example.com'", aid))[0].n === 1, JSON.stringify(rq1));
+  // one Food team per campus
+  await fails('a second Food team on a campus is refused', '/services', { ...A, method: 'POST', body: { code: 'FOODY', name: 'Night Canteen', form_schema: { form_type: 'food', fields: [] } } }, 400, 'already has a Food team');
+  const gen2 = await ok('an ordinary team', '/services', { ...A, method: 'POST', body: { code: 'FOODZ', name: 'Canteen desk', form_schema: { form_type: 'general', fields: [] } } });
+  await fails('…also by turning another team into one', '/services/' + gen2.id, { ...A, method: 'PATCH', body: { form_schema: { form_type: 'food', fields: [] } } }, 400, 'already has a Food team');
+  await ok('(that team is deleted)', '/services/' + gen2.id, { ...A, method: 'DELETE' });
+  // no Food team: nobody would read a rating, so none is taken
+  await ok('the Food team is deactivated', '/services/' + fsvc.id, { ...A, method: 'PATCH', body: { is_active: 0 } });
+  check('without an active Food team feedback is not taken', (await fb({ location_id: L1, meal: 'breakfast', rating: 4 })).status === 404);
+  await ok('(and activated again)', '/services/' + fsvc.id, { ...A, method: 'PATCH', body: { is_active: 1 } });
   // reports
   const rep = (per, qs = '', key = 'food-report-key-0123456789') => fetch(`${API}/reports/food/${per}?tenant=alpha&format=json${qs}`, { headers: { 'x-report-key': key } });
   check('report endpoints need the report key', (await rep('daily', '', 'wrong-key-wrong-key-wrong-k')).status === 401);
@@ -1501,7 +1583,7 @@ async function uiSmoke(tok, id) {
     await visit('food: rate your meal', '/d/alpha/raise/FOODX?flow=rate', null, '.stars');
     check('the meal defaults to the one by the time of day', await js(`const m = await import('/shared.js'); const f = await (await fetch('/api/public/alpha/food')).json();
       const hm = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
-      return document.querySelector('[name=meal]:checked').value === m.mealAt(f.data.windows, hm) && document.querySelector('[name=dayk]:checked').value === f.data.today`));
+      return document.querySelector('#fmeal').value === f.data.meal_now && document.querySelector('[name=dayk]:checked').value === f.data.day_now`));
     await visit('food: report a serious problem', '/d/alpha/raise/FOODX?flow=report', null, '.fcats');
     check('"Something else" shows the feedback-instead hint with Switch to feedback, carrying the text', await js(`const f = document.querySelector('#f'); const hidden = document.querySelector('#else').hidden;
       f.querySelector('[name=category][value=other]').click(); f.description.value = 'Too salty today';

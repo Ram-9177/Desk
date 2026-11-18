@@ -22,7 +22,7 @@ function png({ w, h, px }) {
 // spec: { type: 'bar' | 'line', labels: [...], max, colors?: [per-bar colour], series: [{ color: '#rrggbb', values: [number|null] }] }
 export function chartPng(spec, w = 560, h = 220) {
   const c = canvas(w, h), pad = { l: 12, r: 12, t: 12, b: 12 }, iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
-  const n = Math.max(1, spec.labels?.length || 0), series = (spec.series || []).slice(0, 8);
+  const n = Math.max(1, spec.labels?.length || 0), series = (spec.series || []).slice(0, 20);
   const max = spec.max || Math.max(1, ...series.flatMap(s => s.values.filter(v => v != null)));
   const Y = v => pad.t + ih - (v / max) * ih, grid = hex('#eceef5');
   for (let g = 0; g <= 4; g++) c.rect(pad.l, Math.round(pad.t + ih * g / 4), iw, 1, grid);
