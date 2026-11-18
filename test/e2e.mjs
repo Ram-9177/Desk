@@ -1116,6 +1116,17 @@ try {
   await stop(); s2 = await start({ SUPER_ADMIN_EMAIL: 'second@example.com', SUPER_ADMIN_PASSWORD: 'Forgotten#Reset1' });
   check('a reset is emailed too, with the new temporary password', (await q("SELECT body FROM notifications WHERE template_key='password_reset' AND recipient='second@example.com'"))[0]?.body.includes('Forgotten#Reset1'));
   check('a changed SUPER_ADMIN_PASSWORD is a reset: temporary again, others untouched', /temporary password set/.test(s2.out()) && !!(await login('second@example.com', 'Forgotten#Reset1')) && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));
+  // a template saved before the joined timeline existed gets the block once; a later edit by the admin is left alone
+  const tplBefore = (await q("SELECT value FROM app_settings WHERE key='mail_templates'"))[0]?.value;
+  await run("INSERT INTO app_settings (key, value) VALUES ('mail_templates', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value", JSON.stringify({ status_in_progress: { subject: '[{{ticket_no}}] Started', body: 'Hi {{requestor_name}},\nWe started.\n{{ticket_details}}' }, status_rejected: { subject: '[{{ticket_no}}] No', body: 'Sorry.' }, note: { subject: 'x', body: 'Plain note.' } }));
+  await run("DELETE FROM app_settings WHERE key='migr_timeline_v1'");
+  await stop(); const sm = await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
+  const tpl = async () => JSON.parse((await q("SELECT value FROM app_settings WHERE key='mail_templates'"))[0].value);
+  check('saved templates get “Latest updates” once (before the ticket details, or at the end); others are untouched', (await tpl()).status_in_progress.body === 'Hi {{requestor_name}},\nWe started.\n{{timeline}}\n{{ticket_details}}' && (await tpl()).status_rejected.body === 'Sorry.\n{{timeline}}' && (await tpl()).note.body === 'Plain note.' && /added to 2 saved email templates/.test(sm.out()), JSON.stringify(await tpl()));
+  await run("UPDATE app_settings SET value=? WHERE key='mail_templates'", JSON.stringify({ status_rejected: { subject: '[{{ticket_no}}] No', body: 'Sorry, no timeline here.' } }));
+  await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
+  check('…and never again: an admin who takes the block out keeps it out', (await tpl()).status_rejected.body === 'Sorry, no timeline here.');
+  if (tplBefore === undefined) await run("DELETE FROM app_settings WHERE key='mail_templates'"); else await run("UPDATE app_settings SET value=? WHERE key='mail_templates'", tplBefore);
   await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
 
   // ======================= H. UI smoke test =======================

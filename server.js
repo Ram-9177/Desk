@@ -267,7 +267,7 @@ async function ticketVars(t, extra = {}, sim = null) {
   return { progress, ticket_details, timeline, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
     requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), kind: sug ? 'Suggestion' : 'Ticket', due: sug ? 'No target (suggestion)' : fmtIST(t.due_at),
-    providers: provNames, ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
+    providers: provNames, ticket_link: timeline.ticket_link, staff_link: timeline.staff_link,
     portal_link: `${base()}/#/d/${tn.slug}`, reopen_days: tn.reopen_window_days, queue_no: q?.queue_no ?? '', lands_on: q?.lands_on || '', queue_note: queueNote(q), ...extra };
 }
 const ROLE_NAMES = { provider: 'Service provider', tenant_admin: 'Campus admin', super_admin: 'Super admin' };
@@ -1793,6 +1793,16 @@ await provision();
 // Share feedback / Report a problem. Only where the campus has no Food service yet; remembered, so an admin's later change stays.
 // One time: the super admin account shown as "Digital Services" in emails becomes "ONE DESK"
 if (getSettings().migr_onedesk_name_v1 !== '1') { await run("UPDATE users SET name='ONE DESK' WHERE role='super_admin' AND name='Digital Services'"); await setSetting('migr_onedesk_name_v1', '1'); }
+// One time: email templates an admin saved before the joined timeline existed get the "Latest updates" block where the standard text now has it
+if (getSettings().migr_timeline_v1 !== '1') {
+  let saved = {}; try { saved = JSON.parse(getSettings().mail_templates || '{}') || {}; } catch { saved = {}; }
+  let n = 0;
+  for (const k of ['status_in_progress', 'status_rejected', 'queue_landed', 'transferred_requestor', 'escalated_requestor']) { const t = saved[k];
+    if (typeof t?.body !== 'string' || t.body.includes('{{timeline}}')) continue;
+    t.body = t.body.includes('\n{{ticket_details}}') ? t.body.replace('\n{{ticket_details}}', '\n{{timeline}}\n{{ticket_details}}') : `${t.body}\n{{timeline}}`; n++; }
+  if (n) { await setSetting('mail_templates', JSON.stringify(saved)); console.log(`"Latest updates" added to ${n} saved email template${n === 1 ? '' : 's'}.`); }
+  await setSetting('migr_timeline_v1', '1');
+}
 if (getSettings().migr_food_type_v1 !== '1') {
   for (const s of await all("SELECT id, form_schema FROM services WHERE upper(code)='FOOD' AND form_schema::jsonb->>'form_type' <> 'food' AND NOT EXISTS (SELECT 1 FROM services x WHERE x.tenant_id=services.tenant_id AND x.form_schema::jsonb->>'form_type'='food')")) {
     const f = JSON.parse(s.form_schema || '{}'); await run('UPDATE services SET form_schema=? WHERE id=?', JSON.stringify({ ...f, form_type: 'food', icon: 'utensils' }), s.id);
