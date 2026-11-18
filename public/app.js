@@ -1195,7 +1195,7 @@ async function users(main, { sa }) {
 }
 
 function setOwnPassword() {
-  document.body.className = 'console';
+  document.body.className = 'console'; botFor(null); // until the password is chosen nothing else of the desk is open, the help chat included
   app.innerHTML = `<div class="wrap hero" style="max-width:440px;padding-top:48px"><img class="logo" src="logo.png" alt="St. Mary's Rehabilitation University">
     <h1>Set your <span>new password</span></h1><p class="muted">Hi ${esc(S.me.user.name.split(' ')[0])}, you signed in with a temporary password. Choose your own to continue.</p>
     <form id="f" class="card"><label style="margin-top:0">Temporary password <small>(from the email we sent you)</small></label><input name="current" type="password" required autofocus autocomplete="current-password">
@@ -1912,8 +1912,11 @@ document.addEventListener('keydown', e => { if (e.key !== 'Escape') return;
 const nameFields = root => {
   root.querySelectorAll('label:not([for])').forEach(l => { if (l.querySelector('input, select, textarea')) return;
     let n = l.nextElementSibling; while (n && n.matches('small, .muted, .hint')) n = n.nextElementSibling;
-    const f = n && (n.matches('input, select, textarea') ? n : n.matches('.row, .search, div') ? n.querySelector('input:not([type=hidden]), select, textarea') : null);
-    if (!f || f.getAttribute('aria-label') || f.labels?.length) return;
+    // the field right after the label, or the only field inside the box right after it. A caption above a group of choices
+    // (radios, tick boxes, several fields) is not tied to any one of them: tapping it must not pick the first choice.
+    const inBox = n && !n.matches('input, select, textarea') ? n.querySelectorAll('input:not([type=hidden]), select, textarea') : [];
+    const f = n && (n.matches('input, select, textarea') ? n : inBox.length === 1 ? inBox[0] : null);
+    if (!f || /^(radio|checkbox)$/.test(f.type || '') || f.getAttribute('aria-label') || f.labels?.length) return;
     if (!f.id) f.id = 'fld' + (nameFields.n = (nameFields.n || 0) + 1); l.htmlFor = f.id; });
   root.querySelectorAll('a.iconbtn:not([aria-label])').forEach(a => a.setAttribute('aria-label', 'Back'));
   root.querySelectorAll('dialog:not([aria-label]):not([aria-labelledby])').forEach(d => { const h = d.querySelector('h2, h1'); if (h) { if (!h.id) h.id = 'dlgh' + (nameFields.n = (nameFields.n || 0) + 1); d.setAttribute('aria-labelledby', h.id); } });

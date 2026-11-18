@@ -836,7 +836,11 @@ P.get('/:slug/tickets/:no', wrap(async req => await publicTicket(await findPubli
 // The answer is the same for a wrong number and a wrong email, and tries are limited, so it cannot be used to guess either.
 P.post('/:slug/tickets/:no/open', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), no = String(req.params.no), email = oneEmail(req.body.email);
-  limit('open:' + req.ip, 60); limit(`open-t:${tn.id}:${normNo(no).slice(0, 20)}`, 20);
+  // tries are counted per address (a whole hostel may share one), per ticket and per email: neither the number nor the
+  // email can be found by trying many of the other
+  limit('open:' + req.ip, 300);
+  if (!allow(`open-t:${tn.id}:${normNo(no).slice(0, 20)}`, 20) || (email && !allow(`open-e:${tn.id}:${email}`, 15)))
+    throw new HttpErr(429, 'RATE_LIMIT', 'Too many tries. Please wait an hour, or open the ticket from the link in your email.');
   const t = email && TICKET_NO.test(no) ? await one('SELECT id, tracking_token, requestor_id FROM tickets WHERE tenant_id=? AND ticket_no=?', tn.id, normNo(no)) : null;
   const tr = t && await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND lower(contact)=? ORDER BY is_first DESC LIMIT 1', t.id, email);
   const first = t && !tr && await one('SELECT 1 AS x FROM requestors WHERE id=? AND lower(email)=?', t.requestor_id, email); // tickets older than the list of reporters
