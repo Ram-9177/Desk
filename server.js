@@ -56,6 +56,10 @@ const wrap = fn => (req, res, next) => {
 const mw = fn => (req, res, next) => fn(req, res, next).catch(next);
 const audit = async (req, action, entity, entity_id, meta = {}) =>
   await insert('audit_logs', { id: uid(), tenant_id: req.tenantId || null, actor_id: req.user?.id, action, entity, entity_id, meta: JSON.stringify(meta), created_at: now() });
+// The Fair Score board is asked for often (Home, Reports, the profile, the bot) and costs a pass over every closed ticket: one
+// answer per campus is kept for a minute, and dropped at once when a ticket, the points, the people or the settings change.
+const fairKept = new Map(), FAIR_KEEP_MS = 60e3;
+const fairStale = tid => { fairKept.delete(tid); };
 // A change to a setting of the whole installation (the mail connection, email wording, how duplicates merge): it belongs to no
 // campus, so it is kept apart from every campus's own log (only super admins see it).
 const auditAll = (req, ...a) => audit({ user: req.user }, ...a);
@@ -112,6 +116,8 @@ const myServiceIds = async (u, tenantId) => isAdmin(u)
 const tenantBySlug = async slug => { const t = await one('SELECT * FROM tenants WHERE slug=? AND is_active=1', slug); if (!t) throw notFound(); return t; };
 const providersFor = async (tenantId, serviceId) => await all(`SELECT u.id,u.name,u.email,u.phone FROM service_members m JOIN users u ON u.id=m.user_id
   WHERE m.tenant_id=? AND m.service_id=? AND u.is_active=1`, tenantId, serviceId);
+// A team takes new tickets (and shows on the portal) when it is active and, for a sub-team, its main team is active too.
+const OPEN_TEAM = a => `${a}.is_active=1 AND (${a}.parent_id IS NULL OR EXISTS (SELECT 1 FROM services mp WHERE mp.id=${a}.parent_id AND mp.is_active=1))`;
 // The people who work a team's tickets: its own members. A sub-team with no members of its own is worked by its main team's.
 const handlersOf = async (tenantId, serviceId) => {
   const own = await providersFor(tenantId, serviceId); if (own.length) return own;
@@ -137,7 +143,7 @@ const calOf = async tenantId => calendar(await tenantRow(tenantId));
 const holdReasons = tn => { try { return JSON.parse(tn.hold_reasons) || DEFAULT_HOLD_REASONS; } catch { return DEFAULT_HOLD_REASONS; } };
 const dueFrom = async (tenantId, startIso, minutes) => addWorking(await calOf(tenantId), startIso, minutes);
 async function award(t, userId, points, reason) {
-  if (userId) await insert('provider_points', { id: uid(), tenant_id: t.tenant_id, user_id: userId, ticket_id: t.id, points, reason, created_at: now() });
+  if (userId) { await insert('provider_points', { id: uid(), tenant_id: t.tenant_id, user_id: userId, ticket_id: t.id, points, reason, created_at: now() }); fairStale(t.tenant_id); }
 }
 // Leaving hold: shift the due time by the working time held, and penalise a hold that ran past its own SLA.
 async function leaveHold(t, ts) {
@@ -199,6 +205,7 @@ async function nextTicketNo(tenant) {
 }
 
 async function addEvent(t, actor, type, o = {}) {
+  fairStale(t.tenant_id); // whatever happened to a ticket, the Fair Score board is worked out afresh next time
   return (await insert('ticket_events', { tenant_id: t.tenant_id, ticket_id: t.id, actor_type: actor.type, actor_id: actor.id, actor_name: actor.name,
     event_type: type, from_value: o.from, to_value: o.to, body: o.body, is_internal: o.internal ? 1 : 0, meta: JSON.stringify(o.meta || {}), created_at: now() })).id;
 }
@@ -516,6 +523,8 @@ async function fireReminders() {
   for (const m of await all('SELECT m.*, u.email, u.name, u.is_active FROM ticket_reminders m JOIN users u ON u.id=m.user_id WHERE m.fired_at IS NULL AND m.done_at IS NULL AND m.remind_at<=? ORDER BY m.remind_at LIMIT 500', now())) {
     if (!(await run('UPDATE ticket_reminders SET fired_at=? WHERE id=? AND fired_at IS NULL', now(), m.id)).changes) continue;
     const t = await one('SELECT * FROM tickets WHERE id=?', m.ticket_id); if (!t || !m.is_active) continue;
+    // the ticket moved to a team this person is not in (or they left the team): they can no longer open it, so its details are not mailed to them
+    if (!(await canOpen(await one('SELECT * FROM users WHERE id=?', m.user_id), t))) { await run('UPDATE ticket_reminders SET done_at=? WHERE id=?', now(), m.id); continue; }
     await notify(t, [m.email], 'reminder', await ticketVars(t, { note: m.note, actor_name: m.name }));
   }
 }
@@ -548,7 +557,7 @@ async function noticesRead(t, svc, ids) {
   }
 }
 async function createTicket(tenant, b, opts) {
-  const svc = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', b.service_id, tenant.id);
+  const svc = await one(`SELECT * FROM services s WHERE s.id=? AND s.tenant_id=? AND ${OPEN_TEAM('s')}`, b.service_id, tenant.id);
   if (!svc) throw notFound();
   // a name and a subject are one line each (they go into email subjects); the description has a length limit like a note
   b.name = oneLine(b.name, 120); b.subject = oneLine(b.subject, 200);
@@ -675,7 +684,7 @@ async function joinTicket(t, r, b, contact, actor, ts) {
   const { n } = await one('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=?', t.id);
   // more people affected raises the priority; it is never lowered, and a priority a provider set by hand is left alone
   const p = !t.priority_by_staff && RANK[priorityFor(n)] > RANK[t.priority] ? priorityFor(n) : t.priority;
-  const due = p === t.priority ? t.due_at : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
+  const due = p === t.priority ? t.due_at : await dueFrom(t.tenant_id, t.work_from || t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + (t.work_from ? t.work_held || 0 : t.held_minutes));
   await run('UPDATE tickets SET affected_count=?, priority=?, due_at=?, updated_at=? WHERE id=?', n, p, due, ts, t.id);
   if (p !== t.priority) await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'priority_changed', { from: t.priority, to: p, internal: true, meta: { reason: `${n} people affected` } });
   return { ticket: { ...t, affected_count: n, priority: p, due_at: due }, again: false, count: n, tr };
@@ -751,7 +760,7 @@ P.get('/', wrap(async () => await all('SELECT name, code, slug FROM tenants WHER
 P.get('/:slug', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug);
   return { tenant: { name: tn.name, code: tn.code, slug: tn.slug },
-    services: await Promise.all((await all('SELECT id,code,name,description,form_schema,parent_id FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order,name', tn.id))
+    services: await Promise.all((await all(`SELECT id,code,name,description,form_schema,parent_id FROM services s WHERE s.tenant_id=? AND ${OPEN_TEAM('s')} ORDER BY sort_order,name`, tn.id))
       .map(async s => ({ ...s, form_schema: JSON.parse(s.form_schema) }))) }; // provider names show only after a ticket is raised
 }));
 P.post('/:slug/tickets', wrap(async req => {
@@ -804,8 +813,9 @@ async function reopenDeciders(t) {
 async function doReopen(t, actor, reason, { penalty = false, internal = false, meta = {} } = {}) {
   await tx(async () => {
     if (penalty) await award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
-    stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, reopen_requested_at=NULL, reopen_request_note=NULL, due_at=?, updated_at=? WHERE id=? AND status=?',
-      'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), t.id, t.status));
+    // a new work period starts now: the days it sat closed are nobody's work time (Fair Score)
+    stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, reopen_requested_at=NULL, reopen_request_note=NULL, due_at=?, work_from=?, work_held=0, updated_at=? WHERE id=? AND status=?',
+      'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), now(), t.id, t.status));
     await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: internal ? '' : reason, meta });
     if (internal) await addEvent(t, actor, 'note', { body: reason, internal: true });
   });
@@ -837,7 +847,7 @@ async function publicBot(tn, q) {
   if (said(q, /\b(track|status|where|find|check|my ticket)/)) return { text: 'Type your ticket number, for example 0042. You find it on the screen after raising and in every email.' };
   if (said(q, /\b(raise|new|complain|report|problem|broken|not working|issue)/)) return { text: 'To raise a ticket:\n1. Pick the team that can help.\n2. Fill in your details, where the problem is and what happened.\n3. Add up to 4 photos if you like, then tap Raise ticket.\nYou get a ticket number straight away, and an email at every step. No login needed.', items: [raiseLink, { title: 'Step-by-step guide (2 min, with voice)', href: 'guide/requestor.html' }] };
   if (said(q, /\b(team|service|which|who can|department)/)) {
-    const svcs = await all('SELECT code, name, description FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order, name', tn.id);
+    const svcs = await all(`SELECT code, name, description FROM services s WHERE s.tenant_id=? AND ${OPEN_TEAM('s')} ORDER BY sort_order, name`, tn.id);
     return { text: `${svcs.length} teams can help at ${tn.name}. Tap one to raise a ticket with it.`, items: svcs.map(s => ({ title: s.name, sub: s.description || '', href: `#/d/${tn.slug}/raise/${s.code}` })) };
   }
   if (said(q, /\b(limit|how many|per day|a day)/)) { const l = dailyLimits(tn); return { text: `Each email can raise ${l.student} tickets a day (faculty ${l.faculty}, staff ${l.staff}). After that, the form tells you when you can raise the next one. For something urgent, add a note to one of today's tickets.` }; }
@@ -862,7 +872,7 @@ P.post('/:slug/bot', wrap(async req => {
 // team is still on the portal (a deactivated team's notices are kept, but students don't see them).
 const NOTICE_AUD = ['all', 'student', 'faculty', 'staff', 'parent', 'visitor'];
 const liveNotice = n => `${n}.deleted_at IS NULL AND ${n}.status='published' AND (${n}.starts_at IS NULL OR ${n}.starts_at<=?) AND (${n}.ends_at IS NULL OR ${n}.ends_at>?)
-  AND (${n}.service_id IS NULL OR EXISTS (SELECT 1 FROM services sv WHERE sv.id=${n}.service_id AND sv.is_active=1))`;
+  AND (${n}.service_id IS NULL OR EXISTS (SELECT 1 FROM services sv WHERE sv.id=${n}.service_id AND ${OPEN_TEAM('sv')}))`;
 const NOTICE_ORDER = n => `${n}.important DESC, coalesce(${n}.starts_at, ${n}.published_at, ${n}.created_at) DESC`; // important first, then the newest (by when it went up, not when it was drafted)
 const noticeFor = q => NOTICE_AUD.includes(q) && q !== 'all' ? q : null; // "I'm a student": notices for everyone plus that group
 // What the public sees of each notice, with its files (one query for all of them). Students see which team posted it,
@@ -884,7 +894,7 @@ P.get('/:slug/notices', wrap(async req => {
 // before raising a ticket for a team: its live notices (a sub-team also shows its main team's), for this kind of requester
 P.get('/:slug/notices/for/:serviceId', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now(), aud = noticeFor(req.query.for);
-  const sv = UUID.test(req.params.serviceId) ? await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.params.serviceId, tn.id) : null; if (!sv) return [];
+  const sv = UUID.test(req.params.serviceId) ? await one(`SELECT id, parent_id FROM services s WHERE s.id=? AND s.tenant_id=? AND ${OPEN_TEAM('s')}`, req.params.serviceId, tn.id) : null; if (!sv) return [];
   const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
     ORDER BY ${NOTICE_ORDER('x')} LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
@@ -1026,6 +1036,7 @@ S.patch('/tenants/:id', role('super_admin'), wrap(async req => {
 
 // everything below is tenant scoped
 S.use(needTenant);
+S.use((req, res, next) => { if (req.method !== 'GET') res.on('finish', () => fairStale(req.tenantId)); next(); }); // any change by staff: the Fair Score is worked out afresh
 S.get('/users', role('super_admin', 'tenant_admin'), wrap(async req =>
   await all(`SELECT u.id,u.name,u.email,u.phone,u.role,u.is_active,u.last_login_at,u.must_change_pw,
     (SELECT string_agg(s.name, ', ' ORDER BY s.name) FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=u.id) services
@@ -1144,6 +1155,9 @@ S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
 S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const b = req.body;
+  // on or off, nothing else (2 or -1 looked active to staff and hid the team from the portal); a name is never blank
+  if (b.is_active !== undefined) { if (![0, 1, true, false].includes(b.is_active)) throw bad('is_active must be 1 (active) or 0 (inactive)'); b.is_active = b.is_active ? 1 : 0; }
+  if (b.name !== undefined) { if (typeof b.name !== 'string' || !b.name.trim()) throw bad('Name required'); b.name = b.name.trim(); }
   await oneFoodTeam(req, b.form_schema ? cleanSchema(b.form_schema) : JSON.parse(s.form_schema || '{}'), b.is_active ?? s.is_active, s.id);
   await run('UPDATE services SET name=?, description=?, form_schema=?, is_active=?, sort_order=? WHERE id=?', b.name ?? s.name, b.description ?? s.description,
     b.form_schema ? JSON.stringify(cleanSchema(b.form_schema)) : s.form_schema, b.is_active ?? s.is_active, b.sort_order ?? s.sort_order, s.id);
@@ -1301,7 +1315,10 @@ S.post('/bot', wrap(async req => { limit('sbot:' + req.user.id, 600); return awa
 // ---------- Fair Score: rank providers fairly across busy and quiet teams (per campus) ----------
 // Every measure is relative to the provider's OWN team, so a heavy, slow flow (Maintenance) and a light, quick one (Exams)
 // compete on equal terms. For each provider, over the last `window_days` (default 30):
-//   work time of a ticket  = working minutes from when it reached the team to closing, minus time on hold
+//   work time of a ticket  = working minutes from when it reached the team to closing, minus time on hold.
+//                            "Reached the team": raised, landed from the queue, moved in from another team, or reopened;
+//                            whichever came last (time with another team, and time it sat closed, is nobody's work time).
+//                            Work done outside working hours counts the minutes it took, never as slower than the team's usual.
 //   team usual time        = median work time of the team's tickets of that priority, closed in the last `baseline_days` (90)
 //                            (falls back to the team's median, then the campus median, when there are fewer than 3 tickets)
 //   pace of a ticket       = work time ÷ team usual time (1.0 = the team's normal; capped at 3)
@@ -1312,64 +1329,94 @@ S.post('/bot', wrap(async req => { limit('sbot:' + req.user.id, 600); return awa
 //   Fair Score = (40 P + 30 O + 15 D + 15 L) ÷ 100                    (weights changeable per campus)
 // Averages are smoothed: each provider is counted as if they also had k = 5 tickets at their team's level, so 1–2 lucky
 // tickets can't top the board. Ranked only with at least `min_tickets` (5) closed in the window.
+// A ticket someone raised and closed themselves is left out of Pace and of the team's usual time (a one-minute ticket of
+// one's own must not make colleagues look slow); if it was an internal ticket it is not counted at all.
+// Someone who works in several teams is compared, ticket by ticket, with the team that ticket belongs to.
 const FAIR_DEFAULTS = { weights: { pace: 40, on_time: 30, done_right: 15, load: 15 }, min_tickets: 5, window_days: 30, baseline_days: 90, k: 5 };
 const fairCfg = tn => { let c = {}; try { c = JSON.parse(tn.fair_cfg || '{}') || {}; } catch { /* defaults */ }
   return { ...FAIR_DEFAULTS, ...c, weights: { ...FAIR_DEFAULTS.weights, ...(c.weights || {}) } }; };
 const median = a => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
 const r1 = v => Math.round(v * 10) / 10, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 async function fairScores(tid) {
+  const kept = fairKept.get(tid); if (kept && Date.now() - kept.at < FAIR_KEEP_MS) return kept.v;
   const tn = await tenantRow(tid), cfg = fairCfg(tn), cal = calendar(tn), nowMs = Date.now(), k = cfg.k;
-  const since = d => new Date(nowMs - d * 864e5).toISOString();
-  const rows = await all(`SELECT t.id, t.service_id, t.priority, t.created_at, t.lands_at, t.closed_at, t.due_at, t.held_minutes, t.closed_by, s.name service
-    FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND t.status='closed' AND t.closed_by IS NOT NULL AND coalesce(t.kind,'issue')<>'suggestion' AND t.closed_at>=?`,
-    tid, since(Math.max(cfg.baseline_days, cfg.window_days)));
-  for (const t of rows) t.work = Math.max(1, workingBetween(cal, t.lands_at || t.created_at, t.closed_at) - (t.held_minutes || 0));
+  const since = d => new Date(nowMs - d * 864e5).toISOString(), baseDays = Math.max(cfg.baseline_days, cfg.window_days); // the usual time never looks back less far than the ranking
+  const rows = await all(`SELECT t.id, t.service_id, t.priority, t.created_at, t.lands_at, t.work_from, t.work_held, t.closed_at, t.due_at, t.held_minutes, t.closed_by, t.created_by_user_id, s.name service
+    FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND t.status='closed' AND t.closed_by IS NOT NULL AND coalesce(t.kind,'issue')<>'suggestion' AND t.closed_at>=?
+      AND (coalesce(t.is_internal,0)<>1 OR coalesce(t.created_by_user_id,'')<>t.closed_by)`, tid, since(baseDays));
+  for (const t of rows) {
+    const start = t.work_from || t.lands_at || t.created_at, held = t.work_from ? t.work_held || 0 : t.held_minutes || 0;
+    let w = workingBetween(cal, start, t.closed_at) - held;
+    // no working time on the clock (an evening or holiday job, a queued ticket taken before its day): the minutes it took
+    if (w < 1) { const from = start <= t.closed_at ? start : t.created_at; t.off = true; w = Math.min((Date.parse(t.closed_at) - Date.parse(from)) / 6e4, cal.end - cal.start); }
+    t.work = Math.max(1, Math.round(w)); t.self = !!t.created_by_user_id && t.created_by_user_id === t.closed_by;
+  }
   // the team's usual time, per priority
-  const base = rows.filter(t => t.closed_at >= since(cfg.baseline_days)), campusMed = median(base.map(t => t.work)) || 60, usual = {};
+  const base = rows.filter(t => !t.self), campusMed = median(base.map(t => t.work)) || 60, usual = {};
   const usualOf = t => { const key = t.service_id + '|' + t.priority; if (usual[key] != null) return usual[key];
     const sp = base.filter(x => x.service_id === t.service_id && x.priority === t.priority), s_ = base.filter(x => x.service_id === t.service_id);
     return (usual[key] = sp.length >= 3 ? median(sp.map(x => x.work)) : s_.length >= 3 ? median(s_.map(x => x.work)) : campusMed); };
+  for (const t of rows) if (t.off) t.work = Math.max(1, Math.min(t.work, Math.round(usualOf(t)))); // …never slower than the team's usual
   const win = rows.filter(t => t.closed_at >= since(cfg.window_days));
   for (const t of win) { t.pace = Math.min(3, t.work / usualOf(t)); t.on = t.due_at ? t.closed_at <= t.due_at : null; }
-  // misses: accepted reopens and holds past their limit, in the window
-  const bad = Object.fromEntries((await all(`SELECT user_id, count(*)::int n FROM provider_points WHERE tenant_id=? AND created_at>=? AND reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY user_id`, tid, since(cfg.window_days))).map(r => [r.user_id, r.n]));
+  // each team in the window: its tickets, how many were on time, its misses, and the hours of everyone who closed its tickets
+  const NONE = { onRate: 0.8, badRate: 0, avgH: 0 }, teams = {}, team = id => (teams[id] ??= { tickets: [], bad: 0, hours: new Map(), ...NONE });
+  for (const t of win) { const tm = team(t.service_id); tm.tickets.push(t); tm.hours.set(t.closed_by, (tm.hours.get(t.closed_by) || 0) + t.work / 60); }
+  // misses: accepted reopens and holds past their limit, in the window, counted for the person and for the ticket's team
+  const bad = {};
+  for (const m of await all(`SELECT p.user_id, t.service_id, count(*)::int n FROM provider_points p LEFT JOIN tickets t ON t.id=p.ticket_id WHERE p.tenant_id=? AND p.created_at>=?
+    AND p.reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY p.user_id, t.service_id`, tid, since(cfg.window_days))) { bad[m.user_id] = (bad[m.user_id] || 0) + m.n; if (m.service_id) team(m.service_id).bad += m.n; }
+  for (const tm of Object.values(teams)) { const due = tm.tickets.filter(t => t.on !== null);
+    tm.onRate = due.length ? due.filter(t => t.on).length / due.length : NONE.onRate; tm.badRate = tm.tickets.length ? tm.bad / tm.tickets.length : 0;
+    tm.avgH = tm.hours.size ? [...tm.hours.values()].reduce((a, h) => a + h, 0) / tm.hours.size : 0; }
   const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND (u.role='provider' OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
-  const mine = Object.fromEntries(people.map(p => [p.id, win.filter(t => t.closed_by === p.id)]));
-  // a provider's team: the service they closed most tickets in (else their first service)
-  const firstSvc = Object.fromEntries((await all(`SELECT m.user_id, min(s.name) name, min(s.id) id FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.tenant_id=? GROUP BY m.user_id`, tid)).map(r => [r.user_id, r]));
-  const teamOf = p => { const c = {}; for (const t of mine[p.id]) c[t.service_id] = (c[t.service_id] || 0) + 1; const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
-    return top ? { id: top[0], name: win.find(t => t.service_id === top[0]).service } : firstSvc[p.id] ? { id: firstSvc[p.id].id, name: firstSvc[p.id].name } : { id: null, name: 'No team yet' }; };
-  const list = people.map(p => ({ ...p, team: teamOf(p), t: mine[p.id], bad: bad[p.id] || 0 }));
-  const teams = {};
-  for (const x of list) { const tm = (teams[x.team.id] ??= { members: [], tickets: [], bad: 0 }); tm.members.push(x); tm.tickets.push(...x.t); tm.bad += x.bad; }
+  const mine = Object.fromEntries(people.map(p => [p.id, []])); for (const t of win) mine[t.closed_by]?.push(t);
+  // the team shown beside a name: where they closed most tickets (equal: by name), else the first team they are in
+  const firstSvc = Object.fromEntries((await all(`SELECT DISTINCT ON (m.user_id) m.user_id, s.id, s.name FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.tenant_id=? ORDER BY m.user_id, s.name, s.id`, tid)).map(r => [r.user_id, r]));
+  const homeOf = p => { const c = {}; for (const t of mine[p.id]) (c[t.service_id] ??= { id: t.service_id, name: t.service, n: 0 }).n++;
+    const top = Object.values(c).sort((x, y) => y.n - x.n || x.name.localeCompare(y.name) || x.id.localeCompare(y.id))[0];
+    return top ? { id: top.id, name: top.name } : firstSvc[p.id] ? { id: firstSvc[p.id].id, name: firstSvc[p.id].name } : { id: null, name: 'No team yet' }; };
   const W = cfg.weights, wsum = Math.max(1, W.pace + W.on_time + W.done_right + W.load);
-  const out = list.map(x => {
-    const tm = teams[x.team.id], n = x.t.length, onT = x.t.filter(t => t.on !== null), tmOn = tm.tickets.filter(t => t.on !== null);
-    const teamOnRate = tmOn.length ? tmOn.filter(t => t.on).length / tmOn.length : 0.8, teamBadRate = tm.tickets.length ? tm.bad / tm.tickets.length : 0;
-    const pace = (x.t.reduce((a, t) => a + t.pace, 0) + k * 1) / (n + k);
-    const onRate = (onT.filter(t => t.on).length + k * teamOnRate) / (onT.length + k);
-    const doneRate = 1 - Math.min(1, (x.bad + k * teamBadRate) / (n + k));
-    const hours = x.t.reduce((a, t) => a + t.work, 0) / 60, active = tm.members.filter(m => m.t.length), teamAvgH = active.length ? active.reduce((a, m) => a + m.t.reduce((b, t) => b + t.work, 0) / 60, 0) / active.length : 0;
+  const out = people.map(p => {
+    const T = mine[p.id], n = T.length, home = homeOf(p), paced = T.filter(t => !t.self), due = T.filter(t => t.on !== null), onN = due.filter(t => t.on).length, miss = bad[p.id] || 0;
+    // what this person's team does on average; for someone in several teams, in the mix of their own tickets
+    const mix = f => n ? T.reduce((a, t) => a + f(teams[t.service_id]), 0) / n : f(teams[home.id] || NONE);
+    const teamOn = mix(tm => tm.onRate), teamBad = mix(tm => tm.badRate), teamAvgH = mix(tm => tm.avgH);
+    const pace = (paced.reduce((a, t) => a + t.pace, 0) + k * 1) / (paced.length + k);
+    const onRate = (onN + k * teamOn) / (due.length + k);
+    const doneRate = 1 - Math.min(1, (miss + k * teamBad) / (n + k));
+    const hours = T.reduce((a, t) => a + t.work, 0) / 60;
     const P = clamp((1.5 - pace) * 100, 0, 100), O = onRate * 100, D = doneRate * 100, L = teamAvgH ? Math.min(hours / teamAvgH, 1.5) / 1.5 * 100 : 0;
-    const usualH = n ? median(x.t.map(t => usualOf(t))) / 60 : null, ownH = n ? median(x.t.map(t => t.work)) / 60 : null;
-    return { id: x.id, name: x.name, team: x.team.name, team_id: x.team.id, tickets: n, eligible: n >= cfg.min_tickets,
-      pace: r1(pace * 100) / 100, on_time_pct: Math.round(onRate * 100), reopens_holds: x.bad, hours: r1(hours), team_avg_hours: r1(teamAvgH),
+    const usualH = paced.length ? median(paced.map(t => usualOf(t))) / 60 : null, ownH = paced.length ? median(paced.map(t => t.work)) / 60 : null;
+    return { id: p.id, name: p.name, team: home.name, team_id: home.id, tickets: n, eligible: n >= cfg.min_tickets,
+      pace: r1(pace * 100) / 100, on_time_pct: Math.round(onRate * 100), on_time_count: onN, on_time_of: due.length, reopens_holds: miss, hours: r1(hours), team_avg_hours: r1(teamAvgH),
       typical_hours: ownH == null ? null : r1(ownH), team_typical_hours: usualH == null ? null : r1(usualH),
       parts: { pace: Math.round(P), on_time: Math.round(O), done_right: Math.round(D), load: Math.round(L) }, score: r1((W.pace * P + W.on_time * O + W.done_right * D + W.load * L) / wsum) };
   });
-  const ranked = out.filter(x => x.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets);
-  ranked.forEach((x, i) => { x.rank = i + 1; });
-  return { cfg, rows: [...ranked, ...out.filter(x => !x.eligible).sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name))] };
+  const ranked = out.filter(x => x.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets || a.name.localeCompare(b.name));
+  ranked.forEach((x, i) => { x.rank = i && ranked[i - 1].score === x.score ? ranked[i - 1].rank : i + 1; }); // equal scores share a place: 1, 2, 3, 3, 5
+  const v = { cfg, rows: [...ranked, ...out.filter(x => !x.eligible).sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name))] };
+  fairKept.set(tid, { at: Date.now(), v });
+  return v;
 }
 S.get('/fair', wrap(async req => { const f = await fairScores(req.tenantId); return { ...f, me: f.rows.find(x => x.id === req.user.id) || null }; }));
 S.put('/fair', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body || {}, cur = fairCfg(await tenantRow(req.tenantId)), w = { ...cur.weights };
-  for (const kk of Object.keys(w)) if (b.weights?.[kk] !== undefined) { const v = Number(b.weights[kk]); if (!(Number.isInteger(v) && v >= 0 && v <= 100)) throw bad('Weights: whole numbers 0 to 100'); w[kk] = v; }
+  // only whole numbers, as numbers or digits: an emptied box is told so, never quietly saved as 0
+  const whole = (v, lo, hi, label) => { const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d{1,4}$/.test(v.trim()) ? Number(v) : NaN;
+    if (!(Number.isInteger(n) && n >= lo && n <= hi)) throw bad(`${label}: a whole number ${lo} to ${hi}`); return n; };
+  const extra = Object.keys(b).filter(x => !['weights', 'min_tickets', 'window_days', 'baseline_days'].includes(x));
+  if (extra.length) throw bad(`Not a Fair Score setting: ${extra.join(', ')}`);
+  if (b.weights !== undefined) {
+    if (!b.weights || typeof b.weights !== 'object' || Array.isArray(b.weights) || Object.keys(b.weights).some(x => !(x in w))) throw bad('Weights: pace, on_time, done_right and load, each a whole number 0 to 100');
+    for (const kk of Object.keys(b.weights)) w[kk] = whole(b.weights[kk], 0, 100, 'Weights');
+  }
   if (!Object.values(w).some(v => v > 0)) throw bad('At least one weight above 0');
-  const num = (v, lo, hi, def, label) => { if (v === undefined || v === '') return def; const n = Number(v); if (!(Number.isInteger(n) && n >= lo && n <= hi)) throw bad(`${label}: a whole number ${lo} to ${hi}`); return n; };
+  const num = (v, lo, hi, def, label) => v === undefined ? def : whole(v, lo, hi, label);
   const c = { weights: w, min_tickets: num(b.min_tickets, 1, 100, cur.min_tickets, 'Minimum tickets'), window_days: num(b.window_days, 7, 365, cur.window_days, 'Ranking window (days)'),
     baseline_days: num(b.baseline_days, 14, 730, cur.baseline_days, 'Team usual time from (days)'), k: cur.k };
-  await run('UPDATE tenants SET fair_cfg=? WHERE id=?', JSON.stringify(c), req.tenantId);
+  if (c.baseline_days < c.window_days) throw bad(`“Team usual time from” (${c.baseline_days} days) must look back at least as far as the ranking window (${c.window_days} days)`);
+  await run('UPDATE tenants SET fair_cfg=? WHERE id=?', JSON.stringify(c), req.tenantId); fairStale(req.tenantId);
   await audit(req, 'fair.update', 'tenant', req.tenantId, c); return { ok: true, cfg: c };
 }));
 S.get('/points', wrap(async req => ({
@@ -1384,10 +1431,12 @@ S.get('/points', wrap(async req => ({
 })));
 
 // tickets
+// May this person open the ticket: it is in one of their teams (admins: any team of the campus), or it is escalated to them
+const canOpen = async (u, t) => !!u && (u.role === 'super_admin' || u.tenant_id === t.tenant_id) && ((await myServiceIds(u, t.tenant_id)).includes(t.service_id) || t.escalated_to === u.id
+  || !!(t.escalated_at && await one('SELECT 1 AS x FROM service_escalations e LEFT JOIN services s ON s.id=? WHERE e.user_id=? AND e.service_id IN (s.id, s.parent_id)', t.service_id, u.id)));
 async function loadTicket(req) {
   const t = await one('SELECT * FROM tickets WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
-  if (!t || !((await myServiceIds(req.user, req.tenantId)).includes(t.service_id) || t.escalated_to === req.user.id
-    || (t.escalated_at && await one('SELECT 1 AS x FROM service_escalations e LEFT JOIN services s ON s.id=? WHERE e.user_id=? AND e.service_id IN (s.id, s.parent_id)', t.service_id, req.user.id)))) throw notFound();
+  if (!t || !(await canOpen(req.user, t))) throw notFound();
   return t;
 }
 const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
@@ -1467,6 +1516,7 @@ S.post('/tickets/:id/status', wrap(async req => {
   let note = noteText(req_(req.body.note, 'Please write a note')), meta = {};
   if (!req.body.is_internal) { const pub = await requesterNote(t, note, req.body.approved, req.body.typed); note = pub.body; meta = { ...pub.meta }; }
   if (t.status === 'closed' && to === 'open') { // staff reopen a closed ticket: the requester is told (unless the note is internal), like every other step
+    if (t.reopen_requested_at) throw new HttpErr(409, 'REOPEN_REQUESTED', 'The requester has asked to reopen this ticket. Answer them with “Accept and reopen” or “Decline” at the top of the ticket.');
     await doReopen(t, actorOf(req), note, { internal: !!req.body.is_internal, meta });
     if (!req.body.is_internal) await notifyRequestors(t, 'status_open', await ticketVars(t, { note, actor_name: req.user.name }));
     return { ok: true };
@@ -1483,9 +1533,9 @@ S.post('/tickets/:id/status', wrap(async req => {
       meta = { ...meta, hold_reason: hr.label, hold_due_at: hdue };
     } else if (to === 'in_progress' || to === 'open') { // start work, or resume after a hold
       let held = 0, due = t.due_at; if (t.status === 'hold') ({ held, due } = await leaveHold(t, ts));
-      stillAs(await run('UPDATE tickets SET status=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, held, due, ts, t.id, t.status)); }
+      stillAs(await run('UPDATE tickets SET status=?, held_minutes=held_minutes+?, work_held=coalesce(work_held,0)+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, held, held, due, ts, t.id, t.status)); }
     else { let held = 0, due = t.due_at; if (t.status === 'hold') ({ held, due } = await leaveHold(t, ts));
-      stillAs(await run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, ts, req.user.id, held, due, ts, t.id, t.status));
+      stillAs(await run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, held_minutes=held_minutes+?, work_held=coalesce(work_held,0)+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, ts, req.user.id, held, held, due, ts, t.id, t.status));
       if (to === 'closed' && due) {
         // share of the SLA window used: before due → 1 - remaining/target, after due → 1 + late/target
         const cal = await calOf(t.tenant_id), target = await targetHours(t.tenant_id, t.service_id, t.priority) * 60;
@@ -1517,14 +1567,16 @@ S.post('/tickets/:id/notes', wrap(async req => {
 S.post('/tickets/:id/transfer', wrap(async req => {
   const t = await loadTicket(req), pub = await requesterNote(t, req_(req.body.note, 'Please write a note'), req.body.approved, req.body.typed), note = pub.body;
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
-  const ns = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
+  const ns = await one(`SELECT * FROM services s WHERE s.id=? AND s.tenant_id=? AND ${OPEN_TEAM('s')}`, req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
   const old = await one('SELECT name FROM services WHERE id=?', t.service_id), oldTeam = await teamEmails(t.tenant_id, t.service_id), ts = now();
   // the new team starts with its own full target from now: a ticket that arrives late is not escalated on them a minute later
   // (and the requester is not sent the "escalated" apology a second time). On hold, the held time is counted from the move.
   const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, ns.id, t.priority) * 60);
-  await tx(async () => { stillAs(await run('UPDATE tickets SET service_id=?, escalated_at=NULL, escalated_to=NULL, due_at=?, hold_started_at=CASE WHEN status=? THEN ? ELSE hold_started_at END, updated_at=? WHERE id=? AND service_id=? AND status=?',
-      ns.id, due, 'hold', ts, ts, t.id, t.service_id, t.status));
+  const heldSoFar = t.status === 'hold' && t.hold_started_at ? workingBetween(await calOf(t.tenant_id), t.hold_started_at, ts) : 0;
+  // work_from: the time with the old team is not the new team's work time (Fair Score)
+  await tx(async () => { stillAs(await run('UPDATE tickets SET service_id=?, escalated_at=NULL, escalated_to=NULL, due_at=?, work_from=?, work_held=0, held_minutes=held_minutes+?, hold_started_at=CASE WHEN status=? THEN ? ELSE hold_started_at END, updated_at=? WHERE id=? AND service_id=? AND status=?',
+      ns.id, due, ts, heldSoFar, 'hold', ts, ts, t.id, t.service_id, t.status));
     await addEvent(t, actorOf(req), 'transferred', { from: old.name, to: ns.name, body: note, meta: pub.meta }); });
   const tv = await ticketVars(t, { note, actor_name: req.user.name, from_service: old.name, to_service: ns.name });
   await notify(t, [...oldTeam, ...(await teamEmails(t.tenant_id, ns.id))], 'transferred', tv);
@@ -1551,8 +1603,12 @@ S.post('/tickets/:id/reopen-request', wrap(async req => {
 // ---------- reminders: a provider asks to be reminded about a ticket later; the ticket itself does not change ----------
 const REMIND_IN = { day: 1, '3days': 3, week: 7, month: 30 };
 S.post('/tickets/:id/reminders', wrap(async req => {
-  const t = await loadTicket(req), note = req_(req.body.note, 'Write what to remind you about').slice(0, 500), b = req.body;
-  let at = REMIND_IN[b.in] ? new Date(Date.now() + REMIND_IN[b.in] * 864e5) : new Date(b.at || '');
+  const t = await loadTicket(req), b = req.body, note = typeof b.note === 'string' ? b.note.trim().slice(0, 500) : '';
+  if (!note) throw bad('Write what to remind you about');
+  // "2026-11-25T10:00" (as typed in the box) is campus time, whatever the device or the server is set to
+  const typed = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/.exec(typeof b.at === 'string' ? b.at : '');
+  const at = REMIND_IN[b.in] ? new Date(Date.now() + REMIND_IN[b.in] * 864e5)
+    : typed ? new Date(Date.parse(dateStart((await tenantRow(t.tenant_id)).timezone || 'Asia/Kolkata', typed[1])) + (Number(typed[2]) * 60 + Number(typed[3])) * 6e4) : new Date(typeof b.at === 'string' ? b.at : '');
   if (isNaN(at)) throw bad('Pick when to remind you');
   if (at.getTime() < Date.now() + 60e3) throw bad('Pick a time in the future');
   if (at.getTime() > Date.now() + 366 * 864e5) throw bad('Pick a time within a year');
@@ -1561,9 +1617,11 @@ S.post('/tickets/:id/reminders', wrap(async req => {
   await insert('ticket_reminders', { id, tenant_id: t.tenant_id, ticket_id: t.id, user_id: req.user.id, remind_at: at.toISOString(), note, created_at: now() });
   return { ok: true, id, remind_at: at.toISOString() };
 }));
-const REM_SQL = `SELECT m.id, m.ticket_id, m.remind_at, m.note, m.fired_at, t.ticket_no, t.subject, t.status FROM ticket_reminders m JOIN tickets t ON t.id=m.ticket_id`;
+const REM_SQL = `SELECT m.id, m.ticket_id, m.remind_at, m.note, m.fired_at, t.ticket_no, t.subject, t.status, t.service_id, t.escalated_to FROM ticket_reminders m JOIN tickets t ON t.id=m.ticket_id`;
 S.get('/reminders', wrap(async req => {
-  const rows = await all(`${REM_SQL} WHERE m.user_id=? AND m.tenant_id=? AND m.done_at IS NULL ORDER BY m.remind_at LIMIT 200`, req.user.id, req.tenantId);
+  const mineIds = await myServiceIds(req.user, req.tenantId);
+  // only for tickets this person can still open (a ticket moved to another team drops off the list)
+  const rows = (await all(`${REM_SQL} WHERE m.user_id=? AND m.tenant_id=? AND m.done_at IS NULL ORDER BY m.remind_at LIMIT 200`, req.user.id, req.tenantId)).filter(r => mineIds.includes(r.service_id) || r.escalated_to === req.user.id).map(({ service_id, escalated_to, ...r }) => r);
   const n = now();
   return { due: rows.filter(r => r.remind_at <= n), upcoming: rows.filter(r => r.remind_at > n) };
 }));
@@ -1749,7 +1807,9 @@ S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
-  const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
+  let due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, t.work_from || t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + (t.work_from ? t.work_held || 0 : t.held_minutes));
+  // a target that has already been missed is not moved later by lowering the priority (an admin can extend the due time, with a reason)
+  if (due && t.due_at && ACTIVE.includes(t.status) && t.due_at < now() && due > t.due_at) due = t.due_at;
   await tx(async () => { await run('UPDATE tickets SET priority=?, priority_by_staff=1, due_at=?, updated_at=? WHERE id=?', p, due, now(), t.id); // reports joining later never change it
     await addEvent(t, actorOf(req), 'priority_changed', { from: t.priority, to: p, internal: true }); });
   return { ok: true };
@@ -2070,6 +2130,9 @@ if (getSettings().migr_mailtext_v2 !== '1') {
   fix('invite', b => b.replace(HOW_IT_WORKS.provider, '{{how_it_works}}'));
   fix('invite', b => b.includes('14 days') ? b : b.replace('You will be asked to choose your own password the first time you sign in.', 'You will be asked to choose your own password the first time you sign in. The temporary password works for 14 days.'));
   fix('password_reset', b => b.includes('14 days') ? b : b.replace('You will be asked to choose a new password when you sign in.', 'It works for 14 days. You will be asked to choose a new password when you sign in.'));
+  // a reminder: the private note stays out of the subject, and the "what happens next" words written for requesters are left out
+  if (saved.reminder?.subject === '[{{ticket_no}}] Reminder: {{note}}') { saved.reminder.subject = '[{{ticket_no}}] Reminder: {{subject}}'; n++; }
+  fix('reminder', b => b.split('\n').map(l => l.trim() === '{{progress}}' ? 'Status: {{status}}' : l).join('\n'));
   if (n) { await setSetting('mail_templates', JSON.stringify(saved)); console.log(`Wording brought up to date in ${n} saved email template${n === 1 ? '' : 's'}.`); }
   await setSetting('migr_mailtext_v2', '1');
 }

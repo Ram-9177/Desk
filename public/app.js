@@ -294,7 +294,7 @@ async function portal(slug, q, view, code) {
     <p class="muted">${services.length ? 'Pick the service you need.' : 'No services are open on this campus yet. Please check back soon.'}</p>
     ${services.filter(s => !s.parent_id || !services.some(x => x.id === s.parent_id)).map((s, i) => `<a class="svc" href="#/d/${slug}/raise/${encodeURIComponent(s.code)}"><span class="chip c${i % 5}">${I(svcIcon(s), 22)}</span>
       <span class="t"><b>${esc(s.name)}</b><span class="muted small">${isFood(s.form_schema) ? 'Rate meals or report a problem' : esc(s.description || '')}</span>
-      ${services.some(x => x.parent_id === s.id) ? `<br><span class="plate">${services.filter(x => x.parent_id === s.id).length} teams inside</span>` : ''}</span><span class="chev">${I('chev')}</span></a>`).join('')}
+      ${(n => n ? `<br><span class="plate">${n} team${n === 1 ? '' : 's'} inside</span>` : '')(services.filter(x => x.parent_id === s.id).length)}</span><span class="chev">${I('chev')}</span></a>`).join('')}
 </div>`;
 }
 
@@ -572,7 +572,7 @@ async function shell(active, render, title) {
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
       ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
-  app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
+  app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { if (S.bell?.overdue === 0) sessionStorage.removeItem('qf'); else sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
   if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
     mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
     mm.onkeydown = e => { if (e.key === 'Escape') { shut(); mb.focus(); } }; mm.querySelectorAll('a').forEach(x => x.onclick = shut);
@@ -591,8 +591,9 @@ async function bellDot(admin) {
   const show = () => document.querySelectorAll('.ndot').forEach(d => d.hidden = !S.bell?.on);
   show(); if (!S.tenant || (S.bell && S.bell.for === S.tenant && Date.now() - S.bell.at < 60e3)) return;
   try { const rem = (await api('/reminders').catch(() => ({ due: [] }))).due.length > 0;
-    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7')).counts || {}));
-    S.bell = { on, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
+    const cc = admin ? null : (await api('/reports?days=7')).counts || {};
+    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc.overdue || 0) + (cc.reopen_requests || 0) > 0);
+    S.bell = { on, overdue: cc ? cc.overdue || 0 : null, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
 }
 // Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
 function moreSheet(items) {
@@ -705,15 +706,15 @@ const REMIND_OPTS = [['day', 'Tomorrow'], ['3days', 'In 3 days'], ['week', 'In a
 function remindDlg(id, done) {
   const d = dlg(`<h2>Remind me later</h2><p class="muted small">The ticket stays as it is. At that time you get an email and it shows on your Home.</p>
     <label>When</label><div class="whochips remwhen" role="radiogroup" aria-label="When">${REMIND_OPTS.map(([k, l], i) => `<label><input type="radio" name="in" value="${k}" ${i === 2 ? 'checked' : ''}><span class="rtb">${l}</span></label>`).join('')}</div>
-    <div id="remat" hidden><label for="remdt">Date and time</label><input type="datetime-local" id="remdt" name="at"></div>
+    <div id="remat" hidden><label for="remdt">Date and time <small>(India time)</small></label><input type="datetime-local" id="remdt" name="at"></div>
     <label for="remnote">What should we remind you about?</label><textarea id="remnote" name="note" required maxlength="500" rows="3" placeholder="e.g. Check the new bulb is still working"></textarea>`,
     async f => { const k = f.querySelector('[name=in]:checked')?.value;
       if (k === 'at' && !f.at.value) throw new Error('Pick the date and time');
-      const r = await api(`/tickets/${id}/reminders`, { method: 'POST', body: { in: k === 'at' ? null : k, at: k === 'at' ? new Date(f.at.value).toISOString() : null, note: f.note.value } });
+      const r = await api(`/tickets/${id}/reminders`, { method: 'POST', body: { in: k === 'at' ? null : k, at: k === 'at' ? f.at.value : null, note: f.note.value } }); // as typed: the server reads it as campus time
       toast('Reminder set for ' + shortDate(r.remind_at)); done(); });
-  const pad = n => String(n).padStart(2, '0'), min = new Date(Date.now() + 5 * 60e3), dt = d.querySelector('#remdt');
-  dt.min = `${min.getFullYear()}-${pad(min.getMonth() + 1)}-${pad(min.getDate())}T${pad(min.getHours())}:${pad(min.getMinutes())}`;
-  d.querySelectorAll('[name=in]').forEach(r => r.onchange = () => { const on = r.value === 'at' && r.checked; if (r.checked) { d.querySelector('#remat').hidden = !on; dt.required = on; } });
+  const dt = d.querySelector('#remdt'); dt.min = toLocalInput(new Date(Date.now() + 5 * 60e3).toISOString());
+  // a date typed and then hidden again is emptied: a hidden box must never stop the form from saving
+  d.querySelectorAll('[name=in]').forEach(r => r.onchange = () => { const on = r.value === 'at' && r.checked; if (r.checked) { d.querySelector('#remat').hidden = !on; dt.required = on; if (!on) dt.value = ''; } });
   d.querySelector('button[value=ok]').textContent = 'Set reminder';
 }
 // "Check before sending": the note corrected on the server, the changes, and the exact email the requester will get.
@@ -910,7 +911,7 @@ async function workspace(main, id, { admin }) {
   main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
   const remind = () => remindDlg(id, reload);
   main.querySelectorAll('[data-remadd]').forEach(b => b.onclick = remind);
-  main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); } catch (er) { toast(er.message); } });
+  main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); bellDot(S.me.user.role !== 'provider'); } catch (er) { toast(er.message); } });
   main.querySelectorAll('[data-reo]').forEach(b => b.onclick = () => { const acc = b.dataset.reo === 'accept';
     dlg(`<h2>${acc ? 'Accept and reopen' : 'Decline the reopen request'}</h2><p class="muted">${acc ? 'The ticket opens again with a fresh target. The requester is emailed.' : 'The ticket stays closed. The requester is emailed your note.'}</p>
       <label>Note to the requester</label><textarea name="note" required maxlength="5000" placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea><div class="muted small">Spelling and short forms are tidied before it is sent.</div>`,
@@ -962,10 +963,11 @@ async function newTicket(main) {
 }
 
 async function attention(main) {
-  const a = await api('/attention');
+  const [a, rem] = await Promise.all([api('/attention'), api('/reminders').catch(() => ({ due: [] }))]);
   const sec = (icon, title, n, body, hint) => `<section class="card att"><div class="att-h">${cardHeading(icon, title)}<span class="tab-cnt ${n ? 'hot' : ''}">${n}</span></div>${n ? body : emptyState('All clear', hint)}</section>`;
   const tix = rows => `${ticketTable(rows)}<div class="tcards">${rows.map(ticketCard).join('')}</div>`;
   main.innerHTML = `<div class="attp">
+    ${rem.due.length ? sec('alarm', 'My reminders due', rem.due.length, `<div class="att-list">${rem.due.map(m => `<a class="att-row" href="#/c/t/${m.ticket_id}"><span><b>${esc(m.note)}</b><span class="psub">#${esc(m.ticket_no)} · ${esc(m.subject)} · ${shortDate(m.remind_at)}</span></span><span class="linkbtn">Open the ticket</span></a>`).join('')}</div>`, '') : ''}
     ${a.reopen_requests?.length ? sec('history', 'Reopen requests', a.reopen_requests.length, tix(a.reopen_requests), '') : ''}
     ${sec('calert', 'Overdue', a.overdue.length, tix(a.overdue), 'No ticket is past its due time.')}
     ${sec('bell', 'Escalated', a.escalated.length, tix(a.escalated), 'No open ticket is escalated.')}
@@ -1023,8 +1025,8 @@ async function services(main) {
     cd.oninput = () => { typed = true; cd.value = cd.value.replace(/[^A-Za-z0-9-]/g, '').toUpperCase(); };
     nm.addEventListener('input', () => { if (typed) return; const w = nm.value.split(/[^A-Za-z0-9]+/).filter(x => x && !/^(and|of|the|for|other)$/i.test(x));
       cd.value = (w.length > 1 ? w.map(x => x[0]).join('') : (w[0] || '').slice(0, 6)).toUpperCase().slice(0, 12); }); };
-  main.querySelectorAll('[data-act]').forEach(b => b.onclick = () => { const s = svcs.find(x => x.id === b.dataset.act), off = !!s.is_active;
-    dlg(`<h2>${off ? 'Deactivate' : 'Activate'} ${esc(s.name)}?</h2><p class="muted">${off ? 'It leaves the portal, so no new tickets can be raised for it. Its open tickets stay with the team, and you can activate it again any time.' : 'It shows on the portal again and takes new tickets.'}</p>`,
+  main.querySelectorAll('[data-act]').forEach(b => b.onclick = () => { const s = svcs.find(x => x.id === b.dataset.act), off = !!s.is_active, subs = svcs.filter(x => x.parent_id === s.id && x.is_active).length;
+    dlg(`<h2>${off ? 'Deactivate' : 'Activate'} ${esc(s.name)}?</h2><p class="muted">${off ? `It leaves the portal, so no new tickets can be raised for it${subs ? ` or for its ${subs} sub-team${subs === 1 ? '' : 's'}` : ''}. Its open tickets stay with the team, and you can activate it again any time.` : `It shows on the portal again and takes new tickets${subs ? `, and so ${subs === 1 ? 'does its sub-team' : `do its ${subs} sub-teams`}` : ''}.`}</p>`,
       async () => { await api('/services/' + s.id, { method: 'PATCH', body: { is_active: off ? 0 : 1 } }); toast(off ? 'Service deactivated' : 'Service activated'); services(main); })
       .querySelector('button[value=ok]').textContent = off ? 'Deactivate' : 'Activate'; });
   main.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const s = svcs.find(x => x.id === b.dataset.del);
@@ -1779,8 +1781,8 @@ async function profile(main) {
     <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
     <div class="pstats" style="grid-template-columns:repeat(4,1fr)"><div><b><span class="gold">${I('star', 18)}</span> ${fm?.eligible ? fm.score.toFixed(0) : '—'}</b><span>Fair Score${fm?.eligible ? ` · #${fm.rank}` : ''}</span></div><div><b>${r.counts.open || 0}</b><span>Open</span></div><div><b>${r.counts.closed_period || 0}</b><span>Closed (7d)</span></div><div><b>${mine.length}</b><span>Services</span></div></div></div>
     ${fm ? `<div class="card fme"><b>My Fair Score${fm.eligible ? `: ${fm.score.toFixed(1)}` : ''}</b><div class="muted small">Last ${fair.cfg.window_days} days, compared with your team (${esc(fm.team)}). ${fm.eligible ? `Rank ${fm.rank} on this campus.` : `Ranked from ${fair.cfg.min_tickets} closed tickets; you have ${fm.tickets}.`}</div>
-      ${FAIR_PARTS.map(([k, l]) => `<div class="fme-r"><span>${l}</span><i><b style="width:${fm.parts[k]}%"></b></i><em>${fm.parts[k]}</em></div>`).join('')}
-      <div class="muted small fme-why">${[fm.typical_hours != null ? `Your typical ticket: ${fm.typical_hours} h of work; your team's usual: ${fm.team_typical_hours} h.` : '', `${fm.on_time_pct}% on time.`, fm.reopens_holds ? `${fm.reopens_holds} reopen${fm.reopens_holds === 1 ? '' : 's'} or late hold${fm.reopens_holds === 1 ? '' : 's'}.` : 'No reopens or late holds.', `${fm.hours} work hours (team average ${fm.team_avg_hours}).`].filter(Boolean).join(' ')}</div></div>` : ''}
+      ${fm.tickets ? FAIR_PARTS.map(([k, l]) => `<div class="fme-r"><span>${l}</span><i><b style="width:${fm.parts[k]}%"></b></i><em>${fm.parts[k]}</em></div>`).join('') : ''}
+      <div class="muted small fme-why">${!fm.tickets ? `You have not closed a ticket in the last ${fair.cfg.window_days} days. Your bars show here once you do.` : [fm.typical_hours != null ? `Your typical ticket: ${fm.typical_hours} h of work; your team's usual: ${fm.team_typical_hours} h.` : '', fm.on_time_of ? `${fm.on_time_count} of ${fm.on_time_of} closed on time.` : '', fm.reopens_holds ? `${fm.reopens_holds} reopen${fm.reopens_holds === 1 ? '' : 's'} or late hold${fm.reopens_holds === 1 ? '' : 's'}.` : 'No reopens or late holds.', `${fm.hours} work hours (team average ${fm.team_avg_hours}).`].filter(Boolean).join(' ')}</div></div>` : ''}
     ${pts.history.length ? `<div class="card"><b>Recent points <span class="muted small" style="font-weight:400">(lifetime ${pts.me}, history only)</span></b>${pts.history.map(h => `<div class="brow"><span class="pill ${h.points > 0 ? 'p-low' : 'p-high'}" style="flex:0 0 48px;text-align:center">${h.points > 0 ? '+' : ''}${h.points}</span>
       <div>${esc(h.reason)}<div class="muted small">${h.ticket_id ? `<a href="#/c/t/${h.ticket_id}" class="mono">#${h.ticket_no}</a> · ` : ''}${fmt(h.created_at)}</div></div></div>`).join('')}</div>` : ''}
     <div class="menu">${S.nav.filter(([h]) => h !== 'c').map(([h, l, ic]) => `<a href="#/${h}">${tile(ic, 18)}${l}<span class="chev">${I('chev', 18)}</span></a>`).join('')}

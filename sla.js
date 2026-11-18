@@ -21,9 +21,12 @@ export const POINTS = { reopened: -5, holdBreach: -3 };
 export const closePoints = ratio => POINT_RULES.find(r => ratio <= r.upTo);
 
 const hm = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
+// one formatter per time zone, made once: building one costs far more than using it, and the working-hours clock asks thousands of times
+const zoneFmt = new Map();
+const fmtOf = tz => zoneFmt.get(tz) || (zoneFmt.set(tz, new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+  day: '2-digit', hour: '2-digit', minute: '2-digit' })), zoneFmt.get(tz));
 function offsetMin(tz, d) {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit',
-    day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(d).map(x => [x.type, x.value]));
+  const p = Object.fromEntries(fmtOf(tz).formatToParts(d).map(x => [x.type, x.value]));
   return (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - Math.floor(d.getTime() / MIN) * MIN) / MIN;
 }
 

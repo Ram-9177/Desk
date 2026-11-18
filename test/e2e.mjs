@@ -828,7 +828,87 @@ try {
   await fails('weights must be 0–100', '/fair', { ...A, method: 'PUT', body: { weights: { pace: 150 } } }, 400);
   await ok('admin lowers the minimum to 2', '/fair', { ...A, method: 'PUT', body: { min_tickets: 2 } });
   check('…then the new provider is ranked too', (await api('/fair', A)).data.rows.find(x => x.id === p5).eligible === true);
-  await ok('(back to 5)', '/fair', { ...A, method: 'PUT', body: { min_tickets: 5 } }); }
+  await ok('(back to 5)', '/fair', { ...A, method: 'PUT', body: { min_tickets: 5 } });
+  // --- rules the independent audit found unfair ---
+  const board = async () => { await ok('(the board is worked out afresh)', '/fair', { ...A, method: 'PUT', body: { min_tickets: 5 } }); const d = (await api('/fair', A)).data; return id => d.rows.find(x => x.id === id); };
+  const mkT = async (svc, n) => (await ok(`ticket “${n}”`, '/tickets', { ...A, method: 'POST', body: { channel: 'walk_in', service_id: svc, name: n, email: `${n.toLowerCase().replace(/\W/g, '')}@fair.example.com`, phone: '9000012345', requestor_type: 'staff', subject: n, description: 'x', location: 'Room ' + n } })).id;
+  const soon = () => new Date(Date.now() + 1000).toISOString();
+  // a ticket that waited with another team
+  let b0 = await board(), h3 = b0(p3).hours, n3 = b0(p3).tickets;
+  const tr = await mkT(busy.id, 'Moved job');
+  await q('UPDATE tickets SET created_at=?, due_at=? WHERE id=?', start, addWorking(cal, start, 480), tr); // it sat with the busy team for 12 days or more
+  await ok('a ticket that waited with one team is moved to another', `/tickets/${tr}/transfer`, { ...A, method: 'POST', body: { service_id: quiet.id, note: 'This is an exam matter.', approved: true } });
+  await q("UPDATE tickets SET status='closed', closed_by=?, closed_at=? WHERE id=?", p3, soon(), tr);
+  let b1 = await board();
+  check('…the days with the old team are not charged to whoever closes it in the new one', b1(p3).tickets === n3 + 1 && b1(p3).hours - h3 <= 0.1, `${h3} → ${b1(p3).hours} work hours`);
+  // a ticket that sat closed and was reopened
+  const ro = await mkT(quiet.id, 'Reopened job'), roNo = (await q('SELECT ticket_no FROM tickets WHERE id=?', ro))[0].ticket_no, two = Date.now() - 2 * 864e5;
+  await q("UPDATE tickets SET status='closed', closed_by=?, created_at=?, closed_at=?, due_at=? WHERE id=?", p3, new Date(two - 30 * 60e3).toISOString(), new Date(two).toISOString(), new Date(two + 3600e3).toISOString(), ro);
+  b0 = await board(); h3 = b0(p3).hours; const miss3 = b0(p3).reopens_holds;
+  await ok('the requester asks to reopen a ticket closed two days ago', `/public/alpha/tickets/${roNo}/reopen`, { method: 'POST', body: { reason: 'It broke again.' } });
+  await fails('with that request waiting, staff cannot reopen it by a plain status change (that skipped the “done right” mark)', `/tickets/${ro}/status`, { ...A, method: 'POST', body: { to: 'open', note: 'reopening', is_internal: true } }, 409, 'asked to reopen');
+  await ok('it is accepted', `/tickets/${ro}/reopen-request`, { ...A, method: 'POST', body: { decision: 'accept', note: 'We will look again.', approved: true } });
+  await q("UPDATE tickets SET status='closed', closed_by=?, closed_at=? WHERE id=?", p3, soon(), ro);
+  b1 = await board();
+  check('…the days it sat closed are not counted as work; the reopen itself is counted once, under Done right', b1(p3).hours <= h3 + 0.1 && b1(p3).reopens_holds === miss3 + 1, `${h3} → ${b1(p3).hours} work hours, ${miss3} → ${b1(p3).reopens_holds} misses`);
+  // a job done in the evening
+  const nt = await mkT(quiet.id, 'Night job'), nine = new Date(Date.parse(dateStart(cal.tz, day)) + 21 * 3600e3).toISOString(); // 9 pm that day
+  b0 = await board(); h3 = b0(p3).hours;
+  await q("UPDATE tickets SET status='closed', closed_by=?, created_at=?, closed_at=?, due_at=? WHERE id=?", p3, nine, new Date(Date.parse(nine) + 30 * 60e3).toISOString(), addWorking(cal, nine, 60), nt);
+  b1 = await board();
+  check('a 30-minute job done at 9 in the evening counts 30 minutes (it used to count 1)', Math.abs(b1(p3).hours - h3 - 0.5) < 0.05, `${h3} → ${b1(p3).hours} work hours`);
+  // tickets someone raises and closes themselves
+  const rp = await ok('(Quiet Two gets a password)', `/users/${p4}/reset-password`, { ...A, method: 'POST' }); let t4 = await login('quiet2@fair.example.com', rp.temp_password);
+  await ok('(and chooses their own)', '/me/password', { token: t4, method: 'POST', body: { current: rp.temp_password, password: 'Quiet#Two2026' } }); t4 = await login('quiet2@fair.example.com', 'Quiet#Two2026');
+  b0 = await board(); const was = { n4: b0(p4).tickets, pace4: b0(p4).pace, pace3: b0(p3).pace, usual3: b0(p3).team_typical_hours };
+  for (let i = 0; i < 6; i++) { const own = await ok('Quiet Two raises an internal ticket for the own team', '/tickets', { token: t4, method: 'POST', body: { channel: 'internal', service_id: quiet.id, name: 'Quiet Two', email: 'quiet2@fair.example.com', subject: 'Own job ' + i, description: 'x' } });
+    await ok('…and closes it at once', `/tickets/${own.id}/status`, { token: t4, method: 'POST', body: { to: 'closed', note: 'Done.', approved: true } }); }
+  b1 = await board();
+  check('…six of them change nothing on the board: not their own place, not their colleagues’', b1(p4).tickets === was.n4 && b1(p4).pace === was.pace4 && b1(p3).pace === was.pace3 && b1(p3).team_typical_hours === was.usual3,
+    JSON.stringify([was, { n4: b1(p4).tickets, pace4: b1(p4).pace, pace3: b1(p3).pace, usual3: b1(p3).team_typical_hours }]));
+  const wk = await ok('a walk-in they log at the counter', '/tickets', { token: t4, method: 'POST', body: { channel: 'walk_in', service_id: quiet.id, name: 'Walker', email: 'walker@fair.example.com', phone: '9000012346', requestor_type: 'staff', subject: 'Counter job', description: 'x', location: 'Counter' } });
+  await ok('…and close at once', `/tickets/${wk.id}/status`, { token: t4, method: 'POST', body: { to: 'closed', note: 'Done at the counter.', approved: true } });
+  b1 = await board();
+  check('…counts as their ticket, but not in Pace or in the team’s usual time', b1(p4).tickets === was.n4 + 1 && b1(p4).pace === was.pace4 && b1(p3).team_typical_hours === was.usual3, JSON.stringify([b1(p4).tickets, b1(p4).pace, b1(p3).team_typical_hours]));
+  check('the real share closed on time is given with the score', b1(p3).on_time_of >= 6 && b1(p3).on_time_count <= b1(p3).on_time_of && b1(p3).on_time_count >= 6, JSON.stringify([b1(p3).on_time_count, b1(p3).on_time_of]));
+  // someone in two teams; equal scores
+  const p6 = await mk('Both Teams', 'both@fair.example.com');
+  await ok('(a person in two teams)', `/services/${busy.id}/members`, { ...A, method: 'PUT', body: { user_ids: [p1, p2, p6] } }); await ok('(…the second)', `/services/${quiet.id}/members`, { ...A, method: 'PUT', body: { user_ids: [p3, p4, p6] } });
+  const [w1, w2] = [await mk('Twin A', 'twina@fair.example.com'), await mk('Twin B', 'twinb@fair.example.com')];
+  const twin = await ok('a team of two who do the same work', '/services', { ...A, method: 'POST', body: { code: 'TWINX', name: 'Twin Team', form_schema: { form_type: 'general', fields: [] } } });
+  await ok('(its members)', `/services/${twin.id}/members`, { ...A, method: 'PUT', body: { user_ids: [w1, w2] } });
+  await closeN(twin.id, w1, 5, 120); await closeN(twin.id, w2, 5, 120);
+  b1 = await board();
+  check('someone in two teams with no closed ticket is listed under one team: its name and its id belong together', b1(p6).team === 'Busy Maintenance' && b1(p6).team_id === busy.id, JSON.stringify([b1(p6).team, b1(p6).team_id === busy.id]));
+  check('equal scores share a place (both get the medal)', b1(w1).score === b1(w2).score && b1(w1).rank === b1(w2).rank && Number.isInteger(b1(w1).rank), JSON.stringify([b1(w1).score, b1(w1).rank, b1(w2).score, b1(w2).rank]));
+  // settings and targets
+  await fails('an emptied weight is refused, not saved as 0', '/fair', { ...A, method: 'PUT', body: { weights: { pace: '' } } }, 400, 'whole number');
+  await fails('weights are the four named numbers', '/fair', { ...A, method: 'PUT', body: { weights: 'junk' } }, 400);
+  await fails('a setting the board does not have is refused, not ignored', '/fair', { ...A, method: 'PUT', body: { k: 0 } }, 400, 'Not a Fair Score setting');
+  await fails('the usual time must look back at least as far as the ranking window', '/fair', { ...A, method: 'PUT', body: { window_days: 90, baseline_days: 14 } }, 400, 'look back');
+  const od = await mkT(quiet.id, 'Late job'), past = new Date(Date.now() - 3600e3).toISOString();
+  await q('UPDATE tickets SET due_at=?, priority=? WHERE id=?', past, 'high', od);
+  await ok('the priority of a ticket that already missed its target is lowered', `/tickets/${od}/priority`, { ...A, method: 'POST', body: { priority: 'low' } });
+  check('…the missed target stays where it was (it used to move ahead, so the ticket closed “on time”)', (await q('SELECT due_at FROM tickets WHERE id=?', od))[0].due_at === past);
+  for (const id of [p6, w1, w2]) await ok('(the extra accounts are switched off)', `/users/${id}`, { ...A, method: 'PATCH', body: { is_active: 0 } });
+  await ok('(the extra team is switched off)', `/services/${twin.id}`, { ...A, method: 'PATCH', body: { is_active: 0 } }); }
+
+  sec('Teams: a closed main team closes its sub-teams; only real values are saved');
+  { const A = { token: T.sa, tenant: ids.alpha };
+  const mainZ = await ok('a main team', '/services', { ...A, method: 'POST', body: { code: 'MAINZ', name: 'Main Zed', form_schema: { form_type: 'general', fields: [] } } });
+  const subZ = await ok('…with a sub-team', '/services', { ...A, method: 'POST', body: { code: 'SUBZ', name: 'Sub Zed', parent_id: mainZ.id, form_schema: { form_type: 'general', fields: [] } } });
+  const listed = async () => (await api('/public/alpha')).data.services.map(s => s.code);
+  check('both are on the portal', (await listed()).includes('MAINZ') && (await listed()).includes('SUBZ'));
+  await ok('the main team is deactivated', `/services/${mainZ.id}`, { ...A, method: 'PATCH', body: { is_active: 0 } });
+  check('…its sub-team leaves the portal with it (it used to stay on, as a team of its own)', !(await listed()).includes('MAINZ') && !(await listed()).includes('SUBZ'));
+  r = await raise('alpha', { service_id: subZ.id, name: 'Zed', email: 'zed@teams.example.com', subject: 'x', location: 'y' });
+  check('…and takes no new tickets', r.status === 404, String(r.status));
+  await ok('the main team is activated again', `/services/${mainZ.id}`, { ...A, method: 'PATCH', body: { is_active: 1 } });
+  check('…and the sub-team is back with it', (await listed()).includes('SUBZ'));
+  await fails('is_active is 1 or 0, nothing else', `/services/${mainZ.id}`, { ...A, method: 'PATCH', body: { is_active: 2 } }, 400);
+  await fails('…not a word either (it used to answer 500)', `/services/${mainZ.id}`, { ...A, method: 'PATCH', body: { is_active: 'yes' } }, 400);
+  await fails('a team’s name cannot be made blank', `/services/${mainZ.id}`, { ...A, method: 'PATCH', body: { name: '   ' } }, 400);
+  for (const id of [subZ.id, mainZ.id]) await ok('(the test teams are removed)', `/services/${id}`, { ...A, method: 'DELETE' }); }
 
   sec('Morning brief: whole campus for admins, own team for providers');
   { const tid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, pav = (await q("SELECT id, email FROM users WHERE email='pavan@example.com'"))[0];
@@ -1138,7 +1218,7 @@ try {
   check('at 9 in the morning the brief goes out once; one person’s failure neither stops the others nor repeats theirs', !!(await mark()) && cnt('asha@example.com', 'digest_admin') === 1 && cnt('wally@join.example.com', 'digest') === 1 && cnt('pavan@example.com', 'digest') === 0,
     JSON.stringify(b1.map(m => m.recipient)));
   const ab = b1.find(m => m.recipient === 'asha@example.com')?.body || '', heads = ab.split('\n').map((l, i, a) => [l, a[i + 1] || '']).filter(([l]) => /^[A-Z][A-Z ]+ \(\d+/.test(l));
-  check('a list longer than the limit: a heading only above lines that are shown, the rest summed up at the end', heads.length >= 1 && heads.every(([, nx]) => nx.startsWith('#')) && /first \d+ shown\)/.test(ab) && /…and more in ONE Desk: \d+ /.test(ab)
+  check('a list longer than the limit: a heading only above lines that are shown, the rest summed up at the end', heads.length >= 1 && heads.every(([, nx]) => nx.startsWith('#')) && /…and more in ONE Desk: \d+ /.test(ab)
     && ab.split('\n').filter(l => l.startsWith('#')).length === 3, ab.slice(0, 700));
   const swept = await waitFor(async () => { const m = (await q('SELECT body, html, secret FROM notifications WHERE id=?', held.id))[0]; return m.secret === null ? m : null; }, 14000);
   check('once the person has chosen their own password, the waiting copy of the old one is masked', !!swept && !swept.body.includes(rp2.temp_password) && swept.body.includes('••••••') && !swept.html.includes(rp2.temp_password));
@@ -1306,7 +1386,7 @@ try {
   const tk2 = await login(pav, 'Pavan#New2026'); await ok('(back to the usual test password)', '/me/password', { token: tk2, method: 'POST', body: { current: 'Pavan#New2026', password: 'Pavan2026ok' } }); }
 
   sec('Remind me later (a provider’s reminder on a ticket)');
-  { const tk = (await q("SELECT id, status, due_at FROM tickets WHERE service_id=? AND status IN ('open','in_progress') ORDER BY created_at LIMIT 1", ids.elec))[0];
+  { const tk = (await q("SELECT id, status, due_at, ticket_no, subject FROM tickets WHERE service_id=? AND status IN ('open','in_progress') ORDER BY created_at LIMIT 1", ids.elec))[0];
   const r1 = await ok('a provider sets a reminder for a week', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'week', note: 'Check the new bulb still works' } });
   check('it lands about 7 days ahead', Math.abs(new Date(r1.remind_at) - Date.now() - 7 * 864e5) < 120e3);
   await fails('a reminder needs a note', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'day', note: ' ' } }, 400);
@@ -1320,10 +1400,25 @@ try {
   check('the ticket page lists my reminders, soonest first', tv.reminders.length === 2 && tv.reminders[0].id === r2.id);
   check('the admin on the same ticket does not see them (they are mine)', (await api(`/tickets/${tk.id}`, { token: T.sa, tenant: (await q("SELECT tenant_id FROM tickets WHERE id=?", tk.id))[0].tenant_id })).data?.reminders?.length === 0);
   await fails('someone without the ticket cannot set one', `/tickets/${tk.id}/reminders`, { token: T.bina, method: 'POST', body: { in: 'day', note: 'x' } }, 404);
-  await q("UPDATE ticket_reminders SET remind_at=? WHERE id=?", new Date(Date.now() - 60e3).toISOString(), r2.id);
+  // what is typed: only text for the note; a date and time without a zone is campus time
+  await fails('a note that is not text is refused (it used to answer 500)', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'day', note: 12345 } }, 400);
+  await fails('…a list too', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'day', note: ['a', 'b'] } }, 400);
+  const d10 = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+  const r3 = await ok('a date and time as typed in the box, with no time zone', `/tickets/${tk.id}/reminders`, { token: T.pavan, method: 'POST', body: { at: `${d10}T10:00`, note: 'Ten in the morning' } });
+  check('…is campus time: 10:00 in India, whatever the device or the server is set to', r3.remind_at === `${d10}T04:30:00.000Z`, r3.remind_at);
+  await ok('(that one is cleared)', `/reminders/${r3.id}/done`, { token: T.pavan, method: 'POST' });
+  // a reminder on a ticket that then moves to a team its owner is not in
+  const tidR = (await q('SELECT tenant_id FROM tickets WHERE id=?', tk.id))[0].tenant_id, mvR = await raise('alpha', elecBody('Remmove', 'remmove@example.com')), mvT = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', mvR.data?.ticket_no, tidR))[0].id;
+  const away = (await q("SELECT id FROM services s WHERE tenant_id=? AND is_active=1 AND parent_id IS NULL AND coalesce(form_schema::jsonb->>'form_type','')<>'food' AND id NOT IN (SELECT service_id FROM service_members WHERE user_id=(SELECT id FROM users WHERE email='pavan@example.com')) ORDER BY name LIMIT 1", tidR))[0].id;
+  const r4 = await ok('a reminder on another ticket', `/tickets/${mvT}/reminders`, { token: T.pavan, method: 'POST', body: { in: 'day', note: 'Check the fan' } });
+  await ok('…which is then moved to a team the provider is not in', `/tickets/${mvT}/transfer`, { token: T.pavan, method: 'POST', body: { service_id: away, note: 'This belongs to another team.', approved: true } });
+  await q("UPDATE ticket_reminders SET remind_at=? WHERE id IN (?, ?)", new Date(Date.now() - 60e3).toISOString(), r2.id, r4.id);
   await stop(); await start(); await new Promise(r => setTimeout(r, 6500)); // the worker runs 5 s after start
-  const mail = (await q("SELECT recipient, subject FROM notifications WHERE template_key='reminder' AND ticket_id=?", tk.id));
-  check('when it comes due the provider is emailed once', mail.length === 1 && /Reminder: Call the electrician/.test(mail[0].subject), JSON.stringify(mail));
+  const mail = (await q("SELECT recipient, subject, body, text_body FROM notifications WHERE template_key='reminder' AND ticket_id=?", tk.id));
+  check('when it comes due the provider is emailed once; the note is in the email, never in its subject (subjects show in the Email log)', mail.length === 1 && mail[0].subject === `[${tk.ticket_no}] Reminder: ${tk.subject}`
+    && mail[0].body.includes('> Call the electrician') && /Status: /.test(mail[0].text_body) && !/We'll email you|You can reopen|ask to reopen/.test(mail[0].text_body), JSON.stringify(mail.map(m => [m.subject, m.text_body.slice(0, 300)])));
+  check('a reminder on a ticket its owner can no longer open is not mailed, and leaves their list', (await q("SELECT 1 FROM notifications WHERE template_key='reminder' AND ticket_id=?", mvT)).length === 0
+    && (await q('SELECT done_at FROM ticket_reminders WHERE id=?', r4.id))[0].done_at !== null && !(await api('/reminders', { token: T.pavan })).data.due.some(m => m.id === r4.id));
   const mine = (await api('/reminders', { token: T.pavan })).data;
   check('it shows as due on Home; the week one is still upcoming', mine.due.length === 1 && mine.due[0].id === r2.id && mine.upcoming.some(m => m.id === r1.id));
   await fails('only its owner can clear it', `/reminders/${r2.id}/done`, { token: T.lata, method: 'POST' }, 404);

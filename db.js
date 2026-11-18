@@ -123,6 +123,10 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS food_chips TEXT;
 -- Forgot password: a temporary password emailed to the person, good for an hour, next to their own (so nobody is locked out)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_pw_expires TEXT;
+-- Fair Score: when the ticket reached the team that has it now (moved in from another team, or reopened), and the working
+-- minutes it has been on hold since then. Empty = since it was raised (or landed from the queue).
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS work_from TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS work_held INT DEFAULT 0;
 -- When an admin issued the temporary password a new or reset account signs in with: it stops working after 14 days
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_issued_at TEXT;
 -- The password an email carries, kept only until that email is handed over: then it is masked in the stored copy and this is emptied
