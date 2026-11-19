@@ -908,6 +908,19 @@ try {
   const tk = await api('/public/alpha/tickets', { method: 'POST', body: { service_id: elec, name: 'Nia', email: 'nia@notice.example.com', phone: '9000088881', requestor_type: 'student', identifier: 'S9', department: 'BPT', subject: 'Fan not working', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Notice room 7', issue: 'Fan' }, seen_notices: [nt.id] } });
   const tid2 = (await q('SELECT id FROM tickets WHERE ticket_no=? AND tenant_id=?', tk.data?.ticket_no, tid))[0]?.id;
   check('a ticket raised after reading it says so (for the team only)', !!tid2 && (await q("SELECT is_internal FROM ticket_events WHERE ticket_id=? AND event_type='notice_seen'", tid2))[0]?.is_internal === 1, JSON.stringify(tk.error || ''));
+  // a provider shares the team's notice and a policy in a reply; the requester gets them in the email and on the ticket page
+  const pol2 = await ok('a live policy to share', '/notices', { token: T.pavan, method: 'POST', body: { kind: 'policy', service_id: elec, title: 'Power work timings', body: 'Work in rooms is done 9 to 5.', status: 'published' } });
+  const shr = (await ok('the ticket lists what can be shared', `/tickets/${tid2}/shareable`, { token: T.pavan }));
+  check('…the team\'s live notice and policy, and the campus notice', [nt.id, pol2.id, camp.id].every(x => shr.some(y => y.id === x)) && !shr.some(y => y.id === draft.id && 1) && !shr.some(y => y.id === pol.id), JSON.stringify(shr.map(x => x.title)));
+  await fails('a notice of another team cannot be shared', `/tickets/${tid2}/notes`, { token: T.pavan, method: 'POST', body: { body: 'See this.', approved: true, shared: [draft.id] } }, 400);
+  await ok('reply with a note + notice + policy', `/tickets/${tid2}/notes`, { token: T.pavan, method: 'POST', body: { body: 'Hi, please see the notice and our policy. Thank you.', approved: true, shared: [nt.id, pol2.id] } });
+  const nmail = (await q("SELECT text_body, html FROM notifications WHERE template_key='note' AND ticket_id=? ORDER BY created_at DESC LIMIT 1", tid2))[0];
+  check('the email has the note and "Please see" with both links', !!nmail && /Please see/.test(nmail.html + nmail.text_body) && (nmail.html + nmail.text_body).includes(`/notices/${pol2.id}`) && (nmail.html + nmail.text_body).includes(`/notices/${nt.id}`), String(nmail?.text_body).slice(0, 300));
+  const pubT = (await api(`/public/alpha/tickets/${tk.data.ticket_no}?k=${tk.data.tracking_token}`)).data;
+  check('the requester\'s ticket page lists both, no staff-only details', pubT.events.some(e => e.shared?.length === 2 && e.shared.some(x => x.kind === 'policy' && x.title === 'Power work timings') && !('url' in e.shared[0])), JSON.stringify(pubT.events.map(e => e.shared)));
+  check('each counts one share', (await q('SELECT shared FROM notices WHERE id IN (?, ?)', nt.id, pol2.id)).every(r => r.shared === 1));
+  await ok('an internal note ignores sharing', `/tickets/${tid2}/notes`, { token: T.pavan, method: 'POST', body: { body: 'internal', is_internal: true, shared: [nt.id] } });
+  check('…no extra share counted', (await q('SELECT shared FROM notices WHERE id=?', nt.id))[0].shared === 1);
   const n1 = (await api('/notices/' + nt.id, { token: T.pavan })).data;
   check('the team sees the counts: seen, found their answer, raised anyway', n1.views === 1 && n1.answered === 1 && n1.raised === 1, JSON.stringify([n1.views, n1.answered, n1.raised]));
   check('the title is tidied like a reply (no full stop added)', (await api('/notices/' + nt.id, { token: T.pavan })).data.title === 'Power cut in block a till 4pm', (await api('/notices/' + nt.id, { token: T.pavan })).data.title);

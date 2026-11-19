@@ -154,9 +154,17 @@ export function fill(tpl, vars) {
 }
 export const unknownVars = (tpl, allowed) => [...new Set([...String(tpl).matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map(m => m[1]))].filter(n => !allowed.includes(n));
 export const templateFor = (cfg, key) => ({ ...(({ subject, body }) => ({ subject, body }))(eventByKey(key) || {}), ...(cfg.templates[key] || {}) });
+// Notices / policies a provider shared with the reply ({ title, url, label }): "Please see:" with each title as a link, placed right
+// after the provider's note (the "> {{note}}" line), else before the first button, else at the end. Built here, not from the
+// typed values, so the links work while typed text still can't add any.
+const sharedLines = list => ['Please see:', ...list.filter(x => /^https?:\/\//.test(x.url)).map(x => `• [[${clean(x.title).replace(/[|\]\[]/g, ' ').trim()}|${String(x.url).replace(/[\s\]|]/g, '')}]]${x.label ? ` (${clean(x.label)})` : ''}`)];
 export function renderTemplate(cfg, key, vars) {
-  const t = templateFor(cfg, key);
-  return { subject: fill(t.subject, vars).replace(/\s*\n\s*/g, ' ').trim().slice(0, 250), body: fill(t.body, vars) };
+  const t = templateFor(cfg, key), lines = fill(t.body, vars).split('\n');
+  if (Array.isArray(vars.shared) && vars.shared.length) {
+    const q = lines.findIndex(l => /^\s*>/.test(l)), b = lines.findIndex(l => /^\s*\[\[[^\]]+\]\]\s*$/.test(l));
+    lines.splice(q >= 0 ? q + 1 : b >= 0 ? b : lines.length, 0, ...sharedLines(vars.shared));
+  }
+  return { subject: fill(t.subject, vars).replace(/\s*\n\s*/g, ' ').trim().slice(0, 250), body: lines.join('\n') };
 }
 // Plain-text version: buttons become "label: link", bold markers dropped.
 const STEP_TEXT = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Not accepted' };

@@ -514,9 +514,9 @@ async function createTicket(tenant, b, opts) {
     await saveFiles(t, ev, b.files, opts.actor.type);
     // the team's notices the requester read before raising it: noted for the team (internal) and counted on the notice
     const seen = Array.isArray(b.seen_notices) ? [...new Set(b.seen_notices.map(String))].slice(0, 10) : [];
-    for (const nid of seen) { const nt = await one('SELECT id, title FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', nid, t.tenant_id); if (!nt) continue;
+    for (const nid of seen) { const nt = await one('SELECT id, title, kind FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', nid, t.tenant_id); if (!nt) continue;
       await run('UPDATE notices SET raised=raised+1 WHERE id=?', nt.id);
-      await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'notice_seen', { body: `The requester read the notice "${nt.title}" and still raised this ticket.`, internal: true, meta: { notice_id: nt.id } }); }
+      await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'notice_seen', { body: `The requester read the ${nt.kind === 'policy' ? 'policy' : 'notice'} "${nt.title}" and still raised this ticket.`, internal: true, meta: { notice_id: nt.id } }); }
     return t;
   }); } catch (e) { // the same submission arriving twice at once: the unique index keeps one, return it
     const ex = e.code === '23505' && b.idempotency_key && await one('SELECT * FROM tickets WHERE tenant_id=? AND idempotency_key=?', tenant.id, b.idempotency_key);
@@ -589,7 +589,7 @@ async function closeEarlier(t, req, note) {
 const providerCard = ({ name, email, phone }, type) => (type || 'student') === 'student' ? { name, email } : { name, email, phone };
 async function publicTicket(t) {
   const svc = await one('SELECT name, code FROM services WHERE id=?', t.service_id), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
-  const ev = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_name,created_at FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
+  const ev = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_name,created_at,meta FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
   const att = await all('SELECT event_id,file_name,mime_type,storage_key,source,stamped_at FROM attachments WHERE ticket_id=?', t.id);
   const r = await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id);
   // no priority here: the service provider sets it, for the team only
@@ -600,7 +600,8 @@ async function publicTicket(t) {
     hold_label: t.status === 'hold' && t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label : null, hold_due_at: t.status === 'hold' ? t.hold_due_at : null,
     reopen_until: t.status === 'closed' ? addH(t.closed_at, tn.reopen_window_days * 24) : null,
     providers: tn.show_provider_contact ? (await providersFor(t.tenant_id, t.service_id)).map(p => providerCard(p, r?.requestor_type)) : [],
-    events: ev.map(e => ({ ...e, actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: att.filter(a => a.event_id === e.id) })) };
+    events: ev.map(({ meta, ...e }) => { let m = {}; try { m = JSON.parse(meta || '{}'); } catch { /* none */ } // only the shared notices / policies leave the server, not staff-only meta
+      return { ...e, shared: (m.shared || []).map(x => ({ id: x.id, kind: x.kind, title: x.title, team: x.team })), actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name, files: att.filter(a => a.event_id === e.id) }; }) };
 }
 async function findPublic(slug, no, q) {
   const tn = await tenantBySlug(slug);
@@ -726,7 +727,7 @@ const noticesOut = async rows => { // what the public sees of each notice, with 
   if (!rows.length) return [];
   const files = await all('SELECT notice_id, file_name, mime_type, size_bytes, storage_key FROM notice_files WHERE notice_id = ANY(?::text[]) ORDER BY created_at', rows.map(r => r.id));
   return rows.map(n => ({ id: n.id, kind: n.kind || 'notice', title: n.title, body: n.body, audience: n.audience, important: !!n.important, starts_at: n.starts_at, ends_at: n.ends_at,
-    team: n.team || 'Whole campus', service_id: n.service_id, posted_by: n.created_by_name, created_at: n.created_at,
+    team: n.team || 'Whole campus', team_code: n.team_code || null, service_id: n.service_id, posted_by: n.created_by_name, created_at: n.created_at,
     files: files.filter(f => f.notice_id === n.id).map(f => ({ name: f.file_name, type: f.mime_type, size: f.size_bytes, url: `/api/notice-files/${f.storage_key}` })) }));
 };
 const noticeOut = async n => (await noticesOut([n]))[0];
@@ -755,7 +756,7 @@ P.get('/:slug/policies/for/:serviceId', wrap(async req => {
 }));
 P.get('/:slug/notices/:id', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now();
-  const r = await one(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, req.params.id, tn.id, n, n);
+  const r = await one(`SELECT x.*, s.name team, s.code team_code FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, req.params.id, tn.id, n, n);
   if (!r) throw notFound(); return noticeOut(r);
 }));
 // counts for the team: shown (views), "This answers my question" (answered); "raised" is counted when the ticket is made
@@ -1348,10 +1349,32 @@ S.post('/tickets', wrap(async req => {
   if (channel === 'internal') Object.assign(b, { name: req.user.name, email: req.user.email, phone: req.user.phone, requestor_type: 'staff' });
   return await createTicket(tn, b, { channel, actor: actorOf(req) });
 }));
+// ---------- sharing a notice or policy in a reply ----------
+// A provider picks live notices / policies of the ticket's team (its main team's, or the campus's) and they go with the reply:
+// listed on the ticket and in the email as "Please see: …" with a link to the page. Only live ones, at most 5 per reply.
+const shareScope = async t => { const sv = await one('SELECT id, parent_id FROM services WHERE id=?', t.service_id); return [sv.id, sv.parent_id || sv.id]; };
+async function shareable(t) {
+  const [a, b2] = await shareScope(t), n = now();
+  return all(`SELECT x.id, coalesce(x.kind,'notice') kind, x.title, x.audience, x.important, coalesce(s.name, 'Whole campus') team, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files
+    FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND (x.service_id IN (?, ?) OR x.service_id IS NULL) AND ${liveNotice('x')}
+    ORDER BY (x.service_id IS NULL), coalesce(x.kind,'notice') DESC, x.important DESC, x.title LIMIT 50`, t.tenant_id, a, b2, n, n);
+}
+async function sharedItems(t, ids) {
+  ids = [...new Set((Array.isArray(ids) ? ids : []).map(String))]; if (!ids.length) return [];
+  if (ids.length > 5) throw bad('Share at most 5 notices or policies in one reply');
+  const ok = await shareable(t), tn = await tenantRow(t.tenant_id);
+  return ids.map(id => { const x = ok.find(y => y.id === id); if (!x) throw bad('That notice or policy has ended or is not for this team. Pick it again.');
+    return { id: x.id, kind: x.kind, title: x.title, team: x.team, url: `${base()}/#/d/${tn.slug}/notices/${x.id}` }; });
+}
+// in the email: "Please see:" with each title as a link (the mailer builds it from `shared`; typed text can't add links)
+const sharedVars = items => ({ shared: items.map(x => ({ title: x.title, url: x.url, label: `${x.kind === 'policy' ? 'Policy' : 'Notice'}, ${x.team}` })) });
+const countShared = items => Promise.all(items.map(x => run('UPDATE notices SET shared=coalesce(shared,0)+1 WHERE id=?', x.id)));
+S.get('/tickets/:id/shareable', wrap(async req => shareable(await loadTicket(req))));
 S.post('/tickets/:id/status', wrap(async req => {
   const t = await loadTicket(req), to = req.body.to;
   let note = req_(req.body.note, 'Please write a note'), meta = {};
   if (!req.body.is_internal) { const pub = await requesterNote(t, note, req.body.approved, req.body.typed); note = pub.body; meta = { ...pub.meta }; }
+  const shared = req.body.is_internal ? [] : await sharedItems(t, req.body.shared); if (shared.length) meta = { ...meta, shared };
   if (t.status === 'closed' && to === 'open') { await doReopen(t, actorOf(req), note); return { ok: true }; }
   assertTransition(t.status, to);
   const ts = now();
@@ -1382,7 +1405,8 @@ S.post('/tickets/:id/status', wrap(async req => {
   if (!req.body.is_internal) {
     // after a hold, moving to "in progress" is a resume ("work resumed"); from open it is a fresh start ("work started")
     const key = to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
-    await notifyRequestors(t, key, await ticketVars(t, { note, actor_name: req.user.name,
+    await countShared(shared);
+    await notifyRequestors(t, key, await ticketVars(t, { note, ...sharedVars(shared), actor_name: req.user.name,
       hold_reason: meta.hold_reason || '', resume_by: meta.hold_due_at ? fmtIST(meta.hold_due_at) : '' }));
   }
   const closedEarlier = to === 'closed' && req.body.close_earlier && t.location_key && t.problem_key ? await closeEarlier(t, req, note) : 0;
@@ -1391,9 +1415,10 @@ S.post('/tickets/:id/status', wrap(async req => {
 S.post('/tickets/:id/notes', wrap(async req => {
   const t = await loadTicket(req), raw = req_(req.body.body, 'Write a note');
   const pub = req.body.is_internal ? { body: raw, meta: {} } : await requesterNote(t, raw, req.body.approved, req.body.typed), body = pub.body;
-  await tx(async () => { const ev = await addEvent(t, actorOf(req), 'note', { body, internal: req.body.is_internal, meta: pub.meta }); await saveFiles(t, ev, req.body.files, 'user');
+  const shared = req.body.is_internal ? [] : await sharedItems(t, req.body.shared);
+  await tx(async () => { const ev = await addEvent(t, actorOf(req), 'note', { body, internal: req.body.is_internal, meta: shared.length ? { ...pub.meta, shared } : pub.meta }); await saveFiles(t, ev, req.body.files, 'user');
     await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
-  if (!req.body.is_internal) await notifyRequestors(t, 'note', await ticketVars(t, { note: body, actor_name: req.user.name }));
+  if (!req.body.is_internal) { await countShared(shared); await notifyRequestors(t, 'note', await ticketVars(t, { note: body, ...sharedVars(shared), actor_name: req.user.name })); }
   return { ok: true };
 }));
 S.post('/tickets/:id/transfer', wrap(async req => {
@@ -1458,7 +1483,7 @@ S.post('/tickets/:id/preview', wrap(async req => {
   const key = to === 'note' ? 'note' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
   let extra = {};
   if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0]; extra = { hold_reason: hr?.label || '', resume_by: hr ? fmtIST(await dueFrom(t.tenant_id, now(), hr.hours * 60, t.service_id)) : '' }; }
-  const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }) });
+  const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, ...sharedVars(await sharedItems(t, b.shared)), actor_name: req.user.name, ...extra }) });
   const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name;
   const { subject, body } = renderTemplate(cfg, key, v), blocks = Object.fromEntries(BLOCKS.filter(x => v[x]).map(x => [x, v[x]]));
   return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || '', subject, html: renderEmail({ subject, body, campus: tn.name, blocks, requester: true }), sends: !!rq?.email && eventOn(cfg, key) };

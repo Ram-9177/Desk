@@ -221,8 +221,10 @@ async function noticesPage(slug, id) {
   if (id) { const n = await api(`/public/${slug}/notices/${id}`).catch(() => null);
     app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="${n?.kind === 'policy' ? 'javascript:history.back()' : `#/d/${slug}/notices`}" aria-label="Back">${I('back')}</a><h1>${n?.kind === 'policy' ? 'Policy' : 'Notice'}</h1></div>
       ${n ? `<article class="card ntcard ${n.important ? 'imp' : ''}">${ntTags(n)}<h2>${esc(n.title)}</h2><div class="muted small">Posted by ${esc(n.posted_by || n.team)} · ${ntWhen(n)}</div>${ntBody(n)}</article>
-        <a class="btn" href="#/d/${slug}/raise" style="width:100%">Still need help? Raise a ticket</a>` : '<div class="card"><p>This notice has ended or was removed.</p></div>'}</div>`;
-    if (n) api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: [n.id] } }).catch(() => {});
+        <a class="btn primary" href="#/d/${slug}/raise${n.team_code ? '/' + encodeURIComponent(n.team_code) : ''}" style="width:100%">${I('send', 16)} Still need help? Raise a ticket${n.team_code ? ` for ${esc(n.team)}` : ''}</a>
+        <p class="muted small" style="text-align:center">You can always raise a ticket, even after reading this. The team will see that you read it.</p>` : '<div class="card"><p>This notice has ended or was removed.</p></div>'}</div>`;
+    if (n) { api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: [n.id] } }).catch(() => {});
+      if (n.service_id) try { const k = 'ng:' + n.service_id, l = JSON.parse(sessionStorage.getItem(k) || '[]'); if (!l.includes(n.id)) sessionStorage.setItem(k, JSON.stringify([...l, n.id].slice(-10))); } catch { /* fine */ } }
     return; }
   const list = await api(`/public/${slug}/notices?for=${nbFor()}`);
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Notice board</h1></div>
@@ -502,7 +504,7 @@ async function ticketPage(slug, no, q) {
       <div><b>${sug ? (t.status === 'closed' ? 'Suggestion closed' : 'Suggestion received') : t.queue ? `In the queue · number ${t.queue.queue_no}` : STATUS_WORDS[t.status]}</b><div class="muted small">${sug && t.status !== 'closed' ? `The ${esc(t.service)} team will read it. If they reply, we'll email you.` : ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
     <h2>What happened</h2><div class="card"><ul class="stamps">${t.events.map(e => `<li><b>${label(e)}</b><div class="when">${fmt(e.created_at)}${e.actor_type === 'user' ? ' · ' + esc(e.actor_name) : ''}</div>
-      ${e.body ? `<div>${esc(e.body)}</div>` : ''}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
+      ${e.body ? `<div>${esc(e.body)}</div>` : ''}${(e.shared || []).map(x => `<a class="shrd" href="#/d/${slug}/notices/${x.id}">${I(x.kind === 'policy' ? 'file' : 'notice', 15)}<span><small>${x.kind === 'policy' ? 'Policy' : 'Notice'} · ${esc(x.team)}</small><b>${esc(x.title)}</b></span>${I('chev', 16)}</a>`).join('')}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
     ${t.status === 'rejected' ? `<div class="card">This ticket was rejected. <a href="#/d/${slug}" id="newt">Raise a new ticket</a></div>` : `
     <form id="nf" class="card"><b>Add a note</b><textarea name="body" required placeholder="Anything the team should know" style="margin-top:10px"></textarea>${fileButtons('note')}
       <p><button class="btn primary big">${I('send')} Send note</button></p></form>`}
@@ -820,7 +822,7 @@ async function workspace(main, id, { admin }) {
   const evs = t.events, last = evs.length - 1;
   const timeline = `<ol class="tl">${evs.map((e, i) => `<li class="${i === last ? 'latest' : ''}"><span class="rail"><i style="background:${evDot(e)}"></i></span>
     <div class="tlc"><div class="tlt"><b>${evLabel(e)}</b>${e.is_internal ? '<span class="tag">Internal</span>' : ''}</div><div class="tlm">${shortDate(e.created_at)} · ${esc(e.actor_name || e.actor_type || '')}</div>
-      ${e.body ? `<div class="bubble">${esc(e.body)}</div>` : ''}${meta(e).original ? `<div class="typed muted small" title="Only staff see this">Typed as: “${esc(meta(e).original)}” · tidied for the requester</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div></li>`).join('')}</ol>`;
+      ${e.body ? `<div class="bubble">${esc(e.body)}</div>` : ''}${(meta(e).shared || []).map(x => `<div class="shrd">${I(x.kind === 'policy' ? 'file' : 'notice', 15)}<span><small>Shared ${x.kind === 'policy' ? 'policy' : 'notice'} · ${esc(x.team)}</small><b>${esc(x.title)}</b></span></div>`).join('')}${meta(e).original ? `<div class="typed muted small" title="Only staff see this">Typed as: “${esc(meta(e).original)}” · tidied for the requester</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === e.id))}</div></li>`).join('')}</ol>`;
   const details = `<div class="issue"><div class="eyebrow up ic">${tile('file', 14)}Issue</div><p>${esc(t.description || t.subject)}</p></div>
     ${t.location ? `<div class="locrow m-only">${I('pin', 16)}<div><dt>Location</dt><dd>${esc(t.location)}</dd></div></div>` : ''}
     <dl class="dlist">${t.location ? `<div class="dli dli-loc"><dt>Location</dt><dd>${esc(t.location)}</dd></div>` : ''}${dl([...fd, ['Created', fmt(t.created_at)], ['Channel', cap(String(t.channel).replace('_', ' '))], ...(t.is_internal ? [['Kind', 'Internal request']] : [])])}</dl>`;
@@ -830,6 +832,7 @@ async function workspace(main, id, { admin }) {
       <div class="helper" id="tohint"></div>
       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(x => `<option value="${x.key}">${esc(x.label)} — ${x.hours}h limit</option>`).join('')}</select></div>
       <label for="unote">Note</label><div class="phr" id="phr" aria-label="Ready-made sentences"></div><textarea name="note" id="unote" required rows="4" placeholder="What did you do, or why this change? Tap a sentence above, or type your own."></textarea>
+      <div id="shrow"><div id="shsel"></div><button type="button" class="btn soft" id="shadd">${I('file', 16)} Add notice / policy</button></div>
       ${t.location_key && t.problem_key ? `<label id="earlyrow" class="chk" hidden><input type="checkbox" name="close_earlier"> Also close earlier open tickets for the same problem and location</label>` : ''}
       <div class="upd-row"><label class="iconbtn" aria-label="Attach a photo from camera">${I('camera', 18)}<input hidden type="file" accept="image/*" capture="environment" multiple data-source="camera" class="f-act"></label>
         <label class="iconbtn" aria-label="Attach from gallery">${I('image', 18)}<input hidden type="file" accept="image/*,application/pdf" multiple data-source="gallery" class="f-act"></label>
@@ -870,19 +873,33 @@ async function workspace(main, id, { admin }) {
   $('#updX').onclick = () => sheet(false); main.querySelector('.upd-back').onclick = () => sheet(false);
   const sel = $('#to'), sync = () => { const to = sel.value, same = to === t.status;
     $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to]; if ($('#earlyrow')) $('#earlyrow').hidden = to !== 'closed';
+    $('#shrow').hidden = $('#act').is_internal.checked;
     $('#mailhint').textContent = $('#act').is_internal.checked ? 'Saved as an internal note. The requester will not be emailed.' : "Before it goes out you'll see it corrected, inside the email the requester gets.";
     // ready-made sentences for this step (tap to add)
     const step = same ? 'note' : to === 'in_progress' && t.status === 'hold' ? 'open' : to, list = (phr.phrases || {})[step] || [];
     $('#phr').innerHTML = list.map((x, i) => `<button type="button" class="phc" data-ph="${i}">${esc(x)}</button>`).join('');
     $('#phr').querySelectorAll('[data-ph]').forEach(b => b.onclick = () => { const ta = $('#unote'), v = ta.value.trim(); ta.value = (v ? v + (/[.!?]$/.test(v) ? ' ' : '. ') : '') + list[b.dataset.ph]; ta.focus(); }); };
   sel.onchange = sync; $('#act').is_internal.onchange = sync; sync();
+  // share the team's live notices / policies with the reply: picked here, listed in the email as "Please see: …" with a link
+  const shared = [], drawShared = () => { $('#shsel').innerHTML = shared.map((x, i) => `<div class="shrd">${I(x.kind === 'policy' ? 'file' : 'notice', 15)}<span><small>${x.kind === 'policy' ? 'Policy' : 'Notice'} · ${esc(x.team)}</small><b>${esc(x.title)}</b></span><button type="button" class="msheet-x" data-shx="${i}" aria-label="Remove ${esc(x.title)}">${I('x', 16)}</button></div>`).join('');
+    $('#shsel').querySelectorAll('[data-shx]').forEach(b => b.onclick = () => { shared.splice(+b.dataset.shx, 1); drawShared(); }); };
+  $('#shadd').onclick = async () => { let list; try { list = await api(`/tickets/${id}/shareable`); } catch (er) { return toast(er.message); }
+    const d = document.createElement('dialog'); d.className = 'sheet shpick';
+    d.innerHTML = `<div class="pv-h"><b>Share a notice or policy</b><button type="button" class="msheet-x" data-c aria-label="Close">${I('x', 20)}</button></div>
+      <p class="muted small" style="margin:0 0 10px">It goes with your reply: the requester gets a link to it in the email and on their ticket page.</p>
+      ${list.length ? list.map(x => `<button type="button" class="shopt" data-sh="${x.id}" ${shared.some(y => y.id === x.id) ? 'disabled' : ''}>${I(x.kind === 'policy' ? 'file' : 'notice', 18)}<span><small>${x.kind === 'policy' ? 'Policy' : 'Notice'} · ${esc(x.team)}${x.files ? ` · 📎 ${x.files}` : ''}</small><b>${esc(x.title)}</b></span>${shared.some(y => y.id === x.id) ? '<i class="muted small">Added</i>' : I('plus', 18)}</button>`).join('')
+        : `<p class="muted">No live notices or policies for this team yet. Post one under More → Notices.</p>`}`;
+    document.body.append(d); d.showModal(); const close = () => { d.close(); d.remove(); };
+    d.querySelector('[data-c]').onclick = close; d.oncancel = e2 => { e2.preventDefault(); close(); };
+    d.querySelectorAll('[data-sh]').forEach(b => b.onclick = () => { if (shared.length >= 5) return toast('At most 5 in one reply'); shared.push(list.find(x => x.id === b.dataset.sh)); drawShared(); close(); }); };
   $('#act').onsubmit = async e => {
     e.preventDefault(); const f = e.target, to = f.to.value, note = f.note.value.trim();
     if (!note) return toast('Write a note first');
     if (to === 'hold' && !f.hold_reason.value) return toast('Pick a hold reason');
     try { let final = note, approved = false;
-      if (!f.is_internal.checked) { const p = await replyPreview(id, { to, note, hold_reason: f.hold_reason.value }, t); if (p == null) return; final = p; approved = true; }
-      const body = { note: final, body: final, approved, typed: note, is_internal: f.is_internal.checked, files: await readFiles(document.querySelectorAll('.f-act')) };
+      const shareIds = f.is_internal.checked ? [] : shared.map(x => x.id);
+      if (!f.is_internal.checked) { const p = await replyPreview(id, { to, note, hold_reason: f.hold_reason.value, shared: shareIds }, t); if (p == null) return; final = p; approved = true; }
+      const body = { note: final, body: final, approved, typed: note, is_internal: f.is_internal.checked, shared: shareIds, files: await readFiles(document.querySelectorAll('.f-act')) };
       if (to === t.status) { await api(`/tickets/${id}/notes`, { method: 'POST', body }); toast('Note added'); }
       else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value, close_earlier: !!f.close_earlier?.checked } });
         toast((res.points != null ? `Closed · ${res.points > 0 ? '+' : ''}${res.points} points` : `Status: ${STATUS_INFO[to][0]}`) + (res.closed_earlier ? ` · ${res.closed_earlier} earlier closed too` : '')); }
@@ -1661,7 +1678,7 @@ async function noticesAdmin(main) {
       <div class="tabs">${STATES.map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}${by[k].length ? ` <span class="cnt">${by[k].length}</span>` : ''}</button>`).join('')}</div>
       <div class="ntlist">${by[st.tab].map(n => `<div class="card ntadm ${n.important ? 'imp' : ''}">${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>
         <h3>${esc(n.title)}</h3><div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · ${pol ? `updated ${shortDate(n.updated_at || n.created_at)}` : `from ${shortDate(n.starts_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}`}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
-        <div class="muted small" style="margin-top:4px">${pol ? `👁 Opened ${n.views}` : `👁 Seen ${n.views} · <b style="color:var(--ok)">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway`} · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
+        <div class="muted small" style="margin-top:4px">${pol ? `👁 Opened ${n.views} · 💬 shared in ${n.shared || 0} repl${n.shared === 1 ? 'y' : 'ies'}` : `👁 Seen ${n.views} · <b style="color:var(--ok)">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway · 💬 shared in ${n.shared || 0} repl${n.shared === 1 ? 'y' : 'ies'}`} · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
         <div class="ntacts"><button class="btn" data-ed="${n.id}">${I('pencil', 15)} Edit</button>
           ${n.state === 'draft' ? `<button class="btn primary" data-pub="${n.id}">Publish</button>` : n.state === 'live' ? `<button class="btn" data-end="${n.id}">${pol ? 'Withdraw' : 'End now'}</button>`
             : n.state === 'scheduled' ? `<button class="btn" data-undo="${n.id}">Move to drafts</button>` : `<button class="btn" data-again="${n.id}">Show again</button>`}
