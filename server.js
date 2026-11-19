@@ -108,17 +108,23 @@ async function targetHours(tenantId, serviceId, priority) {
 const fmtIST = iso => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
 const addH = (iso, h) => new Date(new Date(iso).getTime() + h * 3600e3).toISOString();
 const tenantRow = async id => await one('SELECT * FROM tenants WHERE id=?', id);
-const calOf = async tenantId => calendar(await tenantRow(tenantId));
+// A department's working hours: its own, else its main team's, else the campus's
+const teamHours = (tn, s) => s?.work_days ? { ...tn, work_start: s.work_start, work_end: s.work_end, work_days: s.work_days }
+  : s?.p_work_days ? { ...tn, work_start: s.p_work_start, work_end: s.p_work_end, work_days: s.p_work_days } : tn;
+const svcHoursRow = id => one(`SELECT s.id, s.work_start, s.work_end, s.work_days, s.escalate_holds, p.work_start p_work_start, p.work_end p_work_end, p.work_days p_work_days, p.escalate_holds p_escalate_holds
+  FROM services s LEFT JOIN services p ON p.id=s.parent_id WHERE s.id=?`, id);
+const calFor = async (tn, serviceId) => calendar(teamHours(tn, serviceId ? await svcHoursRow(serviceId) : null));
+const calOf = async (tenantId, serviceId) => calFor(await tenantRow(tenantId), serviceId);
 const holdReasons = tn => { try { return JSON.parse(tn.hold_reasons) || DEFAULT_HOLD_REASONS; } catch { return DEFAULT_HOLD_REASONS; } };
-const dueFrom = async (tenantId, startIso, minutes) => addWorking(await calOf(tenantId), startIso, minutes);
+const dueFrom = async (tenantId, startIso, minutes, serviceId) => addWorking(await calOf(tenantId, serviceId), startIso, minutes);
 async function award(t, userId, points, reason) {
   if (userId) await insert('provider_points', { id: uid(), tenant_id: t.tenant_id, user_id: userId, ticket_id: t.id, points, reason, created_at: now() });
 }
 // Leaving hold: shift the due time by the working time held, and penalise a hold that ran past its own SLA.
 async function leaveHold(t, ts) {
-  const held = workingBetween(await calOf(t.tenant_id), t.hold_started_at, ts);
+  const held = workingBetween(await calOf(t.tenant_id, t.service_id), t.hold_started_at, ts);
   if (t.hold_due_at && ts > t.hold_due_at) await award(t, t.hold_by, POINTS.holdBreach, 'Hold ran past its hold SLA');
-  return { held, due: t.due_at ? addWorking(await calOf(t.tenant_id), t.due_at, held) : null }; // a suggestion has no target to move
+  return { held, due: t.due_at ? addWorking(await calOf(t.tenant_id, t.service_id), t.due_at, held) : null }; // a suggestion has no target to move
 }
 
 // Validate and normalise a service's custom form (built in the admin's field builder).
@@ -343,9 +349,10 @@ setInterval(() => digest().catch(e => console.error('digest', e.message)), 60e3)
 // A ticket goes to its service's providers first. When it misses its target (or a hold passes its limit) by the
 // campus's "escalate after" working days, it escalates to the service's escalation person (else a campus admin, else the super admin).
 // The team's own time (hours, Services → Escalate after) wins over the campus's (days, SLA & points); a sub-team without one uses its main team's.
-function escalationDue(t, tn, hours) {
-  const cal = calendar(tn), mins = hours != null ? Math.round(hours * 60) : Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
-  const from = ACTIVE.includes(t.status) ? t.due_at : tn.escalate_holds ? t.hold_due_at : null;
+function escalationDue(t, tn, team = {}) {
+  const cal = calendar(teamHours(tn, team.row)), hours = team.hours ?? null, holds = team.holds ?? tn.escalate_holds;
+  const mins = hours != null ? Math.round(hours * 60) : Math.round((tn.escalate_after_days || 0) * (cal.end - cal.start));
+  const from = ACTIVE.includes(t.status) ? t.due_at : holds ? t.hold_due_at : null;
   if (!from) return null;
   return mins > 0 ? addWorking(cal, from, mins) : from; // 0 days = the moment the target is missed
 }
@@ -376,8 +383,10 @@ async function runEscalations() {
   const n = now();
   for (const tn of await all('SELECT * FROM tenants WHERE is_active=1')) {
     const due = await all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND ((status IN ('open','in_progress') AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
-    const hrs = Object.fromEntries((await all('SELECT s.id, coalesce(s.escalate_after_hours, p.escalate_after_hours) h FROM services s LEFT JOIN services p ON p.id=s.parent_id WHERE s.tenant_id=?', tn.id)).map(r => [r.id, r.h]));
-    for (const t of due) { try { const at = escalationDue(t, tn, hrs[t.service_id] ?? null); if (at && at <= n) await escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
+    const teams = Object.fromEntries((await all(`SELECT s.id, coalesce(s.escalate_after_hours, p.escalate_after_hours) h, coalesce(s.escalate_holds, p.escalate_holds) holds,
+      s.work_start, s.work_end, s.work_days, p.work_start p_work_start, p.work_end p_work_end, p.work_days p_work_days FROM services s LEFT JOIN services p ON p.id=s.parent_id WHERE s.tenant_id=?`, tn.id))
+      .map(r => [r.id, { hours: r.h, holds: r.holds, row: r }]));
+    for (const t of due) { try { const at = escalationDue(t, tn, teams[t.service_id]); if (at && at <= n) await escalate(t); } catch (e) { console.error('escalation', t.ticket_no, e.message); } }
   }
 }
 const escalations = () => runEscalations().catch(e => console.error('escalation', e.message));
@@ -389,7 +398,7 @@ setInterval(escalations, 60e3); setTimeout(escalations, 3000);
 const nextDay = ymd => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); };
 async function queueSlot(tn, svc, today) {
   await one('SELECT pg_advisory_xact_lock(hashtext(?)) AS x', 'cap|' + svc.id); // tickets for one team take their places one at a time
-  const cal = calendar(tn), cap = svc.daily_cap;
+  const cal = await calFor(tn, svc.id), cap = svc.daily_cap;
   let d = today;
   for (let i = 0; i < 1000; i++) {
     if (d === today || cal.days.has(new Date(d + 'T00:00:00Z').getUTCDay())) {
@@ -496,7 +505,7 @@ async function createTicket(tenant, b, opts) {
     const t = await insert('tickets', { id: uid(), tenant_id: tenant.id, ticket_no: await nextTicketNo(tenant), service_id: svc.id, requestor_id: r.id,
       subject: String(b.subject).slice(0, 200), description: b.description, location: b.location, form_data: JSON.stringify(b.form_data || {}),
       priority, status: 'open', channel: opts.channel, is_internal: opts.channel === 'internal' ? 1 : 0, created_by_user_id: opts.actor.type === 'user' ? opts.actor.id : null,
-      due_at: suggestion ? null : await dueFrom(tenant.id, slot.lands_at || ts, await targetHours(tenant.id, svc.id, priority) * 60), kind: suggestion ? 'suggestion' : 'issue', tracking_token: crypto.randomBytes(24).toString('base64url'),
+      due_at: suggestion ? null : await dueFrom(tenant.id, slot.lands_at || ts, await targetHours(tenant.id, svc.id, priority) * 60, svc.id), kind: suggestion ? 'suggestion' : 'issue', tracking_token: crypto.randomBytes(24).toString('base64url'),
       idempotency_key: b.idempotency_key || null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,
       location_key: lkey, problem_key: prob?.key, problem_label: prob?.label, created_date: day, affected_count: 1, priority_by_staff: byStaff ? 1 : 0, not_merged: b.merge === 'no' ? 1 : 0,
       queued: slot.queued ? 1 : 0, queue_day: slot.day, lands_at: slot.lands_at || null });
@@ -547,7 +556,7 @@ async function joinTicket(t, r, b, contact, actor, ts) {
   const { n } = await one('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=?', t.id);
   // more people affected raises the priority; it is never lowered, and a priority a provider set by hand is left alone
   const p = !t.priority_by_staff && RANK[priorityFor(n)] > RANK[t.priority] ? priorityFor(n) : t.priority;
-  const due = p === t.priority ? t.due_at : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
+  const due = p === t.priority ? t.due_at : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes, t.service_id);
   await run('UPDATE tickets SET affected_count=?, priority=?, due_at=?, updated_at=? WHERE id=?', n, p, due, ts, t.id);
   if (p !== t.priority) await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'priority_changed', { from: t.priority, to: p, internal: true, meta: { reason: `${n} people affected` } });
   return { ticket: { ...t, affected_count: n, priority: p, due_at: due }, again: false, count: n };
@@ -657,7 +666,7 @@ async function doReopen(t, actor, reason, { penalty = false } = {}) {
   await tx(async () => {
     if (penalty) await award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
     stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, reopen_requested_at=NULL, reopen_request_note=NULL, due_at=?, updated_at=? WHERE id=? AND status=?',
-      'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), t.id, t.status));
+      'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60, t.service_id), now(), t.id, t.status));
     await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: reason });
   });
   await notify(t, (await providersFor(t.tenant_id, t.service_id)).map(p => p.email), 'reopened', await ticketVars(t, { note: reason, actor_name: actor.type === 'requestor' ? `the requestor (${actor.name})` : actor.name }));
@@ -1009,6 +1018,39 @@ S.get('/sla', wrap(async req => {
     escalate_after_days: tn.escalate_after_days ?? 0, escalate_holds: !!tn.escalate_holds,
     hold_reasons: holdReasons(tn), daily_limits: dailyLimits(tn), point_rules: POINT_RULES.map(r => ({ ...r, upTo: r.upTo === Infinity ? null : r.upTo })), points: POINTS };
 }));
+// A department's own SLA settings: working hours and days, time to close by priority, escalation. Empty = the campus's.
+S.get('/sla/service/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+  const sv = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!sv) throw notFound();
+  const tn = await tenantRow(req.tenantId), r = await svcHoursRow(sv.id), eff = teamHours(tn, r);
+  const pol = async sid => Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id IS NOT DISTINCT FROM ?', req.tenantId, sid)).map(x => [x.priority, x.target_hours]));
+  const parent = sv.parent_id ? await one('SELECT id, name, escalate_after_hours FROM services WHERE id=?', sv.parent_id) : null;
+  return { id: sv.id, name: sv.name, parent: parent?.name || null, own_hours: !!sv.work_days, inherited_from: !sv.work_days && r.p_work_days ? parent?.name : null,
+    work_start: eff.work_start, work_end: eff.work_end, work_days: String(eff.work_days).split(',').filter(Boolean).map(Number),
+    targets: await pol(sv.id), base_targets: { ...await pol(null), ...(parent ? await pol(parent.id) : {}) },
+    escalate_after_hours: sv.escalate_after_hours, base_escalate_after_hours: parent?.escalate_after_hours ?? null, campus_escalate_after_days: tn.escalate_after_days ?? 0,
+    escalate_holds: sv.escalate_holds, base_escalate_holds: !!(r.p_escalate_holds ?? tn.escalate_holds) };
+}));
+S.put('/sla/service/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+  const sv = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!sv) throw notFound();
+  const b = req.body || {}, hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
+  let ws = null, we = null, wd = null;
+  if (b.own_hours) {
+    if (!hhmm.test(b.work_start) || !hhmm.test(b.work_end) || b.work_end <= b.work_start) throw bad('Working hours must be like 09:00 – 17:00');
+    const days = [...new Set((b.work_days || []).map(Number))].filter(d => d >= 0 && d <= 6).sort();
+    if (!days.length) throw bad('Pick at least one working day');
+    [ws, we, wd] = [b.work_start, b.work_end, days.join(',')];
+  }
+  const tg = {};
+  for (const p of PRIORITIES) { const v = b.targets?.[p]; if (v === '' || v == null) continue; const n = Number(v);
+    if (!(n > 0 && n <= 5000)) throw bad('Time to close: working hours above 0 (empty = campus setting)'); tg[p] = n; }
+  const eh = escHours(b.escalate_after_hours), holds = b.escalate_holds == null || b.escalate_holds === '' ? null : b.escalate_holds ? 1 : 0;
+  await tx(async () => {
+    await run('UPDATE services SET work_start=?, work_end=?, work_days=?, escalate_after_hours=?, escalate_holds=? WHERE id=?', ws, we, wd, eh, holds, sv.id);
+    await run('DELETE FROM sla_policies WHERE tenant_id=? AND service_id=?', req.tenantId, sv.id);
+    for (const [p, h] of Object.entries(tg)) await insert('sla_policies', { id: uid(), tenant_id: req.tenantId, service_id: sv.id, priority: p, target_hours: h });
+  });
+  await audit(req, 'sla.service', 'service', sv.id, b); return { ok: true };
+}));
 S.put('/sla', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body, hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
   if (!hhmm.test(b.work_start) || !hhmm.test(b.work_end) || b.work_end <= b.work_start) throw bad('Working hours must be like 09:00 – 17:00');
@@ -1130,12 +1172,13 @@ const fairCfg = tn => { let c = {}; try { c = JSON.parse(tn.fair_cfg || '{}') ||
 const median = a => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
 const r1 = v => Math.round(v * 10) / 10, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 async function fairScores(tid) {
-  const tn = await tenantRow(tid), cfg = fairCfg(tn), cal = calendar(tn), nowMs = Date.now(), k = cfg.k;
+  const tn = await tenantRow(tid), cfg = fairCfg(tn), nowMs = Date.now(), k = cfg.k, cals = {};
+  const calOfSvc = async sid => (cals[sid] ??= await calFor(tn, sid));
   const since = d => new Date(nowMs - d * 864e5).toISOString();
   const rows = await all(`SELECT t.id, t.service_id, t.priority, t.created_at, t.lands_at, t.closed_at, t.due_at, t.held_minutes, t.closed_by, s.name service
     FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.tenant_id=? AND t.status='closed' AND t.closed_by IS NOT NULL AND coalesce(t.kind,'issue')<>'suggestion' AND t.closed_at>=?`,
     tid, since(Math.max(cfg.baseline_days, cfg.window_days)));
-  for (const t of rows) t.work = Math.max(1, workingBetween(cal, t.lands_at || t.created_at, t.closed_at) - (t.held_minutes || 0));
+  for (const t of rows) t.work = Math.max(1, workingBetween(await calOfSvc(t.service_id), t.lands_at || t.created_at, t.closed_at) - (t.held_minutes || 0));
   // the team's usual time, per priority
   const base = rows.filter(t => t.closed_at >= since(cfg.baseline_days)), campusMed = median(base.map(t => t.work)) || 60, usual = {};
   const usualOf = t => { const key = t.service_id + '|' + t.priority; if (usual[key] != null) return usual[key];
@@ -1171,7 +1214,31 @@ async function fairScores(tid) {
   });
   const ranked = out.filter(x => x.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets);
   ranked.forEach((x, i) => { x.rank = i + 1; });
-  return { cfg, rows: [...ranked, ...out.filter(x => !x.eligible).sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name))] };
+  // Departments ranked against each other. Pace and on time are measured against each department's OWN SLA target
+  // (not the campus's), so long-job teams and quick teams compete fairly:
+  //   Pace = (1.5 − average of work time ÷ the ticket's SLA target) × 100, kept to 0–100
+  //   On time = share closed by the due time;  Done right = 1 − (reopens + holds past limit) ÷ closed
+  //   Cleared = closed ÷ (closed + still open) of tickets that reached the team in the window
+  const tgt = {}, targetOf = async t => (tgt[t.service_id + '|' + t.priority] ??= await targetHours(tid, t.service_id, t.priority) * 60);
+  const svcs = await all(`SELECT s.id, s.name FROM services s WHERE s.tenant_id=? AND s.is_active=1 ORDER BY s.sort_order, s.name`, tid);
+  const openBy = Object.fromEntries((await all(`SELECT service_id, count(*)::int n FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress','hold') AND coalesce(kind,'issue')<>'suggestion' AND coalesce(lands_at, created_at)>=? GROUP BY service_id`, tid, since(cfg.window_days))).map(r => [r.service_id, r.n]));
+  const badBy = Object.fromEntries((await all(`SELECT t.service_id, count(*)::int n FROM provider_points pp JOIN tickets t ON t.id=pp.ticket_id WHERE pp.tenant_id=? AND pp.created_at>=? AND pp.reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY t.service_id`, tid, since(cfg.window_days))).map(r => [r.service_id, r.n]));
+  const deptW = { pace: W.pace, on_time: W.on_time, done_right: W.done_right, load: W.load }, dsum = wsum;
+  const depts = [];
+  for (const sv of svcs) {
+    const ts = win.filter(t => t.service_id === sv.id), n = ts.length, open = openBy[sv.id] || 0;
+    if (!n && !open) continue;
+    let ratio = 0; for (const t of ts) ratio += Math.min(3, t.work / await targetOf(t));
+    const onT = ts.filter(t => t.on !== null), avg = n ? ratio / n : 1;
+    const P = clamp((1.5 - avg) * 100, 0, 100), O = onT.length ? onT.filter(t => t.on).length / onT.length * 100 : 0;
+    const D = n ? (1 - Math.min(1, (badBy[sv.id] || 0) / n)) * 100 : 0, C = n + open ? n / (n + open) * 100 : 0;
+    depts.push({ id: sv.id, name: sv.name, tickets: n, open, eligible: n >= cfg.min_tickets, hours: r1(ts.reduce((a, t) => a + t.work, 0) / 60),
+      sla_used: r1(avg * 100) / 100, on_time_pct: Math.round(O), reopens_holds: badBy[sv.id] || 0, providers: Object.values(teams[sv.id]?.members || []).length,
+      parts: { pace: Math.round(P), on_time: Math.round(O), done_right: Math.round(D), load: Math.round(C) },
+      score: r1((deptW.pace * P + deptW.on_time * O + deptW.done_right * D + deptW.load * C) / dsum) });
+  }
+  const dr = depts.filter(d => d.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets); dr.forEach((d, i) => { d.rank = i + 1; });
+  return { cfg, departments: [...dr, ...depts.filter(d => !d.eligible).sort((a, b) => b.tickets - a.tickets)], rows: [...ranked, ...out.filter(x => !x.eligible).sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name))] };
 }
 S.get('/fair', wrap(async req => { const f = await fairScores(req.tenantId); return { ...f, me: f.rows.find(x => x.id === req.user.id) || null }; }));
 S.put('/fair', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -1247,7 +1314,7 @@ S.get('/tickets.csv', async (req, res, next) => { try {
 } catch (e) { next(e); } });
 S.get('/tickets/:id', wrap(async req => {
   const t = await loadTicket(req);
-  const tn = await tenantRow(t.tenant_id), cal = calendar(tn), n = now();
+  const tn = await tenantRow(t.tenant_id), cal = await calFor(tn, t.service_id), n = now();
   return { ...t, form_data: JSON.parse(t.form_data), overdue: ACTIVE.includes(t.status) && t.due_at < n,
     sla_left_min: ACTIVE.includes(t.status) && t.due_at ? (n <= t.due_at ? workingBetween(cal, n, t.due_at) : -workingBetween(cal, t.due_at, n)) : null,
     hold_label: t.hold_reason ? holdReasons(tn).find(r => r.key === t.hold_reason)?.label || t.hold_reason : null,
@@ -1283,7 +1350,7 @@ S.post('/tickets/:id/status', wrap(async req => {
     if (to === 'hold') {
       const hr = holdReasons(await tenantRow(t.tenant_id)).find(r => r.key === req.body.hold_reason);
       if (!hr) throw bad('Pick a hold reason');
-      const hdue = await dueFrom(t.tenant_id, ts, hr.hours * 60);
+      const hdue = await dueFrom(t.tenant_id, ts, hr.hours * 60, t.service_id);
       stillAs(await run('UPDATE tickets SET status=?, hold_started_at=?, hold_reason=?, hold_due_at=?, hold_by=?, updated_at=? WHERE id=? AND status=?', to, ts, hr.key, hdue, req.user.id, ts, t.id, t.status));
       meta = { ...meta, hold_reason: hr.label, hold_due_at: hdue };
     } else if (to === 'in_progress' || to === 'open') { // start work, or resume after a hold
@@ -1293,7 +1360,7 @@ S.post('/tickets/:id/status', wrap(async req => {
       stillAs(await run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, held_minutes=held_minutes+?, due_at=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', to, ts, req.user.id, held, due, ts, t.id, t.status));
       if (to === 'closed' && due) {
         // share of the SLA window used: before due → 1 - remaining/target, after due → 1 + late/target
-        const cal = await calOf(t.tenant_id), target = await targetHours(t.tenant_id, t.service_id, t.priority) * 60;
+        const cal = await calOf(t.tenant_id, t.service_id), target = await targetHours(t.tenant_id, t.service_id, t.priority) * 60;
         const ratio = ts <= due ? 1 - workingBetween(cal, ts, due) / target : 1 + workingBetween(cal, due, ts) / target;
         const rule = closePoints(ratio); await award(t, req.user.id, rule.points, rule.reason); meta = { ...meta, points: rule.points, sla_used_pct: Math.round(ratio * 100) };
       }
@@ -1380,7 +1447,7 @@ S.post('/tickets/:id/preview', wrap(async req => {
   const to = b.to === t.status || !b.to ? 'note' : b.to;
   const key = to === 'note' ? 'note' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
   let extra = {};
-  if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0]; extra = { hold_reason: hr?.label || '', resume_by: hr ? fmtIST(await dueFrom(t.tenant_id, now(), hr.hours * 60)) : '' }; }
+  if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0]; extra = { hold_reason: hr?.label || '', resume_by: hr ? fmtIST(await dueFrom(t.tenant_id, now(), hr.hours * 60, t.service_id)) : '' }; }
   const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }) });
   const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name;
   const { subject, body } = renderTemplate(cfg, key, v), blocks = Object.fromEntries(BLOCKS.filter(x => v[x]).map(x => [x, v[x]]));
@@ -1480,7 +1547,7 @@ S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
-  const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes);
+  const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes, t.service_id);
   await tx(async () => { await run('UPDATE tickets SET priority=?, priority_by_staff=1, due_at=?, updated_at=? WHERE id=?', p, due, now(), t.id); // reports joining later never change it
     await addEvent(t, actorOf(req), 'priority_changed', { from: t.priority, to: p, internal: true }); });
   return { ok: true };
@@ -1489,7 +1556,7 @@ S.post('/tickets/:id/extend', role('super_admin', 'tenant_admin'), wrap(async re
   const t = await loadTicket(req), h = Number(req.body.hours), reason = req_(req.body.reason, 'Give a reason');
   if (!(h > 0)) throw bad('Hours must be positive');
   if (!t.due_at) throw bad('A suggestion has no due time to extend');
-  const due = await dueFrom(t.tenant_id, t.due_at, h * 60);
+  const due = await dueFrom(t.tenant_id, t.due_at, h * 60, t.service_id);
   await tx(async () => { await run('UPDATE tickets SET due_at=?, updated_at=? WHERE id=?', due, now(), t.id);
     await addEvent(t, actorOf(req), 'due_extended', { from: t.due_at, to: due, body: reason, internal: true }); });
   return { ok: true };

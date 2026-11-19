@@ -68,6 +68,13 @@ const fairBoard = (f, team = '') => { const all_ = f.rows.filter(x => !team || x
     ${ranked.map((x, i) => `<div class="brow fbrow"><span class="rank r${x.rank}">${['🥇', '🥈', '🥉'][x.rank - 1] || x.rank}</span><div class="fb-n"><b>${esc(x.name)}</b><div class="muted small">${esc(x.team)} · ${x.tickets} closed · ${x.hours} work-h</div><div class="fb-c">${fairChips(x)}</div></div>
       <b class="fb-s">${x.score.toFixed(1)}</b></div>`).join('') || '<p class="muted small" style="margin:10px 0 0">Nobody has enough closed tickets yet in this period.</p>'}
     ${low.length ? `<div class="fb-low muted small">Not enough tickets yet: ${low.map(x => `${esc(x.name)} (${x.tickets} of ${f.cfg.min_tickets})`).join(' · ')}</div>` : ''}`; };
+// Departments ranked against each other, each measured against its own SLA targets
+const DEPT_PARTS = [['pace', 'Pace'], ['on_time', 'On time'], ['done_right', 'Done right'], ['load', 'Cleared']];
+const deptBoard = f => { const d = f.departments || [], ranked = d.filter(x => x.eligible), low = d.filter(x => !x.eligible);
+  return `<div class="fb-h"><div><b>Department ranking</b><div class="muted small">Last ${f.cfg.window_days} days · each department measured against its own SLA · ranked from ${f.cfg.min_tickets} closed tickets</div></div></div>
+    ${ranked.map(x => `<div class="brow fbrow"><span class="rank r${x.rank}">${['🥇', '🥈', '🥉'][x.rank - 1] || x.rank}</span><div class="fb-n"><b>${esc(x.name)}</b><div class="muted small">${x.tickets} closed · ${x.open} still open · ${x.on_time_pct}% on time · ${x.hours} work-h</div>
+      <div class="fb-c">${DEPT_PARTS.map(([k, l]) => `<span class="fchip2" title="${l}">${l} <b>${x.parts[k]}</b></span>`).join('')}</div></div><b class="fb-s">${x.score.toFixed(1)}</b></div>`).join('') || '<p class="muted small" style="margin:10px 0 0">No department has enough closed tickets yet in this period.</p>'}
+    ${low.length ? `<div class="fb-low muted small">Not enough tickets yet: ${low.map(x => `${esc(x.name)} (${x.tickets} of ${f.cfg.min_tickets})`).join(' · ')}</div>` : ''}`; };
 const wireFairBoard = (box, f) => { const draw = team => { box.innerHTML = fairBoard(f, team); const s = box.querySelector('.fb-team'); if (s) s.onchange = e => draw(e.target.value); }; draw(''); };
 const svcIcon = s => s.form_schema?.icon || ({ IT: 'wifi', ELEC: 'bolt', HOSTEL: 'bed', TRANS: 'bus' })[s.code] || 'grid';
 const ring = (pct, size = 96, color = 'var(--brand)', track = '#EEF0F3') => { const r = (size - 12) / 2, c = 2 * Math.PI * r;
@@ -1212,11 +1219,29 @@ async function tenants(main) {
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 async function slaPage(main) {
-  const [c, fair] = await Promise.all([api('/sla'), api('/fair')]);
+  const dept = sessionStorage.getItem('slaDept') || '';
+  const [c, fair, svcs] = await Promise.all([api('/sla'), api('/fair'), api('/services')]);
+  const dc = dept && svcs.some(x => x.id === dept) ? await api('/sla/service/' + dept) : null;
   const rRow = (r = { label: '', hours: 8 }) => `<div class="row hr" style="margin-top:8px;align-items:center"><input type="hidden" name="hk" value="${esc(r.key || '')}"><input name="hl" value="${esc(r.label)}" placeholder="e.g. Waiting for parts" style="flex:3">
     <input name="hh" type="number" min="1" value="${r.hours}" style="flex:1;min-width:80px" title="Hold limit in working hours"><button type="button" class="btn danger" data-rm style="flex:0 0 auto;min-width:0">✕</button></div>`;
   const badge = (n, cls) => `<span class="pill ${cls}" style="flex:0 0 52px;text-align:center">${n > 0 ? '+' : ''}${n}</span>`;
-  main.innerHTML = `<div class="two"><form id="sf" class="card" style="margin:0" novalidate>
+  const picker = `<div class="card" style="margin:0 0 14px"><label style="margin-top:0">Settings for</label><select id="dpick"><option value="">Whole campus (default for every department)</option>
+    ${svcs.filter(x => x.is_active).map(x => `<option value="${esc(x.id)}" ${dc?.id === x.id ? 'selected' : ''}>${x.parent_id ? '— ' : ''}${esc(x.name)}</option>`).join('')}</select>
+    <div class="muted small" style="margin-top:6px">${dc ? `Only <b>${esc(dc.name)}</b>. Anything left empty or set to “same as campus” follows the campus settings${dc.parent ? ` (or ${esc(dc.parent)}'s)` : ''}.` : 'Each department can have its own working hours, time to close and escalation. Pick one to change it.'}</div></div>`;
+  const deptForm = dc && `<form id="df" class="card" style="margin:0" novalidate>
+    <b>Working hours · ${esc(dc.name)}</b><div class="muted small">The SLA clock for this department only runs inside its own window.</div>
+    <label class="switch" style="margin-top:10px"><input type="checkbox" name="own" ${dc.own_hours ? '' : 'checked'}> Same as ${dc.inherited_from ? esc(dc.inherited_from) : 'campus'}</label>
+    <fieldset id="dh" style="border:0;padding:0;margin:0" ${dc.own_hours ? '' : 'disabled'}>
+    <div class="row"><div><label>Starts</label><input type="time" name="work_start" value="${dc.work_start}"></div><div><label>Ends</label><input type="time" name="work_end" value="${dc.work_end}"></div></div>
+    <label>Working days</label><div class="daypick">${DAYS.map((d, i) => `<label class="daychip ${dc.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${dc.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div></fieldset>
+    <b style="display:block;margin-top:18px">Time to close, by priority</b><div class="muted small">Working hours. Empty = the campus target (shown faintly).</div>
+    <div class="prow">${['critical', 'high', 'medium', 'low'].map(p => `<div><label style="text-transform:capitalize">${p}</label><input type="number" min="1" name="t_${p}" value="${dc.targets[p] || ''}" placeholder="${dc.base_targets[p] || ''}"><div class="muted small" data-d="${p}"></div></div>`).join('')}</div>
+    <b style="display:block;margin-top:18px">Escalation</b><div class="muted small">Working hours past the target before the ticket goes to this department's escalation officers. Empty = ${dc.base_escalate_after_hours != null ? `${dc.base_escalate_after_hours} h (${esc(dc.parent)})` : `the campus's ${dc.campus_escalate_after_days} working day${dc.campus_escalate_after_days == 1 ? '' : 's'}`}.</div>
+    <div class="row"><div><label>Escalate after <small>(working hours; 0 = as soon as it's missed)</small></label><input type="number" name="esc_h" min="0" max="2000" step="0.5" value="${dc.escalate_after_hours ?? ''}" placeholder="${dc.base_escalate_after_hours ?? ''}"></div>
+      <div><label>Escalate holds past their limit</label><select name="esc_holds"><option value="">Same as campus (${dc.base_escalate_holds ? 'yes' : 'no'})</option><option value="1" ${dc.escalate_holds === 1 ? 'selected' : ''}>Yes</option><option value="0" ${dc.escalate_holds === 0 ? 'selected' : ''}>No</option></select></div></div>
+    <div class="muted small" style="margin-top:14px">Daily ticket limits and hold reasons are the same for the whole campus. New targets apply to new tickets.</div>
+    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn primary big">Save ${esc(dc.name)} settings</button></p></form>`;
+  main.innerHTML = `<div class="two"><div>${picker}${deptForm || `<form id="sf" class="card" style="margin:0" novalidate>
     <b>Working hours</b><div class="muted small">The SLA clock only runs inside this window. Evenings, nights and days off don't count.</div>
     <div class="row"><div><label>Starts</label><input type="time" name="work_start" value="${c.work_start}"></div><div><label>Ends</label><input type="time" name="work_end" value="${c.work_end}"></div></div>
     <label>Working days</label><div class="daypick">${DAYS.map((d, i) => `<label class="daychip ${c.work_days.includes(i) ? 'on' : ''}" style="margin:0"><input type="checkbox" name="wd" value="${i}" ${c.work_days.includes(i) ? 'checked' : ''} hidden>${d}</label>`).join('')}</div>
@@ -1230,7 +1255,7 @@ async function slaPage(main) {
     <b style="display:block;margin-top:18px">Hold reasons — each with its own hold SLA</b><div class="muted small">On hold, the provider picks a reason. The main clock pauses and the hold must end within that many working hours.</div>
     <div class="row muted small hrhead" style="margin-top:8px"><span style="flex:3">Reason</span><span style="flex:1;min-width:80px">Hold limit (h)</span><span style="flex:0 0 44px"></span></div>
     <div id="hrs">${c.hold_reasons.map(rRow).join('')}</div><button type="button" class="btn soft" id="addr" style="margin-top:10px">${I('plus', 16)} Add reason</button>
-    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn primary big">Save SLA settings</button></p></form>
+    <div class="err" id="err"></div><p style="margin-bottom:0"><button class="btn primary big">Save SLA settings</button></p></form>`}</div>
     <div><form class="card" id="ff" style="margin-top:0"><b>Fair Score: how providers are ranked</b>
       <div class="muted small">Everyone is compared with <b>their own team</b>, so a busy team with long jobs (like Maintenance) and a quiet, quick one compete on equal terms.</div>
       <ol class="fmath">
@@ -1243,18 +1268,33 @@ async function slaPage(main) {
       <div class="prow" style="margin-top:12px">${FAIR_PARTS.map(([k, l]) => `<div><label>${l} weight</label><input type="number" min="0" max="100" name="w_${k}" value="${fair.cfg.weights[k]}"></div>`).join('')}</div>
       <div class="prow">${[['min_tickets', 'Min. tickets to rank', 1, 100], ['window_days', 'Ranking window (days)', 7, 365], ['baseline_days', 'Team usual time from (days)', 14, 730]].map(([k, l, lo, hi]) => `<div><label>${l}</label><input type="number" min="${lo}" max="${hi}" name="${k}" value="${fair.cfg[k]}"></div>`).join('')}</div>
       <div class="muted small" id="fsum"></div><div class="err" id="ferr2"></div><p style="margin-bottom:0"><button class="btn primary">Save Fair Score settings</button></p></form>
-    <div class="card" id="lb2"></div>
+    <div class="card" id="db2"></div><div class="card" id="lb2"></div>
     <div class="card"><b>Lifetime points (history and badges, not the ranking)</b><div class="muted small">Still given to whoever closes the ticket, by how much of the SLA window they used.</div>
       ${c.point_rules.map(r => `<div class="brow">${badge(r.points, r.points > 0 ? 'p-low' : 'p-high')}<div>${esc(r.reason)}</div></div>`).join('')}
       <div class="brow">${badge(c.points.reopened, 'p-high')}<div>Requestor reopens a ticket you closed</div></div>
       <div class="brow">${badge(c.points.holdBreach, 'p-high')}<div>A hold you started runs past its hold SLA</div></div></div></div></div>`;
-  wireFairBoard($('#lb2'), fair);
+  wireFairBoard($('#lb2'), fair); $('#db2').innerHTML = deptBoard(fair);
+  $('#dpick').onchange = e => { sessionStorage.setItem('slaDept', e.target.value); slaPage(main); };
   const ff = $('#ff'), fsum = () => { const w = FAIR_PARTS.map(([k]) => +ff['w_' + k].value || 0), t = w.reduce((x, y) => x + y, 0);
     $('#fsum').textContent = `Fair Score = (${FAIR_PARTS.map(([k, l], i) => `${w[i]} × ${l}`).join(' + ')}) ÷ ${t || 1}`; };
   ff.querySelectorAll('input').forEach(x => x.oninput = fsum); fsum();
   ff.onsubmit = async e => { e.preventDefault(); $('#ferr2').textContent = '';
     try { await api('/fair', { method: 'PUT', body: { weights: Object.fromEntries(FAIR_PARTS.map(([k]) => [k, Number(ff['w_' + k].value)])), min_tickets: ff.min_tickets.value, window_days: ff.window_days.value, baseline_days: ff.baseline_days.value } });
-      toast('Fair Score settings saved'); wireFairBoard($('#lb2'), await api('/fair')); } catch (er) { $('#ferr2').textContent = er.message; } };
+      toast('Fair Score settings saved'); const f2 = await api('/fair'); wireFairBoard($('#lb2'), f2); $('#db2').innerHTML = deptBoard(f2); } catch (er) { $('#ferr2').textContent = er.message; } };
+  if (dc) {
+    const g = $('#df'), glen = () => { const [a, b] = [g.work_start.value, g.work_end.value].map(v => +v.slice(0, 2) * 60 + +v.slice(3)); return Math.max(1, (b - a) / 60); };
+    const gh = () => ['critical', 'high', 'medium', 'low'].forEach(p => { const h = +(g['t_' + p].value || g['t_' + p].placeholder), d = h / glen();
+      main.querySelector(`[data-d=${p}]`).textContent = h ? (d >= 1 ? `≈ ${+d.toFixed(1)} working day${d === 1 ? '' : 's'}` : `${h}h`) : ''; });
+    gh(); g.oninput = gh;
+    g.own.onchange = () => { $('#dh').disabled = g.own.checked; };
+    g.querySelectorAll('[name=wd]').forEach(i => i.onchange = () => i.parentElement.classList.toggle('on', i.checked));
+    g.onsubmit = async e => { e.preventDefault(); $('#err').textContent = '';
+      try { await api('/sla/service/' + dc.id, { method: 'PUT', body: { own_hours: !g.own.checked, work_start: g.work_start.value, work_end: g.work_end.value,
+          work_days: [...g.querySelectorAll('[name=wd]:checked')].map(i => +i.value), targets: Object.fromEntries(['critical', 'high', 'medium', 'low'].map(p => [p, g['t_' + p].value])),
+          escalate_after_hours: g.esc_h.value, escalate_holds: g.esc_holds.value === '' ? null : g.esc_holds.value === '1' } });
+        toast(`${dc.name} settings saved`); slaPage(main); } catch (er) { $('#err').textContent = er.message; } };
+    return;
+  }
   const f = $('#sf'), len = () => { const [a, b] = [f.work_start.value, f.work_end.value].map(v => +v.slice(0, 2) * 60 + +v.slice(3)); return Math.max(1, (b - a) / 60); };
   const hints = () => ['critical', 'high', 'medium', 'low'].forEach(p => { const h = +f['t_' + p].value, d = h / len();
     main.querySelector(`[data-d=${p}]`).textContent = h ? (d >= 1 ? `≈ ${+d.toFixed(1)} working day${d === 1 ? '' : 's'}` : `${h}h`) : ''; });

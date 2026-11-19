@@ -71,6 +71,12 @@ ALTER TABLE services ADD COLUMN IF NOT EXISTS daily_cap INT DEFAULT 0;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS parent_id TEXT;
 -- a team's own escalation time: working hours past the target before it escalates (NULL = the campus setting)
 ALTER TABLE services ADD COLUMN IF NOT EXISTS escalate_after_hours DOUBLE PRECISION;
+-- a department's own working hours and days (all NULL = the campus's; a sub-team without its own uses its main team's)
+ALTER TABLE services ADD COLUMN IF NOT EXISTS work_start TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS work_end TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS work_days TEXT;
+-- a department's own "also escalate holds past their limit" (NULL = the campus setting)
+ALTER TABLE services ADD COLUMN IF NOT EXISTS escalate_holds INT;
 -- a suggestion (Suggestion box on the raise form) is a ticket with kind='suggestion': no target time, never overdue or escalated
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'issue';
 -- reopen is a request: the provider who closed the ticket accepts (it reopens) or declines (it stays closed)

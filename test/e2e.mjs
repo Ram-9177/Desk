@@ -172,6 +172,14 @@ try {
     targets: { critical: 3, high: 5, medium: 8, low: 24 }, hold_reasons: [{ key: 'parts', label: 'Waiting for parts', hours: 16 }, { label: 'Waiting for exam cell', hours: 4 }], escalate_after_days: 0, escalate_holds: true } });
   const sla = await ok('read SLA', '/sla', A);
   check('SLA saved as sent', sla.targets.critical === 3 && sla.hold_reasons.length === 2 && sla.hold_reasons[1].key === 'waiting_for_exam_cell' && sla.escalate_after_days === 0 && sla.escalate_holds === true);
+  // a department's own settings, then back to the campus's
+  await fails('department: end before start is rejected', `/sla/service/${elec.id}`, { ...A, method: 'PUT', body: { own_hours: true, work_start: '18:00', work_end: '08:00', work_days: [1] } }, 400);
+  await ok('department: own hours 08:00–20:00 every day, Critical 2 h, escalate after 4 h', `/sla/service/${elec.id}`, { ...A, method: 'PUT', body: { own_hours: true, work_start: '08:00', work_end: '20:00', work_days: [0, 1, 2, 3, 4, 5, 6], targets: { critical: 2 }, escalate_after_hours: 4, escalate_holds: false } });
+  let ds = await ok('department: read its settings', `/sla/service/${elec.id}`, A);
+  check('department settings saved, other priorities follow the campus', ds.own_hours && ds.work_start === '08:00' && ds.work_days.length === 7 && ds.targets.critical === 2 && !ds.targets.high && ds.base_targets.high === 5 && ds.escalate_after_hours === 4 && ds.escalate_holds === 0, JSON.stringify(ds));
+  await ok('department: back to the campus settings', `/sla/service/${elec.id}`, { ...A, method: 'PUT', body: { own_hours: false, targets: {}, escalate_after_hours: '', escalate_holds: null } });
+  ds = await ok('department: read again', `/sla/service/${elec.id}`, A);
+  check('department follows the campus again', !ds.own_hours && ds.work_start === '09:00' && !Object.keys(ds.targets).length && ds.escalate_after_hours === null && ds.escalate_holds === null, JSON.stringify(ds));
 
   // ======================= C. requestor =======================
   sec('Requestor raises tickets');
@@ -590,6 +598,7 @@ try {
     b = (await sb(`ticket ${examNo}`, T.pavan)).data;
     check("provider: another team's ticket is not shown", !!examNo && /not in your services/.test(b.text), b.text);
     check('provider: admin questions are for admins', /for admins/.test((await sb('services with no provider', T.pavan)).data.text));
+    check('departments are ranked too', Array.isArray((await api('/fair', { token: T.pavan })).data.departments));
     check('provider: own Fair Score (or how many tickets are still needed)', /Fair Score is [\d.]+ \(rank \d+\)|closed tickets in \d+ days to be ranked/.test((await sb('my points', T.pavan)).data.text));
     b = (await sb(`ticket ${examNo}`, T.asha)).data;
     check('admin: any ticket of the campus', new RegExp(`#${examNo}`).test(b.text) && /Raised by/.test(b.text), b.text);
