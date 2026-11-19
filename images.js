@@ -54,25 +54,29 @@ function zipText(b, e, max = 2e6) {
   const at = e.offset + 30 + b.readUInt16LE(e.offset + 26) + b.readUInt16LE(e.offset + 28), raw = b.subarray(at, at + e.csize);
   try { return e.method === 0 ? raw.toString('utf8') : e.method === 8 ? zlib.inflateRawSync(raw, { maxOutputLength: max }).toString('utf8') : null; } catch { return null; }
 }
-// A plain Word (.docx) or Excel (.xlsx) file. Refused: macro-enabled files and templates (whatever they are named),
-// macro sheets, ActiveX parts, and any zip that merely carries a Word-looking name inside (a .jar, a zip with a program).
+// A plain Word (.docx) or Excel (.xlsx) file. 'macro' for macro-enabled files and templates (whatever they are named),
+// macro sheets and ActiveX parts; null for any zip that merely carries a Word-looking name inside (a .jar, a zip with a program).
+// Folders Word and Excel themselves add are fine: a Microsoft 365 sensitivity label (docMetadata/), a custom ribbon or
+// toolbar (customUI/, userCustomization/), signatures (package/, _xmlsignatures/) and an editor's left-overs ([trash]/).
 const OFFICE_MAIN = { docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml' };
 function officeKind(b) {
   const es = zipEntries(b); if (!es) return null;
   const types = zipText(b, es.find(e => e.name === '[Content_Types].xml')); if (!types) return null;
-  const kind = Object.keys(OFFICE_MAIN).find(k => types.includes(OFFICE_MAIN[k])); if (!kind) return null; // .docm, .xlsm, templates and everything else stop here
-  if (/macroenabled|vbaproject|macrosheet|activex/i.test(types)) return null;
+  if (/macroenabled|vbaproject|macrosheet|activex/i.test(types) || es.some(e => /vbaproject|vbadata|macrosheet|activex/i.test(e.name))) return 'macro'; // .docm, .xlsm, macro templates
+  const kind = Object.keys(OFFICE_MAIN).find(k => types.includes(OFFICE_MAIN[k])); if (!kind) return null; // other templates and everything else stop here
   const home = kind === 'docx' ? 'word/' : 'xl/';
-  const fine = n => n === '[Content_Types].xml' || /^(_rels|docProps|customXml|_xmlsignatures)\//.test(n) || n.startsWith(home);
-  if (!es.some(e => e.name.startsWith(home)) || es.some(e => !fine(e.name) || /vbaproject|vbadata|macrosheet|activex/i.test(e.name) || /\.(exe|dll|com|scr|msi|bat|cmd|ps1|vbs|js|jse|wsf|hta|jar|lnk)$/i.test(e.name))) return null;
+  const fine = n => n === '[Content_Types].xml' || /^(_rels|docProps|customXml|_xmlsignatures|docMetadata|customUI|userCustomization|package|\[trash\])\//.test(n) || n.startsWith(home);
+  if (!es.some(e => e.name.startsWith(home)) || es.some(e => !fine(e.name) || /\.(exe|dll|com|scr|msi|bat|cmd|ps1|vbs|js|jse|wsf|hta|jar|lnk)$/i.test(e.name))) return null;
   return kind;
 }
-// Old Word / Excel (.doc, .xls): which one from the streams inside; a file with a VBA project (macros) is refused
+// Old Word / Excel (.doc, .xls): which one from the streams inside; 'macro' for a file with a VBA project
 function oleKind(b) {
   const has = t => b.includes(Buffer.from(t, 'utf16le'));
-  if (has('_VBA_PROJECT')) return null;
+  if (has('_VBA_PROJECT')) return has('WordDocument') || has('Workbook') || has('Book') ? 'macro' : null;
   return has('WordDocument') ? 'doc' : has('Workbook') || has('Book') ? 'xls' : null;
 }
+// What a notice's file is: a picture kind, 'pdf', 'docx', 'xlsx', 'doc', 'xls'; 'macro' for a Word or Excel file that
+// carries macros (never stored); null for anything else.
 export function docKindOf(b) {
   const k = kindOf(b); if (k) return k;
   if (!b || b.length < 8) return null;
@@ -85,6 +89,58 @@ export function docKindOf(b) {
 export function safeName(name, kind, max = 120) {
   const ext = EXT[kind] || 'bin', base = String(name || '').replace(/[\u0000-\u001f\\/]+/g, ' ').trim().replace(/\.[A-Za-z0-9]{1,5}$/, '').trim() || 'file';
   return `${base.slice(0, max - ext.length - 1)}.${ext}`;
+}
+
+// A JPEG without what the camera hides in it: the place it was taken (GPS), the phone's make and model, the date, a
+// small copy of the uncropped photo, editing history, and anything stuck on after the picture (the video clip of a
+// "motion photo"). The picture itself is copied byte for byte: nothing is decoded or compressed again. Which way up
+// the photo is shown (its orientation) and its colour profile are kept. A file this cannot read comes back unchanged.
+export function jpegClean(b) {
+  try {
+    if (!Buffer.isBuffer(b) || b.length < 4 || b[0] !== 0xFF || b[1] !== 0xD8) return b;
+    const head = [], icc = s => s[1] === 0xE2 && s.length >= 16 && s.toString('latin1', 4, 16) === 'ICC_PROFILE\0';
+    let p = 2, turn = 0, dropped = false;
+    for (;;) { // the segments before the picture data
+      while (p < b.length - 1 && b[p] === 0xFF && b[p + 1] === 0xFF) p++; // fill bytes
+      if (p + 4 > b.length || b[p] !== 0xFF) return b;
+      const m = b[p + 1]; if (m === 0xDA) break; // start of scan: the picture follows
+      if (m === 0xD8 || m === 0xD9 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) return b; // not where these belong: leave the file alone
+      const len = b.readUInt16BE(p + 2); if (len < 2 || p + 2 + len > b.length) return b;
+      const seg = b.subarray(p, p + 2 + len); p += 2 + len;
+      if (m === 0xE1 && seg.length >= 12 && seg.toString('latin1', 4, 10) === 'Exif\0\0') turn = turn || exifTurn(seg.subarray(10));
+      // kept: JFIF (APP0), the colour profile (APP2 ICC), Adobe's colour marker (APP14) and everything the decoder needs.
+      // Dropped: Exif and XMP (APP1), other APP segments (maker notes, multi-picture index, Photoshop/IPTC) and comments.
+      if ((m >= 0xE1 && m <= 0xEF && m !== 0xEE && !icc(seg)) || m === 0xFE) dropped = true; else head.push(seg);
+    }
+    // the picture data, scan after scan, up to the end marker; inside it FF is always followed by 00 or a restart marker
+    let q = p, end = -1;
+    while (q < b.length - 1) {
+      if (b[q] !== 0xFF) { q++; continue; }
+      const m = b[q + 1];
+      if (m === 0x00 || m === 0xFF || (m >= 0xD0 && m <= 0xD7)) { q += m === 0xFF ? 1 : 2; continue; }
+      if (m === 0xD9) { end = q + 2; break; }
+      if (q + 4 > b.length) break;
+      const len = b.readUInt16BE(q + 2); if (len < 2 || q + 2 + len > b.length) break;
+      q += 2 + len; // a table or the header of the next scan
+    }
+    if (end < 0) end = b.length; // no end marker found: keep everything after the header as it is
+    if (!dropped && end === b.length) return b;
+    const out = [b.subarray(0, 2)];
+    const jfif = head.length && head[0][1] === 0xE0 ? head.shift() : null; if (jfif) out.push(jfif);
+    if (turn > 1 && turn <= 8) out.push(Buffer.from([0xFF, 0xE1, 0x00, 0x22, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08,
+      0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, turn, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])); // an Exif block that holds the orientation and nothing else
+    return Buffer.concat([...out, ...head, b.subarray(p, end)]);
+  } catch { return b; }
+}
+// the orientation (1 to 8) from an Exif block, 0 when it has none
+function exifTurn(t) {
+  if (t.length < 14) return 0;
+  const le = t.toString('latin1', 0, 2) === 'II'; if (!le && t.toString('latin1', 0, 2) !== 'MM') return 0;
+  const u16 = o => le ? t.readUInt16LE(o) : t.readUInt16BE(o), u32 = o => le ? t.readUInt32LE(o) : t.readUInt32BE(o);
+  if (u16(2) !== 42) return 0;
+  const ifd = u32(4); if (ifd + 2 > t.length) return 0;
+  for (let i = 0, n = u16(ifd); i < n && ifd + 2 + (i + 1) * 12 <= t.length; i++) { const e = ifd + 2 + i * 12; if (u16(e) === 0x0112) { const v = u16(e + 8); return v >= 1 && v <= 8 ? v : 0; } }
+  return 0;
 }
 
 // HEIC → JPEG, at most `max` pixels on the long side (phone photos are 3000–8000 px; 1920 shows the problem clearly)

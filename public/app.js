@@ -210,13 +210,21 @@ const countSeen = (slug, ids) => { let old = []; try { old = JSON.parse(sessionS
   const fresh = ids.filter(id => !NV.has(id) && !old.includes(id)); if (!fresh.length) return; fresh.forEach(id => NV.add(id));
   try { sessionStorage.setItem('nv', JSON.stringify([...old, ...fresh].slice(-200))); } catch { /* memory only */ }
   api(`/public/${slug}/notices/seen`, { method: 'POST', quiet: true, body: { ids: fresh } }).catch(() => {}); };
-// web addresses in a notice can be tapped (the text is escaped first; only http, https and www links are made)
-const ntLinks = h => h.replace(/\b(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]|www\.[^\s<]+[^\s<.,;:!?)\]'"])/g, m => `<a href="${m.startsWith('www.') ? 'https://' + m : m}" target="_blank" rel="noopener noreferrer">${m}</a>`);
-const ntTags = n => `${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>`;
+// Web and email addresses in a notice can be tapped. The links are found in the text as it was typed and every piece is
+// escaped on its own, so a quote, a bracket or a full stop next to an address never ends up inside the link.
+const ntLinks = raw => { raw = String(raw ?? ''); let out = '', at = 0, m; const re = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+  while ((m = re.exec(raw))) { let u = m[0];
+    for (;;) { const c = u.slice(-1); if (/[.,;:!?}]/.test(c) || (c === ')' && !u.includes('(')) || (c === ']' && !u.includes('['))) u = u.slice(0, -1); else break; }
+    const mail = !/^(https?:|www\.)/i.test(u); if (u.length < 5) continue;
+    out += esc(raw.slice(at, m.index)) + `<a href="${esc(mail ? 'mailto:' + u : /^www\./i.test(u) ? 'https://' + u : u)}"${mail ? '' : ' target="_blank" rel="noopener noreferrer"'}>${esc(u)}</a>`;
+    at = m.index + u.length; re.lastIndex = at; }
+  return out + esc(raw.slice(at)); };
+const NT_FOR = { student: 'For students', faculty: 'For faculty', staff: 'For staff', parent: 'For parents', visitor: 'For visitors' };
+const ntTags = n => `${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>${NT_FOR[n.audience] ? ` <span class="ntag">${NT_FOR[n.audience]}</span>` : ''}`;
 const ntWhen = n => `${shortDate(n.starts_at || n.published_at || n.created_at)}${n.ends_at ? ` · until ${shortDate(n.ends_at)}` : ''}`;
 const ntFiles = n => n.files.length ? ` · 📎 ${n.files.length === 1 ? esc(n.files[0].name) : `${n.files.length} files`}` : '';
 const ntRow = (slug, n) => `<a class="ntrow ${n.important ? 'imp' : ''}" href="#/d/${slug}/notices/${n.id}"><div>${ntTags(n)}<b>${esc(n.title)}</b><div class="muted small">${ntWhen(n)}${ntFiles(n)}</div></div><span class="chev">${I('chev', 18)}</span></a>`;
-const ntBody = n => `<div class="ntbody">${ntLinks(esc(n.body || '')).replace(/\n/g, '<br>')}</div>
+const ntBody = n => `<div class="ntbody">${ntLinks(n.body).replace(/\n/g, '<br>')}</div>
   ${n.files.filter(f => /^image\//.test(f.type)).map(f => `<a href="${f.url}" target="_blank" rel="noopener"><img class="ntimg" src="${f.url}" alt="${esc(f.name)}"></a>`).join('')}
   ${n.files.filter(f => !/^image\//.test(f.type)).map(f => `<a class="ntfile" href="${f.url}" target="_blank" rel="noopener"><span class="ft ${/pdf/.test(f.type) ? 'pdf' : /sheet|excel/.test(f.type) ? 'xls' : 'doc'}">${/pdf/.test(f.type) ? 'PDF' : /sheet|excel/.test(f.type) ? 'XLS' : 'DOC'}</span><span>${esc(f.name)}</span><span class="muted small">${Math.max(1, Math.round(f.size / 1024))} KB</span></a>`).join('')}`;
 // the card on the campus page: important ones, then the latest; 3 rows, the rest under "See all" (Raise a ticket stays in view)
@@ -233,33 +241,47 @@ async function noticeBoard(slug, box, focus) {
   box.querySelectorAll('[data-for]').forEach(b => b.onclick = () => { nbFor(b.dataset.for); noticeBoard(slug, box, true); });
   if (focus) box.querySelector('[data-for].on')?.focus();
 }
-async function noticesPage(slug, id) {
+async function noticesPage(slug, id, focus) {
   document.body.className = '';
-  if (id) { let gone = false; const n = await api(`/public/${slug}/notices/${id}`).catch(er => { gone = er.status === 404; return null; });
+  if (id) { let gone = false; const here = location.hash; ++nbTurn; // a list answer that is still on its way must not be drawn over this notice
+    const n = await api(`/public/${slug}/notices/${id}`).catch(er => { gone = er.status === 404; return null; });
+    if (location.hash !== here) return;
     app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/notices" aria-label="Back">${I('back')}</a><h1>Notice</h1></div>
       ${n ? `<article class="card ntcard ${n.important ? 'imp' : ''}">${ntTags(n)}<h2>${esc(n.title)}</h2><div class="muted small">Posted by ${esc(n.posted_by || n.team)} · ${ntWhen(n)}</div>${ntBody(n)}</article>
         <a class="btn" href="#/d/${slug}/raise" style="width:100%">Still need help? Raise a ticket</a>` : `<div class="card"><p>${gone ? 'This notice has ended or was removed.' : 'This notice could not be loaded. Check your connection and try again.'}</p>${gone ? '' : '<p><button class="btn" id="ntRetry">Try again</button></p>'}</div>`}</div>`;
     if (n) countSeen(slug, [n.id]); else if ($('#ntRetry')) $('#ntRetry').onclick = () => noticesPage(slug, id);
     return; }
-  const turn = ++nbTurn, list = await api(`/public/${slug}/notices?for=${nbFor()}`); if (turn !== nbTurn) return;
+  const turn = ++nbTurn, here = location.hash, list = await api(`/public/${slug}/notices?for=${nbFor()}`); if (turn !== nbTurn || location.hash !== here) return;
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>Notice board</h1></div>
     <div class="nbchips" role="radiogroup" aria-label="Notices for">${NB_AUD.map(([k, l]) => `<button type="button" role="radio" aria-checked="${nbFor() === k}" class="${nbFor() === k ? 'on' : ''}" data-for="${k}">${l}</button>`).join('')}</div>
     <div class="card nboard">${list.map(n => ntRow(slug, n)).join('') || '<p class="muted">No notices right now.</p>'}</div></div>`;
-  app.querySelectorAll('[data-for]').forEach(b => b.onclick = () => { nbFor(b.dataset.for); noticesPage(slug); });
+  app.querySelectorAll('[data-for]').forEach(b => b.onclick = () => { nbFor(b.dataset.for); noticesPage(slug, undefined, true); });
+  if (focus) app.querySelector('[data-for].on')?.focus(); // the chosen chip keeps the focus after the list is drawn again
+  // Back from a notice returns to the same place in a long list
+  app.querySelectorAll('.ntrow').forEach(a => a.addEventListener('click', () => { try { sessionStorage.setItem('nb-y', String(scrollY)); } catch { /* starts at the top */ } }));
+  if (!focus && route.prev?.startsWith(`#/d/${slug}/notices/`)) { let y = 0; try { y = +sessionStorage.getItem('nb-y') || 0; } catch { /* top */ } if (y) scrollTo(0, y); }
 }
 // Before raising a ticket for a team: its live notices pop up. "This answers my question" → no ticket (counted);
 // "I still need to raise a ticket" → the form, and the ticket records which notices were read.
-async function noticeGate(slug, svc, back = `#/d/${slug}/raise`) {
+let ngTurn = 0;
+async function noticeGate(slug, svc, back) {
+  const list0 = `#/d/${slug}/raise`; back = back || list0;
   document.querySelectorAll('dialog.ngate').forEach(x => { x.close(); x.remove(); }); // never two at once
-  let list; try { list = await api(`/public/${slug}/notices/for/${svc.id}?for=${nbFor()}`); } catch { return true; }
+  // The pop-up belongs to the page it was asked for. On a slow connection the person may have gone Back (or Back and
+  // Forward) before the notices arrive: then nothing is drawn for this page any more, and only the newest request opens one.
+  const here = location.hash, turn = ++ngTurn;
+  let all_ = null; try { all_ = await api(`/public/${slug}/notices/for/${svc.id}?for=${nbFor()}`); } catch { /* no notices to show: go on to the form */ }
+  if (turn !== ngTurn || location.hash !== here) return false;
+  if (!all_) return true;
+  const list = all_.slice(0, 10), more = all_.length > list.length; // the server sends one more than is shown, so the pop-up can say that there are more
   if (!list.length || list.every(n => seenNotices(svc.id).includes(n.id))) return true;
-  const here = location.hash;
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1></div></div>`;
   countSeen(slug, list.map(n => n.id));
   return new Promise(resolve => {
     const d = document.createElement('dialog'); d.className = 'sheet ngate'; d.setAttribute('aria-labelledby', 'ngT');
     d.innerHTML = `<div class="pv-h"><div class="muted small" style="font-weight:600">Before you raise a ticket</div><button type="button" class="msheet-x" data-a="back" aria-label="Close">${I('x', 20)}</button></div><h2 id="ngT">The ${esc(svc.name)} team has ${list.length === 1 ? 'a notice' : list.length + ' notices'} for you</h2>
       ${list.map(n => `<article class="ntcard ${n.important ? 'imp' : ''}">${ntTags(n)}<h3>${esc(n.title)}</h3>${ntBody(n)}<div class="muted small" style="margin-top:6px">Posted by ${esc(n.posted_by || n.team)} · ${ntWhen(n)}</div></article>`).join('')}
+      ${more ? `<p class="muted small" style="text-align:center;margin:0 0 10px">These are the newest ${list.length}. The team has more on the <a href="#/d/${slug}/notices">notice board</a>.</p>` : ''}
       <button type="button" class="btn ok big" data-a="answered">${I('check', 18)} This answers my question</button>
       <button type="button" class="btn primary big" data-a="raise">I still need to raise a ticket</button>
       <p class="muted small" style="text-align:center;margin:8px 0 0">If you raise one, the team sees that you read ${list.length === 1 ? 'this notice' : 'these notices'}.</p>`;
@@ -273,7 +295,8 @@ async function noticeGate(slug, svc, back = `#/d/${slug}/raise`) {
     const done = a => { if (over) return; shut();
       // "answered" and the X leave no extra step in the browser's history, so Back does not bring the pop-up up again
       if (a === 'answered') { api(`/public/${slug}/notices/seen`, { method: 'POST', quiet: true, body: { ids: list.map(n => n.id), outcome: 'answered' } }).catch(() => {}); toast('Glad that helped!'); location.replace(`#/d/${slug}`); return resolve(false); }
-      if (a === 'back') { location.replace(back); return resolve(false); }
+      // (after a tap on a team in the list, X goes back one step: the list is then not in the history twice)
+      if (a === 'back') { if (back === list0 && route.prev === list0) history.back(); else location.replace(back); return resolve(false); }
       NG[svc.id] = list.map(n => n.id); try { sessionStorage.setItem('ng:' + svc.id, JSON.stringify(NG[svc.id])); } catch { /* kept in memory */ }
       resolve(location.hash === here); }; // only if the person is still on the page the pop-up was for
     d.querySelectorAll('[data-a]').forEach(b => b.onclick = () => done(b.dataset.a)); d.oncancel = e => { e.preventDefault(); done('back'); };
@@ -283,7 +306,8 @@ async function noticeGate(slug, svc, back = `#/d/${slug}/raise`) {
 // ================= PUBLIC =================
 async function portal(slug, q, view, code) {
   document.body.className = '';
-  const { tenant, services } = await api(`/public/${slug}`);
+  const here = location.hash, { tenant, services } = await api(`/public/${slug}`);
+  if (location.hash !== here) return; // the person moved on while this page was loading: the newer page draws itself
   document.title = `${tenant.name} · ONE Desk`;
   const want = (code || q.get('service') || '').toUpperCase(), pick = want && services.find(s => s.code === want);
   // a team with sub-teams (Maintenance → Electrical, Plumbing …): pick the sub-team first
@@ -776,31 +800,44 @@ function remindDlg(id, done) {
 }
 // "Check before sending": the note corrected on the server, the changes, and the exact email the requester will get.
 // Resolves with the text to send (corrected, original or edited), or null if the provider goes back.
-function replyPreview(id, req, t) {
+function replyPreview(id, req, t, { photos = 0 } = {}) {
   return new Promise(async resolve => {
     let r; try { r = await api(`/tickets/${id}/preview`, { method: 'POST', body: req }); } catch (er) { toast(er.message); return resolve(null); }
     const d = document.createElement('dialog'); d.className = 'sheet prev';
     const many = (r.recipients || []).length > 1; // several people reported the same problem: each of them gets this note
     const fixes = r.changes.filter(c => !['spacing', 'sentences', 'CAPITALS'].includes(c.from));
     const extra = r.changes.filter(c => ['spacing', 'sentences', 'CAPITALS'].includes(c.from)).map(c => c.from === 'CAPITALS' ? 'capitals made normal' : c.from === 'spacing' ? 'spacing tidied' : 'capitals and full stops');
+    const ea = r.earlier, en = ea?.tickets.length || 0; // "Also close earlier open tickets": the people on those tickets get this note too
     d.innerHTML = `<div class="pv-h"><div><h2>Check before sending</h2><div class="muted small">This is exactly what ${many ? `the ${r.recipients.length} people who reported this ticket` : esc(t.requestor?.name || 'the requester')} will ${r.sends ? 'get by email and see on their ticket page' : 'see on their ticket page'}.</div></div><button type="button" class="msheet-x" data-x aria-label="Close">${I('x', 20)}</button></div>
-      ${r.changes.length ? `<div class="pv-tabs" role="tablist"><button type="button" class="on" data-v="fixed">Corrected</button><button type="button" data-v="orig">My original</button></div>
+      ${r.as_typed ? `<div class="pv-fix ok">${I('check', 15)} This note is too long to tidy, so it goes exactly as you typed it.</div>`
+        : r.changes.length ? `<div class="pv-tabs" role="tablist"><button type="button" class="on" data-v="fixed">Corrected</button><button type="button" data-v="orig">My original</button></div>
         <div class="pv-fix">${I('check', 15)} <b>${fixes.length + extra.length} fix${fixes.length + extra.length === 1 ? '' : 'es'}</b>, meaning unchanged${fixes.length ? ': ' + fixes.map(c => `<del>${esc(c.from)}</del> <ins>${esc(c.to)}</ins>`).join(' · ') : ''}${extra.length ? `${fixes.length ? ' · ' : ': '}${extra.join(' · ')}` : ''}</div>`
         : `<div class="pv-fix ok">${I('check', 15)} Looks good. No corrections needed.</div>`}
-      <label for="pvt">Your note <small>(you can still change it)</small></label><textarea id="pvt" rows="3">${esc(r.text)}</textarea>
-      <div class="pv-mail"><div class="pv-sub">${r.sends ? `To ${many ? `<b>${r.recipients.length} people</b> (${esc(r.recipients.slice(0, 3).map(x => x.name).join(', '))}${r.recipients.length > 3 ? ` and ${r.recipients.length - 3} more` : ''}), each greeted by name · ` : `${esc(r.to)} · `}` : ''}<b>${esc(r.subject)}</b></div><iframe title="Email preview" sandbox=""></iframe></div>
+      <label for="pvt">Your note <small>(you can still change it)</small></label><textarea id="pvt" rows="3" maxlength="5000">${esc(r.text)}</textarea>
       <div class="err" id="pverr" role="alert"></div>
+      ${en ? `<div class="ntoff" id="pvalso">${I('calert', 15)} <span>This also closes ${en === 1 ? 'the earlier ticket' : `${en} earlier tickets`} <b>${esc(ea.tickets.slice(0, 6).join(', '))}${en > 6 ? ` and ${en - 6} more` : ''}</b>. ${ea.people ? `The <b>${ea.people} ${ea.people === 1 ? 'person' : 'people'}</b> who reported ${en === 1 ? 'it' : 'them'} get this same note by email` : `The people who reported ${en === 1 ? 'it' : 'them'} see this same note on their ticket page`}, so write it for everyone: no name, amount or number meant for one person.</span></div>` : ''}
+      ${photos ? `<div class="muted small" id="pvph" style="margin-top:8px">📎 Your ${photos === 1 ? 'photo is' : `${photos} photos are`} added under this update, in the email and on the ticket page.</div>` : ''}
+      <div class="pv-mail"><div class="pv-sub">${r.sends ? `To ${many ? `<b>${r.recipients.length} people</b> (${esc(r.recipients.slice(0, 3).map(x => x.name).join(', '))}${r.recipients.length > 3 ? ` and ${r.recipients.length - 3} more` : ''}), each greeted by name · ` : `${esc(r.to)} · `}` : ''}<b>${esc(r.subject)}</b></div><iframe title="Email preview" sandbox=""></iframe></div>
       <div class="pv-acts"><button type="button" class="btn" data-x>Back</button><button type="button" class="btn primary" data-go>${I('send', 16)} Send update</button></div>`;
     document.body.append(d); d.showModal();
     let fr = d.querySelector('iframe'); const ta = d.querySelector('#pvt'), show = html => { const nf = fr.cloneNode(false); nf.srcdoc = html; fr.replaceWith(nf); fr = nf; };
     show(r.html);
-    let tm; const refresh = () => { clearTimeout(tm); tm = setTimeout(async () => { try { const x = await api(`/tickets/${id}/preview`, { method: 'POST', body: { ...req, note: ta.value || ' ', text_as_is: true } }); show(x.html); } catch { /* keep the last one */ } }, 400); };
+    // the email is drawn again after each change; only the answer for the newest text is shown (an older one may arrive late)
+    let tm, turn = 0; const refresh = () => { clearTimeout(tm); const mine = ++turn; tm = setTimeout(async () => { try { const x = await api(`/tickets/${id}/preview`, { method: 'POST', body: { ...req, note: ta.value || ' ', text_as_is: true } }); if (mine === turn) show(x.html); } catch { /* keep the last one */ } }, 400); };
     ta.oninput = () => { d.querySelector('#pverr').textContent = ''; refresh(); };
     d.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { d.querySelectorAll('[data-v]').forEach(x => x.classList.toggle('on', x === b)); ta.value = b.dataset.v === 'orig' ? r.original : r.text; refresh(); });
-    const done = v => { d.close(); d.remove(); resolve(v); };
+    const done = v => { turn++; clearTimeout(tm); d.close(); d.remove(); resolve(v); };
     d.querySelectorAll('[data-x]').forEach(b => b.onclick = () => done(null)); d.oncancel = e => { e.preventDefault(); done(null); };
-    d.querySelector('[data-go]').onclick = () => { const v = ta.value.trim(); if (!v) { d.querySelector('#pverr').textContent = 'Write a note first: the box above is empty.'; ta.focus(); return; } done(v); };
+    d.querySelector('[data-go]').onclick = () => { const v = ta.value.trim(); if (!v) { const er = d.querySelector('#pverr'); er.textContent = 'Write a note first: the box above is empty.'; er.scrollIntoView({ block: 'nearest' }); ta.focus(); return; } done(v); };
   });
+}
+// A note that goes to the requester from a small dialog (transfer, the answer to a reopen request): the same check as
+// every reply. Returns what to send, or stops the dialog's save (it stays open with the text) when the provider goes back.
+async function checkedNote(id, t, to, note, more = {}) {
+  const typed = String(note || '').trim(); if (!typed) throw new Error('Write a note first');
+  const p = await replyPreview(id, { to, note: typed, ...more }, t);
+  if (p == null) throw new Error(''); // Back: nothing was sent
+  return { note: p, approved: true, typed };
 }
 // Admin: the ready-made reply sentences, for the whole campus or one team (one sentence per line).
 // A team uses its own list for a step; without one, its main team's; then the whole campus's; then the standard text.
@@ -952,7 +989,8 @@ async function workspace(main, id, { admin }) {
     if (!note) return toast('Write a note first');
     if (to === 'hold' && !f.hold_reason.value) return toast('Pick a hold reason');
     try { let final = note, approved = false;
-      if (!f.is_internal.checked) { const p = await replyPreview(id, { to, note, hold_reason: f.hold_reason.value }, t); if (p == null) return; final = p; approved = true; }
+      if (!f.is_internal.checked) { const p = await replyPreview(id, { to, note, hold_reason: f.hold_reason.value, close_earlier: to === 'closed' && !!f.close_earlier?.checked }, t,
+        { photos: [...document.querySelectorAll('.f-act')].reduce((n, i) => n + (i.files?.length || 0), 0) }); if (p == null) return; final = p; approved = true; }
       const body = { note: final, body: final, approved, typed: note, is_internal: f.is_internal.checked, files: await readFiles(document.querySelectorAll('.f-act')) };
       if (to === t.status) { await api(`/tickets/${id}/notes`, { method: 'POST', body }); toast('Note added'); }
       else { const res = await api(`/tickets/${id}/status`, { method: 'POST', body: { ...body, to, hold_reason: f.hold_reason.value, close_earlier: !!f.close_earlier?.checked } });
@@ -962,7 +1000,8 @@ async function workspace(main, id, { admin }) {
   };
   main.querySelectorAll('#pri').forEach(p => p.onchange = async e => { try { await api(`/tickets/${id}/priority`, { method: 'POST', body: { priority: e.target.value } }); reload(); } catch (er) { toast(er.message); } });
   const transfer = () => dlg(`<h2>Transfer ticket</h2><label>To service</label><select name="service_id">${services.filter(s2 => s2.id !== t.service_id && s2.is_active).map(s2 => `<option value="${s2.id}">${esc(s2.name)}</option>`).join('')}</select>
-    <label>Note</label><textarea name="note" required maxlength="5000"></textarea><div class="muted small">The requester is emailed this note too (tidied for spelling, like every reply), so write it for them as well as for the new team.</div>`, async f => { await api(`/tickets/${id}/transfer`, { method: 'POST', body: formVals(f) }); toast('Transferred'); location.hash = '#/c'; });
+    <label>Note</label><textarea name="note" required maxlength="5000"></textarea><div class="muted small">The requester is emailed this note too, so write it for them as well as for the new team. You see it corrected, inside their email, before it goes.</div>`,
+    async f => { const sid = f.elements.service_id.value; await api(`/tickets/${id}/transfer`, { method: 'POST', body: { service_id: sid, ...await checkedNote(id, t, 'transfer', f.elements.note.value, { service_id: sid }) } }); toast('Transferred'); location.hash = '#/c'; }, 'Check and transfer');
   const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
   main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
@@ -971,8 +1010,8 @@ async function workspace(main, id, { admin }) {
   main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); bellDot(S.me.user.role !== 'provider'); } catch (er) { toast(er.message); } });
   main.querySelectorAll('[data-reo]').forEach(b => b.onclick = () => { const acc = b.dataset.reo === 'accept';
     dlg(`<h2>${acc ? 'Accept and reopen' : 'Decline the reopen request'}</h2><p class="muted">${acc ? 'The ticket opens again with a fresh target. The requester is emailed.' : 'The ticket stays closed. The requester is emailed your note.'}</p>
-      <label>Note to the requester</label><textarea name="note" required maxlength="5000" placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea><div class="muted small">Spelling and short forms are tidied before it is sent.</div>`,
-      async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }, acc ? 'Accept and reopen' : 'Decline'); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
+      <label>Note to the requester</label><textarea name="note" required maxlength="5000" placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea><div class="muted small">You see it corrected, inside their email, before it goes.</div>`,
+      async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, ...await checkedNote(id, t, acc ? 'reopen_accept' : 'reopen_decline', f.elements.note.value) } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }, acc ? 'Accept and reopen' : 'Decline'); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
   // phones: the three-dots menu holds the secondary actions
   $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
     ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
@@ -1727,7 +1766,8 @@ const NT_STATES = [['live', 'Live'], ['scheduled', 'Scheduled'], ['draft', 'Draf
 const toLocalInput = iso => iso ? new Date(iso).toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }).slice(0, 16).replace(' ', 'T') : '';
 const fromLocalInput = v => v ? new Date(`${v.slice(0, 16)}:00+05:30`).toISOString() : '';
 // A notice's file, opened signed in (the team sees the files of drafts and ended notices too; students only while it is live)
-const openNoticeFile = async (url, name) => { const w = window.open('', '_blank');
+// a picture or a PDF opens in a new tab; a Word or Excel file (which no browser shows) is downloaded under its own name
+const openNoticeFile = async (url, name) => { const w = /\.(pdf|jpe?g|png|gif|webp)$/i.test(name) ? window.open('', '_blank') : null;
   try { const r = await api(url.replace(/^\/api/, ''), { raw: true }); if (!r.ok) throw new Error('That file could not be opened');
     const u = URL.createObjectURL(await r.blob()); if (w) w.location = u; else { const a = document.createElement('a'); a.href = u; a.download = name; a.click(); } setTimeout(() => URL.revokeObjectURL(u), 60000);
   } catch (er) { if (w) w.close(); toast(er.message); } };
@@ -1742,7 +1782,8 @@ async function noticesAdmin(main) {
       ${d.teams.length || d.can_campus ? `<button class="btn primary" id="ntNew">${I('plus', 18)} New notice</button>` : ''}</div>
       <div class="tabs">${NT_STATES.map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}${by[k].length ? ` <span class="cnt">${by[k].length}</span>` : ''}</button>`).join('')}</div>
       <div class="ntlist">${by[st.tab].map(n => `<div class="card ntadm ${n.important ? 'imp' : ''}">${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>
-        <h3>${esc(n.title)}</h3>${n.state === 'off' ? `<div class="ntoff">${I('calert', 15)} The ${esc(n.team)} team is deactivated, so students do not see this notice. Activate the team on the Services page to show it again.</div>` : ''}
+        <h3>${esc(n.title)}</h3>${n.state === 'off' ? `<div class="ntoff">${I('calert', 15)} ${n.main_off ? `${esc(n.team)} belongs to ${esc(n.main_off)}, which is deactivated, so students do not see this notice. Activate ${esc(n.main_off)} on the Services page to show it again.`
+          : `The ${esc(n.team)} team is deactivated, so students do not see this notice. Activate the team on the Services page to show it again.`}</div>` : ''}
         <div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · from ${shortDate(n.starts_at || n.published_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
         <div class="muted small" style="margin-top:4px">👁 Seen ${n.views} · <b style="color:#067647">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
         <div class="ntacts"><button class="btn" data-ed="${n.id}">${I('pencil', 15)} Edit</button>
@@ -1757,17 +1798,24 @@ async function noticesAdmin(main) {
       catch (er) { toast(er.status === 404 ? 'That notice is gone: someone deleted it.' : er.message); draw(); } finally { btn.disabled = false; } };
     if ($('#ntNew')) $('#ntNew').onclick = e => openEd(e.currentTarget, null);
     main.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => openEd(b, b.dataset.ed));
-    const act = async (id, body, msg) => { try { await api('/notices/' + id, { method: 'PATCH', body }); toast(msg); draw(); } catch (er) { toast(er.message); } };
-    main.querySelectorAll('[data-pub]').forEach(b => b.onclick = () => act(b.dataset.pub, { status: 'published' }, 'Published'));
+    // (Publish and Show again say what really happened: a notice set to start later is scheduled, not on show)
+    const act = async (id, body, msg, check) => { try { await api('/notices/' + id, { method: 'PATCH', body });
+      const x = check ? await api('/notices/' + id).catch(() => null) : null;
+      if (x && x.state !== 'live') { toast(ntSaid(x)); st.tab = x.state === 'off' ? 'live' : x.state; mem('ntab', st.tab); } else toast(msg);
+      draw(); } catch (er) { toast(er.message); } };
+    main.querySelectorAll('[data-pub]').forEach(b => b.onclick = () => act(b.dataset.pub, { status: 'published' }, 'Published: students can see it now', true));
     main.querySelectorAll('[data-end]').forEach(b => b.onclick = () => act(b.dataset.end, { end_now: true }, 'Ended: students no longer see it'));
     main.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => act(b.dataset.undo, { status: 'draft' }, 'Moved to drafts'));
-    main.querySelectorAll('[data-again]').forEach(b => b.onclick = () => act(b.dataset.again, { ends_at: '', status: 'published' }, 'Showing again (no end date)'));
+    main.querySelectorAll('[data-again]').forEach(b => b.onclick = () => act(b.dataset.again, { ends_at: '', status: 'published' }, 'Showing again (no end date)', true));
     main.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const n = d.notices.find(x => x.id === b.dataset.del);
       const dd = dlg(`<h2>Delete this notice?</h2><p class="muted">"${esc(n.title)}" disappears for students right away. This can't be undone.</p>`, async () => { await api('/notices/' + n.id, { method: 'DELETE' }); toast('Notice deleted'); draw(); });
       const ok = dd.querySelector('button[value=ok]'); ok.textContent = 'Delete'; ok.classList.add('danger-solid'); });
   };
   await draw();
 }
+// what a save led to, in words: a notice set to start later, or whose end has passed, is not on show
+const ntSaid = x => ({ live: 'Notice published: students can see it now', scheduled: `Scheduled: students see it from ${shortDate(x?.starts_at)}`, ended: 'Saved, but its “Until” time has passed, so students do not see it',
+  draft: 'Saved as a draft', off: 'Saved. Its team is deactivated, so students do not see it' })[x?.state] || 'Saved';
 function noticeEditor(d, n, done) {
   const aud = [['all', 'Everyone'], ['student', 'Students'], ['faculty', 'Faculty'], ['staff', 'Staff'], ['parent', 'Parents'], ['visitor', 'Visitors']];
   const files = n?.files || [], st = { id: n?.id || null }; // st.id: once the notice exists, pressing the button again updates it (never a second copy)
@@ -1779,8 +1827,8 @@ function noticeEditor(d, n, done) {
   const dd = dlg(`<h2>${n ? 'Edit notice' : 'New notice'}</h2>
     <label>Team</label><select name="service_id">${d.can_campus ? `<option value="" ${n && !n.service_id ? 'selected' : ''}>Whole campus</option>` : ''}${gone}${teams.map(t => `<option value="${t.id}" ${n?.service_id === t.id ? 'selected' : ''}>${t.sub ? '— ' : ''}${esc(t.name)}</option>`).join('')}</select>
     <div class="muted small">A team's notice pops up when a student starts a ticket for that team (and its sub-teams).</div>
-    <label>Title</label><input name="title" required maxlength="120" value="${esc(n?.title || '')}" placeholder="e.g. Ground is wet: play not allowed today">
-    <label>Message</label><textarea name="body" rows="4" maxlength="3000" placeholder="What students need to know, and what to do instead">${esc(n?.body || '')}</textarea>
+    <label>Title</label><input name="title" required maxlength="${Math.max(120, (n?.title || '').length)}" value="${esc(n?.title || '')}" placeholder="e.g. Ground is wet: play not allowed today">
+    <label>Message</label><textarea name="body" rows="4" maxlength="${Math.max(3000, (n?.body || '').length)}" placeholder="What students need to know, and what to do instead">${esc(n?.body || '')}</textarea>
     <label>Files <small>(photo, PDF, Word, Excel · up to 3, 10 MB each)</small></label>
     <div id="ntf">${files.map(f => `<div class="ntfrow" data-key="${esc(f.key || f.url.split('/').pop())}"><button type="button" class="linkbtn" data-open="${esc(f.url)}" data-name="${esc(f.name)}">${esc(f.name)}</button><button type="button" class="linkbtn" data-rmf>Remove</button></div>`).join('')}</div>
     <div id="ntnew"></div>
@@ -1796,7 +1844,7 @@ function noticeEditor(d, n, done) {
       const ready = [];
       for (const f0 of picked) {
         if (!f0.size) throw new Error(`${f0.name} is empty. Pick it again.`);
-        const pic = /^image\//.test(f0.type) || /\.(jpe?g|png|gif|webp|heic|heif|avif|bmp|tiff?)$/i.test(f0.name), file = pic ? await shrinkPhoto(f0) : f0; // photos go up at 1920 px, without the camera's hidden details (place, phone)
+        const pic = /^image\//.test(f0.type) || /\.(jpe?g|png|gif|webp|heic|heif|avif|bmp|tiff?)$/i.test(f0.name), file = pic ? await shrinkPhoto(f0) : f0; // big photos go up at 1920 px; the server takes the camera's hidden details (place, phone) out of every photo
         if (!pic && !/\.(pdf|docx?|xlsx?)$/i.test(f0.name)) throw new Error(`${f0.name}: only photos, PDF, Word or Excel files`);
         if (file.size > 10 * 1024 * 1024) throw new Error(`${f0.name} is over 10 MB`);
         ready.push(file); }
@@ -1805,19 +1853,23 @@ function noticeEditor(d, n, done) {
       // With files to add, a new notice is saved as a draft first and published once its files are in: students never see it without them
       const first = { ...body, status: ready.length && !(n && n.status === 'published') ? 'draft' : want };
       const saved = st.id ? await api('/notices/' + st.id, { method: 'PATCH', body: first }) : await api('/notices', { method: 'POST', body: first });
-      st.id = st.id || saved.id; dd.querySelector('button[value=ok]').textContent = 'Save notice';
-      for (const key of removed.splice(0)) await api(`/notices/${st.id}/files/${key}`, { method: 'DELETE' }).catch(er => { if (er.status !== 404) throw er; });
-      for (const file of ready) { await api(`/notices/${st.id}/files`, { method: 'POST', body: { name: file.name, data: await fileB64(file) } });
-        picked.shift(); drawPicked(); // sent: a retry after an error must not send it twice
-        $('#ntf').insertAdjacentHTML('beforeend', `<div class="ntfrow"><span>${esc(file.name)}</span><span class="muted small">added</span></div>`); }
+      st.id = st.id || saved.id; st.saved = true; dd.querySelector('button[value=ok]').textContent = 'Save notice';
+      // the notice itself is saved; if a file step fails now, the message says where things stand
+      const stand = first.status === 'draft' ? 'The notice is saved as a draft; students do not see it yet. Fix this and save again.' : 'The other changes are saved and already showing. Fix this and save again.';
+      try {
+        // a file leaves the list only once the server has removed it: a removal that failed is tried again with the next Save
+        while (removed.length) { await api(`/notices/${st.id}/files/${removed[0]}`, { method: 'DELETE' }).catch(er => { if (er.status !== 404) throw er; }); removed.shift(); }
+        for (const file of ready) { await api(`/notices/${st.id}/files`, { method: 'POST', body: { name: file.name, data: await fileB64(file) } });
+          picked.shift(); drawPicked(); // sent: a retry after an error must not send it twice
+          $('#ntf').insertAdjacentHTML('beforeend', `<div class="ntfrow"><span>${esc(file.name)}</span><span class="muted small">added</span></div>`); }
+      } catch (er) { throw Object.assign(new Error(`${er.message} ${stand}`), { status: er.status }); }
       if (first.status !== want) await api('/notices/' + st.id, { method: 'PATCH', body: { status: want } });
-      // say what really happened: a notice set to start later, or whose end has passed, is not on show
       const now_ = await api('/notices/' + st.id).catch(() => null), state = now_?.state || (want === 'draft' ? 'draft' : 'live');
-      toast({ live: 'Notice published: students can see it now', scheduled: `Scheduled: students see it from ${shortDate(now_?.starts_at)}`, ended: 'Saved, but its “Until” time has passed, so students do not see it',
-        draft: 'Saved as a draft', off: 'Saved. Its team is deactivated, so students do not see it' }[state]);
-      done(state);
+      toast(ntSaid(now_ || { state })); // say what really happened
+      st.finished = true; done(state);
       if (saved.tidied) { const typed = { title: el.title.value, body: el.body.value }; setTimeout(() => noticeTidied(st.id, typed, saved, () => done(state)), 0); } });
   dd.style.maxWidth = '640px'; const removed = [], picked = [];
+  dd.addEventListener('close', () => { if (st.saved && !st.finished) done(null); }); // closed after a save that did not finish (a refused file): the list shows the notice as it now is
   const kb = n => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
   const drawPicked = () => { $('#ntnew').innerHTML = picked.map((f0, i) => `<div class="ntfrow"><span>${esc(f0.name)} <small class="muted">${kb(f0.size)} · to add</small></span><button type="button" class="linkbtn" data-unpick="${i}">Remove</button></div>`).join('');
     $('#ntnew').querySelectorAll('[data-unpick]').forEach(b => b.onclick = () => { picked.splice(+b.dataset.unpick, 1); drawPicked(); }); };
@@ -1901,6 +1953,7 @@ async function botAsk(q, quiet) {
 const closeOverlays = () => { document.querySelectorAll('dialog[open]').forEach(d => { try { d.close(); } catch { /* already closing */ } d.remove(); });
   document.querySelectorAll('.msheet, .msheet-back, .asheet, .asheet-back').forEach(x => x.remove()); };
 async function route() {
+  route.prev = route.cur; route.cur = location.hash; // the page before this one (used where Back must not pile up the same page twice)
   closeOverlays();
   document.onkeydown = null; clearInterval(pollT); stickyInstall(); cornerMenu(location.hash); // Install button and the Sign in corner on every screen
   const [p, qs] = location.hash.slice(1).split('?'), q = new URLSearchParams(qs), seg = p.split('/').filter(Boolean);

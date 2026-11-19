@@ -815,7 +815,7 @@ dialog.ngate{width:min(520px,96vw);max-height:92vh;overflow:auto}dialog.ngate h2
 .ntadm h3{margin:6px 0 2px;font-size:16px}.ntadm.imp{border-color:var(--pa-sun-b);background:var(--pa-sun)}.ntacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.ntacts .btn{min-height:38px;padding:6px 14px;font-size:13px}
 .ntoff{display:flex;gap:6px;align-items:flex-start;margin:6px 0;padding:8px 10px;border-radius:10px;background:var(--pa-sun);border:1px solid var(--pa-sun-b);font-size:13px;line-height:1.4}.ntoff svg{flex:none;margin-top:2px}
 .ntsaved{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--pa-mint,#ECFDF3);line-height:1.5}
-.ntfrow>span,.ntfrow>button:first-child{min-width:0;overflow-wrap:anywhere;text-align:left}.ntfrow>button:last-child{flex:none}
+.ntfrow>span,.ntfrow>button:first-child{min-width:0;overflow-wrap:anywhere;text-align:left;white-space:normal}.ntfrow>button:last-child{flex:none}
 .ntfrow{display:flex;gap:10px;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px}
 .ntimp{background:var(--pa-sun);border:1px solid var(--pa-sun-b);border-radius:10px;padding:10px 12px;margin-top:12px}
 dialog.ngate h2:focus{outline:none}

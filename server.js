@@ -8,7 +8,7 @@ import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm, after
 import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor, goodChipsOf } from './food.js';
-import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME, safeName } from './images.js';
+import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME, safeName, jpegClean } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor, maskSecret, HOW_IT_WORKS, cleanBase } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
 import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES, isEmail } from './public/shared.js';
@@ -246,6 +246,7 @@ async function saveFiles(t, eventId, files = [], byType) {
     const max = kind === 'heic' ? 12 : 5; // the app shrinks other photos on the phone; HEIC is shrunk here
     if (buf.length > max * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${name} is too large: each file must be under ${max} MB`);
     if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; } catch (e) { console.error(`photo ${name}: ${e.message}`); }
+    else if (kind === 'jpeg') buf = jpegClean(buf); // without the place it was taken and the phone's details
     name = safeName(name, kind); // the name always ends the way the file really is (photo.jpg, never photo.jpg.exe)
     const key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
     fs.writeFileSync(path.join(UPLOAD_DIR, key), buf);
@@ -762,18 +763,22 @@ async function notifyRequestors(t, key, vars) {
   if (list.length <= 25) return send();
   send().catch(e => console.error('requestor emails', e.message));
 }
-// "Also close earlier open tickets for the same problem and location": older days' tickets close with the same note
-async function closeEarlier(t, req, note) {
-  const olds = await all(`SELECT * FROM tickets WHERE tenant_id=? AND service_id=? AND location_key=? AND problem_key=? AND id<>? AND created_date<? AND status IN (${MERGEABLE.map(() => '?').join()})`,
-    t.tenant_id, t.service_id, t.location_key, t.problem_key, t.id, t.created_date, ...MERGEABLE);
+// "Also close earlier open tickets for the same problem and location": older days' tickets close with the same note.
+// An internal note stays internal there too: those reporters see that their ticket was closed, never the words, and get no email.
+const earlierOpen = t => t.location_key && t.problem_key ? all(`SELECT * FROM tickets WHERE tenant_id=? AND service_id=? AND location_key=? AND problem_key=? AND id<>? AND created_date<? AND status IN (${MERGEABLE.map(() => '?').join()}) ORDER BY created_at`,
+  t.tenant_id, t.service_id, t.location_key, t.problem_key, t.id, t.created_date, ...MERGEABLE) : [];
+async function closeEarlier(t, req, note, internal = false) {
+  const olds = await earlierOpen(t);
   let n = 0;
   for (const o of olds) {
     const ts = now(); let done = false;
     await tx(async () => {
       if (!(await run('UPDATE tickets SET status=?, closed_at=?, closed_by=?, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL, updated_at=? WHERE id=? AND status=?', 'closed', ts, req.user.id, ts, o.id, o.status)).changes) return;
-      await addEvent(o, actorOf(req), 'status_changed', { from: o.status, to: 'closed', body: note, meta: { closed_with: t.ticket_no } }); done = true;
+      await addEvent(o, actorOf(req), 'status_changed', { from: o.status, to: 'closed', body: internal ? '' : note, meta: { closed_with: t.ticket_no } });
+      if (internal) await addEvent(o, actorOf(req), 'note', { body: note, internal: true });
+      done = true;
     });
-    if (done) { n++; await notifyRequestors(o, 'status_closed', await ticketVars(o, { note, actor_name: req.user.name })); }
+    if (done) { n++; if (!internal) await notifyRequestors(o, 'status_closed', await ticketVars(o, { note, actor_name: req.user.name })); }
   }
   return n;
 }
@@ -906,14 +911,15 @@ async function reopenDeciders(t) {
 }
 // penalty: the requestor asked for it (the ticket was not fixed), so the closer loses the reopen points
 // internal: the staff member's note is for the team only. The requester still sees that the ticket was reopened, without the note.
-async function doReopen(t, actor, reason, { penalty = false, internal = false, meta = {} } = {}) {
+async function doReopen(t, actor, reason, { penalty = false, internal = false, meta = {}, files = null } = {}) {
   await tx(async () => {
     if (penalty) await award(t, t.closed_by, POINTS.reopened, 'Requestor reopened the ticket');
     // a new work period starts now: the days it sat closed are nobody's work time (Fair Score)
     stillAs(await run('UPDATE tickets SET status=?, reopen_count=reopen_count+1, closed_at=NULL, closed_by=NULL, escalated_at=NULL, escalated_to=NULL, reopen_requested_at=NULL, reopen_request_note=NULL, due_at=?, work_from=?, work_held=0, updated_at=? WHERE id=? AND status=?',
       'open', t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, now(), await targetHours(t.tenant_id, t.service_id, t.priority) * 60), now(), now(), t.id, t.status));
-    await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: internal ? '' : reason, meta });
-    if (internal) await addEvent(t, actor, 'note', { body: reason, internal: true });
+    const ev = await addEvent(t, actor, 'reopened', { from: 'closed', to: 'open', body: internal ? '' : reason, meta });
+    const at = internal ? await addEvent(t, actor, 'note', { body: reason, internal: true }) : ev;
+    if (files) await saveFiles(t, at, files, 'user'); // photos sent with the reopening go with its note (internal ones stay with the team)
   });
   await notify(t, await teamEmails(t.tenant_id, t.service_id), 'reopened', await ticketVars(t, { note: reason, actor_name: actor.type === 'requestor' ? `the requestor (${actor.name})` : actor.name }));
 }
@@ -992,7 +998,7 @@ P.get('/:slug/notices/for/:serviceId', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now(), aud = noticeFor(req.query.for);
   const sv = UUID.test(req.params.serviceId) ? await one(`SELECT id, parent_id FROM services s WHERE s.id=? AND s.tenant_id=? AND ${OPEN_TEAM('s')}`, req.params.serviceId, tn.id) : null; if (!sv) return [];
   const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
-    ORDER BY ${NOTICE_ORDER('x')} LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
+    ORDER BY ${NOTICE_ORDER('x')} LIMIT 11`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : [])); // the pop-up shows 10; the 11th only tells it that there are more
   return noticesOut(rows);
 }));
 P.get('/:slug/notices/:id', wrap(async req => {
@@ -1562,12 +1568,15 @@ const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
 // A note the requester will see: tidied on this server (spelling, short-forms, sentences) unless the provider already
 // approved the exact text in the preview. Returns { body, meta } where meta keeps the provider's original wording for staff.
 const NOTE_MAX = 5000;
+// Tidying writes short forms out ("asap" → "as soon as possible"), so a text can grow. It must still fit where the typed
+// text did: when it would not, the words are kept exactly as typed.
+const tidyFit = (text, max, opts) => { const r = polish(text, opts); return r.text.length > max ? { text: String(text).trim(), changes: [], as_typed: true } : r; };
 const noteText = raw => { if (typeof raw !== 'string') throw bad('Write the note as text'); if (raw.length > NOTE_MAX) throw bad(`That note is too long: at most ${NOTE_MAX.toLocaleString('en-IN')} characters`); return raw; };
 async function requesterNote(t, raw, approved, typed) {
   noteText(raw); if (typed != null && typeof typed !== 'string') throw bad('Write the note as text');
   const body = String(raw ?? '').trim(), orig = String(typed ?? '').trim();
   if (approved) return { body, meta: orig && orig !== body ? { original: orig.slice(0, 4000) } : {} };
-  const r = polish(body, { keep: await keepWords(t) });
+  const r = tidyFit(body, NOTE_MAX, { keep: await keepWords(t) });
   return { body: r.text, meta: r.text !== body ? { original: body } : {} };
 }
 const keepWords = async t => { const r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id), s = await one('SELECT name FROM services WHERE id=?', t.service_id);
@@ -1640,7 +1649,7 @@ S.post('/tickets/:id/status', wrap(async req => {
   if (!req.body.is_internal) { const pub = await requesterNote(t, note, req.body.approved, req.body.typed); note = pub.body; meta = { ...pub.meta }; }
   if (t.status === 'closed' && to === 'open') { // staff reopen a closed ticket: the requester is told (unless the note is internal), like every other step
     if (t.reopen_requested_at) throw new HttpErr(409, 'REOPEN_REQUESTED', 'The requester has asked to reopen this ticket. Answer them with “Accept and reopen” or “Decline” at the top of the ticket.');
-    await doReopen(t, actorOf(req), note, { internal: !!req.body.is_internal, meta });
+    await doReopen(t, actorOf(req), note, { internal: !!req.body.is_internal, meta, files: req.body.files });
     if (!req.body.is_internal) await notifyRequestors(t, 'status_open', await ticketVars(t, { note, actor_name: req.user.name }));
     return { ok: true };
   }
@@ -1679,7 +1688,7 @@ S.post('/tickets/:id/status', wrap(async req => {
     await notifyRequestors(t, key, await ticketVars(t, { note, actor_name: req.user.name,
       hold_reason: meta.hold_reason || '', resume_by: meta.hold_due_at ? fmtIST(meta.hold_due_at) : '' }));
   }
-  const closedEarlier = to === 'closed' && req.body.close_earlier && t.location_key && t.problem_key ? await closeEarlier(t, req, note) : 0;
+  const closedEarlier = to === 'closed' && req.body.close_earlier && t.location_key && t.problem_key ? await closeEarlier(t, req, note, !!req.body.is_internal) : 0;
   return { ok: true, points: meta.points, closed_earlier: closedEarlier };
 }));
 S.post('/tickets/:id/notes', wrap(async req => {
@@ -1759,26 +1768,47 @@ S.post('/reminders/:id/done', wrap(async req => {
 // to = the new status, or 'note' for an update without a status change. Nothing is saved or sent.
 S.post('/tickets/:id/preview', wrap(async req => {
   const t = await loadTicket(req), b = req.body || {}, raw = noteText(req_(b.note, 'Write a note first')), tn = await tenantRow(t.tenant_id);
-  const fixed = b.text_as_is ? { text: String(raw).trim(), changes: [] } : polish(raw, { keep: await keepWords(t) });
-  const to = b.to === t.status || !b.to ? 'note' : b.to;
-  const key = to === 'note' ? 'note' : to === 'closed' && t.kind === 'suggestion' ? 'suggestion_closed' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
+  const fixed = b.text_as_is ? { text: String(raw).trim(), changes: [] } : tidyFit(raw, NOTE_MAX, { keep: await keepWords(t) });
+  // what is being previewed: a status step, a plain update ('note'), a transfer, or the answer to a reopen request
+  const other = ['transfer', 'reopen_accept', 'reopen_decline'].includes(b.to) ? b.to : null;
+  const to = other || (b.to === t.status || !b.to ? 'note' : b.to);
+  if (!other && to !== 'note' && !Object.hasOwn(STATUS_WORDS, to)) throw bad('Pick a status');
   // the ticket and its newest update as they will be once this is saved, so the progress tracker and "Latest updates" match the real email
-  const ts = now(), after = { status: to === 'note' ? t.status : to }, meta = {}, reopening = t.status === 'closed' && to === 'open';
-  let extra = {};
-  if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0], hdue = hr ? await dueFrom(t.tenant_id, ts, hr.hours * 60) : null;
-    extra = { hold_reason: hr?.label || '', resume_by: hdue ? fmtIST(hdue) : '' }; Object.assign(after, { hold_reason: hr?.key || null, hold_due_at: hdue, hold_started_at: ts }); if (hr) meta.hold_reason = hr.label; }
-  else if (to !== 'note') {
-    if (t.status === 'hold') { const cal = await calOf(t.tenant_id); const held = workingBetween(cal, t.hold_started_at, ts); Object.assign(after, { due_at: t.due_at ? (held > 0 ? addWorking(cal, t.due_at, held) : t.due_at) : null, hold_reason: null, hold_due_at: null, hold_started_at: null }); }
-    if (to === 'closed' || to === 'rejected') after.closed_at = ts;
-    if (reopening) Object.assign(after, { closed_at: null, escalated_to: null, due_at: t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, t.priority) * 60) });
+  const ts = now(), after = { status: other || to === 'note' ? t.status : to }, meta = {}, reopening = (t.status === 'closed' && to === 'open') || other === 'reopen_accept';
+  const fresh = async sid => t.kind === 'suggestion' ? null : dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, sid, t.priority) * 60);
+  let extra = {}, key, etype = to === 'note' ? 'note' : reopening ? 'reopened' : 'status_changed', from = t.status, toV = to === 'note' ? null : to;
+  if (other === 'transfer') {
+    if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
+    const ns = UUID.test(String(b.service_id || '')) ? await one(`SELECT s.id, s.name FROM services s WHERE s.id=? AND s.tenant_id=? AND ${OPEN_TEAM('s')}`, b.service_id, req.tenantId) : null, old = await one('SELECT name FROM services WHERE id=?', t.service_id);
+    if (!ns || ns.id === t.service_id) throw bad('Pick the team to move this ticket to');
+    key = 'transferred_requestor'; etype = 'transferred'; from = old.name; toV = ns.name; extra = { from_service: old.name, to_service: ns.name };
+    Object.assign(after, { service_id: ns.id, escalated_at: null, escalated_to: null, due_at: await fresh(ns.id), ...(t.status === 'hold' ? { hold_started_at: ts } : {}) });
+  } else if (other) {
+    if (!t.reopen_requested_at || t.status !== 'closed') throw new HttpErr(409, 'BAD_TRANSITION', 'There is no reopen request on this ticket');
+    const accept = other === 'reopen_accept';
+    key = accept ? 'reopen_accepted' : 'reopen_declined'; etype = accept ? 'reopened' : 'reopen_declined'; from = accept ? 'closed' : null; toV = accept ? 'open' : null;
+    if (accept) Object.assign(after, { status: 'open', closed_at: null, escalated_at: null, escalated_to: null, due_at: await fresh(t.service_id) });
+  } else {
+    key = to === 'note' ? 'note' : to === 'closed' && t.kind === 'suggestion' ? 'suggestion_closed' : to !== 'in_progress' ? 'status_' + to : t.status === 'hold' ? 'status_open' : 'status_in_progress';
+    if (to === 'hold') { const hr = holdReasons(tn).find(r => r.key === b.hold_reason) || holdReasons(tn)[0], hdue = hr ? await dueFrom(t.tenant_id, ts, hr.hours * 60) : null;
+      extra = { hold_reason: hr?.label || '', resume_by: hdue ? fmtIST(hdue) : '' }; Object.assign(after, { hold_reason: hr?.key || null, hold_due_at: hdue, hold_started_at: ts }); if (hr) meta.hold_reason = hr.label; }
+    else if (to !== 'note') {
+      if (t.status === 'hold') { const cal = await calOf(t.tenant_id); const held = workingBetween(cal, t.hold_started_at, ts); Object.assign(after, { due_at: t.due_at ? (held > 0 ? addWorking(cal, t.due_at, held) : t.due_at) : null, hold_reason: null, hold_due_at: null, hold_started_at: null }); }
+      if (to === 'closed' || to === 'rejected') after.closed_at = ts;
+      if (reopening) Object.assign(after, { closed_at: null, escalated_to: null, due_at: await fresh(t.service_id) });
+    }
   }
-  const event = { event_type: to === 'note' ? 'note' : reopening ? 'reopened' : 'status_changed', from_value: t.status, to_value: to === 'note' ? null : to, actor_type: 'user', actor_id: req.user.id, actor_name: req.user.name, body: fixed.text, meta: JSON.stringify(meta), created_at: ts };
+  const event = { event_type: etype, from_value: from, to_value: toV, actor_type: 'user', actor_id: req.user.id, actor_name: req.user.name, body: fixed.text, meta: JSON.stringify(meta), created_at: ts };
   const cfg = mailConfig(BASE), v = forRequestor({ login_link: `${base()}/#/login`, ...await ticketVars(t, { note: fixed.text, actor_name: req.user.name, ...extra }, { ticket: after, event }) });
   const rq = await one('SELECT name, email FROM requestors WHERE id=?', t.requestor_id); v.requestor_name = rq?.name || v.requestor_name; v.timeline = { ...v.timeline, reader: t.requestor_id };
   const { subject, body } = renderTemplate(cfg, key, v), blocks = Object.fromEntries(BLOCKS.filter(x => v[x]).map(x => [x, v[x]]));
   // everyone who reported this ticket gets the note, each greeted by name: the preview says how many
   const people = await all("SELECT name, contact FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
-  return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, to: rq?.email || people[0]?.contact || '', recipients: people.map(p => ({ name: p.name, email: p.contact })), subject,
+  // "Also close earlier open tickets": the same note goes to the people on those tickets too, so the preview names them
+  let earlier = null;
+  if (to === 'closed' && b.close_earlier) { const olds = await earlierOpen(t);
+    if (olds.length) earlier = { tickets: olds.map(o => o.ticket_no), people: (await one("SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id = ANY(?::text[]) AND contact LIKE '%@%'", olds.map(o => o.id))).n }; }
+  return { original: String(raw).trim(), text: fixed.text, changes: fixed.changes, as_typed: !!fixed.as_typed, to: rq?.email || people[0]?.contact || '', recipients: people.map(p => ({ name: p.name, email: p.contact })), subject, earlier,
     html: renderEmail({ subject, body, campus: tn.name, blocks, requester: true }), sends: (!!rq?.email || people.length > 0) && eventOn(cfg, key) };
 }));
 // ---------- ready-made reply sentences (good English with one tap), per campus and optionally per team ----------
@@ -1804,7 +1834,7 @@ S.put('/reply-phrases', role('super_admin', 'tenant_admin'), wrap(async req => {
     const typed = b.phrases[k].map(x => String(x ?? '').trim().replace(/\s+/g, ' ')).filter(Boolean);
     if (typed.some(x => x.length > 200)) throw bad('Each sentence: at most 200 characters');
     // tidied first, then doubles dropped ("done" and "Done." are one sentence)
-    const list = [...new Map(typed.map(x => polish(x).text).map(x => [x.toLowerCase(), x])).values()];
+    const list = [...new Map(typed.map(x => tidyFit(x, 200).text).map(x => [x.toLowerCase(), x])).values()];
     if (list.length > 12) throw bad(`${REPLY_STEPS[k]}: at most 12 sentences`);
     if (list.length) mine[k] = list; else delete mine[k]; } // an emptied step follows the main team, the campus or the standard text again
   if (Object.keys(mine).length) p[scope] = mine; else delete p[scope];
@@ -1819,6 +1849,8 @@ const canNotice = async (req, serviceId) => serviceId ? (await noticeTeams(req))
 const loadNotice = async req => { const x = UUID.test(req.params.id) ? await one('SELECT * FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', req.params.id, req.tenantId) : null;
   if (!x || !await canNotice(req, x.service_id)) throw notFound(); return x; };
 const NOTICE_MAX = { title: 120, body: 3000 };
+// the name of a sub-team's main team when it is that main team which is deactivated (the sub-team itself is on)
+const MAIN_OFF = '(SELECT mo.name FROM services mo WHERE mo.id=s.parent_id AND mo.is_active<>1 AND s.is_active=1)';
 // A date and time as the editor sends it: full ISO with a zone, a real calendar day, a sensible year
 const noticeTime = (v, label) => {
   if (v === '' || v == null) return null;
@@ -1827,7 +1859,7 @@ const noticeTime = (v, label) => {
   return d.toISOString();
 };
 // A notice's text is tidied like a reply (typing slips, short forms, capitals) unless the poster wants it exactly as typed
-const tidyNotice = (typed, isTitle) => { const t = polish(typed).text; return isTitle && !/[.!?]$/.test(typed) ? t.replace(/\.$/, '') : t; };
+const tidyNotice = (typed, isTitle, max) => { const t = polish(typed).text, out = isTitle && !/[.!?]$/.test(typed) ? t.replace(/\.$/, '') : t; return out.length > max ? typed : out; }; // tidied text that would not fit: as typed
 const noticeTyped = b => ({ title: String(b.title ?? '').trim().replace(/\s+/g, ' '), body: String(b.body ?? '').trim() });
 const noticeBody = async (req, b, cur = null) => {
   const has = k => b[k] !== undefined && b[k] !== null, ts = now(), typed = noticeTyped(b);
@@ -1836,15 +1868,16 @@ const noticeBody = async (req, b, cur = null) => {
   const text = (k, label, need) => {
     if (cur && (!has(k) || typed[k] === (cur[k] || ''))) return cur[k] || '';
     if (need && !typed[k]) throw bad(need); if (typed[k].length > NOTICE_MAX[k]) throw bad(`${label}: at most ${NOTICE_MAX[k]} characters`);
-    return b.as_typed || !typed[k] ? typed[k] : tidyNotice(typed[k], k === 'title');
+    return b.as_typed || !typed[k] ? typed[k] : tidyNotice(typed[k], k === 'title', NOTICE_MAX[k]);
   };
   const title = text('title', 'Title', 'Write a title'), body = text('body', 'Message');
   const service_id = b.service_id === undefined ? cur?.service_id ?? null : b.service_id ? String(b.service_id) : null;
   if (!cur || service_id !== cur.service_id) { // a new notice, or one being moved: the team must be this campus's, on the portal, and one this person posts for
-    const sv = service_id && UUID.test(service_id) ? await one('SELECT is_active FROM services WHERE id=? AND tenant_id=?', service_id, req.tenantId) : null;
+    const sv = service_id && UUID.test(service_id) ? await one(`SELECT s.is_active, (${OPEN_TEAM('s')})::int open, ${MAIN_OFF} main_off FROM services s WHERE s.id=? AND s.tenant_id=?`, service_id, req.tenantId) : null;
     if (service_id && !sv) throw notFound();
     if (!await canNotice(req, service_id)) throw new HttpErr(403, 'FORBIDDEN', service_id ? 'You can post notices only for your own team' : 'Only admins post notices for the whole campus');
-    if (sv && !sv.is_active) throw bad('That team is deactivated, so students would not see the notice. Activate the team first, or pick another.');
+    if (sv && !sv.open) throw bad(sv.is_active ? `That team's main team (${sv.main_off}) is deactivated, so students would not see the notice. Activate ${sv.main_off} first, or pick another team.`
+      : 'That team is deactivated, so students would not see the notice. Activate the team first, or pick another.');
   }
   if (has('audience') && !NOTICE_AUD.includes(b.audience)) throw bad('Pick who the notice is for');
   const audience = has('audience') ? b.audience : cur?.audience || 'all';
@@ -1852,8 +1885,10 @@ const noticeBody = async (req, b, cur = null) => {
   const ends_at = b.end_now ? ts : b.ends_at === undefined ? cur?.ends_at ?? null : noticeTime(b.ends_at, 'Until');
   if (!b.end_now && starts_at && ends_at && ends_at <= starts_at) throw bad('Until must be after Show from');
   const status = ['draft', 'published'].includes(b.status) ? b.status : cur?.status || 'draft';
-  // an Until that is already over would publish a notice nobody sees
-  if (status === 'published' && !b.end_now && b.ends_at !== undefined && ends_at && ends_at <= ts) throw bad('Until is already past. Pick a later time, or leave it empty.');
+  // an Until that is already over would publish a notice nobody sees: refused when the notice goes up now or its Until
+  // is changed. A notice that has already ended keeps its Until, so its text and files can still be corrected.
+  const sameUntil = cur && (ends_at || '').slice(0, 16) === (cur.ends_at || '').slice(0, 16), goesUp = !cur || cur.status !== 'published';
+  if (status === 'published' && !b.end_now && ends_at && ends_at <= ts && (goesUp || !sameUntil)) throw bad('Until is already past. Pick a later time, or leave it empty.');
   // when it went up: the board lists and dates a notice by this, so a draft published today is today's notice
   const wasUp = cur && cur.status === 'published' && !(cur.ends_at && cur.ends_at <= ts);
   const published_at = status === 'published' ? (wasUp ? cur.published_at || cur.created_at : ts) : cur?.published_at ?? null;
@@ -1866,15 +1901,15 @@ const noticeState = (x, n) => x.status === 'draft' ? 'draft' : x.ends_at && x.en
 S.get('/notices', wrap(async req => {
   const teams = await noticeTeams(req), n = now(), admin = isAdmin(req.user);
   // every notice that is live, scheduled or a draft (so each can always be ended or edited here), then the 200 that ended last
-  const sel = `SELECT x.*, s.name team, s.is_active team_active, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files FROM notices x LEFT JOIN services s ON s.id=x.service_id
+  const sel = `SELECT x.*, s.name team, (${OPEN_TEAM('s')})::int team_active, ${MAIN_OFF} main_off, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files FROM notices x LEFT JOIN services s ON s.id=x.service_id
     WHERE x.tenant_id=? AND x.deleted_at IS NULL AND (${admin ? 'TRUE' : 'FALSE'} OR x.service_id = ANY(?::text[]))`, over = "x.status='published' AND x.ends_at IS NOT NULL AND x.ends_at<=?";
   const rows = [...await all(`${sel} AND NOT (${over}) ORDER BY coalesce(x.updated_at, x.created_at) DESC LIMIT 2000`, req.tenantId, teams, n),
     ...await all(`${sel} AND ${over} ORDER BY x.ends_at DESC LIMIT 200`, req.tenantId, teams, n)];
-  const svcs = await all(`SELECT id, name, parent_id FROM services WHERE tenant_id=? AND is_active=1 ${admin ? '' : 'AND id = ANY(?::text[])'} ORDER BY sort_order, name`, req.tenantId, ...(admin ? [] : [teams]));
+  const svcs = await all(`SELECT s.id, s.name, s.parent_id FROM services s WHERE s.tenant_id=? AND ${OPEN_TEAM('s')} ${admin ? '' : 'AND s.id = ANY(?::text[])'} ORDER BY s.sort_order, s.name`, req.tenantId, ...(admin ? [] : [teams]));
   return { can_campus: admin, teams: svcs, notices: rows.map(x => ({ ...x, team: x.team || 'Whole campus', team_active: !x.service_id || !!x.team_active, important: !!x.important, state: noticeState(x, n) })) };
 }));
-S.get('/notices/:id', wrap(async req => { const x = await loadNotice(req), sv = x.service_id ? await one('SELECT name, is_active FROM services WHERE id=?', x.service_id) : null;
-  return { ...(await noticesOut([{ ...x, team: sv?.name }], true))[0], status: x.status, views: x.views, answered: x.answered, raised: x.raised, team_active: !sv || !!sv.is_active, state: noticeState({ ...x, team_active: sv?.is_active }, now()) }; }));
+S.get('/notices/:id', wrap(async req => { const x = await loadNotice(req), sv = x.service_id ? await one(`SELECT s.name, (${OPEN_TEAM('s')})::int open, ${MAIN_OFF} main_off FROM services s WHERE s.id=?`, x.service_id) : null;
+  return { ...(await noticesOut([{ ...x, team: sv?.name }], true))[0], status: x.status, views: x.views, answered: x.answered, raised: x.raised, team_active: !sv || !!sv.open, main_off: sv?.main_off || null, state: noticeState({ ...x, team_active: sv?.open }, now()) }; }));
 S.post('/notices', wrap(async req => {
   const b = req.body || {}, v = await noticeBody(req, b), ts = now();
   const x = await insert('notices', { id: uid(), tenant_id: req.tenantId, ...v, created_by: req.user.id, created_by_name: req.user.name, updated_by_name: req.user.name, created_at: ts, updated_at: ts });
@@ -1901,9 +1936,11 @@ S.post('/notices/:id/files', wrap(async req => {
   let buf = Buffer.from(String(f.data || '').split(',').pop(), 'base64'), kind = docKindOf(buf);
   if (!buf.length) throw bad('That file is empty. Pick it again.');
   if (['tiff', 'bmp', 'avif'].includes(kind)) throw bad('This kind of picture is not supported. Save it as JPEG or PNG and add it again.');
-  if (!kind) throw bad('Only photos, PDF, Word or Excel files. A Word or Excel file with macros is not accepted: save it as PDF and add that.');
+  if (kind === 'macro') throw bad('Word and Excel files with macros are not accepted. Save the file as PDF and add that.');
+  if (!kind) throw bad('Only photos, PDF, Word or Excel files. This file is none of these, or it is damaged: save it as PDF and add that.');
   if (buf.length > 10 * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${safeName(f.name, kind)} is too large: each file must be under 10 MB`);
   if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; } catch { throw bad('This photo could not be read. Try a JPEG or PNG.'); }
+  else if (kind === 'jpeg') buf = jpegClean(buf); // a notice is public: its photos go up without the place they were taken or the phone's details
   const name = safeName(f.name, kind), key = crypto.randomBytes(18).toString('hex') + '.' + (kind === 'jpeg' ? 'jpg' : kind);
   fs.writeFileSync(path.join(UPLOAD_DIR, key), buf);
   try { await tx(async () => { // one upload at a time per notice, so the limit of 3 holds when several arrive together
