@@ -739,8 +739,9 @@ P.get('/:slug/notices', wrap(async req => {
 // before raising a ticket for a team: its live notices (a sub-team also shows its main team's)
 P.get('/:slug/notices/for/:serviceId', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
-  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}
-    ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n);
+  const aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null; // "I'm a student": notices for everyone and for students
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
+    ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
 }));
 P.get('/:slug/notices/:id', wrap(async req => {

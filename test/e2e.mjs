@@ -1141,12 +1141,13 @@ async function uiSmoke(tok, id) {
     await send('Page.navigate', { url: APP + '/' }); await sleep(1200);
     check('app opens without a connection (from the offline cache)', await js(`return document.title === 'ONE Desk' && !!document.querySelector('#app')`));
     await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-    const visit = async (name, route, token, probe) => {
+    const visit = async (name, route, token, probe, who = 'student') => {
       await js(`localStorage.clear(); sessionStorage.clear(); ${token ? `localStorage.setItem('tok', ${JSON.stringify(token)});` : ''}`);
       errors.length = 0;
       await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#${route}` });
       let found = false; // wait for the screen to render (up to 6 s), then give late script errors a moment to arrive
-      for (let i = 0; i < 24 && !found; i++) { await sleep(250); found = await js(`return !!document.querySelector(${JSON.stringify(probe)});`).catch(() => false); }
+      for (let i = 0; i < 24 && !found; i++) { await sleep(250); found = await js(`return !!document.querySelector(${JSON.stringify(probe)});`).catch(() => false);
+        if (!found && probe !== '#wf') await js(`const c = document.querySelector('#wf [value=${who}]'); if (c) c.click();`).catch(() => {}); } // a team picked: "I'm" comes first
       await sleep(400);
       const tags = found ? await js(`return (document.body.innerText.match(/\\((optional|required)\\)/gi) || []).join(' ')`) : '';
       check(`${name}`, found && !errors.length && !tags, !found ? `missing ${probe}` : tags ? `shows ${tags}` : errors.join(' | ').slice(0, 200));
@@ -1331,9 +1332,16 @@ async function uiSmoke(tok, id) {
     const uiN = (await api('/notices', { token: tok.asha, method: 'POST', body: { service_id: examId, title: 'Hall tickets from Monday', body: 'Collect them at the exam cell from Monday.', important: true, status: 'published' } })).data;
     await visit('campus page with the notice board', '/d/alpha', null, '.nboard .ntrow');
     check('the notice board shows the notice, important on top, with its team', await js(`const r = document.querySelector('.nboard .ntrow'); return r.classList.contains('imp') && /Hall tickets from Monday/.test(r.textContent) && /Examination/i.test(r.textContent)`));
+    await api('/notices', { token: tok.asha, method: 'POST', body: { service_id: examId, title: 'Faculty duty roster', body: 'Invigilation duties are out.', audience: 'faculty', status: 'published' } });
+    await visit('a team picked: "I\'m" is asked first', '/d/alpha/raise/EXAM', null, '#wf');
+    check('the "I\'m" step: five choices, no form yet', await js(`return document.querySelectorAll('#wf [name=requestor_type]').length === 5 && !document.querySelector('#f')`));
+    await visit('a faculty member sees the faculty notice', '/d/alpha/raise/EXAM', null, 'dialog.ngate', 'faculty');
+    check('faculty: both notices', await js(`const t = document.querySelector('dialog.ngate').textContent; return /Faculty duty roster/.test(t) && /Hall tickets/.test(t)`));
+    check('the form opens with "I\'m" already Faculty', await js(`document.querySelector('dialog.ngate [data-a=raise]').click(); await new Promise(r => setTimeout(r, 1500));
+      return document.querySelector('#f [name=requestor_type]:checked')?.value === 'faculty'`));
     await visit('raising for that team: its notice pops up first', '/d/alpha/raise/EXAM', null, 'dialog.ngate');
     check('the pop-up: the notice, “This answers my question” and “I still need to raise a ticket”', await js(`const d = document.querySelector('dialog.ngate');
-      return /Hall tickets from Monday/.test(d.textContent) && !!d.querySelector('[data-a=answered]') && !!d.querySelector('[data-a=raise]') && !document.querySelector('#f')`));
+      return /Hall tickets from Monday/.test(d.textContent) && !/Faculty duty roster/.test(d.textContent) && !!d.querySelector('[data-a=answered]') && !!d.querySelector('[data-a=raise]') && !document.querySelector('#f')`));
     check('“I still need to raise a ticket” opens the form', await js(`document.querySelector('dialog.ngate [data-a=raise]').click(); await new Promise(r => setTimeout(r, 1500));
       return !document.querySelector('dialog.ngate') && !!document.querySelector('#f [name=fd_stu_id]')`));
     await js(`const f = document.querySelector('#f');

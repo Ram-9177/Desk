@@ -188,6 +188,16 @@ const collectForm = (form, svc) => {
 const NB_AUD = [['all', 'All'], ['student', 'Student'], ['faculty', 'Faculty'], ['staff', 'Staff'], ['parent', 'Parent'], ['visitor', 'Visitor']];
 const nbFor = v => { try { if (v !== undefined) localStorage.setItem('nb-for', v); return localStorage.getItem('nb-for') || 'all'; } catch { return 'all'; } };
 const seenNotices = sid => { try { return JSON.parse(sessionStorage.getItem('ng:' + sid) || '[]'); } catch { return []; } };
+// "I'm" (student, faculty …), asked once a team is picked: it decides which notices pop up and is filled in on the form
+const whoAmI = v => { try { if (v !== undefined) sessionStorage.setItem('who', v); return sessionStorage.getItem('who') || ''; } catch { return v || ''; } };
+function whoStep(slug, svc) {
+  return new Promise(resolve => {
+    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
+      <form id="wf" class="card"><label style="margin-top:0">I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === whoAmI() ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
+      <p class="muted small" style="margin:10px 0 0">We show the ${esc(svc.name)} team's notices for you first, then the form.</p></form></div>`;
+    $('#wf').querySelectorAll('[name=requestor_type]').forEach(r => r.onclick = () => { whoAmI(r.value); resolve(r.value); });
+  });
+}
 const ntTags = n => `${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>`;
 const ntWhen = n => `${shortDate(n.starts_at || n.created_at)}${n.ends_at ? ` · until ${shortDate(n.ends_at)}` : ''}`;
 const ntFiles = n => n.files.length ? ` · 📎 ${n.files.length === 1 ? esc(n.files[0].name) : `${n.files.length} files`}` : '';
@@ -222,8 +232,8 @@ async function noticesPage(slug, id) {
 }
 // Before raising a ticket for a team: its live notices pop up. "This answers my question" → no ticket (counted);
 // "I still need to raise a ticket" → the form, and the ticket records which notices were read.
-async function noticeGate(slug, svc) {
-  let list; try { list = await api(`/public/${slug}/notices/for/${svc.id}`); } catch { return true; }
+async function noticeGate(slug, svc, who = '') {
+  let list; try { list = await api(`/public/${slug}/notices/for/${svc.id}${who ? '?for=' + who : ''}`); } catch { return true; }
   if (!list.length || list.every(n => seenNotices(svc.id).includes(n.id))) return true;
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/raise" aria-label="Back">${I('back')}</a><h1>${esc(svc.name)}</h1></div></div>`;
   api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: list.map(n => n.id) } }).catch(() => {});
@@ -260,7 +270,8 @@ async function portal(slug, q, view, code) {
         <span class="t"><b>${esc(s.name)}</b><span class="muted small">${esc(s.description || '')}</span></span><span class="chev">${I('chev')}</span></a>`).join('')}</div>`;
     if (!q.get('direct')) return;
   }
-  if (pick && !(await noticeGate(slug, pick))) return; // the team's notices first; "This answers my question" ends here
+  const who = pick && !isFood(pick.form_schema) ? await whoStep(slug, pick) : '';
+  if (pick && !(await noticeGate(slug, pick, who))) return; // the team's notices first; "This answers my question" ends here
   if (pick && isFood(pick.form_schema)) return foodScreens(slug, tenant, pick, q.get('flow'));
   if (pick) return raiseForm(slug, tenant, pick, null, 'issue'); // other teams: straight to the problem form (feedback and suggestions are a Food thing)
   if (view !== 'raise') {
@@ -384,7 +395,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
       <label><input type="radio" name="kind" value="suggestion" ${sugK ? 'checked' : ''}><span><i class="ks-ic">${I('idea', 18)}</i><b>Share a suggestion or feedback<small>An idea or feedback for the team. No deadline; they reply when they can.</small></b></span></label></div>
     <div class="kindhint" id="kindhint" hidden>${I('idea', 16)}<span>A suggestion goes to the ${esc(svc.name)} team as an idea, not a complaint. It has no deadline; they reply when they can.</span></div>
     <label>Your name</label><input name="name" required autocomplete="name">
-    <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
+    <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === (whoAmI() || 'student') ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
     <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
       <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
     <div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
