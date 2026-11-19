@@ -815,3 +815,8 @@ dialog.ngate{width:min(520px,96vw);max-height:92vh;overflow:auto}dialog.ngate h2
 .ntimp{background:var(--pa-sun);border:1px solid var(--pa-sun-b);border-radius:10px;padding:10px 12px;margin-top:12px}
 dialog.ngate h2:focus{outline:none}
 dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;background:#F2F4F7;color:var(--text-2);display:grid;place-items:center;cursor:pointer}dialog .msheet-x:hover{background:#E4E7EC}
+/* Notices | Policies switch on the staff Notices page */
+.nkind{display:inline-flex;gap:4px;padding:4px;border-radius:12px;background:var(--surface);border:1px solid var(--input-border);margin:0 0 12px}
+.nkind button{font:inherit;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:9px;border:0;background:none;color:var(--text-2);cursor:pointer}
+.nkind button.on{background:var(--ink);color:#fff}.nkind .cnt{font-size:11.5px;opacity:.8}
+.polbox{margin:0 0 14px}

@@ -893,6 +893,16 @@ try {
   check('…drafts never show; files can be opened', !board.some(x => x.id === draft.id) && board.find(x => x.id === nt.id).files[0].name === 'schedule.pdf' && (await fetch(API.replace('/api', '') + board.find(x => x.id === nt.id).files[0].url)).status === 200);
   check('“for Faculty” hides the students-only notice', !(await api('/public/alpha/notices?for=faculty')).data.some(x => x.id === camp.id) && (await api('/public/alpha/notices?for=student')).data.some(x => x.id === camp.id));
   const pop = (await api(`/public/alpha/notices/for/${elec}`)).data;
+  // policies: a provider posts their team's standing rules (text + files); shown on the team's form, never on the board or in the pop-up
+  const pol = await ok('a provider posts a policy for their own team', '/notices', { token: T.pavan, method: 'POST', body: { kind: 'policy', service_id: elec, title: 'Electrical work request policy', body: 'Requests after 4 pm are done the next working day.', status: 'published', ends_at: '2020-01-01T00:00:00Z' } });
+  await fails('…not for another team', '/notices', { token: T.pavan, method: 'POST', body: { kind: 'policy', service_id: other, title: 'x', status: 'published' } }, 403);
+  for (const [nm] of [["rules.pdf"], ["photo.png"]]) await ok(`policy file: ${nm}`, `/notices/${pol.id}/files`, { token: T.pavan, method: 'POST', body: { name: nm, data: nm.endsWith('pdf') ? PDF : PNG } });
+  const pols = (await api(`/public/alpha/policies/for/${elec}`)).data;
+  check('the team\'s form lists the policy with its files (no end date kept)', pols.length === 1 && pols[0].id === pol.id && pols[0].kind === 'policy' && pols[0].files.length === 2 && !pols[0].ends_at, JSON.stringify(pols));
+  check('a policy is not a notice: not on the board, not in the pop-up', !(await api('/public/alpha/notices')).data.some(x => x.id === pol.id) && !(await api(`/public/alpha/notices/for/${elec}`)).data.some(x => x.id === pol.id));
+  check('the policy page opens', (await api(`/public/alpha/notices/${pol.id}`)).data?.title === 'Electrical work request policy');
+  await ok('withdraw the policy', `/notices/${pol.id}`, { token: T.pavan, method: 'PATCH', body: { end_now: true } });
+  check('withdrawn: gone from the form', !(await api(`/public/alpha/policies/for/${elec}`)).data.length);
   check('raising for Electrical: its notice pops up (not the whole-campus one)', pop.length === 1 && pop[0].id === nt.id);
   await api('/public/alpha/notices/seen', { method: 'POST', body: { ids: [nt.id] } }); await api('/public/alpha/notices/seen', { method: 'POST', body: { ids: [nt.id], outcome: 'answered' } });
   const tk = await api('/public/alpha/tickets', { method: 'POST', body: { service_id: elec, name: 'Nia', email: 'nia@notice.example.com', phone: '9000088881', requestor_type: 'student', identifier: 'S9', department: 'BPT', subject: 'Fan not working', form_data: { loc_block: 'Main block', loc_floor: '2nd floor', loc_room: 'Notice room 7', issue: 'Fan' }, seen_notices: [nt.id] } });

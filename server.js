@@ -720,11 +720,12 @@ P.post('/:slug/bot', wrap(async req => {
 // ---------- notice board (public side) ----------
 // A notice belongs to a team (service) or the whole campus. Live = published, started, not ended, not deleted.
 const NOTICE_AUD = ['all', 'student', 'faculty', 'staff', 'parent', 'visitor'];
+const isNotice = n => `coalesce(${n}.kind,'notice')='notice'`, isPolicy = n => `${n}.kind='policy'`;
 const liveNotice = n => `${n}.deleted_at IS NULL AND ${n}.status='published' AND (${n}.starts_at IS NULL OR ${n}.starts_at<=?) AND (${n}.ends_at IS NULL OR ${n}.ends_at>?)`;
 const noticesOut = async rows => { // what the public sees of each notice, with its files (one query for all of them)
   if (!rows.length) return [];
   const files = await all('SELECT notice_id, file_name, mime_type, size_bytes, storage_key FROM notice_files WHERE notice_id = ANY(?::text[]) ORDER BY created_at', rows.map(r => r.id));
-  return rows.map(n => ({ id: n.id, title: n.title, body: n.body, audience: n.audience, important: !!n.important, starts_at: n.starts_at, ends_at: n.ends_at,
+  return rows.map(n => ({ id: n.id, kind: n.kind || 'notice', title: n.title, body: n.body, audience: n.audience, important: !!n.important, starts_at: n.starts_at, ends_at: n.ends_at,
     team: n.team || 'Whole campus', service_id: n.service_id, posted_by: n.created_by_name, created_at: n.created_at,
     files: files.filter(f => f.notice_id === n.id).map(f => ({ name: f.file_name, type: f.mime_type, size: f.size_bytes, url: `/api/notice-files/${f.storage_key}` })) }));
 };
@@ -732,7 +733,7 @@ const noticeOut = async n => (await noticesOut([n]))[0];
 // the board: every live notice of the campus (optionally only those for one group of people), important first
 P.get('/:slug/notices', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now(), aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null;
-  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND ${isNotice('x')} AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
     ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 100`, tn.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
 }));
@@ -740,8 +741,16 @@ P.get('/:slug/notices', wrap(async req => {
 P.get('/:slug/notices/for/:serviceId', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
   const aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null; // "I'm a student": notices for everyone and for students
-  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${isNotice('x')} AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
     ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
+  return noticesOut(rows);
+}));
+// a team's policies (its own, its main team's and the campus's), shown on the raise form; ?for=student narrows by group
+P.get('/:slug/policies/for/:serviceId', wrap(async req => {
+  const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
+  const aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null;
+  const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND (x.service_id IN (?, ?) OR x.service_id IS NULL) AND ${isPolicy('x')} AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
+    ORDER BY (x.service_id IS NULL), x.title LIMIT 30`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
 }));
 P.get('/:slug/notices/:id', wrap(async req => {
@@ -1494,13 +1503,14 @@ const noticeBody = async (req, b, cur = {}) => {
   const body = String(b.body ?? cur.body ?? '').trim(); if (body.length > 3000) throw bad('Message: at most 3000 characters');
   const service_id = b.service_id === undefined ? cur.service_id ?? null : b.service_id || null;
   if (service_id && !await one('SELECT 1 AS x FROM services WHERE id=? AND tenant_id=?', service_id, req.tenantId)) throw notFound();
-  if (!await canNotice(req, service_id)) throw new HttpErr(403, 'FORBIDDEN', service_id ? 'You can post notices only for your own team' : 'Only admins post notices for the whole campus');
+  if (!await canNotice(req, service_id)) throw new HttpErr(403, 'FORBIDDEN', service_id ? 'You can post only for your own team' : 'Only admins post for the whole campus');
   const audience = NOTICE_AUD.includes(b.audience ?? cur.audience) ? (b.audience ?? cur.audience) : 'all';
   const iso = (v, label) => { if (v === '' || v == null) return null; const d = new Date(v); if (isNaN(d)) throw bad(`${label}: pick a date and time`); return d.toISOString(); };
   const starts_at = b.starts_at === undefined ? cur.starts_at ?? null : iso(b.starts_at, 'Show from'), ends_at = b.ends_at === undefined ? cur.ends_at ?? null : iso(b.ends_at, 'Until');
   if (starts_at && ends_at && ends_at <= starts_at) throw bad('Until must be after Show from');
-  const status = ['draft', 'published'].includes(b.status) ? b.status : cur.status || 'draft';
-  return { title, body: polish(body).text, service_id, audience, important: (b.important ?? cur.important) ? 1 : 0, starts_at, ends_at, status };
+  const status = ['draft', 'published'].includes(b.status) ? b.status : cur.status || 'draft', kind = (b.kind ?? cur.kind) === 'policy' ? 'policy' : 'notice';
+  if (kind === 'policy') return { kind, title, body: polish(body).text, service_id, audience, important: 0, starts_at: null, ends_at: b.end_now ? ends_at : null, status }; // a policy stands until removed
+  return { kind, title, body: polish(body).text, service_id, audience, important: (b.important ?? cur.important) ? 1 : 0, starts_at, ends_at, status };
 };
 S.get('/notices', wrap(async req => {
   const teams = await noticeTeams(req), n = now(), admin = isAdmin(req.user);
@@ -1520,8 +1530,8 @@ S.patch('/notices/:id', wrap(async req => {
   const cur = await loadNotice(req), b = { ...req.body };
   if (b.end_now) b.ends_at = now();
   const v = await noticeBody(req, b, cur);
-  await run('UPDATE notices SET title=?, body=?, service_id=?, audience=?, important=?, starts_at=?, ends_at=?, status=?, updated_by_name=?, updated_at=? WHERE id=?',
-    v.title, v.body, v.service_id, v.audience, v.important, v.starts_at, v.ends_at, v.status, req.user.name, now(), cur.id);
+  await run('UPDATE notices SET kind=?, title=?, body=?, service_id=?, audience=?, important=?, starts_at=?, ends_at=?, status=?, updated_by_name=?, updated_at=? WHERE id=?',
+    v.kind, v.title, v.body, v.service_id, v.audience, v.important, v.starts_at, v.ends_at, v.status, req.user.name, now(), cur.id);
   await audit(req, 'notice.update', 'notice', cur.id, { title: v.title, status: v.status }); return { ok: true };
 }));
 S.delete('/notices/:id', wrap(async req => { const x = await loadNotice(req); await run('UPDATE notices SET deleted_at=?, updated_by_name=? WHERE id=?', now(), req.user.name, x.id);
@@ -1529,7 +1539,8 @@ S.delete('/notices/:id', wrap(async req => { const x = await loadNotice(req); aw
 // one file per request (up to 10 MB): images (HEIC becomes JPEG), PDF, Word, Excel; at most 3 per notice
 S.post('/notices/:id/files', wrap(async req => {
   const x = await loadNotice(req), f = req.body || {};
-  if ((await one('SELECT count(*)::int n FROM notice_files WHERE notice_id=?', x.id)).n >= 3) throw bad('At most 3 files per notice');
+  const maxF = x.kind === 'policy' ? 5 : 3;
+  if ((await one('SELECT count(*)::int n FROM notice_files WHERE notice_id=?', x.id)).n >= maxF) throw bad(`At most ${maxF} files per ${x.kind === 'policy' ? 'policy' : 'notice'}`);
   let buf = Buffer.from(String(f.data || '').split(',').pop(), 'base64'), name = String(f.name || 'file').slice(0, 120), kind = docKindOf(buf, name);
   if (!kind || ['tiff', 'bmp', 'avif'].includes(kind)) throw bad('Only photos, PDF, Word or Excel files');
   if (buf.length > 10 * 1024 * 1024) throw new HttpErr(413, 'TOO_LARGE', `${name} is too large: each file must be under 10 MB`);

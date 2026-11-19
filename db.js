@@ -138,6 +138,8 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS reply_phrases TEXT;
 CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), service_id TEXT REFERENCES services(id),
   title TEXT NOT NULL, body TEXT, audience TEXT DEFAULT 'all', important INT DEFAULT 0, status TEXT DEFAULT 'draft', starts_at TEXT, ends_at TEXT,
   views INT DEFAULT 0, answered INT DEFAULT 0, raised INT DEFAULT 0, created_by TEXT, created_by_name TEXT, updated_by_name TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+-- a team's policies (rules, fees, procedures) live next to its notices: kind='policy', no dates, shown on the team's form
+ALTER TABLE notices ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'notice';
 CREATE INDEX IF NOT EXISTS notices_live ON notices (tenant_id, status, starts_at) WHERE deleted_at IS NULL;
 CREATE TABLE IF NOT EXISTS notice_files (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, notice_id TEXT NOT NULL REFERENCES notices(id), file_name TEXT, mime_type TEXT, size_bytes INT, storage_key TEXT UNIQUE, created_at TEXT);
 -- the ticket history and the points ledger are append-only

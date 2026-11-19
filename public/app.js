@@ -219,7 +219,7 @@ async function noticeBoard(slug, box) {
 async function noticesPage(slug, id) {
   document.body.className = '';
   if (id) { const n = await api(`/public/${slug}/notices/${id}`).catch(() => null);
-    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/notices" aria-label="Back">${I('back')}</a><h1>Notice</h1></div>
+    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="${n?.kind === 'policy' ? 'javascript:history.back()' : `#/d/${slug}/notices`}" aria-label="Back">${I('back')}</a><h1>${n?.kind === 'policy' ? 'Policy' : 'Notice'}</h1></div>
       ${n ? `<article class="card ntcard ${n.important ? 'imp' : ''}">${ntTags(n)}<h2>${esc(n.title)}</h2><div class="muted small">Posted by ${esc(n.posted_by || n.team)} · ${ntWhen(n)}</div>${ntBody(n)}</article>
         <a class="btn" href="#/d/${slug}/raise" style="width:100%">Still need help? Raise a ticket</a>` : '<div class="card"><p>This notice has ended or was removed.</p></div>'}</div>`;
     if (n) api(`/public/${slug}/notices/seen`, { method: 'POST', body: { ids: [n.id] } }).catch(() => {});
@@ -388,6 +388,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
   app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="${back}" aria-label="Back">${I('back')}</a>
     <h1>${esc(svc.name)}</h1><span class="chip c0">${I(svcIcon(svc), 22)}</span></div>
   <p class="muted" style="margin-top:-4px">Report a problem: you get a ticket number, and the team acts on it within its target time.</p>
+  <div id="pols"></div>
   <form id="f" class="card">
     <input class="hp" name="website" tabindex="-1" autocomplete="off">
     <div class="kindsw" role="radiogroup" aria-label="What would you like to do?" hidden>
@@ -410,6 +411,10 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
     <p><button class="btn primary big" id="raiseBtn">${I('send')} <span>Raise ticket</span></button></p>
   </form></div>`;
   wireFiles('raise');
+  // the team's policies (rules, fees, procedures), for this group of people: read before raising
+  api(`/public/${slug}/policies/for/${svc.id}${whoAmI() ? '?for=' + whoAmI() : ''}`).then(list => { const box = $('#pols'); if (!box || !list.length) return;
+    box.innerHTML = `<section class="card nboard polbox" aria-labelledby="polT"><div class="nb-h"><b id="polT">${I('file', 16)} ${esc(svc.name)} policies</b><span class="muted small">${list.length}</span></div>
+      ${list.map(n => `<a class="ntrow" href="#/d/${slug}/notices/${n.id}"><div><span class="ntag">${n.service_id ? esc(n.team) : 'Whole campus'}</span><b>${esc(n.title)}</b><div class="muted small">${n.body ? esc(n.body.slice(0, 90)) + (n.body.length > 90 ? '…' : '') : ''}${ntFiles(n).replace(/^ · /, n.body ? ' · ' : '')}</div></div><span class="chev">${I('chev', 18)}</span></a>`).join('')}</section>`; }).catch(() => {});
   // Suggestion box: the same form; the problem's place and questions step aside, the wording changes
   const kindSync = () => { const sug = $('#f').kind.value === 'suggestion';
     $('#f').querySelectorAll('.prob-only').forEach(x => { x.hidden = sug; x.querySelectorAll('input, select, textarea').forEach(i => { if (sug) { i.dataset.req ??= i.required ? '1' : ''; i.required = false; } else if (i.dataset.req !== undefined) { i.required = i.dataset.req === '1'; } }); });
@@ -1641,61 +1646,71 @@ const NT_STATES = [['live', 'Live'], ['scheduled', 'Scheduled'], ['draft', 'Draf
 const toLocalInput = iso => { if (!iso) return ''; const d = new Date(iso), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 const fileB64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); });
 async function noticesAdmin(main) {
-  const st = { tab: sessionStorage.getItem('ntab') || 'live' };
+  const st = { tab: sessionStorage.getItem('ntab') || 'live', kind: sessionStorage.getItem('nkind') || 'notice' };
   const draw = async () => {
-    const d = await api('/notices'), by = Object.fromEntries(NT_STATES.map(([k]) => [k, d.notices.filter(n => n.state === k).sort((x, y) => y.important - x.important)])); // important first, then the latest change
-    main.innerHTML = `<div class="sechead" style="margin-top:0"><span class="muted small">${d.can_campus ? 'You can post notices for any team or the whole campus.' : `You can post notices for: <b>${esc(d.teams.map(t => t.name).join(', ') || 'no team yet')}</b>.`} Students see them on the campus page, and a team's notice pops up before they raise a ticket for that team.</span>
-      ${d.teams.length || d.can_campus ? `<button class="btn primary" id="ntNew">${I('plus', 18)} New notice</button>` : ''}</div>
-      <div class="tabs">${NT_STATES.map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}${by[k].length ? ` <span class="cnt">${by[k].length}</span>` : ''}</button>`).join('')}</div>
+    const pol = st.kind === 'policy', STATES = pol ? [['live', 'Published'], ['draft', 'Drafts'], ['ended', 'Withdrawn']] : NT_STATES;
+    if (!STATES.some(([k]) => k === st.tab)) st.tab = 'live';
+    const d0 = await api('/notices'), d = { ...d0, notices: d0.notices.filter(n => (n.kind || 'notice') === st.kind) };
+    const by = Object.fromEntries(STATES.map(([k]) => [k, d.notices.filter(n => n.state === k).sort((x, y) => y.important - x.important)])); // important first, then the latest change
+    const kc = k => d0.notices.filter(n => (n.kind || 'notice') === k && n.state === 'live').length;
+    main.innerHTML = `<div class="nkind" role="tablist" aria-label="Notices or policies">${[['notice', 'Notices', 'notice'], ['policy', 'Policies', 'file']].map(([k, l, ic]) => `<button type="button" role="tab" aria-selected="${st.kind === k}" class="${st.kind === k ? 'on' : ''}" data-k="${k}">${I(ic, 17)} ${l}${kc(k) ? ` <span class="cnt">${kc(k)}</span>` : ''}</button>`).join('')}</div>
+      <div class="sechead" style="margin-top:0"><span class="muted small">${d.can_campus ? `You can post ${pol ? 'policies' : 'notices'} for any team or the whole campus.` : `You can post ${pol ? 'policies' : 'notices'} for: <b>${esc(d.teams.map(t => t.name).join(', ') || 'no team yet')}</b>.`} ${pol
+        ? 'A policy is your team\'s standing rules: fees, timings, eligibility, procedures. Write it as text and attach photos, PDF, Word or Excel. Requestors see it on your team\'s form, before they raise a ticket.'
+        : 'Students see them on the campus page, and a team\'s notice pops up before they raise a ticket for that team.'}</span>
+      ${d.teams.length || d.can_campus ? `<button class="btn primary" id="ntNew">${I('plus', 18)} New ${pol ? 'policy' : 'notice'}</button>` : ''}</div>
+      <div class="tabs">${STATES.map(([k, l]) => `<button class="tab ${st.tab === k ? 'on' : ''}" data-t="${k}">${l}${by[k].length ? ` <span class="cnt">${by[k].length}</span>` : ''}</button>`).join('')}</div>
       <div class="ntlist">${by[st.tab].map(n => `<div class="card ntadm ${n.important ? 'imp' : ''}">${n.important ? '<span class="ntag imp">Important</span> ' : ''}<span class="ntag">${esc(n.team)}</span>
-        <h3>${esc(n.title)}</h3><div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · from ${shortDate(n.starts_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
-        <div class="muted small" style="margin-top:4px">👁 Seen ${n.views} · <b style="color:var(--ok)">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
+        <h3>${esc(n.title)}</h3><div class="muted small">${{ all: 'Everyone', student: 'Students', faculty: 'Faculty', staff: 'Staff', parent: 'Parents', visitor: 'Visitors' }[n.audience] || 'Everyone'} · ${pol ? `updated ${shortDate(n.updated_at || n.created_at)}` : `from ${shortDate(n.starts_at || n.created_at)} · ${n.ends_at ? `until ${shortDate(n.ends_at)}` : 'no end date'}`}${n.files ? ` · 📎 ${n.files} file${n.files === 1 ? '' : 's'}` : ''}</div>
+        <div class="muted small" style="margin-top:4px">${pol ? `👁 Opened ${n.views}` : `👁 Seen ${n.views} · <b style="color:var(--ok)">${n.answered} found their answer</b> · ${n.raised} raised a ticket anyway`} · last change by ${esc(n.updated_by_name || n.created_by_name || '')}</div>
         <div class="ntacts"><button class="btn" data-ed="${n.id}">${I('pencil', 15)} Edit</button>
-          ${n.state === 'draft' ? `<button class="btn primary" data-pub="${n.id}">Publish</button>` : n.state === 'live' ? `<button class="btn" data-end="${n.id}">End now</button>`
+          ${n.state === 'draft' ? `<button class="btn primary" data-pub="${n.id}">Publish</button>` : n.state === 'live' ? `<button class="btn" data-end="${n.id}">${pol ? 'Withdraw' : 'End now'}</button>`
             : n.state === 'scheduled' ? `<button class="btn" data-undo="${n.id}">Move to drafts</button>` : `<button class="btn" data-again="${n.id}">Show again</button>`}
-          <button class="btn danger" data-del="${n.id}">Delete</button></div></div>`).join('') || `<div class="empty card"><p class="muted">No ${NT_STATES.find(x => x[0] === st.tab)[1].toLowerCase()} notices.</p></div>`}</div>`;
+          <button class="btn danger" data-del="${n.id}">Delete</button></div></div>`).join('') || `<div class="empty card"><p class="muted">No ${STATES.find(x => x[0] === st.tab)[1].toLowerCase()} ${pol ? 'policies' : 'notices'}.</p></div>`}</div>`;
+    main.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { st.kind = b.dataset.k; sessionStorage.setItem('nkind', st.kind); draw(); });
     main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { st.tab = b.dataset.t; sessionStorage.setItem('ntab', st.tab); draw(); });
-    if ($('#ntNew')) $('#ntNew').onclick = () => noticeEditor(d, null, draw);
-    main.querySelectorAll('[data-ed]').forEach(b => b.onclick = async () => noticeEditor(d, await api('/notices/' + b.dataset.ed), draw));
+    if ($('#ntNew')) $('#ntNew').onclick = () => noticeEditor(d, null, draw, st.kind);
+    main.querySelectorAll('[data-ed]').forEach(b => b.onclick = async () => noticeEditor(d, await api('/notices/' + b.dataset.ed), draw, st.kind));
     const act = async (id, body, msg) => { try { await api('/notices/' + id, { method: 'PATCH', body }); toast(msg); draw(); } catch (er) { toast(er.message); } };
     main.querySelectorAll('[data-pub]').forEach(b => b.onclick = () => act(b.dataset.pub, { status: 'published' }, 'Published'));
-    main.querySelectorAll('[data-end]').forEach(b => b.onclick = () => act(b.dataset.end, { end_now: true }, 'Ended: students no longer see it'));
+    main.querySelectorAll('[data-end]').forEach(b => b.onclick = () => act(b.dataset.end, { end_now: true }, pol ? 'Withdrawn: requestors no longer see it' : 'Ended: students no longer see it'));
     main.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => act(b.dataset.undo, { status: 'draft' }, 'Moved to drafts'));
     main.querySelectorAll('[data-again]').forEach(b => b.onclick = () => act(b.dataset.again, { ends_at: '', status: 'published' }, 'Showing again (no end date)'));
     main.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const n = d.notices.find(x => x.id === b.dataset.del);
-      const dd = dlg(`<h2>Delete this notice?</h2><p class="muted">"${esc(n.title)}" disappears for students right away. This can't be undone.</p>`, async () => { await api('/notices/' + n.id, { method: 'DELETE' }); toast('Notice deleted'); draw(); });
+      const dd = dlg(`<h2>Delete this ${pol ? 'policy' : 'notice'}?</h2><p class="muted">"${esc(n.title)}" disappears for students right away. This can't be undone.</p>`, async () => { await api('/notices/' + n.id, { method: 'DELETE' }); toast(pol ? 'Policy deleted' : 'Notice deleted'); draw(); });
       const ok = dd.querySelector('button[value=ok]'); ok.textContent = 'Delete'; ok.classList.add('danger-solid'); });
   };
   await draw();
 }
-function noticeEditor(d, n, done) {
+function noticeEditor(d, n, done, kind = 'notice') {
+  const pol = kind === 'policy';
   const aud = [['all', 'Everyone'], ['student', 'Students'], ['faculty', 'Faculty'], ['staff', 'Staff'], ['parent', 'Parents'], ['visitor', 'Visitors']];
   const files = n?.files || [];
   // main teams first, each followed by its sub-teams; a sub-team whose main team is not in the list stands alone
   const mains = d.teams.filter(t => !t.parent_id || !d.teams.some(x => x.id === t.parent_id));
   const teams = mains.flatMap(t => [t, ...d.teams.filter(x => x.parent_id === t.id).map(x => ({ ...x, sub: true }))]);
-  const dd = dlg(`<h2>${n ? 'Edit notice' : 'New notice'}</h2>
+  const dd = dlg(`<h2>${n ? 'Edit' : 'New'} ${pol ? 'policy' : 'notice'}</h2>
     <label>Team</label><select name="service_id">${d.can_campus ? `<option value="" ${n && !n.service_id ? 'selected' : ''}>Whole campus</option>` : ''}${teams.map(t => `<option value="${t.id}" ${n?.service_id === t.id ? 'selected' : ''}>${t.sub ? '— ' : ''}${esc(t.name)}</option>`).join('')}</select>
-    <div class="muted small">A team's notice pops up when a student starts a ticket for that team (and its sub-teams).</div>
-    <label>Title</label><input name="title" required maxlength="120" value="${esc(n?.title || '')}" placeholder="e.g. Ground is wet: play not allowed today">
-    <label>Message</label><textarea name="body" rows="4" maxlength="3000" placeholder="What students need to know, and what to do instead">${esc(n?.body || '')}</textarea>
-    <label>Files <small>(photo, PDF, Word, Excel · up to 3, 10 MB each)</small></label>
+    <div class="muted small">${pol ? "A team's policy shows on that team's form (and its sub-teams'). A campus policy shows on every team's form." : "A team's notice pops up when a student starts a ticket for that team (and its sub-teams)."}</div>
+    <label>Title</label><input name="title" required maxlength="120" value="${esc(n?.title || '')}" placeholder="${pol ? 'e.g. Hostel leave and late-entry policy' : 'e.g. Ground is wet: play not allowed today'}">
+    <label>${pol ? 'Policy text' : 'Message'}</label><textarea name="body" rows="${pol ? 8 : 4}" maxlength="3000" placeholder="${pol ? 'The rules in plain words: who, what, when, fees, how to apply. Or attach the policy document below.' : 'What students need to know, and what to do instead'}">${esc(n?.body || '')}</textarea>
+    <label>Files <small>(photo, PDF, Word, Excel · up to ${pol ? 5 : 3}, 10 MB each)</small></label>
     <div id="ntf">${files.map(f => `<div class="ntfrow" data-key="${esc(f.url.split('/').pop())}"><span>${esc(f.name)}</span><button type="button" class="linkbtn" data-rmf>Remove</button></div>`).join('')}</div>
     <input type="file" id="ntin" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,application/pdf">
     <label>For</label><select name="audience">${aud.map(([k, l]) => `<option value="${k}" ${(n?.audience || 'all') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <div class="row"><div><label>Show from <small>(empty = now)</small></label><input type="datetime-local" name="starts_at" value="${toLocalInput(n?.starts_at)}"></div><div><label>Until <small>(empty = no end)</small></label><input type="datetime-local" name="ends_at" value="${toLocalInput(n?.ends_at)}"></div></div>
-    <label class="chk ntimp"><input type="checkbox" name="important" ${n?.important ? 'checked' : ''}> <span><b>Important</b>: pinned on top and highlighted</span></label>
+    ${pol ? '' : `<div class="row"><div><label>Show from <small>(empty = now)</small></label><input type="datetime-local" name="starts_at" value="${toLocalInput(n?.starts_at)}"></div><div><label>Until <small>(empty = no end)</small></label><input type="datetime-local" name="ends_at" value="${toLocalInput(n?.ends_at)}"></div></div>
+    <label class="chk ntimp"><input type="checkbox" name="important" ${n?.important ? 'checked' : ''}> <span><b>Important</b>: pinned on top and highlighted</span></label>`}
     <label class="chk"><input type="checkbox" name="publish" ${!n || n.status === 'published' ? 'checked' : ''}> Publish (untick to keep it as a draft)</label>`,
     async f => { const el = f.elements;
-      const body = { service_id: el.service_id.value, title: el.title.value, body: el.body.value, audience: el.audience.value, important: el.important.checked,
+      const body = pol ? { kind, service_id: el.service_id.value, title: el.title.value, body: el.body.value, audience: el.audience.value, status: el.publish.checked ? 'published' : 'draft' }
+        : { kind, service_id: el.service_id.value, title: el.title.value, body: el.body.value, audience: el.audience.value, important: el.important.checked,
         starts_at: el.starts_at.value ? new Date(el.starts_at.value).toISOString() : '', ends_at: el.ends_at.value ? new Date(el.ends_at.value).toISOString() : '', status: el.publish.checked ? 'published' : 'draft' };
       const id = n ? (await api('/notices/' + n.id, { method: 'PATCH', body }), n.id) : (await api('/notices', { method: 'POST', body })).id;
       for (const key of removed) await api(`/notices/${id}/files/${key}`, { method: 'DELETE' });
       for (const file of [...$('#ntin').files]) { if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} is over 10 MB`); await api(`/notices/${id}/files`, { method: 'POST', body: { name: file.name, data: await fileB64(file) } }); }
-      toast(body.status === 'published' ? 'Notice published' : 'Saved as draft'); done(); });
+      toast(body.status === 'published' ? (pol ? 'Policy published' : 'Notice published') : 'Saved as draft'); done(); });
   dd.style.maxWidth = '640px'; const removed = [];
   dd.querySelectorAll('[data-rmf]').forEach(b => b.onclick = () => { const r = b.closest('.ntfrow'); removed.push(r.dataset.key); r.remove(); });
-  dd.querySelector('button[value=ok]').textContent = n ? 'Save notice' : 'Create notice';
+  dd.querySelector('button[value=ok]').textContent = `${n ? 'Save' : 'Create'} ${pol ? 'policy' : 'notice'}`;
 }
 
 async function profile(main) {
