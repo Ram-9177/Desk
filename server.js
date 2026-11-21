@@ -1338,11 +1338,46 @@ S.get('/tickets', wrap(async req => {
   return (await all(`${LIST_SQL} WHERE ${sql} ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 0 WHEN 'hold' THEN 1 ELSE 2 END, t.due_at LIMIT 500`, ...args))
     .map(x => ({ ...x, overdue: ACTIVE.includes(x.status) && x.due_at < now() }));
 }));
+// CSV of exactly the tickets the Home list shows (same status tab, service and search), with every detail: requester,
+// form answers (one column per question), people affected, times in IST, SLA, hold, escalation, reopen and the latest note.
 S.get('/tickets.csv', async (req, res, next) => { try {
-  const { sql, args } = await ticketQuery(req);
-  const rows = await all(`${LIST_SQL} WHERE ${sql} ORDER BY t.created_at DESC`, ...args);
-  const cols = ['ticket_no', 'service', 'subject', 'status', 'priority', 'affected_count', 'channel', 'requestor', 'location', 'created_at', 'due_at', 'closed_at'];
-  res.type('text/csv').attachment('tickets.csv').send([cols.join(','), ...rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n'));
+  const { sql, args } = await ticketQuery(req), n = now();
+  const rows = await all(`SELECT t.*, s.name service, s.code service_code, s.form_schema, p.name main_team, r.name requestor, r.email requestor_email, r.phone requestor_phone,
+      r.requestor_type, r.identifier, r.department, cu.name closed_by_name, eu.name escalated_name,
+      (SELECT count(*)::int FROM attachments a WHERE a.ticket_id=t.id) photos,
+      (SELECT e.body FROM ticket_events e WHERE e.ticket_id=t.id AND e.is_internal=0 AND coalesce(e.body,'')<>'' AND e.event_type<>'created' ORDER BY e.id DESC LIMIT 1) last_note,
+      (SELECT string_agg(tr.name, '; ' ORDER BY tr.raised_at) FROM ticket_requestors tr WHERE tr.ticket_id=t.id AND coalesce(tr.is_first,0)=0) also_reported_by
+    FROM tickets t JOIN services s ON s.id=t.service_id LEFT JOIN services p ON p.id=s.parent_id JOIN requestors r ON r.id=t.requestor_id
+    LEFT JOIN users cu ON cu.id=t.closed_by LEFT JOIN users eu ON eu.id=t.escalated_to WHERE ${sql} ORDER BY t.created_at DESC`, ...args);
+  const tn = await tenantRow(req.tenantId), holdLabel = k => holdReasons(tn).find(x => x.key === k)?.label || k || '';
+  const ist = v => v ? new Date(v).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '';
+  const cap = v => v ? String(v)[0].toUpperCase() + String(v).slice(1).replace(/_/g, ' ') : '';
+  // one column per form question, in the order first seen across the exported tickets' services
+  const qs = new Map();
+  for (const t of rows) for (const f of fieldsOf(JSON.parse(t.form_schema || '{}'))) if (!qs.has(f.key)) qs.set(f.key, f.label);
+  const fixed = [
+    ['Ticket', t => t.ticket_no], ['Type', t => t.kind === 'suggestion' ? 'Suggestion' : 'Problem'], ['Service', t => t.service], ['Main team', t => t.main_team || ''],
+    ['Subject', t => t.subject], ['Description', t => t.description], ['Status', t => t.queued ? 'In queue' : ({ open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Rejected' })[t.status] || cap(t.status)], ['Priority', t => cap(t.priority)],
+    ['Overdue', t => ACTIVE.includes(t.status) && t.due_at && t.due_at < n ? 'Yes' : 'No'],
+    ['Requester', t => t.requestor], ['Requester type', t => cap(t.requestor_type)], ['Email', t => t.requestor_email], ['Phone', t => t.requestor_phone],
+    ['ID / roll no', t => t.identifier], ['Department / branch', t => t.department], ['People affected', t => t.affected_count || 1], ['Also reported by', t => t.also_reported_by || ''],
+    ['Location', t => t.location], ['Problem', t => t.problem_label],
+  ];
+  const tail = [
+    ['Channel', t => cap(t.channel)], ['Internal', t => t.is_internal ? 'Yes' : 'No'], ['Raised on', t => ist(t.created_at)], ['Reached the team', t => ist(t.lands_at || t.created_at)],
+    ['Target', t => ist(t.due_at)], ['Closed on', t => ist(t.closed_at)], ['Closed by', t => t.closed_by_name || ''],
+    ['Within SLA', t => t.status === 'closed' && t.due_at ? (t.closed_at <= t.due_at ? 'Yes' : 'No') : ''],
+    ['On hold for', t => t.status === 'hold' ? holdLabel(t.hold_reason) : ''], ['Hold time (working min)', t => t.held_minutes || 0],
+    ['Escalated to', t => t.escalated_name || ''], ['Escalated on', t => ist(t.escalated_at)], ['Reopened (times)', t => t.reopen_count || 0],
+    ['Reopen requested', t => ist(t.reopen_requested_at)], ['Photos', t => t.photos], ['Latest update', t => t.last_note || ''], ['Last changed', t => ist(t.updated_at)],
+  ];
+  const ans = v => Array.isArray(v) ? v.join(', ') : v ?? '';
+  const cols = [...fixed, ...[...qs].map(([k, l]) => [l, t => ans(JSON.parse(t.form_data || '{}')[k])]), ...tail];
+  const cell = v => { let x = String(v ?? '').replace(/\r?\n/g, ' '); if (/^[=+\-@\t]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; }; // no spreadsheet formulas from typed text
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const name = `tickets-${String(req.query.status || 'all').replace(/[^a-z_]/g, '')}${req.query.service ? '-' + (rows[0]?.service_code || 'team').toLowerCase() : ''}${req.query.q ? '-search' : ''}-${day}.csv`;
+  res.type('text/csv; charset=utf-8').attachment(name)
+    .send('﻿' + [cols.map(c => cell(c[0])).join(','), ...rows.map(t => cols.map(c => cell(c[1](t))).join(','))].join('\r\n')); // BOM: Excel reads Telugu / ₹ correctly
 } catch (e) { next(e); } });
 S.get('/tickets/:id', wrap(async req => {
   const t = await loadTicket(req);

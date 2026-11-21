@@ -318,7 +318,15 @@ try {
   const it = await ok('internal ticket to another service', '/tickets', { token: T.pavan, method: 'POST', body: { channel: 'internal', service_id: trans.id, subject: 'Need a van for the generator', description: 'Tomorrow 10 am' } });
   check('internal ticket uses the staff member as requestor', it.is_internal === 1 && (await q('SELECT r.email FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.id=?', it.id))[0].email === 'pavan@example.com');
   const csv = await api('/tickets.csv?status=all', { token: T.asha, raw: true });
-  check('CSV export', csv.headers.get('content-type')?.includes('text/csv') && (await csv.text()).startsWith('ticket_no,'));
+  const csvText = (await csv.text()).replace(/^\ufeff/, ''), csvHead = csvText.split('\r\n')[0];
+  check('CSV export: every detail (requester, contact, form answers, times, SLA, latest update)', csv.headers.get('content-type')?.includes('text/csv')
+    && ['"Ticket"', '"Description"', '"Requester"', '"Email"', '"Phone"', '"People affected"', '"Raised on"', '"Target"', '"Within SLA"', '"Closed by"', '"Latest update"'].every(h => csvHead.includes(h)), csvHead.slice(0, 300));
+  const csvRows = t => t.replace(/^\ufeff/, '').split('\r\n').length - 1;
+  const listAll = (await api('/tickets?status=all', { token: T.asha })).data.length, listOpen = (await api('/tickets?status=open', { token: T.asha })).data.length;
+  const csvOpen = await (await api('/tickets.csv?status=open', { token: T.asha, raw: true })).text();
+  check('CSV follows the filter: All tab = all rows, Open tab = only open rows', csvRows(csvText) === listAll && csvRows(csvOpen) === listOpen && listOpen < listAll && !/"Closed"/.test(csvOpen.split('\r\n').slice(1).map(l => l.split('","')[6]).join()), `${csvRows(csvText)}/${listAll} ${csvRows(csvOpen)}/${listOpen}`);
+  const csvSearch = await (await api('/tickets.csv?status=all&q=generator', { token: T.asha, raw: true })).text();
+  check('CSV follows the search too', csvRows(csvSearch) === 1 && csvSearch.includes('Need a van for the generator'));
 
   // ======================= E. escalation =======================
   sec('Escalation');
@@ -679,7 +687,7 @@ try {
   await ok('back to silent mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'silent' } });
   const rep = (await api('/reports?days=1', { token: T.asha })).data, row = rep.by_location.find(x => x.location === 'Hostel block · 2nd floor · 301');
   check('reports: students affected in total and per place', rep.affected >= 70 && row?.affected === 52 && row.tickets === 2, JSON.stringify({ affected: rep.affected, row }));
-  check('CSV export has the number affected', (await (await fetch(`${API}/tickets.csv`, { headers: { authorization: 'Bearer ' + T.asha } })).text()).split('\n')[0].includes('affected_count'));
+  check('CSV export has the number affected', (await (await fetch(`${API}/tickets.csv`, { headers: { authorization: 'Bearer ' + T.asha } })).text()).split('\r\n')[0].includes('"People affected"'));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');

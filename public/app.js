@@ -700,8 +700,15 @@ async function queue(main) {
     main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast('Reminder done'); draw(); bellDot(S.me.user.role !== 'provider'); } catch (er) { toast(er.message); } });
     $('#fq').onchange = e => set('q', e.target.value);
     $('#fsvb').onclick = () => { const on = $('.mt-more').classList.toggle('open'); $('#fsvb').setAttribute('aria-expanded', on); if (on) $('#fsv').focus(); };
-    $('#csv').onclick = async e => { e.preventDefault(); const r = await api('/tickets.csv?' + qs, { raw: true }); const a = document.createElement('a');
-      a.href = URL.createObjectURL(await r.blob()); a.download = 'tickets.csv'; a.click(); };
+    // Export CSV: exactly the tickets of the tab, service and search in view (a search still being typed counts too), all details
+    $('#csv').onpointerdown = e => e.preventDefault(); // keep focus in the search box, so the click is not lost to a redraw
+    $('#csv').onclick = async e => { e.preventDefault(); const f = { ...st, q: $('#fq').value.trim() };
+      const r = await api('/tickets.csv?' + new URLSearchParams(Object.entries(f).filter(([, v]) => v)), { raw: true });
+      if (!r.ok) return toast('Could not export. Please try again.');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob());
+      a.download = /filename="?([^";]+)"?/.exec(r.headers.get('content-disposition') || '')?.[1] || 'tickets.csv'; a.click();
+      toast('CSV downloaded: the tickets in this view, with all their details');
+      if (f.q !== (st.q || '')) set('q', f.q); };
     if (keep) { $('#fq').focus(); $('#fq').setSelectionRange(keep[0], keep[0]); }
   };
   await draw();
