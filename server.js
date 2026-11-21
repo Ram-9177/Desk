@@ -1257,8 +1257,10 @@ async function fairScores(tid) {
     const doneRate = 1 - Math.min(1, (bad_ + k * campusBad) / (n + k));
     const P = clamp((1.5 - pace) * 100, 0, 100), O = onRate * 100, D = doneRate * 100, L = avgH ? Math.min(hoursBy[sv.id] / avgH, 1.5) / 1.5 * 100 : 0;
     const members = mem.map(m => { const c = ts.filter(t => t.closed_by === m.id).length, sc = scoreOf[m.id];
-      return { id: m.id, name: m.name, closed: c, active: c > 0, score: sc?.eligible ? sc.score : null, last_login_at: m.last_login_at }; })
-      .sort((a, b) => b.closed - a.closed || a.name.localeCompare(b.name));
+      return { id: m.id, name: m.name, closed: c, active: c > 0, score: sc?.eligible ? sc.score : null, parts: sc?.parts || null, tickets: sc?.tickets || 0, last_login_at: m.last_login_at }; })
+      // ranked inside the team by Fair Score (1, 2, 3 …); people without enough closed tickets follow, unranked
+      .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.closed - a.closed || a.name.localeCompare(b.name));
+    members.forEach((m, i) => { m.rank = m.score != null ? i + 1 : null; });
     depts.push({ id: sv.id, name: sv.name, sub: !!sv.parent_id, tickets: n, open, eligible: n >= cfg.min_tickets, hours: r1(hoursBy[sv.id]), points: ptsBy[sv.id] || 0,
       sla_used: r1(pace * 100) / 100, on_time_pct: Math.round(O), reopens_holds: bad_, size: mem.length, active_count: members.filter(m => m.active).length, members,
       parts: { pace: Math.round(P), on_time: Math.round(O), done_right: Math.round(D), load: Math.round(L) },

@@ -601,7 +601,8 @@ try {
     { const fp = (await api('/fair', { token: T.pavan })).data, fa = (await api('/fair', { token: T.asha })).data;
       check('departments are ranked too, with points and the same four parts', Array.isArray(fp.departments) && fp.departments.length > 0 && fp.departments.every(d => typeof d.points === 'number' && ['pace', 'on_time', 'done_right', 'load'].every(k => typeof d.parts[k] === 'number')), JSON.stringify(fp.departments?.[0]));
       check('a provider sees the department ranking but not who is in each team', fp.departments.every(d => !('members' in d)));
-      check('an admin sees each team\'s members and who is active', fa.departments.some(d => Array.isArray(d.members) && d.members.some(m => 'active' in m && 'closed' in m))); }
+      check('an admin sees each team\'s members and who is active', fa.departments.some(d => Array.isArray(d.members) && d.members.some(m => 'active' in m && 'closed' in m)));
+      check('inside a team, people are ranked 1, 2, 3 … by Fair Score (unranked last)', fa.departments.every(d => (d.members || []).every((m, i, a) => m.rank == null ? a.slice(i).every(x => x.rank == null) : m.rank === i + 1 && (i === 0 || a[i - 1].score >= m.score)))); }
     check('provider: own Fair Score (or how many tickets are still needed)', /Fair Score is [\d.]+ \(rank \d+\)|closed tickets in \d+ days to be ranked/.test((await sb('my points', T.pavan)).data.text));
     b = (await sb(`ticket ${examNo}`, T.asha)).data;
     check('admin: any ticket of the campus', new RegExp(`#${examNo}`).test(b.text) && /Raised by/.test(b.text), b.text);
