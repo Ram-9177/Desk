@@ -598,7 +598,10 @@ try {
     b = (await sb(`ticket ${examNo}`, T.pavan)).data;
     check("provider: another team's ticket is not shown", !!examNo && /not in your services/.test(b.text), b.text);
     check('provider: admin questions are for admins', /for admins/.test((await sb('services with no provider', T.pavan)).data.text));
-    check('departments are ranked too', Array.isArray((await api('/fair', { token: T.pavan })).data.departments));
+    { const fp = (await api('/fair', { token: T.pavan })).data, fa = (await api('/fair', { token: T.asha })).data;
+      check('departments are ranked too, with points and the same four parts', Array.isArray(fp.departments) && fp.departments.length > 0 && fp.departments.every(d => typeof d.points === 'number' && ['pace', 'on_time', 'done_right', 'load'].every(k => typeof d.parts[k] === 'number')), JSON.stringify(fp.departments?.[0]));
+      check('a provider sees the department ranking but not who is in each team', fp.departments.every(d => !('members' in d)));
+      check('an admin sees each team\'s members and who is active', fa.departments.some(d => Array.isArray(d.members) && d.members.some(m => 'active' in m && 'closed' in m))); }
     check('provider: own Fair Score (or how many tickets are still needed)', /Fair Score is [\d.]+ \(rank \d+\)|closed tickets in \d+ days to be ranked/.test((await sb('my points', T.pavan)).data.text));
     b = (await sb(`ticket ${examNo}`, T.asha)).data;
     check('admin: any ticket of the campus', new RegExp(`#${examNo}`).test(b.text) && /Raised by/.test(b.text), b.text);

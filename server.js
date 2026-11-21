@@ -1225,33 +1225,52 @@ async function fairScores(tid) {
   });
   const ranked = out.filter(x => x.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets);
   ranked.forEach((x, i) => { x.rank = i + 1; });
-  // Departments ranked against each other. Pace and on time are measured against each department's OWN SLA target
-  // (not the campus's), so long-job teams and quick teams compete fairly:
-  //   Pace = (1.5 − average of work time ÷ the ticket's SLA target) × 100, kept to 0–100
-  //   On time = share closed by the due time;  Done right = 1 − (reopens + holds past limit) ÷ closed
-  //   Cleared = closed ÷ (closed + still open) of tickets that reached the team in the window
+  // Departments ranked against each other with the SAME math as people (same four parts, weights, smoothing and minimum
+  // tickets). The one difference: a team can't be compared with "its own team", so its pace is measured against its own
+  // SLA target for each ticket's priority (1.0 = used exactly the target time), which keeps long-job and quick teams fair.
+  //   Pace      P = (1.5 − average of work time ÷ SLA target) × 100, kept to 0–100
+  //   On time   O = share closed within the department's SLA × 100
+  //   Done right D = (1 − (accepted reopens + holds past their limit) ÷ closed) × 100
+  //   Load      L = min(work hours ÷ the average department's work hours, 1.5) ÷ 1.5 × 100
+  //   Score = (W.pace P + W.on_time O + W.done_right D + W.load L) ÷ ΣW, smoothed with k tickets at the campus's level
+  // Points = the lifetime points its providers earned on its tickets in the window. Members (admins only) = who is in the team.
   const tgt = {}, targetOf = async t => (tgt[t.service_id + '|' + t.priority] ??= await targetHours(tid, t.service_id, t.priority) * 60);
-  const svcs = await all(`SELECT s.id, s.name FROM services s WHERE s.tenant_id=? AND s.is_active=1 ORDER BY s.sort_order, s.name`, tid);
-  const openBy = Object.fromEntries((await all(`SELECT service_id, count(*)::int n FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress','hold') AND coalesce(kind,'issue')<>'suggestion' AND coalesce(lands_at, created_at)>=? GROUP BY service_id`, tid, since(cfg.window_days))).map(r => [r.service_id, r.n]));
-  const badBy = Object.fromEntries((await all(`SELECT t.service_id, count(*)::int n FROM provider_points pp JOIN tickets t ON t.id=pp.ticket_id WHERE pp.tenant_id=? AND pp.created_at>=? AND pp.reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY t.service_id`, tid, since(cfg.window_days))).map(r => [r.service_id, r.n]));
-  const deptW = { pace: W.pace, on_time: W.on_time, done_right: W.done_right, load: W.load }, dsum = wsum;
+  const svcs = await all(`SELECT s.id, s.name, s.parent_id FROM services s WHERE s.tenant_id=? AND s.is_active=1 ORDER BY s.sort_order, s.name`, tid);
+  const openBy = Object.fromEntries((await all(`SELECT service_id, count(*)::int n FROM tickets WHERE tenant_id=? AND status IN ('open','in_progress','hold') AND coalesce(kind,'issue')<>'suggestion' GROUP BY service_id`, tid)).map(r => [r.service_id, r.n]));
+  const ptsBy = {}, badBy = {};
+  for (const r of await all(`SELECT t.service_id, sum(pp.points)::int pts, count(*) FILTER (WHERE pp.reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA'))::int bad
+      FROM provider_points pp JOIN tickets t ON t.id=pp.ticket_id WHERE pp.tenant_id=? AND pp.created_at>=? GROUP BY t.service_id`, tid, since(cfg.window_days))) { ptsBy[r.service_id] = r.pts; badBy[r.service_id] = r.bad; }
+  const memberRows = await all(`SELECT m.service_id, u.id, u.name, u.role, u.last_login_at FROM service_members m JOIN users u ON u.id=m.user_id WHERE m.tenant_id=? AND u.is_active=1 ORDER BY u.name`, tid);
+  const scoreOf = Object.fromEntries(out.map(x => [x.id, x]));
+  for (const t of win) t.sla = Math.min(3, t.work / await targetOf(t));
+  const winOn = win.filter(t => t.on !== null), campusOn = winOn.length ? winOn.filter(t => t.on).length / winOn.length : 0.8;
+  const campusBad = win.length ? Object.values(badBy).reduce((a, b) => a + b, 0) / win.length : 0;
+  const hoursBy = Object.fromEntries(svcs.map(sv => [sv.id, win.filter(t => t.service_id === sv.id).reduce((a, t) => a + t.work, 0) / 60]));
+  const busy = Object.values(hoursBy).filter(h => h > 0), avgH = busy.length ? busy.reduce((a, b) => a + b, 0) / busy.length : 0;
   const depts = [];
   for (const sv of svcs) {
-    const ts = win.filter(t => t.service_id === sv.id), n = ts.length, open = openBy[sv.id] || 0;
-    if (!n && !open) continue;
-    let ratio = 0; for (const t of ts) ratio += Math.min(3, t.work / await targetOf(t));
-    const onT = ts.filter(t => t.on !== null), avg = n ? ratio / n : 1;
-    const P = clamp((1.5 - avg) * 100, 0, 100), O = onT.length ? onT.filter(t => t.on).length / onT.length * 100 : 0;
-    const D = n ? (1 - Math.min(1, (badBy[sv.id] || 0) / n)) * 100 : 0, C = n + open ? n / (n + open) * 100 : 0;
-    depts.push({ id: sv.id, name: sv.name, tickets: n, open, eligible: n >= cfg.min_tickets, hours: r1(ts.reduce((a, t) => a + t.work, 0) / 60),
-      sla_used: r1(avg * 100) / 100, on_time_pct: Math.round(O), reopens_holds: badBy[sv.id] || 0, providers: Object.values(teams[sv.id]?.members || []).length,
-      parts: { pace: Math.round(P), on_time: Math.round(O), done_right: Math.round(D), load: Math.round(C) },
-      score: r1((deptW.pace * P + deptW.on_time * O + deptW.done_right * D + deptW.load * C) / dsum) });
+    const ts = win.filter(t => t.service_id === sv.id), n = ts.length, open = openBy[sv.id] || 0, mem = memberRows.filter(m => m.service_id === sv.id);
+    if (!n && !open && !mem.length) continue;
+    const onT = ts.filter(t => t.on !== null), bad_ = badBy[sv.id] || 0;
+    const pace = (ts.reduce((a, t) => a + t.sla, 0) + k * 1) / (n + k);
+    const onRate = (onT.filter(t => t.on).length + k * campusOn) / (onT.length + k);
+    const doneRate = 1 - Math.min(1, (bad_ + k * campusBad) / (n + k));
+    const P = clamp((1.5 - pace) * 100, 0, 100), O = onRate * 100, D = doneRate * 100, L = avgH ? Math.min(hoursBy[sv.id] / avgH, 1.5) / 1.5 * 100 : 0;
+    const members = mem.map(m => { const c = ts.filter(t => t.closed_by === m.id).length, sc = scoreOf[m.id];
+      return { id: m.id, name: m.name, closed: c, active: c > 0, score: sc?.eligible ? sc.score : null, last_login_at: m.last_login_at }; })
+      .sort((a, b) => b.closed - a.closed || a.name.localeCompare(b.name));
+    depts.push({ id: sv.id, name: sv.name, sub: !!sv.parent_id, tickets: n, open, eligible: n >= cfg.min_tickets, hours: r1(hoursBy[sv.id]), points: ptsBy[sv.id] || 0,
+      sla_used: r1(pace * 100) / 100, on_time_pct: Math.round(O), reopens_holds: bad_, size: mem.length, active_count: members.filter(m => m.active).length, members,
+      parts: { pace: Math.round(P), on_time: Math.round(O), done_right: Math.round(D), load: Math.round(L) },
+      score: r1((W.pace * P + W.on_time * O + W.done_right * D + W.load * L) / wsum) });
   }
   const dr = depts.filter(d => d.eligible).sort((a, b) => b.score - a.score || b.tickets - a.tickets); dr.forEach((d, i) => { d.rank = i + 1; });
   return { cfg, departments: [...dr, ...depts.filter(d => !d.eligible).sort((a, b) => b.tickets - a.tickets)], rows: [...ranked, ...out.filter(x => !x.eligible).sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name))] };
 }
-S.get('/fair', wrap(async req => { const f = await fairScores(req.tenantId); return { ...f, me: f.rows.find(x => x.id === req.user.id) || null }; }));
+S.get('/fair', wrap(async req => { const f = await fairScores(req.tenantId), admin = isAdmin(req.user);
+  // everyone sees the department ranking; who is in each team (and who is active) only for admins
+  const departments = f.departments.map(({ members, ...d }) => admin ? { ...d, members } : d);
+  return { ...f, departments, me: f.rows.find(x => x.id === req.user.id) || null }; }));
 S.put('/fair', role('super_admin', 'tenant_admin'), wrap(async req => {
   const b = req.body || {}, cur = fairCfg(await tenantRow(req.tenantId)), w = { ...cur.weights };
   for (const kk of Object.keys(w)) if (b.weights?.[kk] !== undefined) { const v = Number(b.weights[kk]); if (!(Number.isInteger(v) && v >= 0 && v <= 100)) throw bad('Weights: whole numbers 0 to 100'); w[kk] = v; }
