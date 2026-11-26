@@ -1135,6 +1135,66 @@ try {
   check('a changed SUPER_ADMIN_PASSWORD is a reset: temporary again, others untouched', /temporary password set/.test(s2.out()) && !!(await login('second@example.com', 'Forgotten#Reset1')) && await mustChange('second@example.com') === 1 && !!(await login(SUPER.email, SUPER.password)));
   await stop(); await start({ FOOD_REPORT_KEY: 'food-report-key-0123456789' });
 
+  // ======================= G2. canteen =======================
+  sec('Canteen: set up, menu, order, token, counter');
+  const A2 = ids.alpha, pid = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id, lid = (await q("SELECT id FROM users WHERE email='lata@example.com'"))[0].id;
+  T.pavan = await login('pavan@example.com', 'Pavan2026ok'); T.lata = await login('lata@example.com', 'Lata2026ok');
+  check('canteen is off by default: students see no menu', (await api('/public/alpha/canteen')).data?.on === false);
+  await fails('a campus admin cannot switch the canteen on', '/canteen/setup', { token: T.asha, method: 'PUT', body: { on: true, managers: [pid] } }, 403);
+  await fails('at most two canteen managers', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid, lid, 'x'] } }, 400, 'at most');
+  await fails('a campus admin cannot be a canteen manager (desk providers only)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [(await q("SELECT id FROM users WHERE email='asha@example.com'"))[0].id] } }, 400);
+  await ok('super admin switches the canteen on with Pavan as manager', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid] } });
+  check('Pavan may run the canteen; Lata (not a manager) may not', (await api('/canteen/access', { token: T.pavan })).data.manage === true && (await api('/canteen/access', { token: T.lata })).data.manage === false);
+  await fails('a non-manager cannot add to the menu', '/canteen/categories', { token: T.lata, method: 'POST', body: { name: 'X' } }, 403);
+  const cat = await ok('manager adds a category', '/canteen/categories', { token: T.pavan, method: 'POST', body: { name: 'Snacks' } });
+  const dosa = await ok('manager adds an item with a price', '/canteen/items', { token: T.pavan, method: 'POST', body: { name: 'Masala dosa', price: '45', category_id: cat.id } });
+  const tea = await ok('…and another', '/canteen/items', { token: T.pavan, method: 'POST', body: { name: 'Tea', price: '12.50', category_id: cat.id } });
+  await fails('a price must be a number', '/canteen/items', { token: T.pavan, method: 'POST', body: { name: 'Bad', price: 'abc' } }, 400);
+  const menu0 = (await api('/public/alpha/canteen')).data;
+  check('students browse the menu without logging in; closed until opened', menu0.on && !menu0.open && menu0.categories[0].items.length === 2 && menu0.categories[0].items.find(i => i.name === 'Tea').price_paise === 1250);
+  await fails('the canteen is closed: no orders', '/public/alpha/canteen/orders', { method: 'POST', body: { device: 'x', name: 'S', items: [{ id: dosa.id, qty: 1 }] } }, 400, 'not taking orders');
+  await ok('manager opens the canteen for the day', '/canteen/open', { token: T.pavan, method: 'POST' });
+  await ok('…and marks Tea sold out', '/canteen/items/' + tea.id, { token: T.pavan, method: 'PATCH', body: { sold_out: true } });
+  await fails('ordering without a verified email is refused', '/public/alpha/canteen/orders', { method: 'POST', body: { device: 'nope', name: 'S', items: [{ id: dosa.id, qty: 1 }] } }, 401);
+  await ok('student asks for an email code', '/public/alpha/canteen/otp', { method: 'POST', body: { email: 'Stu@Example.com' } });
+  const otpMail = (await q("SELECT subject FROM notifications WHERE template_key='canteen_otp' AND recipient='stu@example.com'"))[0], code = otpMail?.subject.match(/\d{6}/)?.[0];
+  check('the code is emailed', !!code);
+  await fails('a wrong code is refused', '/public/alpha/canteen/verify', { method: 'POST', body: { email: 'stu@example.com', code: code === '000000' ? '111111' : '000000' } }, 400, 'not right');
+  const dev = await ok('the right code verifies this device', '/public/alpha/canteen/verify', { method: 'POST', body: { email: 'stu@example.com', code } });
+  await fails('a code works only once', '/public/alpha/canteen/verify', { method: 'POST', body: { email: 'stu@example.com', code } }, 400);
+  check('the device stays verified (no code for the next order)', (await api('/public/alpha/canteen/device', { method: 'POST', body: { device: dev.device } })).data.ok === true);
+  await fails('a sold-out item cannot be ordered', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: tea.id, qty: 1 }] } }, 400, 'sold out');
+  const o1 = await ok('student places an order', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 2 }], note: 'less oil' } });
+  check('…and gets token #001, total from the server price', o1.token === '#001' && o1.total_paise === 9000 && o1.status === 'placed');
+  const o2 = await ok('a second order gets the next token', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }] } });
+  check('…#002', o2.token === '#002');
+  await fails('the order page needs its key', `/public/alpha/canteen/orders/${o1.id}?k=wrong`, {}, 404);
+  const board = await ok('the manager sees new orders', '/canteen/orders', { token: T.pavan });
+  check('…both orders, newest first', board.orders.length === 2 && board.orders[0].token === '#002');
+  await fails('rejecting needs a reason', `/canteen/orders/${o2.id}/rejected`, { token: T.pavan, method: 'POST', body: {} }, 400, 'reason');
+  await ok('manager rejects with a reason', `/canteen/orders/${o2.id}/rejected`, { token: T.pavan, method: 'POST', body: { reason: 'Too many orders right now' } });
+  check('the student sees the rejection and its reason, and is emailed', (await api(`/public/alpha/canteen/orders/${o2.id}?k=${o2.key}`)).data.reject_reason === 'Too many orders right now'
+    && (await q("SELECT 1 FROM notifications WHERE template_key='canteen_rejected' AND recipient='stu@example.com'")).length === 1);
+  await fails('an order cannot jump to collected', `/canteen/orders/${o1.id}/collected`, { token: T.pavan, method: 'POST' }, 400);
+  await ok('manager accepts', `/canteen/orders/${o1.id}/accepted`, { token: T.pavan, method: 'POST' });
+  await fails('an accepted order can no longer be cancelled by the student', `/public/alpha/canteen/orders/${o1.id}/cancel`, { method: 'POST', body: { k: o1.key } }, 400);
+  await ok('manager marks it ready', `/canteen/orders/${o1.id}/ready`, { token: T.pavan, method: 'POST' });
+  check("the student's page shows ready, and a ready email went out", (await api(`/public/alpha/canteen/orders/${o1.id}?k=${o1.key}`)).data.status === 'ready'
+    && (await q("SELECT 1 FROM notifications WHERE template_key='canteen_ready' AND recipient='stu@example.com'")).length === 1);
+  await ok('collected at the counter', `/canteen/orders/${o1.id}/collected`, { token: T.pavan, method: 'POST' });
+  const rep = await ok('canteen report', '/canteen/report', { token: T.pavan });
+  check('collected orders go into the report (sales, top items, reject reasons)', rep.collected === 1 && rep.revenue_paise === 9000 && rep.top[0].name === 'Masala dosa' && rep.top[0].qty === 2 && rep.rejected === 1 && rep.reasons[0].reason === 'Too many orders right now');
+  check('a campus admin can also see the canteen desk', (await api('/canteen/report', { token: T.asha })).status === 200);
+  const o3 = await ok('a placed order…', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }] } });
+  await ok('…can be cancelled by the student', `/public/alpha/canteen/orders/${o3.id}/cancel`, { method: 'POST', body: { k: o3.key } });
+  check('My orders lists this device\'s orders', (await api('/public/alpha/canteen/mine', { method: 'POST', body: { device: dev.device } })).data.length === 3);
+  await ok('manager closes for the day', '/canteen/close', { token: T.pavan, method: 'POST' });
+  check('closed: students see it closed', (await api('/public/alpha/canteen')).data.open === false);
+  await ok('(open again for the screens below)', '/canteen/open', { token: T.pavan, method: 'POST' });
+  check('closing and reopening the same day keeps sold-out marks', (await q("SELECT sold_out FROM canteen_items WHERE id=?", tea.id))[0].sold_out === 1); // same day: kept
+  await run("UPDATE tenants SET canteen_stock_day='2000-01-01' WHERE id=?", A2); await api('/canteen/open', { token: T.pavan, method: 'POST' });
+  check('…on the next day everything is back in stock', (await q("SELECT sold_out FROM canteen_items WHERE id=?", tea.id))[0].sold_out === 0);
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {
@@ -1392,6 +1452,14 @@ async function uiSmoke(tok, id) {
       && (await q('SELECT views, raised FROM notices WHERE id=?', uiN.id))[0].raised === 1, JSON.stringify({ raisedN, seenEv }) + errors.join(' | ').slice(0, 200));
     await visit('staff Notices page', '/c/notices', tok.pavan, '#main .tabs');
     check('a provider outside the team sees no notices of that team and can post for their own', await js(`return !/Hall tickets from Monday/.test(document.querySelector('#main').textContent) && !!document.querySelector('#ntNew')`));
+    // canteen screens (the canteen was switched on and opened in the API section)
+    await visit('student: canteen menu, no login', '/d/alpha/canteen', null, '.cn-item [data-inc]');
+    check('adding an item shows the cart bar', await js(`document.querySelector('.cn-item [data-inc]').click(); await new Promise(r => setTimeout(r, 200)); const b = document.querySelector('#cnbar'); return !b.hidden && /1 item/.test(b.textContent)`));
+    check('student: the cart asks to verify the email first', await js(`document.querySelector('#cnbar a').click(); for (let i = 0; i < 30 && !document.querySelector('#cnf [name=email]'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('#cnf [name=email]') && /Place order/.test(document.querySelector('#cnf').textContent)`));
+    const co = (await q("SELECT id, view_key FROM canteen_orders ORDER BY created_at LIMIT 1"))[0];
+    await visit('student: order page shows the token', `/d/alpha/canteen/o/${co.id}?k=${co.view_key}`, null, '.cn-token b');
+    await visit('canteen desk: order board', '/c/canteen', tok.pavan, '.cn-board');
+    check('the Canteen tab is in the desk header', await js(`return !!document.querySelector('header nav a[href="#/c/canteen"]')`));
     await api('/notices/' + uiN.id, { token: tok.asha, method: 'DELETE' });
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }
