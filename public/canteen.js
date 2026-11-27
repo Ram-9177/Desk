@@ -7,7 +7,7 @@ export const initCanteen = h => { H = h; };
 const rupees = p => '₹' + (p / 100).toFixed(p % 100 ? 2 : 0);
 const ls = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } } };
 const STEPS = [['placed', 'Placed'], ['accepted', 'Preparing'], ['ready', 'Ready'], ['collected', 'Collected']];
-let timer = null, S_find = '', kotSeen = null, posCart = {}, posLast = null, openDone = false;
+let timer = null, S_find = '', kotSeen = null, posCart = {}, posLast = null, openDone = false, posCat = 'all';
 const every = (ms, fn, hash) => { clearInterval(timer); timer = setInterval(() => { if (location.hash.split('?')[0] !== hash) return clearInterval(timer); if (!document.hidden) fn(); }, ms); };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const t12 = hm => { if (!hm) return ''; const [h, m] = hm.split(':').map(Number); return `${(h % 12) || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h < 12 ? 'AM' : 'PM'}`; };
@@ -272,7 +272,7 @@ async function minePage(slug) {
 let stateFor = null;
 export async function canteenPage(main, { sa }) {
   clearInterval(timer); // a poller from another campus or screen stops here
-  const tid = localStorage.getItem('tid') || ''; if (stateFor !== tid) { stateFor = tid; posCart = {}; posLast = null; kotSeen = null; S_find = ''; openDone = false; }
+  const tid = localStorage.getItem('tid') || ''; if (stateFor !== tid) { stateFor = tid; posCart = {}; posLast = null; kotSeen = null; S_find = ''; openDone = false; posCat = 'all'; }
   const { I, esc, api, toast, dlg } = H, acc = await api('/canteen/access');
   const tabKey = 'canteen-tab' + (acc.cashier ? '-counter' : acc.cook ? '-kitchen' : ''), st = ls.get(tabKey, acc.cashier ? 'counter' : 'orders'), hash = '#/c/canteen';
   const tabs = [acc.counter && ['counter', 'Counter (POS)'], acc.counter && ['orders', 'Orders'], acc.kitchen && ['kitchen', 'Kitchen (KOT)'], acc.manage && ['menu', 'Menu'], acc.manage && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
@@ -331,13 +331,16 @@ export async function canteenPage(main, { sa }) {
   // Counter (POS): a walk-in customer at the counter. Tap items, take cash (change shown) or UPI, charge: the order is paid,
   // goes straight to the kitchen as a KOT, and the bill prints.
   async function counter() {
-    const p = await api('/canteen/pos'), sh = await api('/canteen/shift'), list = [...p.categories.flatMap(c => c.items.map(i => ({ ...i, cat: c.name }))), ...p.uncategorised];
+    const p = await api('/canteen/pos'), sh = await api('/canteen/shift'), list = [...p.categories.flatMap(c => c.items.map(i => ({ ...i, cat: c.id }))), ...p.uncategorised.map(i => ({ ...i, cat: 'none' }))];
+    const cats = [...p.categories.map(c => ({ id: c.id, name: c.name, n: c.items.length })), ...(p.uncategorised.length ? [{ id: 'none', name: 'Other', n: p.uncategorised.length }] : [])];
+    if (posCat !== 'all' && !cats.some(c => c.id === posCat)) posCat = 'all';
     const by = new Map(list.map(i => [i.id, i])); for (const k of Object.keys(posCart)) if (!by.has(k) || by.get(k).sold_out) delete posCart[k];
     const tot = () => Object.entries(posCart).reduce((s, [k, n]) => s + by.get(k).price_now * n, 0), n = () => Object.values(posCart).reduce((s, x) => s + x, 0);
     main.innerHTML = `${acc.cashier ? `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>` : head()}
       ${p.open ? '' : `<div class="card cn-warn" style="margin:8px 0">${I('alert', 16)} The canteen is closed. <button class="btn soft" id="posopen" style="margin-left:auto">Open for the day</button></div>`}
-      <div class="cn-pos"><div class="cn-posm"><div class="cn-search">${I('search', 18)}<input id="posq" type="search" placeholder="Find an item" aria-label="Find an item" autocomplete="off"></div>
-        <div class="cn-posg">${list.map(i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''}" data-add="${i.id}" data-n="${esc(i.name.toLowerCase())}" ${i.sold_out ? 'disabled' : ''}><b>${esc(i.name)}</b><span>${i.sold_out ? 'Sold out' : priceHtml(i)}</span>${i.deal ? dealBadge(i.deal) : ''}</button>`).join('') || '<p class="muted">No items on the menu yet.</p>'}</div></div>
+      <div class="cn-pos3"><nav class="cn-poscats" aria-label="Categories">${[{ id: 'all', name: 'All items', n: list.length }, ...cats].map(c => `<button type="button" class="${posCat === c.id ? 'on' : ''}" data-cat="${esc(c.id)}"><span>${esc(c.name)}</span><b>${c.n}</b></button>`).join('')}</nav>
+      <div class="cn-posm"><div class="cn-search">${I('search', 18)}<input id="posq" type="search" placeholder="Find an item" aria-label="Find an item" autocomplete="off"></div>
+        <div id="posgrid"></div></div>
       <form class="card cn-posb" id="posf"><b>Bill</b><div class="cn-opts">${[['takeaway', 'Takeaway'], ['dine_in', 'Dine in']].map(([v, l], k) => `<label class="cn-opt"><input type="radio" name="svc" value="${v}" ${k ? '' : 'checked'}><span><b>${l}</b></span></label>`).join('')}</div>
         <div id="postab" hidden><label>Table no. <span class="muted small">(optional)</span></label><input name="table_no" maxlength="10" inputmode="numeric" autocomplete="off"></div><div id="posl"></div>
         <div class="cn-item cn-tot"><b>Total</b><b id="post">₹0</b></div>
@@ -359,10 +362,19 @@ export async function canteenPage(main, { sa }) {
       const got = f.tendered.value === '' ? t : Math.round(Number(f.tendered.value) * 100), ch = document.getElementById('posch');
       ch.innerHTML = !t || !cash ? '' : !Number.isFinite(got) ? '<span class="err">Enter a number</span>' : got < t ? `<span class="err">Short by ${rupees(t - got)}</span>` : `Give change <b>${rupees(got - t)}</b>`; };
     const add = (k, d) => { posCart[k] = Math.max(0, Math.min(99, (posCart[k] || 0) + d)); if (!posCart[k]) delete posCart[k]; render(); };
-    main.querySelectorAll('[data-add]').forEach(b => b.onclick = () => add(b.dataset.add, 1));
+    // the middle column: the chosen category (or a search across all), in two sections, Veg and Non-veg
+    const tile = i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''} ${i.is_veg ? 'v' : 'nv'}" data-add="${i.id}" ${i.sold_out ? 'disabled' : ''}>${vegDot(i.is_veg)}<b>${esc(i.name)}</b><span>${i.sold_out ? 'Sold out' : priceHtml(i)}</span>${i.deal ? dealBadge(i.deal) : ''}</button>`;
+    const grid = () => { const v = (document.getElementById('posq')?.value || '').trim().toLowerCase(), g = document.getElementById('posgrid');
+      if (!list.length) { g.innerHTML = `<div class="card empty"><span class="et">No items on the menu yet</span><span>${acc.manage ? 'Add categories and items with prices on the <b>Menu</b> tab.' : 'Ask the canteen manager to add items on the Menu tab.'}</span></div>`; return; }
+      const shown = list.filter(i => v ? i.name.toLowerCase().includes(v) || (i.description || '').toLowerCase().includes(v) : posCat === 'all' || i.cat === posCat);
+      const sec = (title, cls, items) => items.length ? `<section class="cn-pss"><h3 class="${cls}">${vegDot(cls === 'v')} ${title} <span class="muted small">${items.length}</span></h3><div class="cn-posg">${items.map(tile).join('')}</div></section>` : '';
+      g.innerHTML = (v ? `<p class="muted small">Results for “${esc(v)}” in all categories</p>` : '') + (sec('Veg', 'v', shown.filter(i => i.is_veg)) + sec('Non-veg', 'nv', shown.filter(i => !i.is_veg)) || '<p class="muted">Nothing matches.</p>');
+      g.querySelectorAll('[data-add]').forEach(b => b.onclick = () => add(b.dataset.add, 1)); };
+    main.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { posCat = b.dataset.cat; main.querySelectorAll('[data-cat]').forEach(x => x.classList.toggle('on', x === b)); document.getElementById('posq').value = ''; grid(); });
+    grid();
     f.onclick = e => { const i = e.target.closest('[data-pi]'), d = e.target.closest('[data-pd]'), q = e.target.closest('[data-tq]'); if (i) add(i.dataset.pi, 1); if (d) add(d.dataset.pd, -1); if (q) { f.tendered.value = q.dataset.tq; render(); } };
     f.oninput = render; f.onchange = render;
-    document.getElementById('posq').oninput = e => { const v = e.target.value.trim().toLowerCase(); main.querySelectorAll('[data-add]').forEach(b => b.hidden = !!v && !b.dataset.n.includes(v)); };
+    document.getElementById('posq').oninput = grid;
     document.getElementById('posstock').onclick = () => stockDialog(draw);
     document.getElementById('posclear').onclick = () => { posCart = {}; f.reset(); render(); };
     const rb = document.getElementById('posreb'); if (rb) rb.onclick = () => printOrder('bill', posLast, p.name, p.print);

@@ -1735,6 +1735,10 @@ async function uiSmoke(tok, id) {
     for (const t of ['orders', 'counter', 'kitchen', 'menu', 'report']) check(`…super admin's ${t} tab opens without an error`, await js(`document.querySelector('[data-t=${t}]').click(); await new Promise(r => setTimeout(r, 1500)); return !document.querySelector('#main p.err, #main .cn-warn')`));
     await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.kavya)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
     for (let i = 0; i < 40 && !(await js(`return !!document.querySelector('.cn-pb[data-add]')`).catch(() => false)); i++) await sleep(250);
+    check('counter: categories on the left, items split into Veg and Non-veg', await js(`const cats = [...document.querySelectorAll('.cn-poscats [data-cat]')].map(b => b.textContent);
+      const snack = document.querySelector('.cn-poscats [data-cat]:not([data-cat=all])'); snack.click(); await new Promise(r => setTimeout(r, 100));
+      const heads = [...document.querySelectorAll('#posgrid .cn-pss h3')].map(h => h.className); const veg = [...document.querySelectorAll('#posgrid .cn-pss h3.v + .cn-posg .cn-pb')].every(b => b.classList.contains('v'));
+      document.querySelector('.cn-poscats [data-cat=all]').click(); return cats.length >= 2 && /All items/.test(cats[0]) && heads.includes('v') && veg`));
     const ordersBefore = (await q('SELECT count(*)::int n FROM canteen_orders'))[0].n;
     check('walk-in UPI on screen: Charge shows the QR; Cancel makes no order', await js(`window.print = () => {}; window.confirm = () => true;
       document.querySelector('.cn-pb[data-add]').click(); document.querySelector('#posf [name=pm][value=upi]').click(); document.querySelector('#posf').dispatchEvent(new Event('change'));
