@@ -1612,6 +1612,9 @@ async function uiSmoke(tok, id) {
     await visit('student: a flash sale pops up with its badge and price', '/d/alpha/canteen', null, '.cn-popup');
     check('…the badge and the struck-out price are on the item', await js(`return !!document.querySelector('.cn-deal.flash') && !!document.querySelector('.cn-price s')`));
     await api('/canteen/deals', { token: tok.pavan, method: 'DELETE' });
+    await visit('canteen desk again', '/c/canteen', tok.pavan, '[data-t=report]');
+    check('canteen reports show the charts', await js(`document.querySelector('[data-t=report]').click(); for (let i = 0; i < 30 && !document.querySelector('.cn-donut'); i++) await new Promise(r => setTimeout(r, 200));
+      const ok = document.querySelectorAll('.cn-donut svg').length === 3 && document.querySelectorAll('.cn-chart .cn-hb').length >= 1 && !!document.querySelector('.cn-bars em'); document.querySelector('[data-t=orders]').click(); return ok`));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
