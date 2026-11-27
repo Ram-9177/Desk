@@ -45,6 +45,10 @@ ALTER TABLE canteen_managers ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'manager
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS kot_started_at TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS kot_by TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS has_booked INT DEFAULT 0;
+-- deals on an item: a plain discount, a flash sale or an end-of-day sale, as % off, until a time (NULL = until ended)
+ALTER TABLE canteen_items ADD COLUMN IF NOT EXISTS deal_pct INT DEFAULT 0;
+ALTER TABLE canteen_items ADD COLUMN IF NOT EXISTS deal_kind TEXT;
+ALTER TABLE canteen_items ADD COLUMN IF NOT EXISTS deal_until TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS delivery_fee_paise INT DEFAULT 0;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS out_at TEXT;
 ALTER TABLE canteen_orders DROP CONSTRAINT IF EXISTS canteen_orders_status_check;
@@ -62,6 +66,10 @@ const FLOORS = ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floo
 export const payOf = tn => { try { return { ...PAY_DEFAULT, ...JSON.parse(tn.canteen_pay || '{}') }; } catch { return { ...PAY_DEFAULT }; } };
 const UPI_ID = /^[\w.\-]{2,60}@[A-Za-z][\w.\-]{1,40}$/, UTR = /^[A-Za-z0-9]{6,30}$/;
 const upiLink = (p, o) => `upi://pay?${new URLSearchParams({ pa: p.upi_id, pn: p.upi_name || 'Canteen', am: (o.total_paise / 100).toFixed(2), cu: 'INR', tn: `Canteen order ${tokenLabel(o.token_no)}` })}`;
+export const DEAL_KINDS = { discount: 'Discount', flash: 'Flash sale', eod: 'End-of-day sale' };
+// an item's live deal and the price a student pays now
+export const dealOf = it => it.deal_pct > 0 && it.deal_kind && (!it.deal_until || it.deal_until > new Date().toISOString()) ? { pct: it.deal_pct, kind: it.deal_kind, until: it.deal_until } : null;
+const priceNow = it => { const d = dealOf(it); return d ? Math.round(it.price_paise * (100 - d.pct) / 100) : it.price_paise; };
 const MAX_KITCHEN = 10, MAX_MANAGERS = 2, MAX_LINES = 30, MAX_QTY = 20, MAX_OPEN_PER_DEVICE = 3, OTP_MIN = 10, DEVICE_DAYS = 180;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -112,7 +120,8 @@ export function canteen(d) {
 
   const menuOf = async (tid, all_ = false) => {
     const cats = await all('SELECT id, name, sort_order FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid);
-    const items = await all(`SELECT id, category_id, name, description, price_paise, is_veg, sold_out, active, sort_order FROM canteen_items WHERE tenant_id=? ${all_ ? '' : 'AND active=1'} ORDER BY sort_order, name`, tid);
+    const items = (await all(`SELECT id, category_id, name, description, price_paise, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_until FROM canteen_items WHERE tenant_id=? ${all_ ? '' : 'AND active=1'} ORDER BY sort_order, name`, tid))
+      .map(({ deal_pct, deal_kind, deal_until, ...i }) => { const deal = dealOf({ deal_pct, deal_kind, deal_until }); return { ...i, deal, price_now: deal ? priceNow({ ...i, deal_pct, deal_kind, deal_until }) : i.price_paise }; });
     return { categories: cats.map(c => ({ ...c, items: items.filter(i => i.category_id === c.id) })).filter(c => all_ || c.items.length),
       uncategorised: items.filter(i => !i.category_id || !cats.some(c => c.id === i.category_id)) };
   };
@@ -166,9 +175,12 @@ export function canteen(d) {
     if (!tn.canteen_on) return { on: false, campus: tn.name, name: canteenName(tn) };
     await expire(tn); const st = stateOf(tn), since = addDays(dayOf(tn.timezone), -6), pop = {}, pay = payOf(tn);
     for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day>=? AND status='collected'`, tn.id, since)) for (const it of JSON.parse(o.items)) pop[it.id] = (pop[it.id] || 0) + it.qty;
+    // fast moving: the items ordered most today (at least 5 each), up to 5
+    const fastQ = {}; for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day=? AND status NOT IN ('cancelled','rejected')`, tn.id, dayOf(tn.timezone))) for (const it of JSON.parse(o.items)) fastQ[it.id] = (fastQ[it.id] || 0) + it.qty;
+    const fast = Object.entries(fastQ).filter(x => x[1] >= 5).sort((a, b) => b[1] - a[1]).slice(0, 5).map(x => x[0]);
     const busy = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND status IN ('placed','accepted')`, tn.id, dayOf(tn.timezone))).n;
     return { on: true, open: st.accepting, state: st, busy, pay: { cash: pay.cash, upi: !!pay.upi_id, delivery: pay.delivery, blocks: pay.delivery ? await blocksOf(tn) : [], floors: FLOORS, delivery_fee_paise: Math.round(pay.delivery_fee * 100), delivery_note: pay.delivery_note, pay_window_min: pay.pay_window_min }, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
-      campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
+      fast, campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
   }));
   // step 1 of the first order on a device: email a six-digit code
   P.post('/:slug/canteen/otp', wrap(async req => {
@@ -233,14 +245,15 @@ export function canteen(d) {
     if (open.n >= MAX_OPEN_PER_DEVICE) throw bad(`You already have ${open.n} orders in progress. Please collect them first.`);
     const ids = [...new Set(lines.map(l => String(l.id)))];
     const rows = await all(`SELECT * FROM canteen_items WHERE tenant_id=? AND id = ANY(?::text[])`, tn.id, ids);
-    const out = [];
+    const out = [], cats = await all('SELECT id, name FROM canteen_categories WHERE tenant_id=?', tn.id);
     for (const l of lines) {
       const it = rows.find(r => r.id === String(l.id)), qty = Math.floor(Number(l.qty));
       if (!it || !it.active) throw bad('Something in your cart is no longer on the menu. Please refresh.');
       // out of stock: still bookable; the manager confirms it can be made before the order goes to the kitchen
       if (!(qty >= 1 && qty <= MAX_QTY)) throw bad(`Quantity for ${it.name} must be 1 to ${MAX_QTY}`);
       const prev = out.find(x => x.id === it.id); if (prev) { prev.qty = Math.min(MAX_QTY, prev.qty + qty); continue; }
-      out.push({ id: it.id, name: it.name, price_paise: it.price_paise, qty, ...(it.sold_out ? { booked: true } : {}) });
+      const d = dealOf(it), cat = cats.find(c => c.id === it.category_id)?.name || null;
+      out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}), ...(it.sold_out ? { booked: true } : {}) });
     }
     const fee = fulfil === 'delivery' ? Math.round(pay.delivery_fee * 100) : 0, total = out.reduce((s, x) => s + x.price_paise * x.qty, 0) + fee, day = dayOf(tn.timezone);
     await run('UPDATE canteen_devices SET last_used_at=? WHERE token_hash=?', now(), dv.token_hash);
@@ -370,6 +383,11 @@ export function canteen(d) {
     if (b.sold_out !== undefined) f.sold_out = b.sold_out ? 1 : 0;
     if (b.active !== undefined) f.active = b.active ? 1 : 0;
     if (Number.isInteger(b.sort_order)) f.sort_order = b.sort_order;
+    if (b.deal_pct !== undefined) { const pct = Math.floor(Number(b.deal_pct) || 0);
+      if (pct === 0) Object.assign(f, { deal_pct: 0, deal_kind: null, deal_until: null });
+      else { if (pct < 1 || pct > 90) throw bad('Discount must be 1% to 90%'); if (!DEAL_KINDS[b.deal_kind]) throw bad('Pick discount, flash sale or end-of-day sale');
+        const mins = Math.floor(Number(b.deal_minutes) || 0); if (b.deal_kind !== 'discount' && !(mins >= 5 && mins <= 1440)) throw bad('A flash or end-of-day sale needs a time: 5 minutes to 24 hours');
+        Object.assign(f, { deal_pct: pct, deal_kind: b.deal_kind, deal_until: mins ? new Date(Date.now() + mins * 6e4).toISOString() : null }); } }
     if (b.category_id !== undefined) { f.category_id = b.category_id || null;
       if (f.category_id && !(await one('SELECT 1 FROM canteen_categories WHERE id=? AND tenant_id=?', f.category_id, req.tenantId))) throw bad('Pick a category'); }
     return f;
@@ -384,6 +402,13 @@ export function canteen(d) {
   // removing an item hides it (old orders keep their copy of the name and price)
   S.delete('/canteen/items/:id', wrap(async req => { await need(req);
     const r = await run('UPDATE canteen_items SET active=0 WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
+
+  // end-of-day sale on everything still in stock (or a flash sale on all), and ending every deal at once
+  S.post('/canteen/deals/all', wrap(async req => { await need(req); const b = req.body, pct = Math.floor(Number(b.pct) || 0), mins = Math.floor(Number(b.minutes) || 0), kind = b.kind === 'flash' ? 'flash' : 'eod';
+    if (pct < 1 || pct > 90) throw bad('Discount must be 1% to 90%'); if (mins < 5 || mins > 1440) throw bad('Pick how long: 5 minutes to 24 hours');
+    const r = await run('UPDATE canteen_items SET deal_pct=?, deal_kind=?, deal_until=? WHERE tenant_id=? AND active=1 AND sold_out=0', pct, kind, new Date(Date.now() + mins * 6e4).toISOString(), req.tenantId);
+    return { items: r.changes }; }));
+  S.delete('/canteen/deals', wrap(async req => { await need(req); const r = await run('UPDATE canteen_items SET deal_pct=0, deal_kind=NULL, deal_until=NULL WHERE tenant_id=? AND deal_pct>0', req.tenantId); return { ended: r.changes }; }));
 
   // ---- open / close for the day ----
   S.post('/canteen/open', wrap(async req => { const a = await need(req), day = dayOf(a.tenant.timezone);
@@ -428,12 +453,23 @@ export function canteen(d) {
   S.get('/canteen/report', wrap(async req => { const a = await need(req), today = dayOf(a.tenant.timezone);
     const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : addDays(today, -6), to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
     const rows = await all('SELECT * FROM canteen_orders WHERE tenant_id=? AND day>=? AND day<=? ORDER BY day, token_no', req.tenantId, from, to);
-    const done = rows.filter(o => o.status === 'collected'), items = {};
-    for (const o of done) for (const it of JSON.parse(o.items)) { const e = items[it.name] ||= { name: it.name, qty: 0, paise: 0 }; e.qty += it.qty; e.paise += it.qty * it.price_paise; }
+    const done = rows.filter(o => o.status === 'collected'), items = {}, cats = {}, hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, orders: 0, paise: 0 })), kinds = {};
+    const catNow = Object.fromEntries((await all('SELECT i.id, c.name FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=?', req.tenantId)).map(r => [r.id, r.name]));
+    const hourOf = iso => +new Intl.DateTimeFormat('en-GB', { timeZone: a.tenant.timezone || 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
+    let discount = 0;
+    for (const o of done) { const h = hours[hourOf(o.created_at)]; h.orders++; h.paise += o.total_paise;
+      for (const it of JSON.parse(o.items)) { const e = items[it.name] ||= { name: it.name, category: it.category || catNow[it.id] || 'No category', qty: 0, paise: 0, discount_paise: 0 }; e.qty += it.qty; e.paise += it.qty * it.price_paise;
+        const c = cats[e.category] ||= { category: e.category, qty: 0, paise: 0 }; c.qty += it.qty; c.paise += it.qty * it.price_paise;
+        if (it.mrp_paise) { const off = (it.mrp_paise - it.price_paise) * it.qty; discount += off; e.discount_paise += off; const k = kinds[it.deal] ||= { kind: it.deal, name: DEAL_KINDS[it.deal] || it.deal, qty: 0, paise: 0, discount_paise: 0 }; k.qty += it.qty; k.paise += it.qty * it.price_paise; k.discount_paise += off; } } }
+    const per = {}; for (const o of done) per[o.email] = (per[o.email] || 0) + 1;
     const days = []; for (let d = from; d <= to && days.length < 92; d = addDays(d, 1)) { const x = done.filter(o => o.day === d);
       days.push({ day: d, orders: x.length, paise: x.reduce((s, o) => s + o.total_paise, 0), rejected: rows.filter(o => o.day === d && o.status === 'rejected').length }); }
     const prep = done.filter(o => o.accepted_at && o.ready_at).map(o => (Date.parse(o.ready_at) - Date.parse(o.accepted_at)) / 6e4);
-    return { from, to, collected: done.length, revenue_paise: done.reduce((s, o) => s + o.total_paise, 0),
+    const revenue = done.reduce((s, o) => s + o.total_paise, 0);
+    return { from, to, collected: done.length, revenue_paise: revenue, aov_paise: done.length ? Math.round(revenue / done.length) : 0, discount_paise: discount,
+      customers: Object.keys(per).length, repeat_customers: Object.values(per).filter(n => n > 1).length, pickups: done.filter(o => o.fulfil !== 'delivery').length,
+      delivery_fee_paise: done.reduce((s, o) => s + (o.delivery_fee_paise || 0), 0), hours: hours.filter(h => h.orders), categories: Object.values(cats).sort((x, y) => y.paise - x.paise),
+      items_all: Object.values(items).sort((x, y) => y.paise - x.paise), deals: Object.values(kinds),
       rejected: rows.filter(o => o.status === 'rejected').length, cancelled: rows.filter(o => o.status === 'cancelled').length,
       avg_prep_min: prep.length ? Math.round(prep.reduce((x, y) => x + y, 0) / prep.length) : null,
       reasons: Object.entries(rows.filter(o => o.status === 'rejected').reduce((m, o) => (m[o.reject_reason] = (m[o.reject_reason] || 0) + 1, m), {})).map(([reason, count]) => ({ reason, count })).sort((x, y) => y.count - x.count).slice(0, 8),
@@ -442,4 +478,16 @@ export function canteen(d) {
       deliveries: done.filter(o => o.fulfil === 'delivery').length, not_paid: rows.filter(o => o.reject_reason === 'Not paid in time').length,
       refunds: rows.filter(o => o.status === 'rejected' && ['paid', 'claimed'].includes(o.pay_status)).map(o => ({ token: tokenLabel(o.token_no), day: o.day, name: o.name, paise: o.total_paise, mode: o.pay_mode, ref: o.upi_ref })) };
   }));
+  // every order in the period as a spreadsheet (one row per order)
+  S.get('/canteen/orders.csv', async (req, res, next) => { try { const a = await need(req), today = dayOf(a.tenant.timezone);
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : addDays(today, -6), to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
+    const rows = await all('SELECT * FROM canteen_orders WHERE tenant_id=? AND day>=? AND day<=? ORDER BY day, token_no', req.tenantId, from, to);
+    const q = v => { const t = String(v ?? ''); return /[",\n]/.test(t) || /^[=+\-@]/.test(t) ? `"${t.replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"` : t; };
+    const ist = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: a.tenant.timezone || 'Asia/Kolkata' }) : '';
+    const head = ['Day', 'Order', 'Status', 'Name', 'Email', 'Phone', 'Items', 'Qty', 'Discount (₹)', 'Delivery fee (₹)', 'Total (₹)', 'Payment', 'Paid', 'UTR', 'Pickup / delivery', 'Deliver to', 'Placed', 'Paid at', 'Ready', 'Done', 'Reason'];
+    const lines = rows.map(o => { const it = JSON.parse(o.items), sh = pub(o); return [o.day, tokenLabel(o.token_no), sh.status_text, o.name, o.email, o.phone, it.map(i => `${i.qty} x ${i.name}`).join('; '), it.reduce((n, i) => n + i.qty, 0),
+      (it.reduce((n, i) => n + ((i.mrp_paise || i.price_paise) - i.price_paise) * i.qty, 0) / 100).toFixed(2), ((o.delivery_fee_paise || 0) / 100).toFixed(2), (o.total_paise / 100).toFixed(2), o.pay_mode === 'upi' ? 'UPI' : 'Cash', o.pay_status === 'paid' ? 'Yes' : 'No', o.upi_ref,
+      o.fulfil === 'delivery' ? 'Delivery' : 'Pickup', o.deliver_to, ist(o.created_at), ist(o.paid_at), ist(o.ready_at), ist(o.collected_at || o.closed_at), o.reject_reason].map(q).join(','); });
+    res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="canteen-orders-${from}-to-${to}.csv"` }).send('\ufeff' + [head.join(','), ...lines].join('\r\n'));
+  } catch (e) { next(e); } });
 }

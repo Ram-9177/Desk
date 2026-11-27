@@ -1317,6 +1317,29 @@ try {
   check('the KOT leaves the kitchen list; the student sees Ready', !(await api('/canteen/kitchen', { token: T.lata })).data.kots.some(o => o.id === k1.id) && (await api(`/public/alpha/canteen/orders/${k1.id}?k=${k1.key}`)).data.status === 'ready');
   await ok('counter hands it over', `/canteen/orders/${k1.id}/collected`, { token: T.pavan, method: 'POST' });
 
+  sec('Canteen: deals, badges, reports');
+  await fails('a deal needs 1–90% off', '/canteen/items/' + dosa.id, { token: T.pavan, method: 'PATCH', body: { deal_pct: 95, deal_kind: 'flash', deal_minutes: 30 } }, 400, '90');
+  await fails('a flash sale needs a time', '/canteen/items/' + dosa.id, { token: T.pavan, method: 'PATCH', body: { deal_pct: 20, deal_kind: 'flash' } }, 400, 'time');
+  await ok('manager starts a 20% flash sale on dosa for 30 min', '/canteen/items/' + dosa.id, { token: T.pavan, method: 'PATCH', body: { deal_pct: 20, deal_kind: 'flash', deal_minutes: 30 } });
+  const dm = (await api('/public/alpha/canteen')).data, dd = [...dm.categories.flatMap(c => c.items)].find(i => i.id === dosa.id);
+  check('students see the flash sale badge data and the new price', dd.deal.kind === 'flash' && dd.deal.pct === 20 && dd.price_now === 3600 && !!dd.deal.until);
+  const fo = await ok('an order at the sale price', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Sale', items: [{ id: dosa.id, qty: 5 }] } });
+  check('…charged ₹36 each, remembering the full price and the deal', fo.total_paise === 5 * 3600 && fo.items[0].mrp_paise === 4500 && fo.items[0].deal === 'flash');
+  check('5 sold today: dosa gets the Fast moving badge', (await api('/public/alpha/canteen')).data.fast.includes(dosa.id));
+  await run("UPDATE canteen_items SET deal_until=? WHERE id=?", new Date(Date.now() - 6e4).toISOString(), dosa.id);
+  check('when the sale time is over the full price is back', [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].find(i => i.id === dosa.id).price_now === 4500);
+  const eod = await ok('end-of-day sale: 30% off everything in stock for 60 min', '/canteen/deals/all', { token: T.pavan, method: 'POST', body: { pct: 30, minutes: 60, kind: 'eod' } });
+  check('…on every item in stock', eod.items >= 2 && [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].every(i => i.sold_out || i.deal?.kind === 'eod'));
+  await ok('end all deals', '/canteen/deals', { token: T.pavan, method: 'DELETE' });
+  check('…no deals left', [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].every(i => !i.deal));
+  await api(`/canteen/orders/${fo.id}/accepted`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${fo.id}/ready`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${fo.id}/collected`, { token: T.pavan, method: 'POST' });
+  const rr2 = (await api('/canteen/report', { token: T.pavan })).data;
+  check('reports: discounts given, deals, categories, busy hours, every item, customers, average order', rr2.discount_paise >= 5 * 900 && rr2.deals.some(d => d.kind === 'flash' && d.qty >= 5)
+    && rr2.categories.some(c => c.category === 'Snacks') && rr2.hours.length >= 1 && rr2.items_all.some(i => i.name === 'Masala dosa') && rr2.customers >= 1 && rr2.aov_paise > 0, JSON.stringify({ d: rr2.discount_paise, k: rr2.deals, c: rr2.categories }));
+  const ccsv = await fetch(API + '/canteen/orders.csv', { headers: { authorization: 'Bearer ' + T.pavan } }), ct = await ccsv.text();
+  check('orders download as CSV: one row per order with payment, UTR and delivery', ccsv.status === 200 && /text\/csv/.test(ccsv.headers.get('content-type')) && /Order,Status,Name/.test(ct) && ct.includes(fo.token) && ct.includes('412345678901'));
+  await fails('students cannot download the CSV', '/canteen/orders.csv', {}, 401);
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata }, { t1: ids.t1 });
 } catch (e) {
@@ -1585,6 +1608,10 @@ async function uiSmoke(tok, id) {
       const p = [...document.querySelector('.cn-list').querySelectorAll('.cn-item')].map(r => +r.dataset.price); document.querySelector('[data-f=sort]').click();
       return !!d && /₹/.test(d.textContent) && p.every((x, i) => !i || p[i - 1] <= x)`));
     await visit('canteen desk: order board', '/c/canteen', tok.pavan, '.cn-board');
+    await api('/canteen/items/' + (await q("SELECT id FROM canteen_items WHERE name='Masala dosa'"))[0].id, { token: tok.pavan, method: 'PATCH', body: { deal_pct: 25, deal_kind: 'flash', deal_minutes: 30 } });
+    await visit('student: a flash sale pops up with its badge and price', '/d/alpha/canteen', null, '.cn-popup');
+    check('…the badge and the struck-out price are on the item', await js(`return !!document.querySelector('.cn-deal.flash') && !!document.querySelector('.cn-price s')`));
+    await api('/canteen/deals', { token: tok.pavan, method: 'DELETE' });
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
