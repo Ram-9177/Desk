@@ -44,8 +44,8 @@ export const escalationFor = o => resolve(o, 'escalation');
 export function tick(t, p, cal, o, nowIso, managers = []) {
   if (!p || t.first_responded_at || !ACTIVE_THREAD.includes(t.status)) return { kind: 'none' };
   if (p.pause_on_hold && t.status === 'hold') return { kind: 'none' };
-  const held = (t.paused_mins || 0) + (t.paused_since ? elapsedMins(t.paused_since, nowIso, p, cal) : 0);
-  const pct = ((elapsedMins(t.created_at, nowIso, p, cal) - held) / p.first_response_mins) * 100;
+  const held = (t.paused_mins || 0) + (p.pause_on_hold && t.paused_since ? elapsedMins(t.paused_since, nowIso, p, cal) : 0);
+  const pct = ((elapsedMins(t.sla_started_at || t.created_at, nowIso, p, cal) - held) / p.first_response_mins) * 100; // from arrival, or from reopening
   const before = s => SLA_ORDER.indexOf(t.sla_state || 'on_track') < SLA_ORDER.indexOf(s);
   const uniq = a => [...new Set(a.filter(Boolean))], esc = escalationFor(o);
   if (p.second_escalate_at_pct && pct >= p.second_escalate_at_pct && before('escalated_2')) return { kind: 'escalate_2', state: 'escalated_2', notify: uniq([esc, ...managers]), pct };

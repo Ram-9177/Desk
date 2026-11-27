@@ -91,6 +91,8 @@ async function list(main, me) {
 /* ================= one thread ================= */
 async function thread(main, ref, me) {
   const d = await H.api('/maildesk/threads/' + encodeURIComponent(ref)), t = d.thread, can = d.can;
+  // everyone who wrote in this thread (a reply-all can bring in a third person); the latest writer is picked first
+  const who = [...new Set([t.requester_email.toLowerCase(), ...d.messages.filter(m => m.dir === 'in').map(m => m.from_email.toLowerCase())])];
   document.title = `${t.ref} · ONE Desk`;
   const msg = m => m.dir === 'in'
     ? `<article class="card mmsg in"><div class="mm-h">${H.avatar(m.from_name || m.from_email, 32)}<div><b>${e(m.from_name || m.from_email)}</b> <span class="muted small">&lt;${e(m.from_email)}&gt;${m.cc_list.length ? ` · cc ${e(m.cc_list.join(', '))}` : ''}</span><div class="muted small">${H.shortDate(m.received_at)}${m.has_attachments ? ' · has attachments (open in Outlook)' : ''}${m.ai ? ` · read by ${e(m.ai_provider)}: ${e(m.ai.summary)}` : ''}</div></div></div>
@@ -112,7 +114,8 @@ async function thread(main, ref, me) {
         ${can.forward ? `<button type="button" class="btn primary" id="fwd">${H.I('swap', 16)}Forward to service${d.suggested_service ? `: ${e(d.suggested_service.name)}` : ''}</button>` : ''}</div>` : ''}
       ${d.desk ? `<div class="queuebar" style="margin-top:10px">${H.I('ticket', 20)}<span><b>Desk ticket #${e(d.desk.ticket_no)} · ${e(d.desk.service)}</b><span class="small">Status: ${e(STATUS[d.desk.status] || d.desk.status)} (from the desk, updated ${H.shortDate(d.desk.updated_at)}). The desk handles it from here.</span></span><a class="btn" href="#/c/t/${e(d.desk.id)}">Open ticket</a></div>` : ''}</div>
     ${d.messages.map(msg).join('')}
-    ${can.reply ? `<form class="card" id="rf"><label for="rb" style="margin-top:0">Reply from ${e(d.channel.address)} to ${e(t.requester_email)}</label>
+    ${can.reply ? `<form class="card" id="rf">${who.length > 1 ? `<label for="rto" style="margin-top:0">Reply from ${e(d.channel.address)} to</label>${sel('to', who.map(x => [x, x]), who[who.length - 1], 'id="rto"')}<label for="rb">Reply</label>`
+      : `<label for="rb" style="margin-top:0">Reply from ${e(d.channel.address)} to ${e(t.requester_email)}</label>`}
       ${d.templates.length ? sel('tpl', [['', 'Quick answer…'], ...d.templates.map(x => [x.id, x.name])], '', 'id="tpl" aria-label="Quick answer"') : ''}
       <textarea id="rb" name="body" rows="7" required maxlength="20000" placeholder="Write the reply. The mailbox signature is added below it."></textarea>
       <label for="rcc">Copy (cc) <small>(optional, comma-separated)</small></label><input id="rcc" name="cc" placeholder="name@smru.edu.in">
@@ -136,13 +139,14 @@ async function thread(main, ref, me) {
   });
   const tpl = main.querySelector('#tpl'); if (tpl) tpl.onchange = () => { const x = d.templates.find(y => y.id === tpl.value); if (x) { const rb = main.querySelector('#rb'); rb.value = (rb.value ? rb.value + '\n\n' : '') + x.body.replace(/\{\{\s*first_name\s*\}\}/g, (t.requester_name || '').split(/\s+/)[0] || 'Sir/Madam').replace(/\{\{\s*ref\s*\}\}/g, t.ref).replace(/\{\{\s*\w+\s*\}\}/g, ''); } tpl.value = ''; };
   const rf = main.querySelector('#rf'); if (rf) rf.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; if (sb.disabled) return; sb.disabled = true;
-    try { const r = await H.api(`/maildesk/threads/${ref}/reply`, { method: 'POST', body: { body: rf.body.value, cc: rf.cc.value.split(/[,;\s]+/).filter(Boolean), close: sb.value === 'close' } });
+    try { const r = await H.api(`/maildesk/threads/${ref}/reply`, { method: 'POST', body: { body: rf.body.value, to: rf.to?.value || undefined, cc: rf.cc.value.split(/[,;\s]+/).filter(Boolean), close: sb.value === 'close' } });
       undoToast(r.id, redraw); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
   const nf = main.querySelector('#nf'); if (nf) nf.onsubmit = ev => { ev.preventDefault(); act(() => H.api(`/maildesk/threads/${ref}/notes`, { method: 'POST', body: { body: nf.body.value } }), 'Note added'); };
   main.querySelector('#fwd')?.addEventListener('click', () => forwardDlg(d, ref));
   if (d.messages.some(m => m.state === 'queued' || m.state === 'sending')) every(4000, redraw, location.hash.split('?')[0]); else clearInterval(pollT);
 }
-function undoToast(id, after) {
+function undoToast(id, after0) {
+  const here = location.hash.split('?')[0], after = () => { if (location.hash.split('?')[0] === here) after0(); }; // left the thread: nothing is redrawn
   const el = document.createElement('div'); el.className = 'mundo'; el.setAttribute('role', 'status');
   let n = 10; const paint = () => { el.innerHTML = `<span>Sending in ${n} s</span><button type="button" class="btn">Undo</button>`; el.querySelector('button').onclick = async () => {
     try { await H.api(`/maildesk/outbound/${id}/cancel`, { method: 'POST' }); H.toast('Not sent'); } catch (er) { H.toast(er.message); } el.remove(); clearInterval(tm); after(); }; };
@@ -186,7 +190,7 @@ async function confirmPage(main, me) {
     c.querySelector('[data-no]').onclick = async () => { try { await H.api(`/maildesk/outbound/${id}/cancel`, { method: 'POST' }); H.toast('Not sent'); redraw(); } catch (er) { H.toast(er.message); } }; });
   main.querySelector('#call')?.addEventListener('click', async () => { const ids = [...main.querySelectorAll('.mconf')].filter(c => c.querySelector('input[type=checkbox]').checked && c.querySelector('textarea').value === rows.find(r => r.id === c.dataset.id).body_text).map(c => c.dataset.id);
     if (!ids.length) return H.toast('Tick the replies to send (an edited reply is confirmed on its own)');
-    try { const r = await H.api('/maildesk/confirm-bulk', { method: 'POST', body: { ids } }); H.toast(`${r.confirmed} confirmed`); redraw(); } catch (er) { H.toast(er.message); } });
+    try { const r = await H.api('/maildesk/confirm-bulk', { method: 'POST', body: { ids } }); H.toast(`${r.confirmed} confirmed${r.skipped?.length ? `; ${r.skipped.length} could not go: ${r.skipped[0].why}` : ''}`); redraw(); } catch (er) { H.toast(er.message); } });
 }
 
 /* ================= Settings ================= */
@@ -223,8 +227,8 @@ async function settings(main, me) {
       <p class="small">Jobs waiting: ${d.jobs?.queued || 0} · failed: ${d.jobs?.failed || 0}${d.ai_today.length ? ` · AI today: ${d.ai_today.map(a => `${e(a.provider)} ${a.calls} calls${a.failures ? `, ${a.failures} failed` : ''}`).join('; ')}` : ''}</p>
       ${d.admin ? `<label class="small"><input type="checkbox" id="kill" ${d.auto_reply_paused ? 'checked' : ''}> Pause every auto-reply (all mailboxes)</label>` : ''}</section>
     ${d.channels.map(chCard).join('')}
-    <form class="card" id="newch"><div class="chead">${H.I('plus', 16)}<span>Add a mailbox</span></div><div class="row"><div><label>Address</label><input name="address" type="email" required placeholder="reach@smru.edu.in"></div><div><label>Display name</label><input name="display_name" maxlength="120"></div></div>
-      <p class="muted small">A new mailbox starts Off. Pick the officers, then switch it to Shadow for a week (mail is read and sorted, nothing is sent), then Live.</p><p><button class="btn primary">Add mailbox</button></p></form>
+    ${d.admin ? `<form class="card" id="newch"><div class="chead">${H.I('plus', 16)}<span>Add a mailbox</span></div><div class="row"><div><label>Address</label><input name="address" type="email" required placeholder="reach@smru.edu.in"></div><div><label>Display name</label><input name="display_name" maxlength="120"></div></div>
+      <p class="muted small">A new mailbox starts Off. Pick the officers, then switch it to Shadow for a week (mail is read and sorted, nothing is sent), then Live.</p><p><button class="btn primary">Add mailbox</button></p></form>` : '<p class="muted small card">A super admin adds mailboxes (the Microsoft app can open any mailbox of the organisation, so that choice stays with them).</p>'}
     <section class="card"><div class="chead">${H.I('mail', 16)}<span>Reply templates</span></div><p class="muted small">Fill-ins: {{first_name}}, {{name}}, {{ref}}, {{campus}}, {{team}}, {{eta}}, {{mailbox_name}}, {{post}}, {{subject}}. "Received" templates are the auto-reply; "Quick answer" templates appear in the reply box.</p>
       ${d.templates.map(t => `<div class="mbar mtpl"><b>${e(t.name)}</b><span class="mchip">${e({ auto_ack: 'Received', status: 'Status', manual: 'Quick answer' }[t.kind])}</span><span class="muted small">${t.channel_id ? e(d.channels.find(c => c.id === t.channel_id)?.address || '') : 'all mailboxes'}${t.category ? ` · ${e(t.category)}` : ''}${t.active ? '' : ' · off'}${t.tenant_id ? '' : ' · default'}</span><span class="sp"></span>
         ${t.tenant_id || d.admin ? `<button type="button" class="btn" data-tpl="${t.id}">Edit</button>` : ''}</div>`).join('')}
@@ -267,7 +271,7 @@ async function settings(main, me) {
     wireRm(); mf.onsubmit = ev => { ev.preventDefault(); const members = [...mf.querySelectorAll('[data-m]')].map(r => ({ user_id: r.querySelector('[name=u]').value, role: r.querySelector('[name=r]').value })).filter(m => m.user_id);
       go(() => H.api(`/maildesk/channels/${id}/members`, { method: 'PUT', body: { members } }), 'People saved'); };
     void c; });
-  main.querySelector('#newch').onsubmit = ev => { ev.preventDefault(); go(() => H.api('/maildesk/channels', { method: 'POST', body: { address: ev.target.address.value, display_name: ev.target.display_name.value } }), 'Mailbox added'); };
+  if (main.querySelector('#newch')) main.querySelector('#newch').onsubmit = ev => { ev.preventDefault(); go(() => H.api('/maildesk/channels', { method: 'POST', body: { address: ev.target.address.value, display_name: ev.target.display_name.value } }), 'Mailbox added'); };
   main.querySelector('#kill')?.addEventListener('change', ev => go(() => H.api('/maildesk/switches', { method: 'PUT', body: { auto_reply_paused: ev.target.checked } }), ev.target.checked ? 'Auto-replies paused' : 'Auto-replies on'));
   main.querySelector('#newrule').onsubmit = ev => { ev.preventDefault(); const f = ev.target; go(() => H.api('/maildesk/rules', { method: 'POST', body: { match: f.match.value, value: f.value.value, action: f.action.value, channel_id: f.channel_id.value || null } }), 'Rule added'); };
   main.querySelectorAll('[data-delrule]').forEach(b => b.onclick = () => go(() => H.api('/maildesk/rules/' + b.dataset.delrule, { method: 'DELETE' }), 'Rule removed'));
