@@ -931,3 +931,14 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-donut li{display:flex;align-items:center;gap:6px;padding:3px 0}.cn-donut li i{width:10px;height:10px;border-radius:3px;flex-shrink:0}.cn-donut li b{margin-left:auto}
 .cn-hb{display:flex;flex-direction:column;gap:8px;margin-top:10px}.cn-hbr{display:grid;grid-template-columns:minmax(70px,34%) 1fr auto;gap:8px;align-items:center;font-size:13px}
 .cn-hbr .l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cn-hbr .t{background:#F1F5F9;border-radius:6px;height:12px;overflow:hidden}.cn-hbr .t i{display:block;height:100%;border-radius:6px}
+.cn-three{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.cn-pos{display:grid;grid-template-columns:1fr 360px;gap:14px;align-items:start}@media(max-width:860px){.cn-pos{grid-template-columns:1fr}}
+.cn-posg{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.cn-pb{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;min-height:76px;padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:var(--card);box-shadow:var(--shadow);cursor:pointer;font:inherit;color:var(--ink)}
+.cn-pb span{font-weight:600;color:var(--brand);font-size:14px}.cn-pb:active{transform:scale(.97)}.cn-pb.off{opacity:.45;cursor:default}.cn-pb .cn-deal{font-size:10px}
+.cn-posb{position:sticky;top:12px;margin:0}.cn-posb .btn.big{margin-top:12px}.cn-posb>.btn:not(.big){width:100%;margin-top:8px}.cn-posb .cn-item{gap:8px}.cn-posb .cn-item>span:first-child{flex:1;min-width:0}
+.cn-quick{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}.cn-change{font-size:16px;margin:4px 0}.cn-change b{font-size:20px;color:#15803D}
+.cn-shift{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}.cn-shift b{font-size:15px}
+.cn-prow{display:flex;gap:8px;margin:8px 0 0}.cn-prow .btn{min-height:34px;padding:4px 12px;font-size:13px}.cn-b.ctr{background:#CFFAFE;color:#155E75}
+.cn-staff{display:flex;flex-direction:column;gap:6px;margin:10px 0}.cn-srow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0;padding:8px 0;border-bottom:1px solid var(--line)}
+.cn-srow>span{display:flex;flex-direction:column;min-width:0}.cn-srow select{width:auto;min-width:150px;margin:0}@media(max-width:480px){.cn-srow{flex-wrap:wrap}.cn-srow select{width:100%}}

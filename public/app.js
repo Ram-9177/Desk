@@ -560,7 +560,7 @@ async function shell(active, render, title) {
   else if (!S.tenant || !S.me.tenants.find(t => t.id === S.tenant)) S.tenant = S.me.tenants[0]?.id;
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
-  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen); } // canteen managers, admins of a campus with the canteen on, super admins
+  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter); } // canteen managers, admins of a campus with the canteen on, super admins
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);

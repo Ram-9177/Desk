@@ -1340,8 +1340,59 @@ try {
   check('orders download as CSV: one row per order with payment, UTR and delivery', ccsv.status === 200 && /text\/csv/.test(ccsv.headers.get('content-type')) && /Order,Status,Name/.test(ct) && ct.includes(fo.token) && ct.includes('412345678901'));
   await fails('students cannot download the CSV', '/canteen/orders.csv', {}, 401);
 
+  sec('Canteen: counter (POS), printing, cash drawer');
+  await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-cashier', tenant_id, 'Kavya Cashier', 'kavya@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+  T.kavya = await login('kavya@example.com', 'Pavan2026ok');
+  await fails('one canteen job per person', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], kitchen: [kid], counter: [kid], name: 'Hilltop Café' } }, 400, 'one canteen job');
+  await ok('super admin makes Kavya counter staff (Lata stays kitchen)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], kitchen: [kid], counter: ['u-cashier'], name: 'Hilltop Café' } });
+  const xca = (await api('/canteen/access', { token: T.kavya })).data;
+  check('counter staff: counter and orders, not menu or reports', xca.counter && xca.cashier && !xca.manage && !xca.kitchen);
+  await fails('counter staff cannot change the menu', '/canteen/items/' + dosa.id, { token: T.kavya, method: 'PATCH', body: { price: '1' } }, 403);
+  await fails('…or see the reports', '/canteen/report', { token: T.kavya }, 403);
+  await fails('kitchen staff cannot sell at the counter', '/canteen/pos', { token: T.lata, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }] } }, 403);
+  const xpm0 = await ok('the counter loads the menu', '/canteen/pos', { token: T.kavya });
+  check('…with prices and print settings', xpm0.categories.length >= 1 && xpm0.print.paper === '80' && xpm0.print.auto_bill === true);
+  await fails('an empty bill is refused', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [] } }, 400, 'item');
+  await fails('cash short of the bill is refused', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 2 }], pay_mode: 'cash', tendered: '50' } }, 400, 'less than');
+  await run('UPDATE canteen_items SET sold_out=1 WHERE id=?', tea.id);
+  await fails('a sold-out item cannot be sold at the counter', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'sold out');
+  await run('UPDATE canteen_items SET sold_out=0 WHERE id=?', tea.id);
+  const xps = await ok('walk-in: 2 dosa + 1 tea, ₹200 cash', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 2 }, { id: tea.id, qty: 1 }], pay_mode: 'cash', tendered: '200', note: 'parcel' } });
+  check('the walk-in gets a bill number and the cashier on it', Number.isInteger(xps.bill_no) && xps.cashier === 'Kavya Cashier' && xps.service === 'takeaway');
+  check('…paid, change ₹97.50, a counter order already in the kitchen', xps.status === 'accepted' && xps.pay_status === 'paid' && xps.channel === 'counter' && xps.total_paise === 10250 && xps.change_paise === 9750 && xps.name === 'Walk-in');
+  check('the KOT is on the kitchen screen at once', (await api('/canteen/kitchen', { token: T.lata })).data.kots.some(o => o.id === xps.id && o.note === 'parcel'));
+  const xdi = await ok('dine in at table 4', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }], service: 'dine_in', table_no: '4' } });
+  check('…numbered bills run on (next bill number), dine in with its table', xdi.bill_no === xps.bill_no + 1 && xdi.service === 'dine_in' && xdi.table_no === '4');
+  await api(`/canteen/orders/${xdi.id}/rejected`, { token: T.kavya, method: 'POST', body: { reason: 'Test clean-up' } });
+  const xpe = await ok('exact cash when nothing is typed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 2 }], pay_mode: 'cash' } });
+  check('…no change', xpe.change_paise === 0 && xpe.cash_tendered_paise === xpe.total_paise);
+  const xpu = await ok('a UPI sale at the counter with its reference', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }], pay_mode: 'upi', upi_ref: 'CTR998877' } });
+  await fails('the same UPI reference cannot be used again', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }], pay_mode: 'upi', upi_ref: 'ctr998877' } }, 400, 'already used');
+  const xpr1 = await ok('the bill prints (first copy)', `/canteen/orders/${xps.id}/printed`, { token: T.kavya, method: 'POST', body: { kind: 'bill' } });
+  const xpr2 = await ok('…a reprint', `/canteen/orders/${xps.id}/printed`, { token: T.kavya, method: 'POST', body: { kind: 'bill' } });
+  check('a reprint is marked DUPLICATE', xpr1.duplicate === false && xpr2.duplicate === true && xpr2.prints === 2);
+  check('the kitchen can print the KOT', (await api(`/canteen/orders/${xps.id}/printed`, { token: T.lata, method: 'POST', body: { kind: 'kot' } })).data.prints === 1);
+  await fails('the kitchen cannot print bills', `/canteen/orders/${xps.id}/printed`, { token: T.lata, method: 'POST', body: { kind: 'bill' } }, 403);
+  const xun = await ok('an online order not paid yet…', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Online', items: [{ id: dosa.id, qty: 1 }] } });
+  await fails('…has no bill to print', `/canteen/orders/${xun.id}/printed`, { token: T.kavya, method: 'POST', body: { kind: 'bill' } }, 400, 'paid');
+  const xacc = (await api(`/canteen/orders/${xun.id}/accepted`, { token: T.kavya, method: 'POST' })).data;
+  check('online order paid at the counter: gets the next bill number and the cashier', xacc.bill_no > xdi.bill_no && xacc.cashier === 'Kavya Cashier' && xacc.pay_status === 'paid');
+  await ok('kitchen: start, ready', `/canteen/kitchen/${xps.id}/start`, { token: T.lata, method: 'POST' }); await api(`/canteen/orders/${xps.id}/ready`, { token: T.lata, method: 'POST' });
+  await ok('the counter hands the walk-in order over', `/canteen/orders/${xps.id}/collected`, { token: T.kavya, method: 'POST' });
+  await ok('a counter sale refunded (rejected after paying)', `/canteen/orders/${xpe.id}/rejected`, { token: T.kavya, method: 'POST', body: { reason: 'Customer changed mind' } });
+  check('no email is sent for a walk-in', !(await q("SELECT 1 FROM notifications WHERE recipient='' OR recipient IS NULL")).length);
+  const xshf = (await api('/canteen/shift', { token: T.kavya })).data;
+  check("Kavya's shift: cash and UPI she took, the refund apart", xshf.cash_paise === 10250 + 4500 && xshf.upi_paise === 4500 && xshf.refunds_paise === xpe.total_paise + xdi.total_paise && xshf.counter_orders === 2, JSON.stringify(xshf));
+  const xrc = (await api('/canteen/report', { token: T.pavan })).data;
+  check('reports: counter vs online sales, cash drawer by staff, reprints', xrc.channels.find(c => c.channel === 'counter').orders >= 1 && xrc.staff.some(x => x.name === 'Kavya Cashier' && x.cash_paise === 14750 && x.upi_paise === 4500) && xrc.reprints >= 1, JSON.stringify(xrc.staff));
+  check('reports leave walk-ins out of the customer count', xrc.customers === new Set((await q("SELECT email FROM canteen_orders WHERE status='collected' AND email<>''")).map(r => r.email)).size);
+  await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
+  await api('/canteen/close', { token: T.pavan, method: 'POST' });
+  await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
+  await ok('counter staff can open the day', '/canteen/open', { token: T.kavya, method: 'POST' });
+
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1 });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1614,7 +1665,15 @@ async function uiSmoke(tok, id) {
     await api('/canteen/deals', { token: tok.pavan, method: 'DELETE' });
     await visit('canteen desk again', '/c/canteen', tok.pavan, '[data-t=report]');
     check('canteen reports show the charts', await js(`document.querySelector('[data-t=report]').click(); for (let i = 0; i < 30 && !document.querySelector('.cn-donut'); i++) await new Promise(r => setTimeout(r, 200));
-      const ok = document.querySelectorAll('.cn-donut svg').length === 3 && document.querySelectorAll('.cn-chart .cn-hb').length >= 1 && !!document.querySelector('.cn-bars em'); document.querySelector('[data-t=orders]').click(); return ok`));
+      const ok = document.querySelectorAll('.cn-donut svg').length >= 4 && document.querySelectorAll('.cn-chart .cn-hb').length >= 1 && !!document.querySelector('.cn-bars em'); document.querySelector('[data-t=orders]').click(); return ok`));
+    await js(`localStorage.clear(); sessionStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.kavya)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
+    let posOk = false; for (let i = 0; i < 60 && !posOk; i++) { await sleep(250); posOk = await js(`return !!document.querySelector('.cn-posg')`).catch(() => false); }
+    check('counter staff land on the Counter (POS)', posOk, await js(`return document.querySelector('#main')?.innerHTML.slice(0, 900)`).catch(e => String(e)));
+    check('a walk-in sale from the screen: tap item, cash, charge → token, change, KOT', await js(`window.print = () => {}; HTMLIFrameElement.prototype.focus = () => {};
+      document.querySelector('.cn-pb[data-add]').click(); await new Promise(r => setTimeout(r, 100));
+      const f = document.querySelector('#posf'); f.tendered.value = '500'; f.tendered.dispatchEvent(new Event('input', { bubbles: true })); const change = /Give change/.test(document.querySelector('#posch').textContent);
+      f.requestSubmit(); for (let i = 0; i < 30 && !/token/.test(document.querySelector('#toast').textContent); i++) await new Promise(r => setTimeout(r, 200));
+      return change && /sent to the kitchen/.test(document.querySelector('#toast').textContent)`));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
