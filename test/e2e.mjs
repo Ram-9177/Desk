@@ -1356,7 +1356,7 @@ try {
   await fails('…or see the reports', '/canteen/report', { token: T.kavya }, 403);
   await fails('kitchen staff cannot sell at the counter', '/canteen/pos', { token: T.lata, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }] } }, 403);
   const xpm0 = await ok('the counter loads the menu', '/canteen/pos', { token: T.kavya });
-  check('…with prices and print settings', xpm0.categories.length >= 1 && xpm0.print.paper === '80' && xpm0.print.auto_bill === true);
+  check('…with prices and print settings (one counter printer: KOT prints there too)', xpm0.categories.length >= 1 && xpm0.print.paper === '80' && xpm0.print.auto_bill === true && xpm0.print.kot_at_counter === true);
   await fails('an empty bill is refused', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [] } }, 400, 'item');
   await fails('cash short of the bill is refused', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 2 }], pay_mode: 'cash', tendered: '50' } }, 400, 'less than');
   await run('UPDATE canteen_items SET sold_out=1 WHERE id=?', tea.id);
@@ -1674,11 +1674,13 @@ async function uiSmoke(tok, id) {
     await js(`localStorage.clear(); sessionStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.kavya)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
     let posOk = false; for (let i = 0; i < 60 && !posOk; i++) { await sleep(250); posOk = await js(`return !!document.querySelector('.cn-posg')`).catch(() => false); }
     check('counter staff land on the Counter (POS)', posOk, await js(`return document.querySelector('#main')?.innerHTML.slice(0, 900)`).catch(e => String(e)));
+    const kotBefore = (await q('SELECT coalesce(sum(kot_prints),0)::int n FROM canteen_orders'))[0].n;
     check('a walk-in sale from the screen: tap item, cash, charge → token, change, KOT', await js(`window.print = () => {}; HTMLIFrameElement.prototype.focus = () => {};
       document.querySelector('.cn-pb[data-add]').click(); await new Promise(r => setTimeout(r, 100));
       const f = document.querySelector('#posf'); f.tendered.value = '500'; f.tendered.dispatchEvent(new Event('input', { bubbles: true })); const change = /Give change/.test(document.querySelector('#posch').textContent);
       f.requestSubmit(); for (let i = 0; i < 30 && !/token/.test(document.querySelector('#toast').textContent); i++) await new Promise(r => setTimeout(r, 200));
       return change && /sent to the kitchen/.test(document.querySelector('#toast').textContent)`));
+    check('…the bill and the KOT both print at the counter', !!(await waitFor(async () => (await q('SELECT coalesce(sum(kot_prints),0)::int n FROM canteen_orders'))[0].n > kotBefore, 6000)));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
