@@ -1417,10 +1417,28 @@ try {
   const rn = await ok('…and reset to the default', '/canteen/name', { token: T.pavan, method: 'PUT', body: { name: '' } });
   check('…back to "Alpha Campus Canteen"', rn.name === 'Alpha Campus Canteen' && (await api('/public/alpha/canteen')).data.name === 'Alpha Campus Canteen');
   await api('/canteen/name', { token: T.pavan, method: 'PUT', body: { name: 'Hilltop Café' } });
+  await ok('counter staff mark tea sold out during the shift', `/canteen/items/${tea.id}/stock`, { token: T.kavya, method: 'POST', body: { sold_out: true } });
+  check('…students see it sold out', [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].find(i => i.id === tea.id).sold_out === 1);
+  await ok('kitchen staff put it back in stock', `/canteen/items/${tea.id}/stock`, { token: T.lata, method: 'POST', body: { sold_out: false } });
+  await fails('…but cannot change its price', '/canteen/items/' + tea.id, { token: T.lata, method: 'PATCH', body: { price: '1' } }, 403);
+  await fails('the counter is told when the bill changed (a deal ended) instead of charging a different amount', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }], expect_paise: 1 } }, 409, 'Prices changed');
+  await fails('…and so is a student', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: tea.id, qty: 1 }], expect_paise: 1 } }, 409, 'Prices changed');
+  const okp = await ok('the right expected total goes through', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }], expect_paise: 1250 } });
+  await api(`/canteen/orders/${okp.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${okp.id}/collected`, { token: T.kavya, method: 'POST' });
+  await ok('KOTs print in one place: choosing the kitchen printer turns off the counter one', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', auto_kot: true, kot_at_counter: true } });
+  check('…only the counter one stays when both are sent', (await api('/canteen/menu', { token: T.pavan })).data.pay.auto_kot === false);
+  await api('/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', kot_at_counter: true } });
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
   await ok('counter staff can open the day', '/canteen/open', { token: T.kavya, method: 'POST' });
+  const live = await ok('an order in progress…', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
+  await fails('…blocks switching the canteen off (no stranded orders)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: false, managers: [pid] } }, 400, 'still in progress');
+  await api(`/canteen/orders/${live.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${live.id}/collected`, { token: T.kavya, method: 'POST' });
+  await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-temp', tenant_id, 'Temp Cook', 'temp@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+  await run(`INSERT INTO canteen_managers (tenant_id, user_id, created_at, kind) VALUES (?, 'u-temp', now()::text, 'kitchen')`, A2);
+  await ok('a kitchen person is deactivated…', '/users/u-temp', { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
+  check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1 });

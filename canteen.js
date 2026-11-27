@@ -125,7 +125,7 @@ export function canteen(d) {
   // ---------- who may do what ----------
   async function access(req) {
     const u = req.user, tid = req.tenantId; if (!tid) return { tenant: null, setup: u.role === 'super_admin', manage: false };
-    const tn = await tenantRow(tid), row = await one('SELECT kind FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id), mgr = row?.kind === 'manager' || (row && !row.kind);
+    const tn = await tenantRow(tid), row = u.role === 'provider' ? await one('SELECT kind FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id) : null, /* canteen jobs are for providers */ mgr = row?.kind === 'manager' || (row && !row.kind);
     const manage = !!tn?.canteen_on && (mgr || u.role !== 'provider');
     return { tenant: tn, setup: u.role === 'super_admin', manage, manager: mgr, kitchen: !!tn?.canteen_on && (manage || row?.kind === 'kitchen'), cook: row?.kind === 'kitchen', counter: !!tn?.canteen_on && (manage || row?.kind === 'counter'), cashier: row?.kind === 'counter', req_admin: u.role === 'tenant_admin' && !!tn?.canteen_on };
   }
@@ -279,6 +279,8 @@ export function canteen(d) {
       out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}), ...(it.sold_out ? { booked: true } : {}) });
     }
     const fee = fulfil === 'delivery' ? Math.round(pay.delivery_fee * 100) : 0, total = out.reduce((s, x) => s + x.price_paise * x.qty, 0) + fee, day = dayOf(tn.timezone);
+    // the student saw a total; if a deal ended or a price changed meanwhile, say so instead of charging a different amount
+    if (b.expect_paise != null && Number(b.expect_paise) !== total) throw new HttpErr(409, 'PRICE_CHANGED', `Prices changed while you were ordering. The total is now ${rupees(total)}. Please check your cart and order again.`);
     await run('UPDATE canteen_devices SET last_used_at=? WHERE token_hash=?', now(), dv.token_hash);
     for (let i = 0; i < 5; i++) { // the next token of the day; a race on the unique index just takes the next one
       const n = ((await one('SELECT max(token_no) m FROM canteen_orders WHERE tenant_id=? AND day=?', tn.id, day)).m || 0) + 1;
@@ -305,7 +307,8 @@ export function canteen(d) {
     return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id), upi, pay_by }; }));
   // the student paid by UPI: they send the reference number (UTR) from their UPI app; staff check it and send the order to the kitchen
   P.post('/:slug/canteen/orders/:id/upi-ref', wrap(async req => {
-    const { tn } = await orderByKey(req); await expire(tn); const o = await one('SELECT * FROM canteen_orders WHERE id=?', req.params.id); // past the pay time: already cancelled limit('cupi:' + o.id, 10);
+    const { tn } = await orderByKey(req); await expire(tn); const o = await one('SELECT * FROM canteen_orders WHERE id=?', req.params.id); // past the pay time: already cancelled
+    limit('cupi:' + o.id, 10);
     const ref = str(req.body.ref, 40).replace(/\s/g, ''); if (!UTR.test(ref)) throw bad('Enter the UPI reference number (UTR) from your UPI app: 6 to 30 letters or digits');
     if (o.status !== 'placed' || o.pay_mode !== 'upi') throw bad('This order is not waiting for a UPI payment');
     if (await one('SELECT 1 FROM canteen_orders WHERE tenant_id=? AND upper(upi_ref)=upper(?) AND id<>?', tn.id, ref, o.id)) throw bad('That reference number is already used on another order');
@@ -359,6 +362,8 @@ export function canteen(d) {
       const ok2 = await all(`SELECT id FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 AND id = ANY(?::text[])`, req.tenantId, l);
       if (ok2.length !== l.length) throw bad(`${what[0].toUpperCase() + what.slice(1)} must be active service providers on this campus`); }
     const all3 = [...ids, ...(kit || []), ...(ctr || [])]; if (new Set(all3).size !== all3.length) throw bad('A person can have one canteen job: manager, kitchen staff or counter staff, not both');
+    if (!on) { const live = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND status IN ${LIVE}`, req.tenantId)).n; // checked before anything is saved
+      if (live) throw bad(`${live} order${live === 1 ? ' is' : 's are'} still in progress (waiting for payment, in the kitchen or on the way). Finish or reject ${live === 1 ? 'it' : 'them'} first, then switch the canteen off.`); }
     await run('UPDATE tenants SET canteen_on=?, canteen_name=? WHERE id=?', on ? 1 : 0, str(req.body.name, 60) || null, req.tenantId);
     if (!on) await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId); // switched off: closed too
     const kinds = ['manager', ...(kit ? ['kitchen'] : []), ...(ctr ? ['counter'] : [])];
@@ -385,7 +390,7 @@ export function canteen(d) {
     const b = req.body, p = { cash: !!b.cash, upi_id: str(b.upi_id, 100), upi_name: str(b.upi_name, 60), delivery: !!b.delivery,
       delivery_fee: Number(b.delivery_fee) || 0, delivery_note: str(b.delivery_note, 120), pay_window_min: Math.floor(Number(b.pay_window_min) || 20),
       delivery_blocks: [...new Set((Array.isArray(b.delivery_blocks) ? b.delivery_blocks : String(b.delivery_blocks || '').split('\n')).map(x => str(x, 60)).filter(Boolean))].slice(0, 100),
-      tagline: str(b.tagline, 80), delivery_cash: !!b.delivery_cash, kot_at_counter: b.kot_at_counter === undefined ? true : !!b.kot_at_counter, prep_sla_min: Math.floor(Number(b.prep_sla_min) || 15), delivery_sla_min: Math.floor(Number(b.delivery_sla_min) || 20), paper: b.paper === '58' ? '58' : '80', auto_kot: !!b.auto_kot, auto_bill: b.auto_bill === undefined ? true : !!b.auto_bill, bill_footer: b.bill_footer === undefined ? PAY_DEFAULT.bill_footer : str(b.bill_footer, 120) };
+      tagline: str(b.tagline, 80), delivery_cash: !!b.delivery_cash, kot_at_counter: b.kot_at_counter === undefined ? true : !!b.kot_at_counter, prep_sla_min: Math.floor(Number(b.prep_sla_min) || 15), delivery_sla_min: Math.floor(Number(b.delivery_sla_min) || 20), paper: b.paper === '58' ? '58' : '80', auto_kot: !!b.auto_kot && !b.kot_at_counter, /* KOTs print in one place */ auto_bill: b.auto_bill === undefined ? true : !!b.auto_bill, bill_footer: b.bill_footer === undefined ? PAY_DEFAULT.bill_footer : str(b.bill_footer, 120) };
     if (p.upi_id && !UPI_ID.test(p.upi_id)) throw bad('Enter a UPI ID like canteen@okhdfcbank');
     if (p.prep_sla_min < 1 || p.prep_sla_min > 180) throw bad('Kitchen target must be 1 to 180 minutes');
     if (p.delivery_sla_min < 1 || p.delivery_sla_min > 180) throw bad('Delivery target must be 1 to 180 minutes');
@@ -431,6 +436,11 @@ export function canteen(d) {
   S.patch('/canteen/items/:id', wrap(async req => { await need(req); const f = await itemFields(req, true); if (!Object.keys(f).length) throw bad('Nothing to change');
     const r = await run(`UPDATE canteen_items SET ${Object.keys(f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(f), req.params.id, req.tenantId);
     if (!r.changes) throw notFound(); return { ok: true }; }));
+  // counter and kitchen staff mark an item sold out / back in stock during the shift (only that; prices stay with the managers)
+  S.post('/canteen/items/:id/stock', wrap(async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.counter && !a.kitchen) throw forbid();
+    const r = await run('UPDATE canteen_items SET sold_out=? WHERE id=? AND tenant_id=? AND active=1', req.body.sold_out ? 1 : 0, req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
+  S.get('/canteen/stock', wrap(async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.counter && !a.kitchen) throw forbid();
+    return (await all('SELECT id, name, sold_out FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY name', req.tenantId)); }));
   // removing an item hides it (old orders keep their copy of the name and price)
   S.delete('/canteen/items/:id', wrap(async req => { await need(req);
     const r = await run('UPDATE canteen_items SET active=0 WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -486,12 +496,13 @@ export function canteen(d) {
     const rows = await all(`SELECT * FROM canteen_items WHERE tenant_id=? AND id = ANY(?::text[])`, tn.id, [...new Set(lines.map(l => String(l.id)))]), cats = await all('SELECT id, name FROM canteen_categories WHERE tenant_id=?', tn.id), out = [];
     for (const l of lines) { const it = rows.find(r => r.id === String(l.id)), qty = Math.floor(Number(l.qty));
       if (!it || !it.active) throw bad('An item is no longer on the menu. Please refresh.');
-      if (it.sold_out) throw bad(`${it.name} is marked sold out. Remove it, or mark it back in stock on the Menu tab.`);
+      if (it.sold_out) throw bad(`${it.name} is marked sold out. Remove it, or mark it back in stock (Stock button on this screen).`);
       if (!(qty >= 1 && qty <= 99)) throw bad(`Quantity for ${it.name} must be 1 to 99`);
       const prev = out.find(x => x.id === it.id); if (prev) { prev.qty = Math.min(99, prev.qty + qty); continue; }
       const d = dealOf(it), cat = cats.find(c => c.id === it.category_id)?.name || null;
       out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}) }); }
     const total = out.reduce((s, x) => s + x.price_paise * x.qty, 0);
+    if (b.expect_paise != null && Number(b.expect_paise) !== total) throw new HttpErr(409, 'PRICE_CHANGED', `Prices changed (a deal ended or a price was edited). The bill is now ${rupees(total)}: check it with the customer and charge again.`);
     let tendered = null, ref = null;
     if (mode === 'cash') { tendered = Math.round(Number(b.tendered) * 100); if (!Number.isFinite(tendered) || b.tendered === '' || b.tendered == null) tendered = total; // nothing typed: exact amount
       if (tendered < total) throw bad(`Cash received (${rupees(tendered)}) is less than the bill (${rupees(total)})`); if (tendered > total + 200000) throw bad('That cash amount looks wrong'); }

@@ -944,3 +944,5 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-srow>span{display:flex;flex-direction:column;min-width:0}.cn-srow select{width:auto;min-width:150px;margin:0}@media(max-width:480px){.cn-srow{flex-wrap:wrap}.cn-srow select{width:100%}}
 .cn-opt.dis{opacity:.45;cursor:not-allowed}
 .bnav[hidden]{display:none!important}
+.cn-stock{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto;margin:8px 0}
+.cn-posbar{display:none}@media(max-width:860px){.cn-posbar:not([hidden]){display:block;position:fixed;left:16px;right:16px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:30;background:var(--brand);color:#fff;text-align:center;font-weight:700;padding:14px;border-radius:14px;box-shadow:0 10px 24px rgba(30,75,143,.35);text-decoration:none}}

@@ -915,6 +915,7 @@ S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (email.toLowerCase() !== u.email.toLowerCase() && await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', email)) throw new HttpErr(409, 'CONFLICT', 'Email already in use');
   await run('UPDATE users SET name=?, email=?, phone=?, role=?, is_active=? WHERE id=?', String(b.name ?? u.name).trim() || u.name, email, b.phone ?? u.phone, b.role || u.role, b.is_active ?? u.is_active, u.id);
   if (b.is_active === 0) await run('DELETE FROM service_members WHERE user_id=?', u.id);
+  if (b.is_active === 0 || (b.role && b.role !== 'provider')) await run('DELETE FROM canteen_managers WHERE user_id=?', u.id); // a canteen job ends with the account or when they stop being a provider
   await audit(req, 'user.update', 'user', u.id, b); return { ok: true };
 }));
 S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -1200,7 +1201,7 @@ async function fairScores(tid) {
   for (const t of win) { t.pace = Math.min(3, t.work / usualOf(t)); t.on = t.due_at ? t.closed_at <= t.due_at : null; }
   // misses: accepted reopens and holds past their limit, in the window
   const bad = Object.fromEntries((await all(`SELECT user_id, count(*)::int n FROM provider_points WHERE tenant_id=? AND created_at>=? AND reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY user_id`, tid, since(cfg.window_days))).map(r => [r.user_id, r.n]));
-  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c WHERE c.user_id=u.id)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
+  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c JOIN tenants ct ON ct.id=c.tenant_id WHERE c.user_id=u.id AND c.tenant_id=u.tenant_id AND ct.canteen_on=1)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
   const mine = Object.fromEntries(people.map(p => [p.id, win.filter(t => t.closed_by === p.id)]));
   // a provider's team: the service they closed most tickets in (else their first service)
   const firstSvc = Object.fromEntries((await all(`SELECT m.user_id, min(s.name) name, min(s.id) id FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.tenant_id=? GROUP BY m.user_id`, tid)).map(r => [r.user_id, r]));
@@ -1291,7 +1292,7 @@ S.get('/points', wrap(async req => ({
   leaderboard: await all(`SELECT u.id, u.name, coalesce((SELECT sum(points) FROM provider_points p WHERE p.user_id=u.id AND p.tenant_id=u.tenant_id),0) points,
       (SELECT count(*) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed') closed,
       (SELECT round(100.0*count(*) FILTER (WHERE t.closed_at<=t.due_at)/greatest(1,count(*))) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed' AND t.due_at IS NOT NULL) on_time
-    FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c WHERE c.user_id=u.id)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
+    FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c JOIN tenants ct ON ct.id=c.tenant_id WHERE c.user_id=u.id AND c.tenant_id=u.tenant_id AND ct.canteen_on=1)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
     ORDER BY points DESC, closed DESC`, req.tenantId),
 })));
 

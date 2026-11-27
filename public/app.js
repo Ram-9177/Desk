@@ -564,7 +564,7 @@ async function shell(active, render, title) {
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
-  if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (active === 'c') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
+  if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (!['c/canteen', 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
   const MAIN = ['c', 'c/canteen', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
@@ -777,8 +777,8 @@ function dlg(html, onSubmit) {
   const d = document.createElement('dialog'); d.innerHTML = `<form method="dialog" id="df">${html}<div class="err" id="derr"></div>
     <p class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="ok">Save</button></p></form>`;
   document.body.append(d); d.showModal(); d.onclose = () => d.remove();
-  d.querySelector('form').onsubmit = async e => { if (e.submitter?.value !== 'ok') return; e.preventDefault();
-    try { await onSubmit(e.target); d.close(); } catch (er) { d.querySelector('#derr').textContent = er.message; } };
+  d.querySelector('form').onsubmit = async e => { if (e.submitter?.value !== 'ok') return; e.preventDefault(); const sb = e.submitter; if (sb.disabled) return; sb.disabled = true; // no double Save
+    try { await onSubmit(e.target); d.close(); } catch (er) { d.querySelector('#derr').textContent = er.message; } finally { sb.disabled = false; } };
   return d;
 }
 
