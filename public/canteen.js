@@ -383,15 +383,20 @@ export async function canteenPage(main, { sa }) {
       document.getElementById('posqk').innerHTML = t ? notes.map(x => `<button type="button" class="tab" data-tq="${x / 100}">${rupees(x)}</button>`).join('') : '';
       const got = f.tendered.value === '' ? t : Math.round(Number(f.tendered.value) * 100), ch = document.getElementById('posch');
       ch.innerHTML = !t || !cash ? '' : !Number.isFinite(got) ? '<span class="err">Enter a number</span>' : got < t ? `<span class="err">Short by ${rupees(t - got)}</span>` : `Give change <b>${rupees(got - t)}</b>`; };
-    const add = (k, d) => { posCart[k] = Math.max(0, Math.min(99, (posCart[k] || 0) + d)); if (!posCart[k]) delete posCart[k]; render(); };
+    // the quantity in the bill, shown on each tile
+    const marks = () => main.querySelectorAll('.cn-pb[data-add]').forEach(b => { const q = posCart[b.dataset.add] || 0, m = b.querySelector('.cn-pbq'); b.classList.toggle('in', !!q); if (m) m.textContent = q ? '×' + q : ''; });
+    const add = (k, d) => { posCart[k] = Math.max(0, Math.min(99, (posCart[k] || 0) + d)); if (!posCart[k]) delete posCart[k]; render(); marks(); };
     // the middle column: the chosen category (or a search across all), in two sections, Veg and Non-veg
-    const tile = i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''} ${i.is_veg ? 'v' : 'nv'}" data-add="${i.id}" ${i.sold_out ? 'disabled' : ''}>${i.img ? `<img class="cn-pbimg" src="${i.img}" alt="" loading="lazy" onerror="this.remove()">` : ''}${vegDot(i.is_veg)}<b>${esc(i.name)}</b><span>${i.sold_out ? 'Sold out' : priceHtml(i)}</span>${i.deal ? dealBadge(i.deal) : ''}</button>`;
+    // an item tile: a picture area (the photo, or the item's first letter on a soft tint), the veg mark on its corner, name, price and +
+    const tile = i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''} ${i.is_veg ? 'v' : 'nv'}" data-add="${i.id}" ${i.sold_out ? 'disabled' : ''} aria-label="Add ${esc(i.name)}, ${rupees(i.price_now)}${i.sold_out ? ', sold out' : ''}">
+      <span class="cn-pbm">${i.img ? `<img src="${i.img}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="cn-pbl" aria-hidden="true">${esc((i.name.trim()[0] || '?').toUpperCase())}</span>${vegDot(i.is_veg)}<span class="cn-pbq"></span>${i.sold_out ? '<span class="cn-pbso">Sold out</span>' : ''}${i.deal ? `<span class="cn-pbdeal">${i.deal.kind === 'flash' ? '⚡' : i.deal.kind === 'eod' ? '🌙' : ''} −${i.deal.pct}%</span>` : ''}</span>
+      <span class="cn-pbt"><b>${esc(i.name)}</b><span class="cn-pbp"><span>${priceHtml(i)}</span>${i.sold_out ? '' : '<i aria-hidden="true">+</i>'}</span></span></button>`;
     const grid = () => { const v = (document.getElementById('posq')?.value || '').trim().toLowerCase(), g = document.getElementById('posgrid');
       if (!list.length) { g.innerHTML = `<div class="card empty"><span class="et">No items on the menu yet</span><span>${acc.manage ? 'Add categories and items with prices on the <b>Menu</b> tab.' : 'Ask the canteen manager to add items on the Menu tab.'}</span></div>`; return; }
       const shown = list.filter(i => v ? i.name.toLowerCase().includes(v) || (i.description || '').toLowerCase().includes(v) : posCat === 'all' || i.cat === posCat);
-      const sec = (title, cls, items) => items.length ? `<section class="cn-pss"><h3 class="${cls}">${vegDot(cls === 'v')} ${title} <span class="muted small">${items.length}</span></h3><div class="cn-posg">${items.map(tile).join('')}</div></section>` : '';
+      const sec = (title, cls, items) => items.length ? `<section class="cn-pss"><h3 class="${cls}"><span class="cn-pssl">${vegDot(cls === 'v')} ${title}<b>${items.length}</b></span></h3><div class="cn-posg">${items.map(tile).join('')}</div></section>` : '';
       g.innerHTML = (v ? `<p class="muted small">Results for “${esc(v)}” in all categories</p>` : '') + (sec('Veg', 'v', shown.filter(i => i.is_veg)) + sec('Non-veg', 'nv', shown.filter(i => !i.is_veg)) || '<p class="muted">Nothing matches.</p>');
-      g.querySelectorAll('[data-add]').forEach(b => b.onclick = () => add(b.dataset.add, 1)); };
+      g.querySelectorAll('[data-add]').forEach(b => b.onclick = () => add(b.dataset.add, 1)); marks(); };
     main.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { posCat = b.dataset.cat; main.querySelectorAll('[data-cat]').forEach(x => x.classList.toggle('on', x === b)); document.getElementById('posq').value = ''; grid(); });
     grid();
     f.onclick = e => { const i = e.target.closest('[data-pi]'), d = e.target.closest('[data-pd]'), q = e.target.closest('[data-tq]'); if (i) add(i.dataset.pi, 1); if (d) add(d.dataset.pd, -1); if (q) { f.tendered.value = q.dataset.tq; render(); } };
