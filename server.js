@@ -1808,7 +1808,7 @@ food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicke
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 // Canteen: students order from the campus link and collect with a token; canteen managers run the counter (canteen.js)
-canteen({ P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, SECRET,
+canteen({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, SECRET,
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 app.use('/api', S);

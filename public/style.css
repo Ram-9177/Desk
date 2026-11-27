@@ -893,3 +893,4 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-filters{display:flex;gap:8px;overflow-x:auto;padding:2px 0 6px;scrollbar-width:none}.cn-filters::-webkit-scrollbar{display:none}.cn-filters .tab{flex-shrink:0}
 .cn-cat h2 .muted{font-weight:500}
 .cn-qp{display:inline-flex;align-items:center;gap:2px;font-weight:600;color:var(--brand);font-size:14px;margin:0}.cn-qp input{width:72px;min-height:32px;padding:4px 8px;margin:0;font-weight:600}
+.cn-qr{width:112px;height:112px;border-radius:10px;border:1px solid var(--line);background:#fff;flex-shrink:0}@media(max-width:560px){.cn-qr{width:160px;height:160px;align-self:center}}

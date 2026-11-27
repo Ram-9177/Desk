@@ -1214,6 +1214,14 @@ try {
   check('…hides the menu and order pages from students', (await api('/public/alpha/canteen')).data.on === false && (await api(`/public/alpha/canteen/orders/${o1.id}?k=${o1.key}`)).status === 404);
   await ok('(back on and open for the screens)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], name: 'Hilltop Café' } }); await api('/canteen/open', { token: T.pavan, method: 'POST' });
 
+  sec('Canteen: short link and QR code');
+  const sl = await fetch(APP + '/Alpha/cafeteria', { redirect: 'manual' });
+  check('<campus>/cafeteria opens the canteen menu', sl.status === 302 && sl.headers.get('location') === '/#/d/alpha/canteen', sl.status + ' ' + sl.headers.get('location'));
+  check('an unknown campus goes to the home page', (await fetch(APP + '/nowhere/cafeteria', { redirect: 'manual' })).headers.get('location') === '/');
+  const qr = await fetch(API + '/canteen-qr/alpha.svg');
+  check('the QR code is an SVG of the short link', qr.status === 200 && /image\/svg/.test(qr.headers.get('content-type')) && /<svg/.test(await qr.text()));
+  check('the manager sees the short link', /\/alpha\/cafeteria$/.test((await api('/canteen/menu', { token: T.pavan })).data.link));
+
   sec('Canteen: timings and what students see');
   await fails('closing must be after opening', '/canteen/hours', { token: T.pavan, method: 'PUT', body: { open: '18:00', close: '09:00', days: [1] } }, 400, 'after');
   await fails('another provider cannot set the timings', '/canteen/hours', { token: T.lata, method: 'PUT', body: { open: '08:00', close: '20:00', days: [1] } }, 403);

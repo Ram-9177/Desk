@@ -5,6 +5,7 @@
 // Students browse without logging in; the first order on a device verifies their email with a one-time code.
 // Self-contained: own tables, own routes; wired from server.js with one call.
 import crypto from 'node:crypto';
+import QRCode from 'qrcode';
 import { pool, one, all, run, uid, now } from './db.js';
 
 await pool.query(`
@@ -67,7 +68,7 @@ const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDa
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
 
 export function canteen(d) {
-  const { P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, sendMail, SECRET } = d;
+  const { app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, sendMail, SECRET } = d;
   const forbid = () => new HttpErr(403, 'FORBIDDEN', 'Only the canteen managers can do this');
   const otpHash = (tid, email, code) => crypto.createHmac('sha256', SECRET).update(`${tid}\n${email}\n${code}`).digest('hex');
 
@@ -102,8 +103,21 @@ export function canteen(d) {
   // typical minutes from accepted to ready over the last week (for "about N min")
   const prepMin = async tid => { const r = await one(`SELECT avg(EXTRACT(EPOCH FROM (ready_at::timestamptz - accepted_at::timestamptz)) / 60) m FROM canteen_orders WHERE tenant_id=? AND ready_at IS NOT NULL AND accepted_at IS NOT NULL AND created_at > ?`, tid, new Date(Date.now() - 7 * 864e5).toISOString());
     return r?.m == null ? null : Math.max(1, Math.round(r.m)); };
+  const shortLink = tn => `${base()}/${tn.slug}/cafeteria`;
   const orderLink = (tn, o) => `${base()}/#/d/${tn.slug}/canteen/o/${o.id}?k=${o.view_key}`;
 
+  // ================= short link + QR =================
+  // https://<site>/<campus>/cafeteria opens the canteen menu (the link printed under the QR code at the counter)
+  {
+    app.get(['/:slug/cafeteria', '/desk/:slug/cafeteria'], async (req, res) => {
+      const slug = String(req.params.slug).toLowerCase(), tn = await one('SELECT slug FROM tenants WHERE slug=? AND is_active=1', slug).catch(() => null);
+      res.redirect(302, tn ? `${req.path.startsWith('/desk/') ? '/desk' : ''}/#/d/${tn.slug}/canteen` : '/');
+    });
+    app.get('/api/canteen-qr/:slug.svg', async (req, res, next) => { try {
+      const tn = await one('SELECT slug FROM tenants WHERE slug=? AND is_active=1', String(req.params.slug).toLowerCase()); if (!tn) throw notFound();
+      const svg = await QRCode.toString(shortLink(tn), { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } });
+      res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=3600' }).send(svg); } catch (e) { next(e); } });
+  }
   // ================= student (public, no login to browse) =================
   P.get('/:slug/canteen', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug);
@@ -240,7 +254,7 @@ export function canteen(d) {
     const h = { open: b.open, close: b.close, days, last_order_min: last };
     await run('UPDATE tenants SET canteen_hours=? WHERE id=?', JSON.stringify(h), req.tenantId); return { hours: h }; }));
   // ---- menu ----
-  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
+  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
   S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
     const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
     const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
