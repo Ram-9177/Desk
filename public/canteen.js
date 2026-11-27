@@ -343,7 +343,7 @@ export async function canteenPage(main, { sa }) {
         <div class="cn-item cn-tot"><b>Total</b><b id="post">₹0</b></div>
         <div class="cn-opts">${['cash', ...(p.upi ? ['upi'] : [])].map(m => `<label class="cn-opt"><input type="radio" name="pm" value="${m}" ${m === 'cash' ? 'checked' : ''}><span>${I(m === 'cash' ? 'cash' : 'phone', 18)}<b>${m === 'cash' ? 'Cash' : 'UPI'}</b></span></label>`).join('')}</div>
         <div id="poscash"><label>Cash received (₹)</label><input name="tendered" inputmode="decimal" placeholder="Exact amount if empty" autocomplete="off"><div class="cn-quick" id="posqk"></div><div class="cn-change" id="posch"></div></div>
-        <div id="posupi" hidden><label>UPI reference (UTR) <span class="muted small">(optional, from the canteen's UPI app)</span></label><input name="upi_ref" maxlength="30" autocomplete="off"></div>
+        <div id="posupi" hidden><p class="muted small">Charge shows a UPI QR for the exact bill. The customer scans and pays; you check the canteen's UPI app, then confirm. Nothing is billed until you confirm.</p></div>
         <details><summary class="muted small">Customer name / note</summary><label>Name</label><input name="name" maxlength="80" placeholder="Walk-in"><label>Note for the kitchen</label><input name="note" maxlength="200"></details>
         <div class="err" id="poserr"></div><button class="btn primary big" id="poscharge" disabled>Charge &amp; send to kitchen</button>
         <button type="button" class="btn" id="posclear">Clear</button><button type="button" class="btn" id="posstock">Stock (sold out)</button>${posLast ? `<button type="button" class="btn" id="posreb">${I('file', 15)} Reprint last bill ${posLast.token}</button>` : ''}</form></div>
@@ -368,8 +368,23 @@ export async function canteenPage(main, { sa }) {
     const rb = document.getElementById('posreb'); if (rb) rb.onclick = () => printOrder('bill', posLast, p.name, p.print);
     const po = document.getElementById('posopen'); if (po) po.onclick = async () => { try { await api('/canteen/open', { method: 'POST' }); toast('Canteen open for today'); } catch (e) { toast(e.message); } draw(); };
     let posBusy = false;
+    // the UPI step for a walk-in: QR for the amount on this screen; resolves with { ref } once the cashier confirms the money arrived, or null
+    const upiConfirm = amount => new Promise(done => { const d = document.createElement('dialog'); d.className = 'cn-upid';
+      d.innerHTML = `<form method="dialog"><h3>UPI payment · ${rupees(amount)}</h3><p class="muted small">Turn the screen to the customer. They scan with any UPI app and pay <b>${rupees(amount)}</b> to ${esc(p.upi_id || '')}.</p>
+        <img alt="UPI QR for ${rupees(amount)}" width="240" height="240" class="cn-upiqr" id="upiimg">
+        <ol class="small"><li>Open the canteen's UPI app and find the payment of <b>${rupees(amount)}</b>.</li><li>Type its reference number (UTR) below if you can, then confirm.</li></ol>
+        <label>UTR from the canteen's UPI app <span class="muted small">(optional)</span></label><input name="ref" maxlength="30" autocomplete="off" inputmode="text">
+        <div class="err" id="upierr"></div><p class="row"><button class="btn" value="no">Cancel · not paid</button><button class="btn primary" value="yes">${I('check', 16)} Payment received · bill</button></p></form>`;
+      document.body.append(d); d.showModal();
+      // the QR needs the sign-in header, so it is fetched and shown as a picture
+      api(`/canteen/pos/upi.svg?amount=${amount}`, { raw: true }).then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || 'QR could not load'); d.querySelector('#upiimg').src = URL.createObjectURL(await r.blob()); })
+        .catch(e => { d.querySelector('#upierr').textContent = e.message; });
+      d.querySelector('form').onsubmit = e => { const yes = e.submitter?.value === 'yes'; if (yes && !confirm(`Have you seen ${rupees(amount)} arrive in the canteen's UPI app?`)) { e.preventDefault(); return; }
+        const ref = d.querySelector('[name=ref]').value.trim(); setTimeout(() => d.remove(), 0); done(yes ? { ref } : null); };
+      d.oncancel = () => { setTimeout(() => d.remove(), 0); done(null); }; });
     f.onsubmit = async e => { e.preventDefault(); if (posBusy) return; posBusy = true; const err = document.getElementById('poserr'), btn = document.getElementById('poscharge'); err.textContent = ''; btn.disabled = true;
-      try { const o = await api('/canteen/pos', { method: 'POST', body: { items: Object.entries(posCart).map(([id, qty]) => ({ id, qty })), pay_mode: f.pm.value, tendered: f.tendered.value, upi_ref: f.upi_ref.value, expect_paise: tot(), name: f.name.value, note: f.note.value, service: f.svc.value, table_no: f.table_no.value } });
+      if (f.pm.value === 'upi') { const ok = await upiConfirm(tot()); if (!ok) { posBusy = false; btn.disabled = false; return; } f.dataset.ref = ok.ref; } // the money first, then the bill
+      try { const o = await api('/canteen/pos', { method: 'POST', body: { items: Object.entries(posCart).map(([id, qty]) => ({ id, qty })), pay_mode: f.pm.value, tendered: f.tendered.value, upi_ref: f.pm.value === 'upi' ? f.dataset.ref || '' : '', expect_paise: tot(), name: f.name.value, note: f.note.value, service: f.svc.value, table_no: f.table_no.value } });
         posCart = {}; posLast = o; toast(`Paid · token ${o.token} sent to the kitchen${o.change_paise ? ` · give change ${rupees(o.change_paise)}` : ''}`, 6000);
         if (p.print.auto_bill) await printOrder('bill', o, p.name, p.print); if (p.print.kot_at_counter) await printOrder('kot', o, p.name, p.print); draw(); }
       catch (er) { posBusy = false; err.textContent = er.message; btn.disabled = false; if (er.code === 'PRICE_CHANGED') { const keep = posCart; await draw(); posCart = keep; } } };

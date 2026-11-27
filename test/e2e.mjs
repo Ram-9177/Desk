@@ -1428,6 +1428,10 @@ try {
   await ok('KOTs print in one place: choosing the kitchen printer turns off the counter one', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', auto_kot: true, kot_at_counter: true } });
   check('…only the counter one stays when both are sent', (await api('/canteen/menu', { token: T.pavan })).data.pay.auto_kot === false);
   await api('/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', kot_at_counter: true } });
+  const uq = await fetch(API + '/canteen/pos/upi.svg?amount=1250', { headers: { authorization: 'Bearer ' + T.kavya } });
+  check('walk-in UPI: the counter gets a QR for the exact bill', uq.status === 200 && /svg/.test(uq.headers.get('content-type')) && /<svg/.test(await uq.text()));
+  check('…not the kitchen, and not without an amount', (await fetch(API + '/canteen/pos/upi.svg?amount=1250', { headers: { authorization: 'Bearer ' + T.lata } })).status === 403
+    && (await fetch(API + '/canteen/pos/upi.svg', { headers: { authorization: 'Bearer ' + T.kavya } })).status === 400);
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
@@ -1729,6 +1733,18 @@ async function uiSmoke(tok, id) {
     check('…the Set up tab lists staff with one job each, no error', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#cnset'); i++) await new Promise(r => setTimeout(r, 200));
       return !!document.querySelector('#cnset select[name=job]') && !document.querySelector('#main .err:not(:empty), #main .cn-warn')`), await js(`return document.querySelector('#main').innerHTML.slice(0, 700)`));
     for (const t of ['orders', 'counter', 'kitchen', 'menu', 'report']) check(`…super admin's ${t} tab opens without an error`, await js(`document.querySelector('[data-t=${t}]').click(); await new Promise(r => setTimeout(r, 1500)); return !document.querySelector('#main p.err, #main .cn-warn')`));
+    await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.kavya)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
+    for (let i = 0; i < 40 && !(await js(`return !!document.querySelector('.cn-pb[data-add]')`).catch(() => false)); i++) await sleep(250);
+    const ordersBefore = (await q('SELECT count(*)::int n FROM canteen_orders'))[0].n;
+    check('walk-in UPI on screen: Charge shows the QR; Cancel makes no order', await js(`window.print = () => {}; window.confirm = () => true;
+      document.querySelector('.cn-pb[data-add]').click(); document.querySelector('#posf [name=pm][value=upi]').click(); document.querySelector('#posf').dispatchEvent(new Event('change'));
+      document.querySelector('#posf').requestSubmit(); for (let i = 0; i < 30 && !document.querySelector('.cn-upid #upiimg[src^="blob:"]'); i++) await new Promise(r => setTimeout(r, 200));
+      const shown = !!document.querySelector('.cn-upid #upiimg[src^="blob:"]'); document.querySelector('.cn-upid button[value=no]').click(); await new Promise(r => setTimeout(r, 600)); return shown && !document.querySelector('.cn-upid')`)
+      && (await q('SELECT count(*)::int n FROM canteen_orders'))[0].n === ordersBefore);
+    check('…Payment received with the UTR: billed, KOT to the kitchen', await js(`document.querySelector('#posf').requestSubmit(); for (let i = 0; i < 30 && !document.querySelector('.cn-upid #upiimg[src^="blob:"]'); i++) await new Promise(r => setTimeout(r, 200));
+      document.querySelector('.cn-upid [name=ref]').value = 'WALKIN7788'; document.querySelector('.cn-upid button[value=yes]').click();
+      for (let i = 0; i < 30 && !/token/.test(document.querySelector('#toast').textContent); i++) await new Promise(r => setTimeout(r, 200)); return /sent to the kitchen/.test(document.querySelector('#toast').textContent)`)
+      && (await q("SELECT pay_mode, pay_status, status, bill_no FROM canteen_orders WHERE upi_ref='WALKIN7788'")).some(r => r.pay_mode === 'upi' && r.pay_status === 'paid' && r.status === 'accepted' && r.bill_no));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));

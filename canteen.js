@@ -486,8 +486,13 @@ export function canteen(d) {
   }));
 
   // ---- the counter (POS): a walk-in customer pays in person, the order goes straight to the kitchen ----
+  // a walk-in paying by UPI: a QR for the exact bill, shown on the counter screen; the order is made only after the cashier sees the money
+  S.get('/canteen/pos/upi.svg', async (req, res, next) => { try { const a = await needCounter(req), p = payOf(a.tenant), amt = Math.round(Number(req.query.amount));
+    if (!p.upi_id) throw bad('UPI is not set up for this canteen'); if (!(amt > 0 && amt <= 10000000)) throw bad('Amount needed');
+    const link = `upi://pay?${new URLSearchParams({ pa: p.upi_id, pn: p.upi_name || canteenName(a.tenant), am: (amt / 100).toFixed(2), cu: 'INR', tn: `${canteenName(a.tenant)} counter bill` })}`;
+    res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' }).send(await qrSvg(link)); } catch (e) { next(e); } });
   S.get('/canteen/pos', wrap(async req => { const a = await needCounter(req), p = payOf(a.tenant);
-    return { name: canteenName(a.tenant), open: isOpen(a.tenant), upi: !!p.upi_id, cash: true, print: { paper: p.paper, auto_bill: p.auto_bill, kot_at_counter: p.kot_at_counter, footer: p.bill_footer, tagline: p.tagline }, ...(await menuOf(req.tenantId)) }; }));
+    return { name: canteenName(a.tenant), open: isOpen(a.tenant), upi: !!p.upi_id, upi_id: p.upi_id, cash: true, print: { paper: p.paper, auto_bill: p.auto_bill, kot_at_counter: p.kot_at_counter, footer: p.bill_footer, tagline: p.tagline }, ...(await menuOf(req.tenantId)) }; }));
   S.post('/canteen/pos', wrap(async req => { const a = await needCounter(req), tn = a.tenant, b = req.body;
     if (!isOpen(tn)) throw bad('Open the canteen for the day first');
     const mode = b.pay_mode === 'upi' ? 'upi' : 'cash', lines = Array.isArray(b.items) ? b.items.slice(0, MAX_LINES + 1) : [];
