@@ -1214,6 +1214,23 @@ try {
   check('…hides the menu and order pages from students', (await api('/public/alpha/canteen')).data.on === false && (await api(`/public/alpha/canteen/orders/${o1.id}?k=${o1.key}`)).status === 404);
   await ok('(back on and open for the screens)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], name: 'Hilltop Café' } }); await api('/canteen/open', { token: T.pavan, method: 'POST' });
 
+  sec('Canteen: timings and what students see');
+  await fails('closing must be after opening', '/canteen/hours', { token: T.pavan, method: 'PUT', body: { open: '18:00', close: '09:00', days: [1] } }, 400, 'after');
+  await fails('another provider cannot set the timings', '/canteen/hours', { token: T.lata, method: 'PUT', body: { open: '08:00', close: '20:00', days: [1] } }, 403);
+  const dow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay();
+  await ok('manager sets timings that skip today', '/canteen/hours', { token: T.pavan, method: 'PUT', body: { open: '00:00', close: '23:59', days: [(dow + 1) % 7], last_order_min: 0 } });
+  const cs = (await api('/public/alpha/canteen')).data;
+  check('students see the timings and that it is closed today', cs.open === false && cs.state.why === 'not_today' && cs.state.hours.open === '00:00');
+  await fails('…and cannot order outside the timings', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'S', items: [{ id: dosa.id, qty: 1 }] } }, 400);
+  await ok('timings for every day, all day', '/canteen/hours', { token: T.pavan, method: 'PUT', body: { open: '00:00', close: '23:59', days: [0, 1, 2, 3, 4, 5, 6], last_order_min: 0 } });
+  const cs2 = (await api('/public/alpha/canteen')).data;
+  check('inside the timings and opened: ordering is on, with the order-until time', cs2.open === true && cs2.state.why === 'open' && cs2.state.last_order_at === '23:59');
+  const ow = await ok('an order inside the timings', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }] } });
+  const ov = (await api(`/public/alpha/canteen/orders/${ow.id}?k=${ow.key}`)).data;
+  check('the order page says how many are ahead and the usual wait', typeof ov.ahead === 'number' && 'wait_min' in ov);
+  check('popular items need at least two sold this week', Array.isArray(cs2.popular));
+  await ok('"No time limit" clears the timings', '/canteen/hours', { token: T.pavan, method: 'PUT', body: { clear: true } });
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {

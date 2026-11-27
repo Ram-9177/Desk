@@ -12,6 +12,7 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_on INT DEFAULT 0;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_open_day TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_stock_day TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_name TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_hours TEXT;
 CREATE TABLE IF NOT EXISTS canteen_managers (tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id), created_at TEXT, PRIMARY KEY (tenant_id, user_id));
 CREATE TABLE IF NOT EXISTS canteen_categories (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL, sort_order INT DEFAULT 0, created_at TEXT);
 CREATE TABLE IF NOT EXISTS canteen_items (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), category_id TEXT REFERENCES canteen_categories(id),
@@ -41,7 +42,27 @@ export const rupees = p => '₹' + (p / 100).toFixed(p % 100 ? 2 : 0);
 export const tokenLabel = n => '#' + String(n).padStart(3, '0');
 const dayOf = (tz, d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Asia/Kolkata' }).format(d);
 export const canteenName = tn => tn.canteen_name || `${tn.name} Canteen`;
-const isOpen = tn => !!tn.canteen_on && tn.canteen_open_day === dayOf(tn.timezone);
+const isOpen = tn => !!tn.canteen_on && tn.canteen_open_day === dayOf(tn.timezone); // opened by a manager today
+// Timings: serving hours, days and last-order cut-off set by the managers. No timings saved = no time limit.
+const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const hoursOf = tn => { try { const h = JSON.parse(tn.canteen_hours || 'null'); if (h && HM.test(h.open) && HM.test(h.close)) return h; } catch { /* none */ } return null; };
+const localNow = tz => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map(x => [x.type, x.value]));
+  return { dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday), min: +p.hour * 60 + +p.minute }; };
+const toMin = hm => +hm.slice(0, 2) * 60 + +hm.slice(3);
+const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+// What students see: can they order now, and why not
+export function stateOf(tn) {
+  const h = hoursOf(tn), opened = isOpen(tn), base = { hours: h };
+  if (!tn.canteen_on) return { ...base, accepting: false, why: 'off' };
+  if (!h) return { ...base, accepting: opened, why: opened ? 'open' : 'closed' };
+  const { dow, min } = localNow(tn.timezone), today = h.days.includes(dow), o = toMin(h.open), c = toMin(h.close), last = c - (h.last_order_min || 0);
+  if (!today) return { ...base, accepting: false, why: 'not_today' };
+  if (min < o) return { ...base, accepting: false, why: 'later', opens_at: h.open };
+  if (min >= c) return { ...base, accepting: false, why: 'over' };
+  if (min >= last) return { ...base, accepting: false, why: 'last_orders_done', closes_at: h.close };
+  if (!opened) return { ...base, accepting: false, why: 'closed' };
+  return { ...base, accepting: true, why: 'open', closes_at: h.close, last_order_at: hm(last), mins_left: last - min };
+}
 const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
 
@@ -78,13 +99,20 @@ export function canteen(d) {
     const text = lines.map(l => l.replace(/<[^>]+>/g, '')).join('\n\n') + (link ? `\n\n${link}` : '');
     try { await sendMail(tn.id, [to], key, subject, html, text); } catch (e) { console.error('canteen mail', e.message); }
   };
+  // typical minutes from accepted to ready over the last week (for "about N min")
+  const prepMin = async tid => { const r = await one(`SELECT avg(EXTRACT(EPOCH FROM (ready_at::timestamptz - accepted_at::timestamptz)) / 60) m FROM canteen_orders WHERE tenant_id=? AND ready_at IS NOT NULL AND accepted_at IS NOT NULL AND created_at > ?`, tid, new Date(Date.now() - 7 * 864e5).toISOString());
+    return r?.m == null ? null : Math.max(1, Math.round(r.m)); };
   const orderLink = (tn, o) => `${base()}/#/d/${tn.slug}/canteen/o/${o.id}?k=${o.view_key}`;
 
   // ================= student (public, no login to browse) =================
   P.get('/:slug/canteen', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug);
     if (!tn.canteen_on) return { on: false, campus: tn.name, name: canteenName(tn) };
-    return { on: true, open: isOpen(tn), campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
+    const st = stateOf(tn), since = addDays(dayOf(tn.timezone), -6), pop = {};
+    for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day>=? AND status='collected'`, tn.id, since)) for (const it of JSON.parse(o.items)) pop[it.id] = (pop[it.id] || 0) + it.qty;
+    const busy = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND status IN ('placed','accepted')`, tn.id, dayOf(tn.timezone))).n;
+    return { on: true, open: st.accepting, state: st, busy, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
+      campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
   }));
   // step 1 of the first order on a device: email a six-digit code
   P.post('/:slug/canteen/otp', wrap(async req => {
@@ -120,7 +148,8 @@ export function canteen(d) {
   P.post('/:slug/canteen/orders', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug), b = req.body;
     if (!tn.canteen_on) throw notFound();
-    if (!isOpen(tn)) throw bad('The canteen is not taking orders right now.');
+    const st = stateOf(tn);
+    if (!st.accepting) throw bad(st.why === 'later' ? `The canteen opens at ${st.opens_at}.` : st.why === 'last_orders_done' ? `Last orders are over for today (closes at ${st.closes_at}).` : 'The canteen is not taking orders right now.');
     const dv = await deviceOf(tn.id, b.device); if (!dv) throw new HttpErr(401, 'VERIFY', 'Please verify your email first');
     limit('cord:' + dv.token_hash, 20);
     const name = str(b.name, 80); if (!name) throw bad('Please enter your name');
@@ -158,7 +187,9 @@ export function canteen(d) {
     if (!o || k.length !== o.view_key.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(o.view_key))) throw notFound();
     return { tn, o };
   };
-  P.get('/:slug/canteen/orders/:id', wrap(async req => { const { tn, o } = await orderByKey(req); return { ...pub(o), canteen: canteenName(tn) }; }));
+  P.get('/:slug/canteen/orders/:id', wrap(async req => { const { tn, o } = await orderByKey(req);
+    const ahead = ['placed', 'accepted'].includes(o.status) ? (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND token_no<? AND status IN ('placed','accepted')`, tn.id, o.day, o.token_no)).n : 0;
+    return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id) }; }));
   P.post('/:slug/canteen/orders/:id/cancel', wrap(async req => {
     const { o } = await orderByKey(req);
     const r = await run(`UPDATE canteen_orders SET status='cancelled', closed_at=? WHERE id=? AND status='placed'`, now(), o.id);
@@ -200,8 +231,16 @@ export function canteen(d) {
   S.put('/canteen/name', wrap(async req => { const a = await need(req); if (!(a.setup || a.manager || req.user.role === 'tenant_admin')) throw forbid();
     const name = str(req.body.name, 60); if (name && name.length < 2) throw bad('The name is too short');
     await run('UPDATE tenants SET canteen_name=? WHERE id=?', name || null, req.tenantId); return { name: canteenName({ ...a.tenant, canteen_name: name || null }) }; }));
+  S.put('/canteen/hours', wrap(async req => { const a = await need(req); if (!(a.setup || a.manager || req.user.role === 'tenant_admin')) throw forbid();
+    const b = req.body; if (b.clear) { await run('UPDATE tenants SET canteen_hours=NULL WHERE id=?', req.tenantId); return { hours: null }; }
+    if (!HM.test(b.open || '') || !HM.test(b.close || '')) throw bad('Enter opening and closing times');
+    if (toMin(b.close) <= toMin(b.open)) throw bad('Closing time must be after opening time');
+    const days = [...new Set((b.days || []).map(Number))].filter(d => d >= 0 && d <= 6).sort(); if (!days.length) throw bad('Pick at least one day');
+    const last = Math.max(0, Math.min(120, Math.floor(Number(b.last_order_min) || 0))); if (last >= toMin(b.close) - toMin(b.open)) throw bad('The last-order cut-off is longer than the opening hours');
+    const h = { open: b.open, close: b.close, days, last_order_min: last };
+    await run('UPDATE tenants SET canteen_hours=? WHERE id=?', JSON.stringify(h), req.tenantId); return { hours: h }; }));
   // ---- menu ----
-  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
+  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
   S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
     const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
     const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
@@ -247,7 +286,7 @@ export function canteen(d) {
   // ---- orders ----
   S.get('/canteen/orders', wrap(async req => { const a = await need(req), day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : dayOf(a.tenant.timezone);
     const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ('placed','accepted','ready'))) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
-    return { day, open: isOpen(a.tenant), name: canteenName(a.tenant), orders: rows.map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
+    return { day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: rows.map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
   S.post('/canteen/orders/:id/:to(accepted|rejected|ready|collected)', wrap(async req => {
     const a = await need(req), to = req.params.to, o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
