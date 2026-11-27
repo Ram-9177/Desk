@@ -1391,6 +1391,18 @@ try {
   const xrc = (await api('/canteen/report', { token: T.pavan })).data;
   check('reports: counter vs online sales, cash drawer by staff, reprints', xrc.channels.find(c => c.channel === 'counter').orders >= 1 && xrc.staff.some(x => x.name === 'Kavya Cashier' && x.cash_paise === 14750 && x.upi_paise === 4500) && xrc.reprints >= 1, JSON.stringify(xrc.staff));
   check('reports leave walk-ins out of the customer count', xrc.customers === new Set((await q("SELECT email FROM canteen_orders WHERE status='collected' AND email<>''")).map(r => r.email)).size);
+  check('canteen SLA: kitchen and delivery targets in the reports, apart from the ticket SLA', xrc.sla.prep_target === 15 && xrc.sla.delivery_target === 20 && xrc.sla.prep_total >= 1);
+  await fails('a canteen target must be sensible', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', prep_sla_min: 0.4 } }, 400, 'Kitchen target');
+  check('canteen-only staff (Kavya, Lata) open on the canteen; Pavan (also an Electrical provider) keeps the desk', (await api('/canteen/access', { token: T.kavya })).data.desk === false && (await api('/canteen/access', { token: T.pavan })).data.desk === true);
+  check('Pavan still sees his team\'s tickets', (await api('/tickets?status=all', { token: T.pavan })).status === 200 && (await api('/tickets?status=all', { token: T.pavan })).data.length >= 1);
+  const fsc = (await api('/fair', { token: T.asha })).data, lb = (await api('/points', { token: T.pavan })).data;
+  check('canteen-only staff are not in the desk Fair Score or the points board', !JSON.stringify(fsc || {}).includes('Kavya Cashier') && !JSON.stringify(lb || {}).includes('Kavya Cashier'), JSON.stringify({ fs: !!fsc, lb: !!lb }));
+  check('canteen orders never become tickets', (await q("SELECT count(*)::int n FROM tickets WHERE subject ILIKE '%canteen%' OR description ILIKE '%KOT%'"))[0].n === 0);
+  await ok('canteen name: rename…', '/canteen/name', { token: T.pavan, method: 'PUT', body: { name: 'Fuel Cafe' } });
+  check('…students see it', (await api('/public/alpha/canteen')).data.name === 'Fuel Cafe');
+  const rn = await ok('…and reset to the default', '/canteen/name', { token: T.pavan, method: 'PUT', body: { name: '' } });
+  check('…back to "Alpha Campus Canteen"', rn.name === 'Alpha Campus Canteen' && (await api('/public/alpha/canteen')).data.name === 'Alpha Campus Canteen');
+  await api('/canteen/name', { token: T.pavan, method: 'PUT', body: { name: 'Hilltop Café' } });
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');

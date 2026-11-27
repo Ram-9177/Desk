@@ -75,7 +75,7 @@ export const STATUS = { placed: 'Waiting for payment', accepted: 'Being prepared
 const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected', 'out', 'rejected'], out: ['collected', 'rejected'] }; // ready/out → rejected: never collected
 const LIVE = "('placed','accepted','ready','out')";
 // Payments and delivery, per campus. Defaults: cash only, pickup only, 20 minutes to pay.
-const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20, delivery_blocks: [], paper: '80', auto_kot: false, auto_bill: true, bill_footer: 'Thanks for choosing us', tagline: '', delivery_cash: false, kot_at_counter: true }; // one printer at the counter: the KOT prints there right after the bill // delivery is paid by UPI unless the manager allows cash (the student pays at the counter first)
+const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20, delivery_blocks: [], paper: '80', auto_kot: false, auto_bill: true, bill_footer: 'Thanks for choosing us', tagline: '', delivery_cash: false, kot_at_counter: true, prep_sla_min: 15, delivery_sla_min: 20 }; // the canteen's own SLA (minutes), separate from the ticket desk's // one printer at the counter: the KOT prints there right after the bill // delivery is paid by UPI unless the manager allows cash (the student pays at the counter first)
 const FLOORS = ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floor', '5th floor', '6th floor'];
 export const payOf = tn => { try { return { ...PAY_DEFAULT, ...JSON.parse(tn.canteen_pay || '{}') }; } catch { return { ...PAY_DEFAULT }; } };
 const UPI_ID = /^[\w.\-]{2,60}@[A-Za-z][\w.\-]{1,40}$/, UTR = /^[A-Za-z0-9]{6,30}$/;
@@ -332,7 +332,9 @@ export function canteen(d) {
 
   // ================= canteen desk (signed in) =================
   S.get('/canteen/access', wrap(async req => { const a = await access(req);
-    return { setup: a.setup, manage: a.manage, manager: !!a.manager, kitchen: !!a.kitchen, cook: !!a.cook, counter: !!a.counter, cashier: !!a.cashier, rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
+    // canteen-only staff (a canteen job, no ticket team) open straight on the canteen; anyone in a desk team still sees their team's tickets
+    const desk = req.user.role !== 'provider' || !!(await one('SELECT 1 FROM service_members WHERE user_id=? LIMIT 1', req.user.id)) || !(a.manager || a.cook || a.cashier);
+    return { desk, setup: a.setup, manage: a.manage, manager: !!a.manager, kitchen: !!a.kitchen, cook: !!a.cook, counter: !!a.counter, cashier: !!a.cashier, rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
   // super admin: switch on for the campus, pick 1–2 desk providers as managers
   S.get('/canteen/setup', wrap(async req => {
     if (req.user.role !== 'super_admin') throw forbid(); if (!req.tenantId) throw bad('Pick a campus first');
@@ -382,8 +384,10 @@ export function canteen(d) {
     const b = req.body, p = { cash: !!b.cash, upi_id: str(b.upi_id, 100), upi_name: str(b.upi_name, 60), delivery: !!b.delivery,
       delivery_fee: Number(b.delivery_fee) || 0, delivery_note: str(b.delivery_note, 120), pay_window_min: Math.floor(Number(b.pay_window_min) || 20),
       delivery_blocks: [...new Set((Array.isArray(b.delivery_blocks) ? b.delivery_blocks : String(b.delivery_blocks || '').split('\n')).map(x => str(x, 60)).filter(Boolean))].slice(0, 100),
-      tagline: str(b.tagline, 80), delivery_cash: !!b.delivery_cash, kot_at_counter: b.kot_at_counter === undefined ? true : !!b.kot_at_counter, paper: b.paper === '58' ? '58' : '80', auto_kot: !!b.auto_kot, auto_bill: b.auto_bill === undefined ? true : !!b.auto_bill, bill_footer: b.bill_footer === undefined ? PAY_DEFAULT.bill_footer : str(b.bill_footer, 120) };
+      tagline: str(b.tagline, 80), delivery_cash: !!b.delivery_cash, kot_at_counter: b.kot_at_counter === undefined ? true : !!b.kot_at_counter, prep_sla_min: Math.floor(Number(b.prep_sla_min) || 15), delivery_sla_min: Math.floor(Number(b.delivery_sla_min) || 20), paper: b.paper === '58' ? '58' : '80', auto_kot: !!b.auto_kot, auto_bill: b.auto_bill === undefined ? true : !!b.auto_bill, bill_footer: b.bill_footer === undefined ? PAY_DEFAULT.bill_footer : str(b.bill_footer, 120) };
     if (p.upi_id && !UPI_ID.test(p.upi_id)) throw bad('Enter a UPI ID like canteen@okhdfcbank');
+    if (p.prep_sla_min < 1 || p.prep_sla_min > 180) throw bad('Kitchen target must be 1 to 180 minutes');
+    if (p.delivery_sla_min < 1 || p.delivery_sla_min > 180) throw bad('Delivery target must be 1 to 180 minutes');
     if (!p.cash && !p.upi_id) throw bad('Turn on cash or add a UPI ID: students need a way to pay');
     if (p.delivery_fee < 0 || p.delivery_fee > 500) throw bad('Delivery charge must be ₹0 to ₹500');
     if (p.pay_window_min < 5 || p.pay_window_min > 120) throw bad('Time to pay must be 5 to 120 minutes');
@@ -448,7 +452,7 @@ export function canteen(d) {
   S.get('/canteen/orders', wrap(async req => { const a0 = await needCounter(req); await expire(a0.tenant); const a = a0, day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : dayOf(a.tenant.timezone);
     const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ${LIVE})) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
     const pr = payOf(a.tenant);
-    return { print: { paper: pr.paper, auto_bill: pr.auto_bill, kot_at_counter: pr.kot_at_counter, footer: pr.bill_footer, tagline: pr.tagline }, day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: (await withCashier(rows)).map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
+    return { sla: { prep: pr.prep_sla_min, delivery: pr.delivery_sla_min }, print: { paper: pr.paper, auto_bill: pr.auto_bill, kot_at_counter: pr.kot_at_counter, footer: pr.bill_footer, tagline: pr.tagline }, day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: (await withCashier(rows)).map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
   S.post('/canteen/orders/:id/:to(accepted|rejected|ready|out|collected)', wrap(async req => {
     const to = req.params.to, a = to === 'ready' ? await needKitchen(req) : await needCounter(req), o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
@@ -524,7 +528,7 @@ export function canteen(d) {
   S.get('/canteen/kitchen', wrap(async req => { const a = await needKitchen(req);
     const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (status='accepted' OR (status IN ('ready','out','collected') AND ready_at > ?)) ORDER BY accepted_at`, req.tenantId, new Date(Date.now() - 2 * 3600e3).toISOString());
     const pr = payOf(a.tenant);
-    return { print: { paper: pr.paper, auto_kot: pr.auto_kot }, name: canteenName(a.tenant), cook: !!a.cook, kots: rows.filter(o => o.status === 'accepted').map(pub), done: rows.filter(o => o.status !== 'accepted').reverse().slice(0, 20).map(pub) }; }));
+    return { sla: { prep: pr.prep_sla_min }, print: { paper: pr.paper, auto_kot: pr.auto_kot }, name: canteenName(a.tenant), cook: !!a.cook, kots: rows.filter(o => o.status === 'accepted').map(pub), done: rows.filter(o => o.status !== 'accepted').reverse().slice(0, 20).map(pub) }; }));
   S.post('/canteen/kitchen/:id/start', wrap(async req => { await needKitchen(req);
     const r = await run(`UPDATE canteen_orders SET kot_started_at=?, kot_by=? WHERE id=? AND tenant_id=? AND status='accepted' AND kot_started_at IS NULL`, now(), req.user.id, req.params.id, req.tenantId);
     if (!r.changes) throw bad('This KOT was already started or is no longer in the kitchen. Please refresh.'); return { ok: true }; }));
@@ -551,6 +555,9 @@ export function canteen(d) {
       delivery_fee_paise: done.reduce((s, o) => s + (o.delivery_fee_paise || 0), 0), hours: hours.filter(h => h.orders), categories: Object.values(cats).sort((x, y) => y.paise - x.paise),
       items_all: Object.values(items).sort((x, y) => y.paise - x.paise), deals: Object.values(kinds),
       rejected: rows.filter(o => o.status === 'rejected').length, cancelled: rows.filter(o => o.status === 'cancelled').length,
+      sla: (() => { const pr = payOf(a.tenant), dl = done.filter(o => o.fulfil === 'delivery' && o.out_at && o.collected_at).map(o => (Date.parse(o.collected_at) - Date.parse(o.out_at)) / 6e4);
+        return { prep_target: pr.prep_sla_min, delivery_target: pr.delivery_sla_min, prep_total: prep.length, prep_on_time: prep.filter(m => m <= pr.prep_sla_min).length,
+          delivery_total: dl.length, delivery_on_time: dl.filter(m => m <= pr.delivery_sla_min).length, avg_delivery_min: dl.length ? Math.round(dl.reduce((x, y) => x + y, 0) / dl.length) : null }; })(),
       avg_prep_min: prep.length ? Math.round(prep.reduce((x, y) => x + y, 0) / prep.length) : null,
       reasons: Object.entries(rows.filter(o => o.status === 'rejected').reduce((m, o) => (m[o.reject_reason] = (m[o.reject_reason] || 0) + 1, m), {})).map(([reason, count]) => ({ reason, count })).sort((x, y) => y.count - x.count).slice(0, 8),
       top: Object.values(items).sort((x, y) => y.qty - x.qty).slice(0, 15), days,

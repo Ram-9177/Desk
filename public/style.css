@@ -943,3 +943,4 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-staff{display:flex;flex-direction:column;gap:6px;margin:10px 0}.cn-srow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0;padding:8px 0;border-bottom:1px solid var(--line)}
 .cn-srow>span{display:flex;flex-direction:column;min-width:0}.cn-srow select{width:auto;min-width:150px;margin:0}@media(max-width:480px){.cn-srow{flex-wrap:wrap}.cn-srow select{width:100%}}
 .cn-opt.dis{opacity:.45;cursor:not-allowed}
+.bnav[hidden]{display:none!important}

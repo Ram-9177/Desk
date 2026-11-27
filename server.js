@@ -1200,7 +1200,7 @@ async function fairScores(tid) {
   for (const t of win) { t.pace = Math.min(3, t.work / usualOf(t)); t.on = t.due_at ? t.closed_at <= t.due_at : null; }
   // misses: accepted reopens and holds past their limit, in the window
   const bad = Object.fromEntries((await all(`SELECT user_id, count(*)::int n FROM provider_points WHERE tenant_id=? AND created_at>=? AND reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY user_id`, tid, since(cfg.window_days))).map(r => [r.user_id, r.n]));
-  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND (u.role='provider' OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
+  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c WHERE c.user_id=u.id)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
   const mine = Object.fromEntries(people.map(p => [p.id, win.filter(t => t.closed_by === p.id)]));
   // a provider's team: the service they closed most tickets in (else their first service)
   const firstSvc = Object.fromEntries((await all(`SELECT m.user_id, min(s.name) name, min(s.id) id FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.tenant_id=? GROUP BY m.user_id`, tid)).map(r => [r.user_id, r]));
@@ -1291,7 +1291,7 @@ S.get('/points', wrap(async req => ({
   leaderboard: await all(`SELECT u.id, u.name, coalesce((SELECT sum(points) FROM provider_points p WHERE p.user_id=u.id AND p.tenant_id=u.tenant_id),0) points,
       (SELECT count(*) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed') closed,
       (SELECT round(100.0*count(*) FILTER (WHERE t.closed_at<=t.due_at)/greatest(1,count(*))) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed' AND t.due_at IS NOT NULL) on_time
-    FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND (u.role='provider' OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
+    FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c WHERE c.user_id=u.id)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
     ORDER BY points DESC, closed DESC`, req.tenantId),
 })));
 

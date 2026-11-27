@@ -560,10 +560,11 @@ async function shell(active, render, title) {
   else if (!S.tenant || !S.me.tenants.find(t => t.id === S.tenant)) S.tenant = S.me.tenants[0]?.id;
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
-  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter); } // canteen managers, admins of a campus with the canteen on, super admins
+  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
+  if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (active === 'c') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
   const MAIN = ['c', 'c/canteen', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
@@ -581,7 +582,7 @@ async function shell(active, render, title) {
       <a class="ibtn gear" href="#/settings" aria-label="Settings">${I('settings', 20)}</a><span class="vdiv"></span>
       <a class="melink" href="#/c/me" aria-label="Profile: ${esc(u.name)}">${avatar(u.name, 36, 'dark')}<span class="who"><b>${esc(u.name)}</b><span>${esc(cap(u.role.replace('_', ' ')))}</span></span></a></div></div></header>
     <div class="cwrap">${active !== 'c' || title ? `<div class="head"><a class="iconbtn" href="#/c" id="bk" aria-label="Back">${I('back')}</a><h1>${esc(title || (all.find(n => n[0] === active) || [])[1] || '')}</h1></div>` : ''}<div id="main">Loading…</div></div>
-    <nav class="bnav" aria-label="Primary">${bn('c', 'Home', 'home')}
+    <nav class="bnav" aria-label="Primary" ${S.canteenOnly ? 'hidden' : ''}>${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
       ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
