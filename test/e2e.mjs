@@ -1294,6 +1294,9 @@ try {
   await run("UPDATE canteen_orders SET created_at=? WHERE id=?", new Date(Date.now() - 3600e3).toISOString(), du2.id);
   const ex = (await api(`/public/alpha/canteen/orders/${du2.id}?k=${du2.key}`)).data;
   check('an order not paid in time is cancelled by itself', ex.status === 'cancelled' && ex.reject_reason === 'Not paid in time');
+  const late = (await ord({ pay_mode: 'upi' })).data;
+  await run("UPDATE canteen_orders SET created_at=? WHERE id=?", new Date(Date.now() - 3600e3).toISOString(), late.id);
+  await fails('a UPI reference sent after the pay time cannot revive the order', `/public/alpha/canteen/orders/${late.id}/upi-ref`, { method: 'POST', body: { k: late.key, ref: 'LATE123456' } }, 400, 'not waiting');
   const pr = await ok('paid, then rejected…', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }] } });
   await api(`/canteen/orders/${pr.id}/accepted`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${pr.id}/rejected`, { token: T.pavan, method: 'POST', body: { reason: 'Kitchen problem' } });
   const crep = (await api('/canteen/report', { token: T.pavan })).data;
@@ -1337,6 +1340,11 @@ try {
   check('…on every item in stock', eod.items >= 2 && [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].every(i => i.sold_out || i.deal?.kind === 'eod'));
   await ok('end all deals', '/canteen/deals', { token: T.pavan, method: 'DELETE' });
   check('…no deals left', [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].every(i => !i.deal));
+  await ok('a 50% discount on tea (no end)…', '/canteen/items/' + tea.id, { token: T.pavan, method: 'PATCH', body: { deal_pct: 50, deal_kind: 'discount' } });
+  await ok('…then a 20% sale on everything', '/canteen/deals/all', { token: T.pavan, method: 'POST', body: { pct: 20, minutes: 30, kind: 'eod' } });
+  const dl2 = [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)];
+  check('the sale on everything keeps a bigger deal (tea stays 50%), others get 20%', dl2.find(i => i.id === tea.id).deal.pct === 50 && dl2.find(i => i.id === dosa.id).deal.pct === 20);
+  await api('/canteen/deals', { token: T.pavan, method: 'DELETE' });
   await api(`/canteen/orders/${fo.id}/accepted`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${fo.id}/ready`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${fo.id}/collected`, { token: T.pavan, method: 'POST' });
   const rr2 = (await api('/canteen/report', { token: T.pavan })).data;
   check('reports: discounts given, deals, categories, busy hours, every item, customers, average order', rr2.discount_paise >= 5 * 900 && rr2.deals.some(d => d.kind === 'flash' && d.qty >= 5)
@@ -1371,6 +1379,9 @@ try {
   await api(`/canteen/orders/${xdi.id}/rejected`, { token: T.kavya, method: 'POST', body: { reason: 'Test clean-up' } });
   const xpe = await ok('exact cash when nothing is typed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 2 }], pay_mode: 'cash' } });
   check('…no change', xpe.change_paise === 0 && xpe.cash_tendered_paise === xpe.total_paise);
+  const xrd = await ok('a walk-in sale for counter-only work', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
+  await ok('counter staff can mark it ready themselves (no kitchen screen needed)', `/canteen/orders/${xrd.id}/ready`, { token: T.kavya, method: 'POST' });
+  await ok('…and hand it over', `/canteen/orders/${xrd.id}/collected`, { token: T.kavya, method: 'POST' });
   const xpu = await ok('a UPI sale at the counter with its reference', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }], pay_mode: 'upi', upi_ref: 'CTR998877' } });
   await fails('the same UPI reference cannot be used again', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }], pay_mode: 'upi', upi_ref: 'ctr998877' } }, 400, 'already used');
   const xpr1 = await ok('the bill prints (first copy)', `/canteen/orders/${xps.id}/printed`, { token: T.kavya, method: 'POST', body: { kind: 'bill' } });
@@ -1387,9 +1398,12 @@ try {
   await ok('a counter sale refunded (rejected after paying)', `/canteen/orders/${xpe.id}/rejected`, { token: T.kavya, method: 'POST', body: { reason: 'Customer changed mind' } });
   check('no email is sent for a walk-in', !(await q("SELECT 1 FROM notifications WHERE recipient='' OR recipient IS NULL")).length);
   const xshf = (await api('/canteen/shift', { token: T.kavya })).data;
-  check("Kavya's shift: cash and UPI she took, the refund apart", xshf.cash_paise === 10250 + 4500 && xshf.upi_paise === 4500 && xshf.refunds_paise === xpe.total_paise + xdi.total_paise && xshf.counter_orders === 2, JSON.stringify(xshf));
+  check("Kavya's shift: cash and UPI she took, the refund apart", xshf.cash_paise === 10250 + 4500 + 1250 && xshf.upi_paise === 4500 && xshf.refunds_paise === xpe.total_paise + xdi.total_paise && xshf.counter_orders === 3, JSON.stringify(xshf));
   const xrc = (await api('/canteen/report', { token: T.pavan })).data;
-  check('reports: counter vs online sales, cash drawer by staff, reprints', xrc.channels.find(c => c.channel === 'counter').orders >= 1 && xrc.staff.some(x => x.name === 'Kavya Cashier' && x.cash_paise === 14750 && x.upi_paise === 4500) && xrc.reprints >= 1, JSON.stringify(xrc.staff));
+  check('reports: counter vs online sales, cash drawer by staff, reprints', xrc.channels.find(c => c.channel === 'counter').orders >= 1 && xrc.staff.some(x => x.name === 'Kavya Cashier' && x.cash_paise === 16000 && x.upi_paise === 4500) && xrc.reprints >= 1, JSON.stringify(xrc.staff));
+  const rday = (await api('/canteen/report?range=day', { token: T.pavan })).data;
+  check("the report's Today uses the campus's own date", rday.from === rday.to && rday.to === rday.today && rday.tz === 'Asia/Kolkata');
+  check('cash and UPI taken match the cash drawer total', rday.cash_paise + rday.upi_paise === rday.staff.reduce((s, x) => s + x.cash_paise + x.upi_paise, 0), JSON.stringify({ c: rday.cash_paise, u: rday.upi_paise, st: rday.staff }));
   check('reports leave walk-ins out of the customer count', xrc.customers === new Set((await q("SELECT email FROM canteen_orders WHERE status='collected' AND email<>''")).map(r => r.email)).size);
   check('canteen SLA: kitchen and delivery targets in the reports, apart from the ticket SLA', xrc.sla.prep_target === 15 && xrc.sla.delivery_target === 20 && xrc.sla.prep_total >= 1);
   await fails('a canteen target must be sensible', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', prep_sla_min: 0.4 } }, 400, 'Kitchen target');

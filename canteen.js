@@ -294,7 +294,7 @@ export function canteen(d) {
   const orderByKey = async req => {
     const tn = await tenantBySlug(req.params.slug); if (!tn.canteen_on) throw notFound(); const o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, tn.id);
     const k = String(req.query.k || req.body?.k || '');
-    if (!o || k.length !== o.view_key.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(o.view_key))) throw notFound();
+    if (!o || Buffer.byteLength(k) !== Buffer.byteLength(o.view_key) || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(o.view_key))) throw notFound();
     return { tn, o };
   };
   P.get('/:slug/canteen/orders/:id', wrap(async req => { let { tn, o } = await orderByKey(req);
@@ -305,11 +305,12 @@ export function canteen(d) {
     return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id), upi, pay_by }; }));
   // the student paid by UPI: they send the reference number (UTR) from their UPI app; staff check it and send the order to the kitchen
   P.post('/:slug/canteen/orders/:id/upi-ref', wrap(async req => {
-    const { tn, o } = await orderByKey(req); limit('cupi:' + o.id, 10);
+    const { tn } = await orderByKey(req); await expire(tn); const o = await one('SELECT * FROM canteen_orders WHERE id=?', req.params.id); // past the pay time: already cancelled limit('cupi:' + o.id, 10);
     const ref = str(req.body.ref, 40).replace(/\s/g, ''); if (!UTR.test(ref)) throw bad('Enter the UPI reference number (UTR) from your UPI app: 6 to 30 letters or digits');
     if (o.status !== 'placed' || o.pay_mode !== 'upi') throw bad('This order is not waiting for a UPI payment');
     if (await one('SELECT 1 FROM canteen_orders WHERE tenant_id=? AND upper(upi_ref)=upper(?) AND id<>?', tn.id, ref, o.id)) throw bad('That reference number is already used on another order');
-    await run(`UPDATE canteen_orders SET upi_ref=?, pay_status='claimed' WHERE id=? AND status='placed'`, ref, o.id);
+    const ru = await run(`UPDATE canteen_orders SET upi_ref=?, pay_status='claimed' WHERE id=? AND status='placed' AND coalesce(pay_status,'unpaid')<>'paid'`, ref, o.id);
+    if (!ru.changes) throw bad('This order is no longer waiting for payment. Please refresh.');
     return { ok: true, pay_status: 'claimed' };
   }));
   // the same UPI payment as a QR code (for paying from another phone or a laptop screen)
@@ -402,7 +403,7 @@ export function canteen(d) {
     if (!sets.length) throw bad('Nothing to change');
     const r = await run(`UPDATE canteen_categories SET ${sets.join(',')} WHERE id=? AND tenant_id=?`, ...args, req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
   S.delete('/canteen/categories/:id', wrap(async req => { await need(req);
-    if ((await one('SELECT count(*) n FROM canteen_items WHERE category_id=? AND active=1', req.params.id)).n) throw bad('Move or remove the items in this category first');
+    if ((await one('SELECT count(*) n FROM canteen_items WHERE category_id=? AND tenant_id=? AND active=1', req.params.id, req.tenantId)).n) throw bad('Move or remove the items in this category first');
     await run('UPDATE canteen_items SET category_id=NULL WHERE category_id=? AND tenant_id=?', req.params.id, req.tenantId);
     const r = await run('DELETE FROM canteen_categories WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
   const itemFields = async (req, partial) => {
@@ -437,7 +438,7 @@ export function canteen(d) {
   // end-of-day sale on everything still in stock (or a flash sale on all), and ending every deal at once
   S.post('/canteen/deals/all', wrap(async req => { await need(req); const b = req.body, pct = Math.floor(Number(b.pct) || 0), mins = Math.floor(Number(b.minutes) || 0), kind = b.kind === 'flash' ? 'flash' : 'eod';
     if (pct < 1 || pct > 90) throw bad('Discount must be 1% to 90%'); if (mins < 5 || mins > 1440) throw bad('Pick how long: 5 minutes to 24 hours');
-    const r = await run('UPDATE canteen_items SET deal_pct=?, deal_kind=?, deal_until=? WHERE tenant_id=? AND active=1 AND sold_out=0', pct, kind, new Date(Date.now() + mins * 6e4).toISOString(), req.tenantId);
+    const r = await run('UPDATE canteen_items SET deal_pct=?, deal_kind=?, deal_until=? WHERE tenant_id=? AND active=1 AND sold_out=0 AND NOT (deal_pct >= ? AND deal_kind IS NOT NULL AND (deal_until IS NULL OR deal_until > ?))', pct, kind, new Date(Date.now() + mins * 6e4).toISOString(), req.tenantId, pct, now()); // an item with a bigger live deal keeps it
     return { items: r.changes }; }));
   S.delete('/canteen/deals', wrap(async req => { await need(req); const r = await run('UPDATE canteen_items SET deal_pct=0, deal_kind=NULL, deal_until=NULL WHERE tenant_id=? AND deal_pct>0', req.tenantId); return { ended: r.changes }; }));
 
@@ -454,16 +455,16 @@ export function canteen(d) {
     const pr = payOf(a.tenant);
     return { sla: { prep: pr.prep_sla_min, delivery: pr.delivery_sla_min }, print: { paper: pr.paper, auto_bill: pr.auto_bill, kot_at_counter: pr.kot_at_counter, footer: pr.bill_footer, tagline: pr.tagline }, day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: (await withCashier(rows)).map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
   S.post('/canteen/orders/:id/:to(accepted|rejected|ready|out|collected)', wrap(async req => {
-    const to = req.params.to, a = to === 'ready' ? await needKitchen(req) : await needCounter(req), o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
+    const to = req.params.to, a = to === 'ready' ? await (async () => { const x = await access(req); if (!x.tenant) throw bad('Pick a campus first'); if (!x.kitchen && !x.counter) throw forbid(); return x; })() : await needCounter(req), o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
     if (!(NEXT[o.status] || []).includes(to)) throw bad(`This order is ${STATUS[o.status].toLowerCase()}; it can't be marked ${to}.`);
     const reason = str(req.body.reason, 200); if (to === 'rejected' && reason.length < 3) throw bad('Please give the student a reason for rejecting');
     if (to === 'out' && o.fulfil !== 'delivery') throw bad('This order is for pickup at the counter');
     if (to === 'accepted') { // payment confirmed by staff: cash taken at the counter, or the UPI payment seen in the canteen's UPI app
-      const r0 = await run(`UPDATE canteen_orders SET pay_status='paid', paid_at=?, paid_by=? WHERE id=? AND status='placed'`, now(), req.user.id, o.id); if (!r0.changes) throw bad('Someone else just updated this order. Please refresh.');
-      o.bill_no = await giveBill(req.tenantId, o.id); o.pay_status = 'paid'; o.paid_at = now(); o.paid_by = req.user.id; o.cashier_name = req.user.name; }
+      const r0 = await run(`UPDATE canteen_orders SET pay_status='paid', paid_at=?, paid_by=?, status='accepted', accepted_at=?, handled_by=? WHERE id=? AND status='placed'`, now(), req.user.id, now(), req.user.id, o.id); if (!r0.changes) throw bad('Someone else just updated this order. Please refresh.');
+      o.bill_no = await giveBill(req.tenantId, o.id); Object.assign(o, { pay_status: 'paid', paid_at: now(), paid_by: req.user.id, cashier_name: req.user.name, status: 'accepted', accepted_at: now() }); }
     const col = { accepted: 'accepted_at', ready: 'ready_at', out: 'out_at', collected: 'collected_at', rejected: 'closed_at' }[to];
-    const r = await run(`UPDATE canteen_orders SET status=?, ${col}=?, ${to === 'collected' ? 'closed_at=?,' : ''} reject_reason=?, handled_by=? WHERE id=? AND status=?`,
+    const r = to === 'accepted' ? { changes: 1 } : await run(`UPDATE canteen_orders SET status=?, ${col}=?, ${to === 'collected' ? 'closed_at=?,' : ''} reject_reason=?, handled_by=? WHERE id=? AND status=?`,
       to, now(), ...(to === 'collected' ? [now()] : []), to === 'rejected' ? reason : o.reject_reason, req.user.id, o.id, o.status);
     if (!r.changes) throw bad('Someone else just updated this order. Please refresh.');
     const n = { ...o, status: to, reject_reason: to === 'rejected' ? reason : o.reject_reason }, tk = tokenLabel(o.token_no);
@@ -504,7 +505,7 @@ export function canteen(d) {
         pay_mode: mode, pay_status: 'paid', paid_at: t, paid_by: req.user.id, upi_ref: ref, fulfil: 'pickup', channel: 'counter', cash_tendered_paise: tendered, handled_by: req.user.id,
         service: b.service === 'dine_in' ? 'dine_in' : 'takeaway', table_no: b.service === 'dine_in' ? str(b.table_no, 10) || null : null };
       try { await run(`INSERT INTO canteen_orders (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); }
-      catch (e) { if (e.code !== '23505') throw e; continue; }
+      catch (e) { if (e.code !== '23505') throw e; if (/upi/.test(e.constraint || '')) throw bad('That UPI reference is already used on another order'); continue; }
       o.bill_no = await giveBill(tn.id, o.id);
       return { ...pub({ ...o, cashier_name: req.user.name }), change_paise: tendered != null ? tendered - total : 0 };
     }
@@ -519,7 +520,7 @@ export function canteen(d) {
     return { prints: r.n, duplicate: r.n > 1 }; }));
   // the cashier's shift: what this person took today (cash drawer check)
   S.get('/canteen/shift', wrap(async req => { const a = await needCounter(req), day = dayOf(a.tenant.timezone);
-    const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND day=? AND paid_by=? AND pay_status='paid'`, req.tenantId, day, req.user.id);
+    const rows = (await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND paid_by=? AND pay_status='paid' AND paid_at > ?`, req.tenantId, req.user.id, new Date(Date.now() - 40 * 3600e3).toISOString())).filter(o => dayOf(a.tenant.timezone, new Date(o.paid_at)) === day); // paid today, whatever day it was ordered
     const keep = rows.filter(o => o.status !== 'rejected'), refunds = rows.filter(o => o.status === 'rejected');
     return { day, orders: keep.length, cash_paise: keep.filter(o => o.pay_mode !== 'upi').reduce((s, o) => s + o.total_paise, 0), upi_paise: keep.filter(o => o.pay_mode === 'upi').reduce((s, o) => s + o.total_paise, 0),
       counter_orders: keep.filter(o => o.channel === 'counter').length, refunds_paise: refunds.reduce((s, o) => s + o.total_paise, 0) }; }));
@@ -535,7 +536,8 @@ export function canteen(d) {
 
   // ---- reports: collected orders ----
   S.get('/canteen/report', wrap(async req => { const a = await need(req), today = dayOf(a.tenant.timezone);
-    const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : addDays(today, -6), to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
+    const back = { day: 0, week: 6, month: 29 }[req.query.range]; // a range is worked out on the campus's own calendar
+    const from = back != null ? addDays(today, -back) : /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : addDays(today, -6), to = back != null ? today : /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
     const rows = await all('SELECT * FROM canteen_orders WHERE tenant_id=? AND day>=? AND day<=? ORDER BY day, token_no', req.tenantId, from, to);
     const done = rows.filter(o => o.status === 'collected'), items = {}, cats = {}, hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, orders: 0, paise: 0 })), kinds = {};
     const catNow = Object.fromEntries((await all('SELECT i.id, c.name FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=?', req.tenantId)).map(r => [r.id, r.name]));
@@ -549,8 +551,8 @@ export function canteen(d) {
     const days = []; for (let d = from; d <= to && days.length < 92; d = addDays(d, 1)) { const x = done.filter(o => o.day === d);
       days.push({ day: d, orders: x.length, paise: x.reduce((s, o) => s + o.total_paise, 0), rejected: rows.filter(o => o.day === d && o.status === 'rejected').length }); }
     const prep = done.filter(o => o.accepted_at && o.ready_at).map(o => (Date.parse(o.ready_at) - Date.parse(o.accepted_at)) / 6e4);
-    const revenue = done.reduce((s, o) => s + o.total_paise, 0);
-    return { from, to, collected: done.length, revenue_paise: revenue, aov_paise: done.length ? Math.round(revenue / done.length) : 0, discount_paise: discount,
+    const revenue = done.reduce((s, o) => s + o.total_paise, 0), taken = rows.filter(o => o.pay_status === 'paid' && !['rejected', 'cancelled'].includes(o.status));
+    return { tz: a.tenant.timezone || 'Asia/Kolkata', today, from, to, collected: done.length, revenue_paise: revenue, aov_paise: done.length ? Math.round(revenue / done.length) : 0, discount_paise: discount,
       customers: Object.keys(per).length, repeat_customers: Object.values(per).filter(n => n > 1).length, pickups: done.filter(o => o.fulfil !== 'delivery').length,
       delivery_fee_paise: done.reduce((s, o) => s + (o.delivery_fee_paise || 0), 0), hours: hours.filter(h => h.orders), categories: Object.values(cats).sort((x, y) => y.paise - x.paise),
       items_all: Object.values(items).sort((x, y) => y.paise - x.paise), deals: Object.values(kinds),
@@ -561,7 +563,7 @@ export function canteen(d) {
       avg_prep_min: prep.length ? Math.round(prep.reduce((x, y) => x + y, 0) / prep.length) : null,
       reasons: Object.entries(rows.filter(o => o.status === 'rejected').reduce((m, o) => (m[o.reject_reason] = (m[o.reject_reason] || 0) + 1, m), {})).map(([reason, count]) => ({ reason, count })).sort((x, y) => y.count - x.count).slice(0, 8),
       top: Object.values(items).sort((x, y) => y.qty - x.qty).slice(0, 15), days,
-      cash_paise: done.filter(o => (o.pay_mode || 'cash') === 'cash').reduce((s, o) => s + o.total_paise, 0), upi_paise: done.filter(o => o.pay_mode === 'upi').reduce((s, o) => s + o.total_paise, 0),
+      cash_paise: taken.filter(o => (o.pay_mode || 'cash') === 'cash').reduce((s, o) => s + o.total_paise, 0), upi_paise: taken.filter(o => o.pay_mode === 'upi').reduce((s, o) => s + o.total_paise, 0), // money taken: paid and not refunded, like the cash drawer
       deliveries: done.filter(o => o.fulfil === 'delivery').length, not_paid: rows.filter(o => o.reject_reason === 'Not paid in time').length,
       refunds: rows.filter(o => o.status === 'rejected' && ['paid', 'claimed'].includes(o.pay_status)).map(o => ({ token: tokenLabel(o.token_no), day: o.day, name: o.name, paise: o.total_paise, mode: o.pay_mode, ref: o.upi_ref })),
       channels: ['online', 'counter'].map(c => { const x = done.filter(o => (o.channel || 'online') === c); return { channel: c, orders: x.length, paise: x.reduce((s, o) => s + o.total_paise, 0) }; }),
