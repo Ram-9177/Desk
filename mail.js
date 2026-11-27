@@ -239,6 +239,7 @@ export async function mail(d) {
   const slaEvent = (thread_id, kind, notified = [], detail = {}) => insert('mail.sla_events', { id: uid(), thread_id, kind, notified_user_ids: JSON.stringify(notified), detail: JSON.stringify(detail), at: now() });
   async function slaTick() {
     const rows = await all(`SELECT t.*, c.tenant_id, c.address, c.office_hours, c.display_name FROM mail.threads t JOIN mail.channels c ON c.id=t.channel_id
+      JOIN tenants n ON n.id=c.tenant_id AND n.is_active=1
       WHERE c.mode='live' AND t.status IN ('open','in_progress','hold') AND t.first_responded_at IS NULL AND t.sla_policy_id IS NOT NULL
         AND coalesce(t.sla_state,'on_track') IN ('on_track','warning','escalated') ORDER BY t.first_response_due_at LIMIT 2000`);
     const pol = new Map(), ts = now();
@@ -324,7 +325,9 @@ export async function mail(d) {
       await one('SELECT pg_advisory_xact_lock(hashtext(?)) x', `mail|${ch.id}|${m.conversationId || messageId}`); // two mails of one conversation at once still make one thread
       if (await one('SELECT 1 x FROM mail.inbound_emails WHERE provider_message_id=?', messageId)) return { dup: true };
       let t = (m.conversationId && await one('SELECT * FROM mail.threads WHERE channel_id=? AND conversation_id=? ORDER BY created_at DESC LIMIT 1', ch.id, m.conversationId))
-        || (refM && await one('SELECT * FROM mail.threads WHERE channel_id=? AND upper(ref)=upper(?)', ch.id, refM[1]));
+        // a quoted number joins that mail only for someone already in it (anyone else quoting it starts their own)
+        || (refM && await one(`SELECT t.* FROM mail.threads t WHERE t.channel_id=? AND upper(t.ref)=upper(?) AND (lower(t.requester_email)=?
+             OR EXISTS (SELECT 1 FROM mail.inbound_emails i WHERE i.thread_id=t.id AND lower(i.from_email)=?))`, ch.id, refM[1], fromEmail, fromEmail));
       let fresh = false;
       if (!t) {
         fresh = true;
@@ -465,6 +468,7 @@ export async function mail(d) {
   async function runJob(j) {
     const p = json(j.payload, {}), ch = p.channel_id && await one('SELECT * FROM mail.channels WHERE id=?', p.channel_id);
     if (!ch || ch.mode === 'off') return;
+    if (!(await tenantRow(ch.tenant_id))?.is_active) return; // a campus switched off: its mailboxes rest too
     if (j.kind === 'ingest') return ingest(ch, p.message_id);
     if (j.kind === 'catchup') return catchup(ch);
   }
@@ -505,7 +509,7 @@ export async function mail(d) {
   async function housekeeping() {
     try {
       await recover(15 * 60e3);
-      for (const ch of await all("SELECT * FROM mail.channels WHERE mode IN ('shadow','live')")) {
+      for (const ch of await all("SELECT c.* FROM mail.channels c JOIN tenants n ON n.id=c.tenant_id AND n.is_active=1 WHERE c.mode IN ('shadow','live')")) {
         if (!ch.sub_expires_at || Date.parse(ch.sub_expires_at) < Date.now() + 864e5) await subscribe(ch);
         if (graphReady()) await enqueue('catchup', { channel_id: ch.id }, `catchup:${ch.id}`);
       }

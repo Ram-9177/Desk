@@ -91,6 +91,7 @@ pg.types.setTypeParser(20, Number);
 const db = new pg.Pool({ connectionString: DB_URL, max: 2 });
 const toPg = s => { let i = 0; return s.replace(/\?/g, () => '$' + ++i); };
 const q = async (s, ...a) => (await db.query(toPg(s), a)).rows;
+const run_ = (s, ...a) => db.query(toPg(s), a);
 const waitFor = async (fn, ms = 8000) => { const t0 = Date.now(); let v; while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await sleep(200); } return fn(); };
 async function api(p, { method = 'GET', body, token, tenant } = {}) {
   const r = await fetch(API + p, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(tenant ? { 'x-tenant-id': tenant } : {}) } });
@@ -315,6 +316,10 @@ try {
   check('a new mail quoting the number joins that mail', await waitFor(async () => (await q('SELECT thread_id FROM mail.inbound_emails WHERE provider_message_id=?', mq))[0]?.thread_id === t1.id));
   check('…and no second auto-reply', (await q("SELECT count(*)::int n FROM mail.outbound_emails WHERE thread_id=? AND origin='auto_ack'", t1.id))[0].n === 1);
 
+  const mx = mkMsg({ from: 'stranger@gmail.com', subject: `Question about ${t1.ref}`, conv: 'conv-STRANGER', body: 'I saw this number somewhere' }); await notifyGraph('sub-1', mx);
+  const tx_ = await waitFor(async () => (await q('SELECT thread_id FROM mail.inbound_emails WHERE provider_message_id=?', mx))[0]?.thread_id);
+  check('someone else quoting a number gets their own mail, not that thread', !!tx_ && tx_ !== t1.id);
+
   sec('Rules and loop guards on live mail');
   const nz = mkMsg({ from: 'offers@mail.news.com', subject: 'Big sale', conv: 'conv-N' }); const aiBefore = AI.calls; await notifyGraph('sub-1', nz);
   const tn1 = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-N'"))[0]);
@@ -432,6 +437,13 @@ try {
   await ok('delete exams@ (no mail yet)', `/maildesk/channels/${ch2.id}`, { ...A, method: 'DELETE' });
   await fails('reach@ has mail, so it cannot be deleted (switch it off instead)', `/maildesk/channels/${ch.id}`, { ...A, method: 'DELETE' }, 409);
   check('numbers run per campus and never repeat', new Set((await q('SELECT ref FROM mail.threads')).map(r => r.ref)).size === (await q('SELECT count(*)::int n FROM mail.threads'))[0].n);
+
+  // a campus switched off: its mailboxes rest (no reading, no reminders)
+  await run_('UPDATE tenants SET is_active=0 WHERE id=?', camp.id);
+  const mo = mkMsg({ from: 'late@gmail.com', subject: 'While closed', conv: 'conv-OFF' }); await notifyGraph('sub-1', mo); await sleep(1500);
+  check('a deactivated campus reads no mail', (await q('SELECT 1 FROM mail.inbound_emails WHERE provider_message_id=?', mo)).length === 0);
+  await run_('UPDATE tenants SET is_active=1 WHERE id=?', camp.id);
+  check('…switched on again, the waiting mail is read', await waitFor(async () => (await q('SELECT 1 FROM mail.inbound_emails WHERE provider_message_id=?', mo)).length === 1, 15000));
 
   sec('Desk unchanged with the mail desk on');
   const pubT = await api('/public/smru/tickets', { method: 'POST', body: { service_id: hostel.id, name: 'Ravi', email: 'ravi@example.com', phone: '9000000001', subject: 'Tap leaking', location: 'Block A', identifier: 'S1', department: 'BPT' } });
