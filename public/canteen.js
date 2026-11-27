@@ -46,7 +46,7 @@ export async function studentCanteen(slug, view, id, q) {
   const stepper = it => it.sold_out ? '<span class="cn-so">Sold out</span>' : !c.open ? '' : cart[it.id]
     ? `<span class="cn-step"><button type="button" data-dec="${it.id}" aria-label="One less ${esc(it.name)}">−</button><b>${cart[it.id]}</b><button type="button" data-inc="${it.id}" aria-label="One more ${esc(it.name)}">+</button></span>`
     : `<button type="button" class="btn soft cn-add" data-inc="${it.id}">Add</button>`;
-  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc(it.name.toLowerCase())}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${rupees(it.price_paise)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
+  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_paise}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${rupees(it.price_paise)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
   const groups = [...c.categories, ...(c.uncategorised.length ? [{ id: 'x', name: c.categories.length ? 'More' : 'Menu', items: c.uncategorised }] : [])];
   const bar = () => { const n = count(), b = document.getElementById('cnbar'); if (!b) return;
     b.hidden = !n || !c.open; b.innerHTML = `<a class="btn primary big" href="#/d/${slug}/canteen/cart">${I('utensils', 18)} ${n} item${n === 1 ? '' : 's'} · ${rupees(total())} <span style="margin-left:auto">View cart ${I('chev', 16)}</span></a>`; };
@@ -56,19 +56,27 @@ export async function studentCanteen(slug, view, id, q) {
     <div id="cnlive"></div>
     ${c.popular?.length && c.open ? `<div class="cn-picks"><b>Popular this week</b><div>${c.popular.map(k => items.get(k)).filter(Boolean).map(it => `<button type="button" class="cn-pick" ${it.sold_out ? 'disabled' : `data-inc="${it.id}"`}><b>${esc(it.name)}</b><span>${it.sold_out ? 'Sold out' : rupees(it.price_paise) + ' · Add'}</span></button>`).join('')}</div></div>` : ''}
     <div class="cn-search">${I('search', 18)}<input id="cnq" type="search" placeholder="Search the menu" aria-label="Search the menu" autocomplete="off"></div>
+    <div class="cn-filters" role="group" aria-label="Filters"><button type="button" class="tab" data-f="veg">🟢 Veg only</button><button type="button" class="tab" data-f="cheap">Under ₹50</button><button type="button" class="tab" data-f="avail">Available now</button><button type="button" class="tab" data-f="sort">Price: low to high</button></div>
     ${mine ? `<a class="svc" href="#/d/${slug}/canteen/mine"><span class="chip c2">${I('ticket', 22)}</span><span class="t"><b>My orders</b><span class="muted small">Tokens and live status</span></span><span class="chev">${I('chev')}</span></a>` : ''}
     ${groups.length > 1 ? `<div class="tabs cn-cats">${groups.map(g => `<a class="tab" href="#" data-go="${g.id}">${esc(g.name)}</a>`).join('')}</div>` : ''}
-    <p class="muted" id="cnnone" hidden>Nothing on the menu matches that.</p>
-    ${groups.map(g => `<section class="cn-cat" id="cat-${g.id}"><h2>${esc(g.name)}</h2><div class="card cn-list">${g.items.map(row).join('')}</div></section>`).join('') || '<div class="card empty"><span class="et">The menu is being prepared</span><span>Please check back soon.</span></div>'}
+    <p class="muted" id="cnnone" hidden>Nothing on the menu matches. Try clearing a filter.</p>
+    ${groups.map(g => `<section class="cn-cat" id="cat-${g.id}"><h2>${esc(g.name)} <span class="muted small">${g.items.length} item${g.items.length === 1 ? '' : 's'}</span></h2><div class="card cn-list">${g.items.map(row).join('')}</div></section>`).join('') || '<div class="card empty"><span class="et">The menu is being prepared</span><span>Please check back soon.</span></div>'}
     </div><div class="cn-bar" id="cnbar" hidden></div>`;
   app.querySelectorAll('[data-go]').forEach(a => a.onclick = e => { e.preventDefault(); document.getElementById('cat-' + a.dataset.go)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   app.onclick = e => { const inc = e.target.closest('[data-inc]'), dec = e.target.closest('[data-dec]'); if (!inc && !dec) return;
     const k = (inc || dec).dataset.inc || (inc || dec).dataset.dec; cart[k] = Math.max(0, Math.min(20, (cart[k] || 0) + (inc ? 1 : -1))); if (!cart[k]) delete cart[k]; save();
     const st_ = document.getElementById('st-' + k); if (st_) st_.innerHTML = stepper(items.get(k)); bar(); if (inc && cart[k] === 1) H.toast(`${items.get(k).name} added`, 1500); };
   bar();
-  const qi = document.getElementById('cnq'); qi.oninput = () => { const v = qi.value.trim().toLowerCase();
-    app.querySelectorAll('.cn-cat').forEach(sec => { let any = false; sec.querySelectorAll('.cn-item').forEach(r => { const hit = !v || r.dataset.name.includes(v); r.hidden = !hit; any ||= hit; }); sec.hidden = !any; });
-    const nm = document.getElementById('cnnone'); if (nm) nm.hidden = !!app.querySelector('.cn-cat:not([hidden])') || !v; };
+  // search (name and description) + filters (veg, under ₹50, available) + sort by price, all together; the choices are remembered
+  const F = new Set(ls.get('canteen-filters', [])), qi = document.getElementById('cnq');
+  const apply = () => { const v = qi.value.trim().toLowerCase();
+    app.querySelectorAll('[data-f]').forEach(b => b.classList.toggle('on', F.has(b.dataset.f)));
+    app.querySelectorAll('.cn-cat').forEach(sec => { let any = false; const list = sec.querySelector('.cn-list');
+      [...list.children].sort((a, b) => F.has('sort') ? a.dataset.price - b.dataset.price : a.dataset.i - b.dataset.i || a.dataset.name.localeCompare(b.dataset.name)).forEach(r => list.append(r));
+      list.querySelectorAll('.cn-item').forEach(r => { const hit = (!v || r.dataset.name.includes(v)) && (!F.has('veg') || r.dataset.veg === '1') && (!F.has('cheap') || +r.dataset.price < 5000) && (!F.has('avail') || !r.classList.contains('off')); r.hidden = !hit; any ||= hit; });
+      sec.hidden = !any; });
+    const nm = document.getElementById('cnnone'); if (nm) nm.hidden = !!app.querySelector('.cn-cat:not([hidden])'); };
+  qi.oninput = apply; app.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { F.has(b.dataset.f) ? F.delete(b.dataset.f) : F.add(b.dataset.f); ls.set('canteen-filters', [...F]); apply(); }); apply();
   // a live order on this phone sits on top; the last collected one can be ordered again in one tap
   const dev0 = localStorage.getItem(devKey);
   if (dev0) H.api(`/public/${slug}/canteen/mine`, { method: 'POST', body: { device: dev0 } }).then(rows => { const el = document.getElementById('cnlive'); if (!el) return;
@@ -193,7 +201,7 @@ export async function canteenPage(main, { sa }) {
 
   async function menu() {
     const m = await api('/canteen/menu'), cats = m.categories;
-    const itemRow = it => `<div class="cn-item ${it.active ? '' : 'gone'}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b> <span class="cn-price">${rupees(it.price_paise)}</span>${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}</div></div>
+    const itemRow = it => `<div class="cn-item ${it.active ? '' : 'gone'}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b> ${it.active ? `<label class="cn-qp">₹<input inputmode="decimal" data-price="${it.id}" value="${it.price_paise / 100}" aria-label="Price of ${esc(it.name)} in rupees"></label>` : `<span class="cn-price">${rupees(it.price_paise)}</span>`}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}</div></div>
       <div class="cn-acts">${it.active ? `<label class="chk cn-sw"><input type="checkbox" data-so="${it.id}" ${it.sold_out ? 'checked' : ''}> Sold out</label>
         <button class="iconbtn" data-edit="${it.id}" aria-label="Edit ${esc(it.name)}">${I('pencil', 16)}</button><button class="iconbtn" data-del="${it.id}" aria-label="Remove ${esc(it.name)}">${I('x', 16)}</button>`
         : `<button class="btn soft" data-back="${it.id}">Put back</button>`}</div></div>`;
@@ -207,7 +215,7 @@ export async function canteenPage(main, { sa }) {
         <div class="cn-days">${DAYS.map((d, i) => `<label class="chk"><input type="checkbox" name="d" value="${i}" ${(m.hours?.days || [1, 2, 3, 4, 5, 6]).includes(i) ? 'checked' : ''}> ${d}</label>`).join('')}</div>
         <p class="row"><button class="btn soft">Save timings</button>${m.hours ? '<button type="button" class="btn" id="cnhclr">No time limit</button>' : ''}</p></form></details>` : ''}
       <p class="row"><button class="btn primary" id="additem">${I('plus', 16)} Add item</button><button class="btn soft" id="addcat">${I('plus', 16)} Add category</button></p>
-      ${groups.map(g => `<section class="cn-cat"><div class="cn-ch"><h2>${esc(g.name)}</h2>${g.id ? `<span><button class="iconbtn" data-ren="${g.id}" aria-label="Rename">${I('pencil', 15)}</button><button class="iconbtn" data-cdel="${g.id}" aria-label="Remove category">${I('x', 15)}</button></span>` : ''}</div>
+      ${groups.map(g => `<section class="cn-cat"><div class="cn-ch"><h2>${esc(g.name)}</h2>${g.id ? `<span><button class="iconbtn" data-up="${g.id}" aria-label="Move ${esc(g.name)} up" ${cats[0]?.id === g.id ? 'disabled' : ''}>▲</button><button class="iconbtn" data-ren="${g.id}" aria-label="Rename">${I('pencil', 15)}</button><button class="iconbtn" data-cdel="${g.id}" aria-label="Remove category">${I('x', 15)}</button></span>` : ''}</div>
         <div class="card cn-list">${g.items.map(itemRow).join('') || '<p class="muted small">No items yet.</p>'}</div></section>`).join('') || '<div class="card empty"><span class="et">Start your menu</span><span>Add a category (Snacks, Meals, Drinks…) and then its items with prices.</span></div>'}`;
     wire();
     const hf = document.getElementById('cnhrs'); if (hf) { hf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/hours', { method: 'PUT', body: { open: hf.open.value, close: hf.close.value, last_order_min: +hf.last.value, days: [...hf.querySelectorAll('[name=d]:checked')].map(x => +x.value) } }); toast('Timings saved'); draw(); } catch (er) { toast(er.message); } };
@@ -227,6 +235,9 @@ export async function canteenPage(main, { sa }) {
     main.querySelectorAll('[data-so]').forEach(b => b.onchange = async () => { try { await api('/canteen/items/' + b.dataset.so, { method: 'PATCH', body: { sold_out: b.checked } }); toast(b.checked ? 'Marked sold out' : 'Back in stock'); } catch (e) { toast(e.message); b.checked = !b.checked; } });
     main.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Remove this item from the menu?')) return; await api('/canteen/items/' + b.dataset.del, { method: 'DELETE' }); draw(); });
     main.querySelectorAll('[data-back]').forEach(b => b.onclick = async () => { await api('/canteen/items/' + b.dataset.back, { method: 'PATCH', body: { active: true } }); draw(); });
+    main.querySelectorAll('[data-price]').forEach(inp => { const was = inp.value; inp.onchange = async () => { try { await api('/canteen/items/' + inp.dataset.price, { method: 'PATCH', body: { price: inp.value } }); toast('Price saved'); } catch (e) { toast(e.message); inp.value = was; } }; inp.onkeydown = e => { if (e.key === 'Enter') inp.blur(); }; });
+    main.querySelectorAll('[data-up]').forEach(b => b.onclick = async () => { const i = cats.findIndex(c => c.id === b.dataset.up); if (i < 1) return; const order = cats.map(c => c.id); [order[i - 1], order[i]] = [order[i], order[i - 1]];
+      for (const [k, id] of order.entries()) await api('/canteen/categories/' + id, { method: 'PATCH', body: { sort_order: k } }); draw(); });
     main.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => dlg(catForm(cats.find(c => c.id === b.dataset.ren).name), async f => { await api('/canteen/categories/' + b.dataset.ren, { method: 'PATCH', body: { name: f.name.value } }); draw(); }));
     main.querySelectorAll('[data-cdel]').forEach(b => b.onclick = async () => { if (!confirm('Remove this category?')) return; try { await api('/canteen/categories/' + b.dataset.cdel, { method: 'DELETE' }); draw(); } catch (e) { toast(e.message); } });
   }

@@ -1494,6 +1494,10 @@ async function uiSmoke(tok, id) {
     check('student: the cart asks to verify the email first', await js(`document.querySelector('#cnbar a').click(); for (let i = 0; i < 30 && !document.querySelector('#cnf [name=email]'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('#cnf [name=email]') && /Place order/.test(document.querySelector('#cnf').textContent)`));
     const co = (await q("SELECT id, view_key FROM canteen_orders ORDER BY created_at LIMIT 1"))[0];
     await visit('student: order page shows the token', `/d/alpha/canteen/o/${co.id}?k=${co.view_key}`, null, '.cn-token b');
+    await visit('student: menu shows category, price and description', '/d/alpha/canteen', null, '.cn-cat h2');
+    check('…with filters; "Veg only" and price sorting work', await js(`const d = document.querySelector('.cn-item .cn-price'); document.querySelector('[data-f=sort]').click(); await new Promise(r => setTimeout(r, 100));
+      const p = [...document.querySelector('.cn-list').querySelectorAll('.cn-item')].map(r => +r.dataset.price); document.querySelector('[data-f=sort]').click();
+      return !!d && /₹/.test(d.textContent) && p.every((x, i) => !i || p[i - 1] <= x)`));
     await visit('canteen desk: order board', '/c/canteen', tok.pavan, '.cn-board');
     check('the Canteen tab is in the desk header', await js(`return !!document.querySelector('header nav a[href="#/c/canteen"]')`));
     await api('/notices/' + uiN.id, { token: tok.asha, method: 'DELETE' });
