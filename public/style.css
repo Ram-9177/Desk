@@ -903,3 +903,5 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-b.unpaid{background:#FEF3C7;color:#92400E}.cn-b.claimed{background:#DBEAFE;color:#1E40AF}.cn-b.paid{background:#DCFCE7;color:#166534}.cn-b.del{background:#EDE9FE;color:#5B21B6}
 .cn-board{grid-template-columns:repeat(4,1fr)}@media(max-width:1200px){.cn-board{grid-template-columns:repeat(2,1fr)}}@media(max-width:700px){.cn-board{grid-template-columns:1fr}}
 .cn-tk.s-out{background:#EDE9FE;color:#5B21B6}.cn-oc.s-out{border-left:4px solid #7C3AED}.cn-token.s-out b{color:#6D28D9}
+.cn-addr{margin:8px 0;padding:12px;border-radius:12px;background:var(--brand-2)}.cn-hgrid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cn-opt{position:relative;overflow:hidden}.cn-opt input{left:0;top:0;width:1px;height:1px}

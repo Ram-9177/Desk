@@ -39,6 +39,7 @@ ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS paid_at TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS paid_by TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS fulfil TEXT DEFAULT 'pickup';
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS deliver_to TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS deliver_addr TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS delivery_fee_paise INT DEFAULT 0;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS out_at TEXT;
 ALTER TABLE canteen_orders DROP CONSTRAINT IF EXISTS canteen_orders_status_check;
@@ -51,7 +52,8 @@ export const STATUS = { placed: 'Waiting for payment', accepted: 'Being prepared
 const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected', 'out', 'rejected'], out: ['collected', 'rejected'] }; // ready/out → rejected: never collected
 const LIVE = "('placed','accepted','ready','out')";
 // Payments and delivery, per campus. Defaults: cash only, pickup only, 20 minutes to pay.
-const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20 };
+const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20, delivery_blocks: [] };
+const FLOORS = ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floor', '5th floor', '6th floor'];
 export const payOf = tn => { try { return { ...PAY_DEFAULT, ...JSON.parse(tn.canteen_pay || '{}') }; } catch { return { ...PAY_DEFAULT }; } };
 const UPI_ID = /^[\w.\-]{2,60}@[A-Za-z][\w.\-]{1,40}$/, UTR = /^[A-Za-z0-9]{6,30}$/;
 const upiLink = (p, o) => `upi://pay?${new URLSearchParams({ pa: p.upi_id, pn: p.upi_name || 'Canteen', am: (o.total_paise / 100).toFixed(2), cu: 'INR', tn: `Canteen order ${tokenLabel(o.token_no)}` })}`;
@@ -111,7 +113,7 @@ export function canteen(d) {
     items: JSON.parse(o.items), total_paise: o.total_paise, total: rupees(o.total_paise), name: o.name, note: o.note, created_at: o.created_at,
     accepted_at: o.accepted_at, ready_at: o.ready_at, collected_at: o.collected_at, out_at: o.out_at,
     pay_mode: o.pay_mode || 'cash', pay_status: o.pay_status || 'unpaid', upi_ref: o.upi_ref, paid_at: o.paid_at,
-    fulfil: o.fulfil || 'pickup', deliver_to: o.deliver_to, delivery_fee_paise: o.delivery_fee_paise || 0,
+    fulfil: o.fulfil || 'pickup', deliver_to: o.deliver_to, deliver_addr: (() => { try { return JSON.parse(o.deliver_addr || 'null'); } catch { return null; } })(), delivery_fee_paise: o.delivery_fee_paise || 0,
     status_text: o.status === 'placed' ? (o.pay_mode === 'upi' ? (o.pay_status === 'claimed' ? 'Payment being checked' : 'Waiting for UPI payment') : 'Pay at the counter')
       : o.status === 'collected' && o.fulfil === 'delivery' ? 'Delivered' : STATUS[o.status] });
   const deviceOf = async (tid, token) => {
@@ -126,6 +128,10 @@ export function canteen(d) {
     try { await sendMail(tn.id, [to], key, subject, html, text); } catch (e) { console.error('canteen mail', e.message); }
   };
   // typical minutes from accepted to ready over the last week (for "about N min")
+  // where the canteen delivers: the manager's own list, else every Block the campus's ticket forms already use
+  const blocksOf = async tn => { const own = payOf(tn).delivery_blocks; if (own?.length) return own;
+    const set = new Set(); for (const r of await all('SELECT form_schema FROM services WHERE tenant_id=? AND is_active=1', tn.id)) { try { (JSON.parse(r.form_schema || '{}').lists?.block || []).forEach(b => b && set.add(String(b).trim())); } catch { /* skip */ } }
+    return [...set].sort((a, b) => a.localeCompare(b)); };
   // unpaid orders past the payment window are cancelled (an order with a UPI reference waits for staff to check it)
   const expire = async tn => { const p = payOf(tn), cut = new Date(Date.now() - p.pay_window_min * 6e4).toISOString();
     await run(`UPDATE canteen_orders SET status='cancelled', closed_at=?, reject_reason='Not paid in time' WHERE tenant_id=? AND status='placed' AND coalesce(pay_status,'unpaid')='unpaid' AND created_at < ?`, now(), tn.id, cut); };
@@ -153,7 +159,7 @@ export function canteen(d) {
     await expire(tn); const st = stateOf(tn), since = addDays(dayOf(tn.timezone), -6), pop = {}, pay = payOf(tn);
     for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day>=? AND status='collected'`, tn.id, since)) for (const it of JSON.parse(o.items)) pop[it.id] = (pop[it.id] || 0) + it.qty;
     const busy = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND status IN ('placed','accepted')`, tn.id, dayOf(tn.timezone))).n;
-    return { on: true, open: st.accepting, state: st, busy, pay: { cash: pay.cash, upi: !!pay.upi_id, delivery: pay.delivery, delivery_fee_paise: Math.round(pay.delivery_fee * 100), delivery_note: pay.delivery_note, pay_window_min: pay.pay_window_min }, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
+    return { on: true, open: st.accepting, state: st, busy, pay: { cash: pay.cash, upi: !!pay.upi_id, delivery: pay.delivery, blocks: pay.delivery ? await blocksOf(tn) : [], floors: FLOORS, delivery_fee_paise: Math.round(pay.delivery_fee * 100), delivery_note: pay.delivery_note, pay_window_min: pay.pay_window_min }, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
       campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
   }));
   // step 1 of the first order on a device: email a six-digit code
@@ -201,7 +207,18 @@ export function canteen(d) {
     if (mode === 'upi' && !pay.upi_id) throw bad('UPI payment is not set up here. Please choose cash.');
     if (mode === 'cash' && !pay.cash) throw bad('This canteen takes UPI only.');
     if (fulfil === 'delivery' && !pay.delivery) throw bad('Delivery is not available. Please choose pickup.');
-    const deliverTo = fulfil === 'delivery' ? str(b.deliver_to, 120) : null; if (fulfil === 'delivery' && deliverTo.length < 3) throw bad('Please say where to deliver (block, floor, room)');
+    // delivery address: Block (from the campus list, or typed when the campus has none / "Other"), floor, room, landmark
+    let deliverTo = null, addr = null;
+    if (fulfil === 'delivery') {
+      const a = b.addr && typeof b.addr === 'object' ? b.addr : null;
+      if (a) { const blocks = await blocksOf(tn);
+        addr = { block: str(a.block, 60), floor: str(a.floor, 30), room: str(a.room, 40), landmark: str(a.landmark, 80) };
+        if (!addr.block) throw bad('Please pick your block / building');
+        if (blocks.length && !blocks.includes(addr.block) && !a.other) throw bad('We do not deliver to that block. Please pick one from the list.');
+        if (!addr.room) throw bad('Please enter your room or class number');
+        deliverTo = [addr.block, addr.floor, 'Room ' + addr.room, addr.landmark && `near ${addr.landmark}`].filter(Boolean).join(', ');
+      } else { deliverTo = str(b.deliver_to, 120); if (deliverTo.length < 3) throw bad('Please say where to deliver (block, floor, room)'); }
+    }
     if (fulfil === 'delivery' && !str(b.phone, 20)) throw bad('Please give a phone number so the delivery person can reach you');
     await expire(tn);
     const open = await one(`SELECT count(*) n FROM canteen_orders WHERE device_hash=? AND status IN ${LIVE}`, dv.token_hash);
@@ -222,7 +239,7 @@ export function canteen(d) {
     for (let i = 0; i < 5; i++) { // the next token of the day; a race on the unique index just takes the next one
       const n = ((await one('SELECT max(token_no) m FROM canteen_orders WHERE tenant_id=? AND day=?', tn.id, day)).m || 0) + 1;
       const o = { id: uid(), tenant_id: tn.id, day, token_no: n, view_key: crypto.randomBytes(12).toString('base64url'), device_hash: dv.token_hash, email: dv.email, name,
-        phone: str(b.phone, 20) || null, note: str(b.note, 200) || null, items: JSON.stringify(out), total_paise: total, status: 'placed', created_at: now(), pay_mode: mode, pay_status: 'unpaid', fulfil, deliver_to: deliverTo, delivery_fee_paise: fee };
+        phone: str(b.phone, 20) || null, note: str(b.note, 200) || null, items: JSON.stringify(out), total_paise: total, status: 'placed', created_at: now(), pay_mode: mode, pay_status: 'unpaid', fulfil, deliver_to: deliverTo, deliver_addr: addr ? JSON.stringify(addr) : null, delivery_fee_paise: fee };
       try {
         await run(`INSERT INTO canteen_orders (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o));
         return { ...pub(o), key: o.view_key };
@@ -308,14 +325,15 @@ export function canteen(d) {
   // payments and delivery (same people as the name and timings)
   S.put('/canteen/payments', wrap(async req => { const a = await need(req); if (!(a.setup || a.manager || req.user.role === 'tenant_admin')) throw forbid();
     const b = req.body, p = { cash: !!b.cash, upi_id: str(b.upi_id, 100), upi_name: str(b.upi_name, 60), delivery: !!b.delivery,
-      delivery_fee: Number(b.delivery_fee) || 0, delivery_note: str(b.delivery_note, 120), pay_window_min: Math.floor(Number(b.pay_window_min) || 20) };
+      delivery_fee: Number(b.delivery_fee) || 0, delivery_note: str(b.delivery_note, 120), pay_window_min: Math.floor(Number(b.pay_window_min) || 20),
+      delivery_blocks: [...new Set((Array.isArray(b.delivery_blocks) ? b.delivery_blocks : String(b.delivery_blocks || '').split('\n')).map(x => str(x, 60)).filter(Boolean))].slice(0, 100) };
     if (p.upi_id && !UPI_ID.test(p.upi_id)) throw bad('Enter a UPI ID like canteen@okhdfcbank');
     if (!p.cash && !p.upi_id) throw bad('Turn on cash or add a UPI ID: students need a way to pay');
     if (p.delivery_fee < 0 || p.delivery_fee > 500) throw bad('Delivery charge must be ₹0 to ₹500');
     if (p.pay_window_min < 5 || p.pay_window_min > 120) throw bad('Time to pay must be 5 to 120 minutes');
     await run('UPDATE tenants SET canteen_pay=? WHERE id=?', JSON.stringify(p), req.tenantId); return p; }));
   // ---- menu ----
-  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { pay: payOf(a.tenant), link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
+  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { campus_blocks: await blocksOf({ ...a.tenant, canteen_pay: null }), pay: payOf(a.tenant), link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
   S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
     const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
     const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));

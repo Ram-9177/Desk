@@ -90,7 +90,7 @@ export async function studentCanteen(slug, view, id, q) {
   function cartPage() {
     app.onclick = null;
     if (!count() || !c.open) { if (!c.open) H.toast(`${c.name} is closed right now`); location.replace(`#/d/${slug}/canteen`); return; }
-    const who = ls.get('canteen-who', {}), dev = localStorage.getItem(devKey);
+    const who = ls.get('canteen-who', {}), dev = localStorage.getItem(devKey), ad = who.addr || {};
     app.innerHTML = `<div class="wrap">${back(`#/d/${slug}/canteen`, 'Your order')}
       <div class="card cn-list">${Object.entries(cart).map(([k, n]) => { const it = items.get(k); return `<div class="cn-item"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b><div class="muted small">${n} × ${rupees(it.price_paise)}</div></div></div><b>${rupees(n * it.price_paise)}</b></div>`; }).join('')}
         <div class="cn-item" id="feerow" hidden><span>Delivery</span><b>${rupees(c.pay.delivery_fee_paise)}</b></div>
@@ -98,7 +98,11 @@ export async function studentCanteen(slug, view, id, q) {
       <form id="cnf" class="card">
         ${c.pay.delivery ? `<b>How do you want it?</b><div class="cn-opts"><label class="cn-opt"><input type="radio" name="fulfil" value="pickup" ${who.fulfil !== 'delivery' ? 'checked' : ''}><span>${I('utensils', 18)}<b>Pickup</b><small>Collect at the counter</small></span></label>
           <label class="cn-opt"><input type="radio" name="fulfil" value="delivery" ${who.fulfil === 'delivery' ? 'checked' : ''}><span>${I('pin', 18)}<b>Deliver to me</b><small>${c.pay.delivery_fee_paise ? rupees(c.pay.delivery_fee_paise) + ' delivery' : 'Free delivery'}</small></span></label></div>
-          <div id="dbox" hidden><label>Deliver to</label><input name="deliver_to" maxlength="120" value="${esc(who.deliver_to || '')}" placeholder="Block, floor, room (e.g. B-Block, 2nd floor, Room 214)">${c.pay.delivery_note ? `<div class="muted small">${esc(c.pay.delivery_note)}</div>` : ''}</div>` : ''}
+          <div id="dbox" class="cn-addr" hidden><b>Delivery address</b>${c.pay.delivery_note ? `<div class="muted small">${esc(c.pay.delivery_note)}</div>` : ''}
+            <label>Block / building</label>${c.pay.blocks.length ? `<select name="a_block"><option value="">Pick your block</option>${c.pay.blocks.map(x => `<option ${ad.block === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : `<input name="a_block" maxlength="60" value="${esc(ad.block || '')}" placeholder="e.g. Boys hostel B, Main block">`}
+            <div class="cn-hgrid2"><div><label>Floor</label><select name="a_floor"><option value="">—</option>${c.pay.floors.map(x => `<option ${ad.floor === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
+            <div><label>Room / class no.</label><input name="a_room" maxlength="40" value="${esc(ad.room || '')}" placeholder="e.g. 214"></div></div>
+            <label>Landmark <span class="muted small">(optional)</span></label><input name="a_landmark" maxlength="80" value="${esc(ad.landmark || '')}" placeholder="e.g. next to the lift, Lab 3"></div>` : ''}
         <b style="display:block;margin-top:12px">How will you pay?</b><div class="cn-opts">
           ${c.pay.cash ? `<label class="cn-opt"><input type="radio" name="pay_mode" value="cash" ${who.pay_mode !== 'upi' || !c.pay.upi ? 'checked' : ''}><span>${I('cash', 18)}<b>Cash at the counter</b><small>Pay first, then it goes to the kitchen</small></span></label>` : ''}
           ${c.pay.upi ? `<label class="cn-opt"><input type="radio" name="pay_mode" value="upi" ${who.pay_mode === 'upi' || !c.pay.cash ? 'checked' : ''}><span>${I('phone', 18)}<b>UPI</b><small>GPay, PhonePe, Paytm…</small></span></label>` : ''}</div>
@@ -109,7 +113,7 @@ export async function studentCanteen(slug, view, id, q) {
         <div id="vbox"></div><div class="err" id="cnerr"></div>
         <button class="btn primary big" id="cnplace">${I('check', 18)} Place order</button></form></div>`;
     const f = document.getElementById('cnf'), err = document.getElementById('cnerr'), vbox = document.getElementById('vbox');
-    const sync = () => { const del = f.fulfil && f.fulfil.value === 'delivery'; const db = document.getElementById('dbox'); if (db) db.hidden = !del; if (f.deliver_to) f.deliver_to.required = del;
+    const sync = () => { const del = f.fulfil && f.fulfil.value === 'delivery'; const db = document.getElementById('dbox'); if (db) db.hidden = !del; if (f.a_block) { f.a_block.required = del; f.a_room.required = del; }
       f.phone.required = del; document.getElementById('phopt').textContent = del ? '(for the delivery person)' : '(optional)';
       document.getElementById('feerow').hidden = !del; document.getElementById('cntot').textContent = rupees(total() + (del ? c.pay.delivery_fee_paise : 0));
       const pm = f.querySelector('[name=pay_mode]:checked')?.value; document.getElementById('paynote').textContent = pm === 'upi' ? 'After placing the order you pay with your UPI app and enter the reference number. The canteen checks it, then starts cooking.'
@@ -129,9 +133,10 @@ export async function studentCanteen(slug, view, id, q) {
         if (!verified) { if (!f.code || f.code.closest('[hidden]')) throw new Error('Tap “Send code” and enter the code from your email');
           const r = await H.api(`/public/${slug}/canteen/verify`, { method: 'POST', body: { email: f.email.value.trim(), code: f.code.value.trim() } });
           localStorage.setItem(devKey, r.device); verified = true; ls.set('canteen-who', { ...ls.get('canteen-who', {}), email: r.email }); }
-        const fulfil = f.fulfil?.value || 'pickup', pay_mode = f.querySelector('[name=pay_mode]:checked')?.value || 'cash', deliver_to = f.deliver_to?.value || '';
-        ls.set('canteen-who', { ...ls.get('canteen-who', {}), name: f.name.value.trim(), phone: f.phone.value.trim(), fulfil, pay_mode, deliver_to });
-        const o = await H.api(`/public/${slug}/canteen/orders`, { method: 'POST', body: { device: localStorage.getItem(devKey), name: f.name.value, phone: f.phone.value, note: f.note.value, fulfil, pay_mode, deliver_to, items: Object.entries(cart).map(([id, qty]) => ({ id, qty })) } });
+        const fulfil = f.fulfil?.value || 'pickup', pay_mode = f.querySelector('[name=pay_mode]:checked')?.value || 'cash';
+        const addr = fulfil === 'delivery' ? { block: f.a_block.value.trim(), floor: f.a_floor.value, room: f.a_room.value.trim(), landmark: f.a_landmark.value.trim(), other: !c.pay.blocks.length } : undefined;
+        ls.set('canteen-who', { ...ls.get('canteen-who', {}), name: f.name.value.trim(), phone: f.phone.value.trim(), fulfil, pay_mode, ...(addr ? { addr } : {}) });
+        const o = await H.api(`/public/${slug}/canteen/orders`, { method: 'POST', body: { device: localStorage.getItem(devKey), name: f.name.value, phone: f.phone.value, note: f.note.value, fulfil, pay_mode, addr, items: Object.entries(cart).map(([id, qty]) => ({ id, qty })) } });
         cart = {}; save(); ls.set('canteen-mine:' + slug, [{ id: o.id, key: o.key }, ...ls.get('canteen-mine:' + slug, [])].slice(0, 20));
         location.hash = `#/d/${slug}/canteen/o/${o.id}?k=${o.key}&new=1`;
       } catch (e2) { err.textContent = e2.message; if (e2.code === 'VERIFY') { localStorage.removeItem(devKey); verified = false; verifyUI(); } btn.disabled = false; } };
@@ -262,6 +267,7 @@ export async function canteenPage(main, { sa }) {
           <label>Minutes to pay before an order is cancelled<input type="number" name="pay_window_min" min="5" max="120" value="${m.pay.pay_window_min}"></label></div>
           <label class="chk" style="margin-top:10px"><input type="checkbox" name="delivery" ${m.pay.delivery ? 'checked' : ''}> Door delivery on campus</label>
           <div class="cn-hgrid"><label>Delivery charge (₹)<input type="number" name="delivery_fee" min="0" max="500" step="0.5" value="${m.pay.delivery_fee}"></label><label style="grid-column:span 2">Note for students<input name="delivery_note" maxlength="120" value="${esc(m.pay.delivery_note)}" placeholder="e.g. Hostels and academic blocks only"></label></div>
+          <label>Blocks you deliver to <span class="muted small">(one per line; leave empty to use the campus's blocks${m.campus_blocks.length ? ': ' + esc(m.campus_blocks.slice(0, 6).join(', ')) + (m.campus_blocks.length > 6 ? '…' : '') : ''})</span></label><textarea name="delivery_blocks" rows="4" placeholder="Boys hostel A&#10;Girls hostel&#10;Main block">${esc((m.pay.delivery_blocks || []).join('\n'))}</textarea>
           <p class="row"><button class="btn soft">Save payments &amp; delivery</button></p></form></details>` : ''}
       <p class="row"><button class="btn primary" id="additem">${I('plus', 16)} Add item</button><button class="btn soft" id="addcat">${I('plus', 16)} Add category</button></p>
       ${groups.map(g => `<section class="cn-cat"><div class="cn-ch"><h2>${esc(g.name)}</h2>${g.id ? `<span><button class="iconbtn" data-up="${g.id}" aria-label="Move ${esc(g.name)} up" ${cats[0]?.id === g.id ? 'disabled' : ''}>▲</button><button class="iconbtn" data-ren="${g.id}" aria-label="Rename">${I('pencil', 15)}</button><button class="iconbtn" data-cdel="${g.id}" aria-label="Remove category">${I('x', 15)}</button></span>` : ''}</div>
@@ -269,7 +275,7 @@ export async function canteenPage(main, { sa }) {
     wire();
     const hf = document.getElementById('cnhrs'); if (hf) { hf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/hours', { method: 'PUT', body: { open: hf.open.value, close: hf.close.value, last_order_min: +hf.last.value, days: [...hf.querySelectorAll('[name=d]:checked')].map(x => +x.value) } }); toast('Timings saved'); draw(); } catch (er) { toast(er.message); } };
       const hc = document.getElementById('cnhclr'); if (hc) hc.onclick = async () => { await api('/canteen/hours', { method: 'PUT', body: { clear: true } }); toast('Time limit removed'); draw(); }; }
-    const pf = document.getElementById('cnpay'); if (pf) pf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/payments', { method: 'PUT', body: { cash: pf.cash.checked, upi_id: pf.upi_id.value.trim(), upi_name: pf.upi_name.value.trim(), pay_window_min: +pf.pay_window_min.value, delivery: pf.delivery.checked, delivery_fee: +pf.delivery_fee.value, delivery_note: pf.delivery_note.value } }); toast('Payments & delivery saved'); } catch (er) { toast(er.message); } };
+    const pf = document.getElementById('cnpay'); if (pf) pf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/payments', { method: 'PUT', body: { cash: pf.cash.checked, upi_id: pf.upi_id.value.trim(), upi_name: pf.upi_name.value.trim(), pay_window_min: +pf.pay_window_min.value, delivery: pf.delivery.checked, delivery_fee: +pf.delivery_fee.value, delivery_note: pf.delivery_note.value, delivery_blocks: pf.delivery_blocks.value } }); toast('Payments & delivery saved'); } catch (er) { toast(er.message); } };
     const nf = document.getElementById('cnname'); if (nf) nf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/name', { method: 'PUT', body: { name: nf.name.value } }); toast('Name saved'); } catch (er) { toast(er.message); } };
     // an A4 poster for the counter or notice board: name, timings, big QR, the short link
     document.getElementById('cnposter').onclick = () => { const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print the poster');

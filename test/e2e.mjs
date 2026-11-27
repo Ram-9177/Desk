@@ -1251,6 +1251,13 @@ try {
   check('students see cash, UPI and delivery with its charge', pm.cash && pm.upi && pm.delivery && pm.delivery_fee_paise === 1000);
   await fails('delivery needs a place', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', phone: '9000000001', items: [{ id: dosa.id, qty: 1 }], fulfil: 'delivery' } }, 400, 'deliver');
   await fails('delivery needs a phone number', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }], fulfil: 'delivery', deliver_to: 'B-Block 214' } }, 400, 'phone');
+  await ok('manager limits delivery to two blocks', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', upi_name: 'Hilltop Cafe', delivery: true, delivery_fee: 10, pay_window_min: 20, delivery_blocks: 'Boys hostel A\nMain block' } });
+  check('the checkout offers those blocks and floors', JSON.stringify((await api('/public/alpha/canteen')).data.pay.blocks) === '["Boys hostel A","Main block"]');
+  await fails('a block outside the list is refused', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', phone: '9000000001', items: [{ id: dosa.id, qty: 1 }], fulfil: 'delivery', addr: { block: 'Mars', room: '1' } } }, 400, 'block');
+  await fails('a room number is needed', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', phone: '9000000001', items: [{ id: dosa.id, qty: 1 }], fulfil: 'delivery', addr: { block: 'Main block' } } }, 400, 'room');
+  const da = (await ord({ fulfil: 'delivery', pay_mode: 'cash', addr: { block: 'Boys hostel A', floor: '2nd floor', room: '214', landmark: 'next to the lift' } })).data;
+  check('the address is saved in parts and as one line for the delivery person', da.deliver_to === 'Boys hostel A, 2nd floor, Room 214, near next to the lift' && da.deliver_addr.room === '214');
+  await api(`/public/alpha/canteen/orders/${da.id}/cancel`, { method: 'POST', body: { k: da.key } });
   const du = (await ord({ fulfil: 'delivery', deliver_to: 'B-Block, Room 214', pay_mode: 'upi' })).data;
   check('a UPI delivery order: total includes the delivery charge, waiting for payment', du.total_paise === 9000 + 1000 && du.status === 'placed' && du.pay_status === 'unpaid' && du.status_text === 'Waiting for UPI payment');
   const dv1 = (await api(`/public/alpha/canteen/orders/${du.id}?k=${du.key}`)).data;
