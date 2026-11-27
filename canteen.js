@@ -40,6 +40,11 @@ ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS paid_by TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS fulfil TEXT DEFAULT 'pickup';
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS deliver_to TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS deliver_addr TEXT;
+-- kitchen staff (kind='kitchen') sit in the same table as the managers; the kitchen works the KOT: start cooking, then ready
+ALTER TABLE canteen_managers ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'manager';
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS kot_started_at TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS kot_by TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS has_booked INT DEFAULT 0;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS delivery_fee_paise INT DEFAULT 0;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS out_at TEXT;
 ALTER TABLE canteen_orders DROP CONSTRAINT IF EXISTS canteen_orders_status_check;
@@ -57,7 +62,7 @@ const FLOORS = ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floo
 export const payOf = tn => { try { return { ...PAY_DEFAULT, ...JSON.parse(tn.canteen_pay || '{}') }; } catch { return { ...PAY_DEFAULT }; } };
 const UPI_ID = /^[\w.\-]{2,60}@[A-Za-z][\w.\-]{1,40}$/, UTR = /^[A-Za-z0-9]{6,30}$/;
 const upiLink = (p, o) => `upi://pay?${new URLSearchParams({ pa: p.upi_id, pn: p.upi_name || 'Canteen', am: (o.total_paise / 100).toFixed(2), cu: 'INR', tn: `Canteen order ${tokenLabel(o.token_no)}` })}`;
-const MAX_MANAGERS = 2, MAX_LINES = 30, MAX_QTY = 20, MAX_OPEN_PER_DEVICE = 3, OTP_MIN = 10, DEVICE_DAYS = 180;
+const MAX_KITCHEN = 10, MAX_MANAGERS = 2, MAX_LINES = 30, MAX_QTY = 20, MAX_OPEN_PER_DEVICE = 3, OTP_MIN = 10, DEVICE_DAYS = 180;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
 const sha = v => crypto.createHash('sha256').update(String(v)).digest('hex');
@@ -98,10 +103,12 @@ export function canteen(d) {
   // ---------- who may do what ----------
   async function access(req) {
     const u = req.user, tid = req.tenantId; if (!tid) return { tenant: null, setup: u.role === 'super_admin', manage: false };
-    const tn = await tenantRow(tid), mgr = !!(await one('SELECT 1 FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id));
-    return { tenant: tn, setup: u.role === 'super_admin', manage: !!tn?.canteen_on && (mgr || u.role !== 'provider'), manager: mgr, req_admin: u.role === 'tenant_admin' && !!tn?.canteen_on };
+    const tn = await tenantRow(tid), row = await one('SELECT kind FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id), mgr = row?.kind === 'manager' || (row && !row.kind);
+    const manage = !!tn?.canteen_on && (mgr || u.role !== 'provider');
+    return { tenant: tn, setup: u.role === 'super_admin', manage, manager: mgr, kitchen: !!tn?.canteen_on && (manage || row?.kind === 'kitchen'), cook: row?.kind === 'kitchen', req_admin: u.role === 'tenant_admin' && !!tn?.canteen_on };
   }
   const need = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.manage) throw forbid(); return a; };
+  const needKitchen = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.kitchen) throw new HttpErr(403, 'FORBIDDEN', 'Only the kitchen and canteen managers can do this'); return a; };
 
   const menuOf = async (tid, all_ = false) => {
     const cats = await all('SELECT id, name, sort_order FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid);
@@ -111,10 +118,11 @@ export function canteen(d) {
   };
   const pub = o => ({ id: o.id, token: tokenLabel(o.token_no), token_no: o.token_no, day: o.day, status: o.status, status_text: STATUS[o.status], reject_reason: o.reject_reason,
     items: JSON.parse(o.items), total_paise: o.total_paise, total: rupees(o.total_paise), name: o.name, note: o.note, created_at: o.created_at,
-    accepted_at: o.accepted_at, ready_at: o.ready_at, collected_at: o.collected_at, out_at: o.out_at,
+    accepted_at: o.accepted_at, ready_at: o.ready_at, collected_at: o.collected_at, out_at: o.out_at, kot_started_at: o.kot_started_at, has_booked: !!o.has_booked,
     pay_mode: o.pay_mode || 'cash', pay_status: o.pay_status || 'unpaid', upi_ref: o.upi_ref, paid_at: o.paid_at,
     fulfil: o.fulfil || 'pickup', deliver_to: o.deliver_to, deliver_addr: (() => { try { return JSON.parse(o.deliver_addr || 'null'); } catch { return null; } })(), delivery_fee_paise: o.delivery_fee_paise || 0,
     status_text: o.status === 'placed' ? (o.pay_mode === 'upi' ? (o.pay_status === 'claimed' ? 'Payment being checked' : 'Waiting for UPI payment') : 'Pay at the counter')
+      : o.status === 'accepted' ? (o.kot_started_at ? 'Being cooked' : 'Sent to the kitchen')
       : o.status === 'collected' && o.fulfil === 'delivery' ? 'Delivered' : STATUS[o.status] });
   const deviceOf = async (tid, token) => {
     if (!token || typeof token !== 'string' || token.length > 100) return null;
@@ -229,17 +237,17 @@ export function canteen(d) {
     for (const l of lines) {
       const it = rows.find(r => r.id === String(l.id)), qty = Math.floor(Number(l.qty));
       if (!it || !it.active) throw bad('Something in your cart is no longer on the menu. Please refresh.');
-      if (it.sold_out) throw bad(`${it.name} just sold out. Please remove it from your cart.`);
+      // out of stock: still bookable; the manager confirms it can be made before the order goes to the kitchen
       if (!(qty >= 1 && qty <= MAX_QTY)) throw bad(`Quantity for ${it.name} must be 1 to ${MAX_QTY}`);
       const prev = out.find(x => x.id === it.id); if (prev) { prev.qty = Math.min(MAX_QTY, prev.qty + qty); continue; }
-      out.push({ id: it.id, name: it.name, price_paise: it.price_paise, qty });
+      out.push({ id: it.id, name: it.name, price_paise: it.price_paise, qty, ...(it.sold_out ? { booked: true } : {}) });
     }
     const fee = fulfil === 'delivery' ? Math.round(pay.delivery_fee * 100) : 0, total = out.reduce((s, x) => s + x.price_paise * x.qty, 0) + fee, day = dayOf(tn.timezone);
     await run('UPDATE canteen_devices SET last_used_at=? WHERE token_hash=?', now(), dv.token_hash);
     for (let i = 0; i < 5; i++) { // the next token of the day; a race on the unique index just takes the next one
       const n = ((await one('SELECT max(token_no) m FROM canteen_orders WHERE tenant_id=? AND day=?', tn.id, day)).m || 0) + 1;
       const o = { id: uid(), tenant_id: tn.id, day, token_no: n, view_key: crypto.randomBytes(12).toString('base64url'), device_hash: dv.token_hash, email: dv.email, name,
-        phone: str(b.phone, 20) || null, note: str(b.note, 200) || null, items: JSON.stringify(out), total_paise: total, status: 'placed', created_at: now(), pay_mode: mode, pay_status: 'unpaid', fulfil, deliver_to: deliverTo, deliver_addr: addr ? JSON.stringify(addr) : null, delivery_fee_paise: fee };
+        phone: str(b.phone, 20) || null, note: str(b.note, 200) || null, items: JSON.stringify(out), total_paise: total, status: 'placed', created_at: now(), pay_mode: mode, pay_status: 'unpaid', fulfil, has_booked: out.some(x => x.booked) ? 1 : 0, deliver_to: deliverTo, deliver_addr: addr ? JSON.stringify(addr) : null, delivery_fee_paise: fee };
       try {
         await run(`INSERT INTO canteen_orders (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o));
         return { ...pub(o), key: o.view_key };
@@ -288,12 +296,13 @@ export function canteen(d) {
 
   // ================= canteen desk (signed in) =================
   S.get('/canteen/access', wrap(async req => { const a = await access(req);
-    return { setup: a.setup, manage: a.manage, manager: !!a.manager, rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
+    return { setup: a.setup, manage: a.manage, manager: !!a.manager, kitchen: !!a.kitchen, cook: !!a.cook, rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
   // super admin: switch on for the campus, pick 1–2 desk providers as managers
   S.get('/canteen/setup', wrap(async req => {
     if (req.user.role !== 'super_admin') throw forbid(); if (!req.tenantId) throw bad('Pick a campus first');
     const tn = await tenantRow(req.tenantId);
-    return { on: !!tn.canteen_on, slug: tn.slug, name: tn.canteen_name || '', default_name: `${tn.name} Canteen`, managers: (await all('SELECT user_id FROM canteen_managers WHERE tenant_id=?', req.tenantId)).map(r => r.user_id),
+    return { on: !!tn.canteen_on, slug: tn.slug, name: tn.canteen_name || '', default_name: `${tn.name} Canteen`, managers: (await all(`SELECT user_id FROM canteen_managers WHERE tenant_id=? AND coalesce(kind,'manager')='manager'`, req.tenantId)).map(r => r.user_id),
+      kitchen: (await all(`SELECT user_id FROM canteen_managers WHERE tenant_id=? AND kind='kitchen'`, req.tenantId)).map(r => r.user_id), max_kitchen: MAX_KITCHEN,
       providers: await all(`SELECT id, name, email FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 ORDER BY name`, req.tenantId), max: MAX_MANAGERS };
   }));
   S.put('/canteen/setup', wrap(async req => {
@@ -303,11 +312,18 @@ export function canteen(d) {
     if (on && !ids.length) throw bad('Pick at least one desk provider as canteen manager');
     const ok = await all(`SELECT id FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 AND id = ANY(?::text[])`, req.tenantId, ids);
     if (ok.length !== ids.length) throw bad('Canteen managers must be active service providers on this campus');
+    const kit = req.body.kitchen === undefined ? null : [...new Set((req.body.kitchen || []).map(String))];
+    if (kit) { if (kit.length > MAX_KITCHEN) throw bad(`Pick at most ${MAX_KITCHEN} kitchen staff`);
+      if (kit.some(id => ids.includes(id))) throw bad('A person is either a canteen manager or kitchen staff, not both');
+      const ok2 = await all(`SELECT id FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 AND id = ANY(?::text[])`, req.tenantId, kit);
+      if (ok2.length !== kit.length) throw bad('Kitchen staff must be active service providers on this campus'); }
     await run('UPDATE tenants SET canteen_on=?, canteen_name=? WHERE id=?', on ? 1 : 0, str(req.body.name, 60) || null, req.tenantId);
     if (!on) await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId); // switched off: closed too
-    await run('DELETE FROM canteen_managers WHERE tenant_id=?', req.tenantId);
-    for (const id of ids) await run('INSERT INTO canteen_managers (tenant_id, user_id, created_at) VALUES (?,?,?)', req.tenantId, id, now());
-    return { on, managers: ids };
+    await run(`DELETE FROM canteen_managers WHERE tenant_id=? ${kit ? '' : "AND coalesce(kind,'manager')='manager'"}`, req.tenantId);
+    if (!kit) await run('DELETE FROM canteen_managers WHERE tenant_id=? AND user_id = ANY(?::text[])', req.tenantId, ids); // made a manager: no longer kitchen
+    for (const id of ids) await run(`INSERT INTO canteen_managers (tenant_id, user_id, created_at, kind) VALUES (?,?,?,'manager')`, req.tenantId, id, now());
+    for (const id of kit || []) await run(`INSERT INTO canteen_managers (tenant_id, user_id, created_at, kind) VALUES (?,?,?,'kitchen')`, req.tenantId, id, now());
+    return { on, managers: ids, kitchen: kit };
   }));
 
   // rename: the super admin, the canteen managers and the campus admin (not other providers)
@@ -381,7 +397,7 @@ export function canteen(d) {
     const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ${LIVE})) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
     return { day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: rows.map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
   S.post('/canteen/orders/:id/:to(accepted|rejected|ready|out|collected)', wrap(async req => {
-    const a = await need(req), to = req.params.to, o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
+    const to = req.params.to, a = to === 'ready' ? await needKitchen(req) : await need(req), o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
     if (!(NEXT[o.status] || []).includes(to)) throw bad(`This order is ${STATUS[o.status].toLowerCase()}; it can't be marked ${to}.`);
     const reason = str(req.body.reason, 200); if (to === 'rejected' && reason.length < 3) throw bad('Please give the student a reason for rejecting');
@@ -399,6 +415,14 @@ export function canteen(d) {
       ...(o.pay_status === 'paid' || o.pay_status === 'claimed' ? [`If you already paid ${rupees(o.total_paise)}, please collect your refund at the counter with this token.`] : [])], orderLink(a.tenant, o));
     return pub(n);
   }));
+
+  // ---- kitchen: KOTs (paid orders) ----
+  S.get('/canteen/kitchen', wrap(async req => { const a = await needKitchen(req);
+    const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (status='accepted' OR (status IN ('ready','out','collected') AND ready_at > ?)) ORDER BY accepted_at`, req.tenantId, new Date(Date.now() - 2 * 3600e3).toISOString());
+    return { name: canteenName(a.tenant), cook: !!a.cook, kots: rows.filter(o => o.status === 'accepted').map(pub), done: rows.filter(o => o.status !== 'accepted').reverse().slice(0, 20).map(pub) }; }));
+  S.post('/canteen/kitchen/:id/start', wrap(async req => { await needKitchen(req);
+    const r = await run(`UPDATE canteen_orders SET kot_started_at=?, kot_by=? WHERE id=? AND tenant_id=? AND status='accepted' AND kot_started_at IS NULL`, now(), req.user.id, req.params.id, req.tenantId);
+    if (!r.changes) throw bad('This KOT was already started or is no longer in the kitchen. Please refresh.'); return { ok: true }; }));
 
   // ---- reports: collected orders ----
   S.get('/canteen/report', wrap(async req => { const a = await need(req), today = dayOf(a.tenant.timezone);

@@ -7,7 +7,7 @@ export const initCanteen = h => { H = h; };
 const rupees = p => '₹' + (p / 100).toFixed(p % 100 ? 2 : 0);
 const ls = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } } };
 const STEPS = [['placed', 'Placed'], ['accepted', 'Preparing'], ['ready', 'Ready'], ['collected', 'Collected']];
-let timer = null, S_find = '';
+let timer = null, S_find = '', kotSeen = null;
 const every = (ms, fn, hash) => { clearInterval(timer); timer = setInterval(() => { if (location.hash.split('?')[0] !== hash) return clearInterval(timer); if (!document.hidden) fn(); }, ms); };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const t12 = hm => { if (!hm) return ''; const [h, m] = hm.split(':').map(Number); return `${(h % 12) || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h < 12 ? 'AM' : 'PM'}`; };
@@ -40,13 +40,13 @@ export async function studentCanteen(slug, view, id, q) {
   document.title = `${c.name} · ${c.campus}`;
   if (!c.on) { app.innerHTML = `<div class="wrap">${back(`#/d/${slug}`, esc(c.name))}<div class="card empty"><span class="et">No canteen ordering here yet</span><span>${esc(c.campus)} has not started canteen orders on ONE Desk.</span></div></div>`; return; }
   const items = new Map([...c.categories.flatMap(x => x.items), ...c.uncategorised].map(i => [i.id, i]));
-  let cart = ls.get(cartKey, {}); for (const k of Object.keys(cart)) if (!items.has(k) || items.get(k).sold_out) delete cart[k];
+  let cart = ls.get(cartKey, {}); for (const k of Object.keys(cart)) if (!items.has(k)) delete cart[k];
   const save = () => ls.set(cartKey, cart), count = () => Object.values(cart).reduce((s, n) => s + n, 0), total = () => Object.entries(cart).reduce((s, [k, n]) => s + items.get(k).price_paise * n, 0);
   const mine = ls.get('canteen-mine:' + slug, []).length, pop = new Set(c.popular || []);
-  const stepper = it => it.sold_out ? '<span class="cn-so">Sold out</span>' : !c.open ? '' : cart[it.id]
+  const stepper = it => !c.open ? (it.sold_out ? '<span class="cn-so">Out of stock</span>' : '') : !cart[it.id] && it.sold_out ? `<button type="button" class="btn cn-add cn-book" data-inc="${it.id}" title="Out of stock: book it and the canteen confirms">Book</button>` : cart[it.id]
     ? `<span class="cn-step"><button type="button" data-dec="${it.id}" aria-label="One less ${esc(it.name)}">−</button><b>${cart[it.id]}</b><button type="button" data-inc="${it.id}" aria-label="One more ${esc(it.name)}">+</button></span>`
     : `<button type="button" class="btn soft cn-add" data-inc="${it.id}">Add</button>`;
-  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_paise}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${rupees(it.price_paise)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
+  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_paise}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${it.sold_out ? ' <span class="cn-oos">Out of stock</span>' : ''}${pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${rupees(it.price_paise)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
   const groups = [...c.categories, ...(c.uncategorised.length ? [{ id: 'x', name: c.categories.length ? 'More' : 'Menu', items: c.uncategorised }] : [])];
   const bar = () => { const n = count(), b = document.getElementById('cnbar'); if (!b) return;
     b.hidden = !n || !c.open; b.innerHTML = `<a class="btn primary big" href="#/d/${slug}/canteen/cart">${I('utensils', 18)} ${n} item${n === 1 ? '' : 's'} · ${rupees(total())} <span style="margin-left:auto">View cart ${I('chev', 16)}</span></a>`; };
@@ -65,7 +65,7 @@ export async function studentCanteen(slug, view, id, q) {
   app.querySelectorAll('[data-go]').forEach(a => a.onclick = e => { e.preventDefault(); document.getElementById('cat-' + a.dataset.go)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   app.onclick = e => { const inc = e.target.closest('[data-inc]'), dec = e.target.closest('[data-dec]'); if (!inc && !dec) return;
     const k = (inc || dec).dataset.inc || (inc || dec).dataset.dec; cart[k] = Math.max(0, Math.min(20, (cart[k] || 0) + (inc ? 1 : -1))); if (!cart[k]) delete cart[k]; save();
-    const st_ = document.getElementById('st-' + k); if (st_) st_.innerHTML = stepper(items.get(k)); bar(); if (inc && cart[k] === 1) H.toast(`${items.get(k).name} added`, 1500); };
+    const st_ = document.getElementById('st-' + k); if (st_) st_.innerHTML = stepper(items.get(k)); bar(); if (inc && cart[k] === 1) H.toast(items.get(k).sold_out ? `${items.get(k).name} booked: the canteen confirms before cooking` : `${items.get(k).name} added`, items.get(k).sold_out ? 3000 : 1500); };
   bar();
   // search (name and description) + filters (veg, under ₹50, available) + sort by price, all together; the choices are remembered
   const F = new Set(ls.get('canteen-filters', [])), qi = document.getElementById('cnq');
@@ -92,7 +92,8 @@ export async function studentCanteen(slug, view, id, q) {
     if (!count() || !c.open) { if (!c.open) H.toast(`${c.name} is closed right now`); location.replace(`#/d/${slug}/canteen`); return; }
     const who = ls.get('canteen-who', {}), dev = localStorage.getItem(devKey), ad = who.addr || {};
     app.innerHTML = `<div class="wrap">${back(`#/d/${slug}/canteen`, 'Your order')}
-      <div class="card cn-list">${Object.entries(cart).map(([k, n]) => { const it = items.get(k); return `<div class="cn-item"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b><div class="muted small">${n} × ${rupees(it.price_paise)}</div></div></div><b>${rupees(n * it.price_paise)}</b></div>`; }).join('')}
+      <div class="card cn-list">${Object.entries(cart).map(([k, n]) => { const it = items.get(k); return `<div class="cn-item"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${it.sold_out ? ' <span class="cn-oos">Out of stock · booked</span>' : ''}<div class="muted small">${n} × ${rupees(it.price_paise)}</div></div></div><b>${rupees(n * it.price_paise)}</b></div>`; }).join('')}
+        ${Object.keys(cart).some(k => items.get(k).sold_out) ? '<div class="cn-note">Some items are out of stock right now. You can still book them: the canteen confirms they can make them before cooking, or rejects with a reason (any payment is refunded at the counter).</div>' : ''}
         <div class="cn-item" id="feerow" hidden><span>Delivery</span><b>${rupees(c.pay.delivery_fee_paise)}</b></div>
         <div class="cn-item cn-tot"><b>Total</b><b id="cntot">${rupees(total())}</b></div></div>
       <form id="cnf" class="card">
@@ -206,21 +207,24 @@ async function minePage(slug) {
 export async function canteenPage(main, { sa }) {
   const { I, esc, api, toast, dlg } = H, acc = await api('/canteen/access');
   const st = ls.get('canteen-tab', 'orders'), hash = '#/c/canteen';
-  const tabs = [acc.manage && ['orders', 'Orders'], acc.manage && ['menu', 'Menu'], acc.manage && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
+  const tabs = [acc.manage && ['orders', 'Orders'], acc.kitchen && ['kitchen', 'Kitchen (KOT)'], acc.manage && ['menu', 'Menu'], acc.manage && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
   let tab = tabs.some(t => t[0] === st) ? st : tabs[0]?.[0];
   if (!tab) { main.innerHTML = '<div class="card empty"><span class="et">Canteen is not set up for you</span><span>The super admin switches the canteen on and picks the canteen managers.</span></div>'; return; }
   const head = () => `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
   const wire = () => main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; ls.set('canteen-tab', tab); clearInterval(timer); draw(); });
-  const draw = async () => { try { await ({ orders, menu, report, setup })[tab](); } catch (e) { main.innerHTML = head() + `<p class="err">${esc(e.message)}</p>`; wire(); } };
+  const draw = async () => { try { await ({ orders, kitchen, menu, report, setup })[tab](); } catch (e) { main.innerHTML = head() + `<p class="err">${esc(e.message)}</p>`; wire(); } };
   await draw();
 
   async function orders() {
     const d = await api('/canteen/orders'), by = s => d.orders.filter(o => s.includes(o.status));
     const card = o => `<div class="card cn-oc s-${o.status}" data-tk="${o.token_no}"><div class="cn-oh"><span class="cn-tk s-${o.status}">${o.token}</span><div><b>${esc(o.name)}</b>${o.earlier ? ` <span class="cn-so">from ${esc(o.day)}</span>` : ''}<div class="muted small">${new Date(o.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}${o.phone ? ' · ' + esc(o.phone) : ''}</div></div><b class="cn-amt">${o.total}</b></div>
+      <div class="cn-sum"><span><small>Order</small><b>${o.token}</b></span><span><small>Amount</small><b>${o.total}</b></span><span><small>${o.pay_mode === 'upi' ? 'UTR' : 'Payment'}</small><b class="mono">${o.pay_mode === 'upi' ? (o.upi_ref ? esc(o.upi_ref) : '—') : 'Cash'}</b></span></div>
+      ${o.has_booked && o.status === 'placed' ? `<div class="cn-warn">${I('alert', 14)} Has out-of-stock items: confirm you can make them before sending to the kitchen.</div>` : ''}
       <div class="cn-badges"><span class="cn-b ${o.pay_status}">${o.pay_mode === 'upi' ? 'UPI' : 'Cash'} · ${o.pay_status === 'paid' ? 'paid' : o.pay_status === 'claimed' ? `ref ${esc(o.upi_ref)}` : 'not paid yet'}</span>${o.fulfil === 'delivery' ? `<span class="cn-b del">${I('pin', 12)} ${esc(o.deliver_to)}</span>` : '<span class="cn-b">Pickup</span>'}</div>
-      <ul class="cn-lines">${o.items.map(i => `<li><b>${i.qty}×</b> ${esc(i.name)}</li>`).join('')}</ul>${o.note ? `<div class="cn-note">${I('pencil', 13)} ${esc(o.note)}</div>` : ''}
+      <table class="cn-itab"><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>${o.items.map(i => `<tr><td>${esc(i.name)}${i.booked ? ' <span class="cn-oos">out of stock</span>' : ''}</td><td>${i.qty}</td><td>${rupees(i.qty * i.price_paise)}</td></tr>`).join('')}
+        ${o.delivery_fee_paise ? `<tr><td>Delivery</td><td></td><td>${rupees(o.delivery_fee_paise)}</td></tr>` : ''}</tbody><tfoot><tr><td>Total</td><td>${o.items.reduce((n, i) => n + i.qty, 0)}</td><td>${o.total}</td></tr></tfoot></table>${o.kot_started_at && o.status === 'accepted' ? '<div class="cn-b paid" style="margin-top:6px;display:inline-flex">Kitchen is cooking</div>' : ''}${o.note ? `<div class="cn-note">${I('pencil', 13)} ${esc(o.note)}</div>` : ''}
       ${o.status === 'rejected' ? `<div class="muted small">Rejected: ${esc(o.reject_reason)}</div>` : ''}
-      <div class="fact">${o.status === 'placed' ? `<button class="btn ${o.pay_mode === 'cash' || o.pay_status === 'claimed' ? 'primary' : ''}" data-a="accepted" data-id="${o.id}" data-pay="${o.pay_mode}" data-ref="${esc(o.upi_ref || '')}" data-amt="${o.total}">${I('check', 16)} ${o.pay_mode === 'cash' ? 'Cash received' : 'UPI verified'} · to kitchen</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
+      <div class="fact">${o.status === 'placed' ? `<button class="btn ${o.pay_mode === 'cash' || o.pay_status === 'claimed' ? 'primary' : ''}" data-a="accepted" data-id="${o.id}" data-pay="${o.pay_mode}" data-ref="${esc(o.upi_ref || '')}" data-amt="${o.total}" data-booked="${o.has_booked ? 1 : ''}">${I('check', 16)} ${o.pay_mode === 'cash' ? 'Cash received' : 'UPI verified'} · to kitchen</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
         : o.status === 'accepted' ? `<button class="btn primary" data-a="ready" data-id="${o.id}">${I('bell', 16)} ${o.fulfil === 'delivery' ? 'Packed' : 'Mark ready'}</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
         : o.status === 'ready' ? (o.fulfil === 'delivery' ? `<button class="btn primary" data-a="out" data-id="${o.id}">${I('send', 16)} Out for delivery</button>` : `<button class="btn primary" data-a="collected" data-id="${o.id}">${I('ccheck', 16)} Collected</button>`) + `<button class="btn danger" data-a="rejected" data-id="${o.id}">Not collected</button>`
         : o.status === 'out' ? `<button class="btn primary" data-a="collected" data-id="${o.id}">${I('ccheck', 16)} Delivered</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Not delivered</button>` : ''}</div></div>`;
@@ -235,6 +239,7 @@ export async function canteenPage(main, { sa }) {
     const fi = document.getElementById('cnfind'); fi.value = S_find; fi.oninput = () => { S_find = fi.value.replace(/\D/g, ''); filt(); }; const filt = () => main.querySelectorAll('.cn-oc').forEach(c => { c.hidden = !!S_find && +c.dataset.tk !== +S_find; }); filt();
     main.querySelectorAll('[data-a]').forEach(b => b.onclick = async () => {
       const go = async body => { await api(`/canteen/orders/${b.dataset.id}/${b.dataset.a}`, { method: 'POST', body }); draw(); };
+      if (b.dataset.a === 'accepted' && b.dataset.booked && !confirm('This order has out-of-stock items. Can the kitchen make them? If not, press Cancel and reject the order.')) return;
       if (b.dataset.a === 'accepted' && !confirm(b.dataset.pay === 'cash' ? `Did you receive ${b.dataset.amt} in cash? The order goes to the kitchen.` : b.dataset.ref ? `Check your UPI app: is there a payment of ${b.dataset.amt} with reference ${b.dataset.ref}? The order goes to the kitchen.` : `The student has not sent a UPI reference yet. Only continue if you can see ${b.dataset.amt} received in your UPI app.`)) return;
       if (b.dataset.a !== 'rejected') { b.disabled = true; try { await go({}); } catch (e) { toast(e.message); draw(); } return; }
       const reasons = ['Payment not received', 'Item sold out', 'Canteen closing', 'Too many orders right now', 'Not collected', 'Could not deliver'];
@@ -243,6 +248,27 @@ export async function canteenPage(main, { sa }) {
       dd.querySelectorAll('[data-r]').forEach(x => x.onclick = () => { dd.querySelector('[name=reason]').value = x.dataset.r; });
     });
     every(10000, () => !document.querySelector('dialog') && document.activeElement?.id !== 'cnfind' && draw(), hash);
+  }
+
+  // Kitchen: each paid order is a KOT (kitchen order ticket): items and quantities, start cooking, then ready
+  async function kitchen() {
+    const k = await api('/canteen/kitchen'), age = iso => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 6e4));
+    const ids = k.kots.map(o => o.id); if (kotSeen && ids.some(id => !kotSeen.includes(id))) { chime(); toast('New KOT in the kitchen'); } kotSeen = ids;
+    const kot = o => `<div class="card cn-kot ${o.kot_started_at ? 'cooking' : 'new'} ${age(o.accepted_at) >= 15 ? 'late' : ''}" data-tk="${o.token_no}"><div class="cn-koth"><b>KOT ${o.token}</b><span>${o.fulfil === 'delivery' ? `${I('pin', 13)} Delivery` : 'Pickup'}</span><span class="cn-age">${age(o.accepted_at)} min</span></div>
+      <table class="cn-ktab"><tbody>${o.items.map(i => `<tr><td class="q">${i.qty}</td><td>${esc(i.name)}${i.booked ? ' <span class="cn-oos">was out of stock</span>' : ''}</td></tr>`).join('')}</tbody></table>
+      ${o.note ? `<div class="cn-note">${I('pencil', 13)} ${esc(o.note)}</div>` : ''}<div class="muted small">${esc(o.name)} · paid ${new Date(o.accepted_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}</div>
+      <div class="fact">${o.kot_started_at ? `<button class="btn primary" data-k="ready" data-id="${o.id}">${I('bell', 16)} ${o.fulfil === 'delivery' ? 'Ready · packed' : 'Ready'}</button>` : `<button class="btn primary" data-k="start" data-id="${o.id}">${I('play', 16)} Start cooking</button>`}<button class="btn" data-print="${o.id}" aria-label="Print KOT ${o.token}">Print</button></div></div>`;
+    main.innerHTML = `${acc.cook ? '' : head()}<div class="cn-kh"><b>${esc(k.name)} · Kitchen</b><span class="muted small">${k.kots.length} KOT${k.kots.length === 1 ? '' : 's'} · refreshes by itself</span></div>
+      <div class="cn-kots">${k.kots.map(kot).join('') || '<div class="card empty" style="grid-column:1/-1"><span class="et">No KOTs right now</span><span>Paid orders appear here as soon as the counter confirms the payment.</span></div>'}</div>
+      <details class="card"><summary><b>Done in the last 2 hours</b> · ${k.done.length}</summary>${k.done.map(o => `<div class="cn-item"><span><span class="cn-tk sm s-${o.status}">${o.token}</span> ${o.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span><span class="muted small">${esc(o.status_text)}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>`;
+    if (!acc.cook) wire();
+    main.querySelectorAll('[data-k]').forEach(b => b.onclick = async () => { b.disabled = true;
+      try { await api(b.dataset.k === 'start' ? `/canteen/kitchen/${b.dataset.id}/start` : `/canteen/orders/${b.dataset.id}/ready`, { method: 'POST' }); toast(b.dataset.k === 'start' ? 'Cooking' : 'Marked ready'); } catch (e) { toast(e.message); } draw(); });
+    main.querySelectorAll('[data-print]').forEach(b => b.onclick = () => { const o = k.kots.find(x => x.id === b.dataset.print), w = window.open('', '_blank', 'width=380,height=600'); if (!w) return toast('Allow pop-ups to print');
+      w.document.write(`<!doctype html><meta charset="utf-8"><title>KOT ${o.token}</title><style>body{font:14px ui-monospace,monospace;margin:12px;width:72mm}h1{font-size:22px;margin:0}td{padding:3px 4px;vertical-align:top}td.q{font-weight:700;font-size:18px}hr{border:0;border-top:1px dashed #000}</style>
+        <h1>KOT ${o.token}</h1><div>${esc(k.name)}</div><div>${new Date(o.accepted_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</div><div>${o.fulfil === 'delivery' ? 'DELIVERY: ' + esc(o.deliver_to) : 'PICKUP'}</div><hr>
+        <table>${o.items.map(i => `<tr><td class="q">${i.qty}</td><td>${esc(i.name)}</td></tr>`).join('')}</table><hr>${o.note ? `<div>NOTE: ${esc(o.note)}</div><hr>` : ''}<div>${esc(o.name)}</div><script>print()<\/script>`); w.document.close(); });
+    every(8000, () => !document.querySelector('dialog') && draw(), hash);
   }
 
   async function menu() {
@@ -325,12 +351,14 @@ export async function canteenPage(main, { sa }) {
       <label class="chk" style="margin:12px 0"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Canteen ordering is on</label>
       <b>Canteen managers</b><div class="muted small">Pick 1 or 2 desk providers. They build the menu, open the canteen and handle orders; campus admins can help too.</div>
       <div class="cn-mgrs">${s.providers.map(p => `<label class="chk"><input type="checkbox" name="m" value="${p.id}" ${s.managers.includes(p.id) ? 'checked' : ''}> ${esc(p.name)} <span class="muted small">${esc(p.email)}</span></label>`).join('') || '<p class="muted small">No active service providers on this campus yet. Add them under People.</p>'}</div>
+      <b style="display:block;margin-top:14px">Kitchen staff</b><div class="muted small">They sign in like other providers and see only the Kitchen (KOT) screen: paid orders with items and quantities, Start cooking, Ready. Up to ${s.max_kitchen}.</div>
+      <div class="cn-mgrs">${s.providers.map(p => `<label class="chk"><input type="checkbox" name="k" value="${p.id}" ${s.kitchen.includes(p.id) ? 'checked' : ''}> ${esc(p.name)} <span class="muted small">${esc(p.email)}</span></label>`).join('')}</div>
       <div class="err" id="cnserr"></div><p><button class="btn primary">Save</button></p>
       ${s.on ? `<p class="muted small">Student link: <code>${esc(location.origin + '/' + s.slug + '/cafeteria')}</code> · the QR code is on the Menu tab.</p>` : ''}</form>`;
     wire();
     const f = document.getElementById('cnset'), boxes = [...f.querySelectorAll('[name=m]')];
     boxes.forEach(b => b.onchange = () => { if (boxes.filter(x => x.checked).length > s.max) { b.checked = false; toast(`At most ${s.max} canteen managers`); } });
-    f.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/setup', { method: 'PUT', body: { name: f.name.value, on: f.on.checked, managers: boxes.filter(x => x.checked).map(x => x.value) } }); toast('Canteen settings saved'); location.reload(); }
+    f.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/setup', { method: 'PUT', body: { name: f.name.value, on: f.on.checked, managers: boxes.filter(x => x.checked).map(x => x.value), kitchen: [...f.querySelectorAll('[name=k]:checked')].map(x => x.value) } }); toast('Canteen settings saved'); location.reload(); }
       catch (er) { document.getElementById('cnserr').textContent = er.message; } };
   }
 }

@@ -905,3 +905,16 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-tk.s-out{background:#EDE9FE;color:#5B21B6}.cn-oc.s-out{border-left:4px solid #7C3AED}.cn-token.s-out b{color:#6D28D9}
 .cn-addr{margin:8px 0;padding:12px;border-radius:12px;background:var(--brand-2)}.cn-hgrid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .cn-opt{position:relative;overflow:hidden}.cn-opt input{left:0;top:0;width:1px;height:1px}
+.cn-oos{display:inline-block;font-size:11px;font-weight:700;color:#991B1B;background:#FEE2E2;border-radius:99px;padding:1px 7px;vertical-align:1px}
+.cn-book{min-height:36px;padding:6px 14px;border-color:#FCA5A5;color:#991B1B;background:#FEF2F2}
+.cn-sum{display:grid;grid-template-columns:auto auto 1fr;gap:6px;margin-top:10px;background:#F8FAFC;border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.cn-sum span{display:flex;flex-direction:column;min-width:0}.cn-sum small{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.cn-sum b{font-size:15px;overflow-wrap:anywhere}.cn-sum .mono{font-family:var(--mono)}
+.cn-warn{display:flex;gap:6px;align-items:flex-start;margin-top:8px;font-size:13px;color:#991B1B;background:#FEF2F2;border-radius:8px;padding:6px 8px}
+.cn-itab,.cn-ktab{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}.cn-itab th{text-align:left;font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;padding:4px 0;border-bottom:1px solid var(--line)}
+.cn-itab td{padding:5px 0;border-bottom:1px solid var(--divider,#EEF0F3)}.cn-itab th:nth-child(n+2),.cn-itab td:nth-child(n+2){text-align:right;white-space:nowrap;padding-left:8px}.cn-itab tfoot td{font-weight:700;border:0}
+.cn-kh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:8px 0;flex-wrap:wrap}
+.cn-kots{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;align-items:start}
+.cn-kot{margin:0;border-top:6px solid #F59E0B}.cn-kot.cooking{border-top-color:var(--brand)}.cn-kot.late .cn-age{background:#FEE2E2;color:#991B1B}
+.cn-koth{display:flex;align-items:center;gap:8px}.cn-koth b{font:700 20px var(--mono);flex:1}.cn-koth span{font-size:12px;font-weight:600;display:inline-flex;gap:3px;align-items:center}.cn-age{background:#F3F4F6;border-radius:99px;padding:2px 8px}
+.cn-ktab td{padding:6px 0;font-size:16px;border-bottom:1px dashed var(--line)}.cn-ktab td.q{font:700 20px var(--mono);width:44px;color:var(--brand)}
+.cn-kot .fact .btn{flex:1}
