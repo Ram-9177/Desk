@@ -185,6 +185,8 @@ INTEGRATIONS_KEY=<64 hex characters: encrypts the saved Microsoft secret and AI 
 
 Microsoft posts new-mail notices to `https://<site>/api/inbound/graph`, which must be reachable over HTTPS (nginx already passes `/api`). The check value for those notices is made automatically (or set `GRAPH_CLIENT_STATE`). AI keys are entered in Mail → Settings → AI providers (super admin) and stored encrypted. Names, phone numbers and emails are masked before any text goes to an AI.
 
+Step-by-step connection (Entra app, permissions, limiting it to the shared mailboxes, first mailbox live) and the full API: [docs/mail-desk.md](docs/mail-desk.md).
+
 Rollout per mailbox: add it (it starts **Off**) → pick the officers → **Shadow** for a week (mail is read and sorted, nothing is sent, officers do not see it yet) → **Live**. On going live, the shadow week's mail is closed, since it was answered in Outlook.
 
 Rollback: set `MAIL_ENABLED=false` and restart. To remove the data too: `psql onedesk -c 'DROP SCHEMA mail CASCADE'`. Desk tickets already made by Forward stay as normal tickets.
