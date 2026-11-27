@@ -12,7 +12,7 @@ const LANES = [['important', 'Important'], ['needs_reply', 'Needs reply'], ['rev
 const LANE = Object.fromEntries(LANES);
 const SLA = { on_track: ['On track', 'open'], warning: ['Reply soon', 'hold'], escalated: ['Escalated', 'overdue'], escalated_2: ['Escalated ×2', 'overdue'], met: ['Replied', 'closed'], breached_met: ['Replied late', 'rejected'] };
 const STATUS = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Rejected', forwarded: 'Forwarded' };
-const ROLE = { nodal_1: 'Nodal officer 1', nodal_2: 'Nodal officer 2', escalation: 'Escalation officer' };
+const ROLE = { nodal: 'Nodal officer', escalation: 'Escalation officer' };
 const MODE = { off: 'Off', shadow: 'Shadow (read and sort only)', live: 'Live' };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const e = v => H.esc(v);
@@ -72,10 +72,10 @@ async function list(main, me) {
           ${sel('status', [['active', 'Open, in progress, on hold'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['forwarded', 'Forwarded to a service'], ['all', 'All']], st.status, 'id="mst" aria-label="Status"')}</div></div>
         <div class="tabs mt-tabs">${[['', 'All lanes'], ...LANES].map(([k, l]) => `<button class="tab ${st.lane === k || (!k && st.lane === 'all') ? 'on' : ''}" data-lane="${k || 'all'}"><span>${l}</span>${k && c[k] ? `<span class="cnt">${c[k]}</span>` : ''}</button>`).join('')}</div>
         ${d.threads.length ? `<div class="tblbox"><table class="ttable"><thead><tr><th>Mail</th><th>From</th><th>Lane</th><th>Reply target</th><th>Status</th><th>Received</th></tr></thead><tbody>
-          ${d.threads.map(t => `<tr data-href="#/c/mail/t/${t.ref_no}"><td><a href="#/c/mail/t/${t.ref_no}" class="tt-main"><span class="mono tt-no">${e(t.ref)}</span><b>${e(t.subject || '(no subject)')}</b><span class="tt-svc">${e(t.address)}${t.n_in > 1 ? ` · ${t.n_in} messages` : ''}${t.mode !== 'live' ? ' · shadow' : ''}</span><span class="muted small">${e(t.preview)}</span></a></td>
+          ${d.threads.map(t => `<tr data-href="#/c/mail/t/${e(t.ref)}"><td><a href="#/c/mail/t/${e(t.ref)}" class="tt-main"><span class="mono tt-no">${e(t.ref)}</span><b>${e(t.subject || '(no subject)')}</b><span class="tt-svc">${e(t.address)}${t.n_in > 1 ? ` · ${t.n_in} messages` : ''}${t.mode !== 'live' ? ' · shadow' : ''}</span><span class="muted small">${e(t.preview)}</span></a></td>
             <td><span class="tt-req">${H.avatar(t.requester_name || t.requester_email, 28)}<span>${e(t.requester_name || t.requester_email)}</span></span></td><td>${laneChip(t.lane)}</td>
             <td>${slaChip(t.sla_state, t.first_response_due_at, !!t.first_responded_at)}</td><td>${statusPill(t.status)}</td><td><span class="tt-when">${H.shortDate(t.created_at)}</span></td></tr>`).join('')}</tbody></table></div>
-          <div class="tcards">${d.threads.map(t => `<a class="tcard" href="#/c/mail/t/${t.ref_no}"><span class="tc-r1"><span class="mono tc-no">${e(t.ref)}</span>${laneChip(t.lane)}<span class="sp"></span>${slaChip(t.sla_state, t.first_response_due_at, !!t.first_responded_at)}${statusPill(t.status)}</span>
+          <div class="tcards">${d.threads.map(t => `<a class="tcard" href="#/c/mail/t/${e(t.ref)}"><span class="tc-r1"><span class="mono tc-no">${e(t.ref)}</span>${laneChip(t.lane)}<span class="sp"></span>${slaChip(t.sla_state, t.first_response_due_at, !!t.first_responded_at)}${statusPill(t.status)}</span>
             <span class="tc-r2"><b class="tc-title">${e(t.subject || '(no subject)')}</b><span class="tc-loc">${e(t.requester_name || t.requester_email)} · ${e(t.address)}</span></span></a>`).join('')}</div>`
           : `<div class="mt-empty">${H.emptyState('No mail here', 'Nothing matches this lane and filter.')}</div>`}</div>`;
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('mailf', JSON.stringify(st)); draw(); };
@@ -124,7 +124,7 @@ async function thread(main, ref, me) {
     <section class="card"><div class="chead">${H.I('pencil', 16)}<span>Internal notes</span><span class="muted small">never mailed</span></div>
       ${d.notes.map(n => `<div class="mnote"><b>${e(n.author || 'ONE Desk')}</b> <span class="muted small">${H.shortDate(n.created_at)}</span><div>${e(n.body).replace(/\n/g, '<br>')}</div></div>`).join('') || '<p class="muted small">No notes yet.</p>'}
       ${can.work ? '<form id="nf" class="mbar"><input name="body" required maxlength="4000" placeholder="Add a note for the team" aria-label="Note"><button class="btn">Add</button></form>' : ''}</section>
-    ${d.others.length ? `<section class="card"><div class="chead">${H.I('history', 16)}<span>Earlier mail from this sender</span></div>${d.others.map(o => `<p><a href="#/c/mail/t/${o.ref_no}"><span class="mono">${e(o.ref)}</span> ${e(o.subject || '(no subject)')}</a> <span class="muted small">${e(STATUS[o.status] || o.status)} · ${H.shortDate(o.created_at)}</span></p>`).join('')}</section>` : ''}</div>`;
+    ${d.others.length ? `<section class="card"><div class="chead">${H.I('history', 16)}<span>Earlier mail from this sender</span></div>${d.others.map(o => `<p><a href="#/c/mail/t/${e(o.ref)}"><span class="mono">${e(o.ref)}</span> ${e(o.subject || '(no subject)')}</a> <span class="muted small">${e(STATUS[o.status] || o.status)} · ${H.shortDate(o.created_at)}</span></p>`).join('')}</section>` : ''}</div>`;
   const redraw = () => thread(main, ref, me);
   const act = async (fn, okMsg) => { try { await fn(); if (okMsg) H.toast(okMsg); redraw(); } catch (er) { H.toast(er.message); } };
   main.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => act(() => H.api(`/maildesk/outbound/${b.dataset.undo}/cancel`, { method: 'POST' }), 'Not sent'));
@@ -180,7 +180,7 @@ async function confirmPage(main, me) {
     ${rows.length > 1 ? '<button type="button" class="btn primary" id="call">Confirm all ticked</button>' : ''}</div>
     <p class="muted small">Each new mail gets a "we received it" reply. Check it, change the words if needed, then Confirm. Nothing goes out without a click. Red: waiting over a day.</p>
     ${rows.map(r => `<div class="card mconf ${r.stale ? 'stale' : ''}" data-id="${r.id}"><div class="mbar"><input type="checkbox" aria-label="Tick ${e(r.ref)}" checked>
-      <a href="#/c/mail/t/${r.ref_no}"><span class="mono">${e(r.ref)}</span> ${e(r.subject || '(no subject)')}</a><span class="muted small">to ${e(r.requester_name || r.requester_email)} · ${e(r.address)} · ${H.shortDate(r.created_at)}</span></div>
+      <a href="#/c/mail/t/${e(r.ref)}"><span class="mono">${e(r.ref)}</span> ${e(r.subject || '(no subject)')}</a><span class="muted small">to ${e(r.requester_name || r.requester_email)} · ${e(r.address)} · ${H.shortDate(r.created_at)}</span></div>
       <details><summary class="small">Their mail</summary><div class="mm-b small">${e(r.their_text || '').replace(/\n/g, '<br>')}</div></details>
       <textarea rows="6" aria-label="Reply for ${e(r.ref)}">${e(r.body_text)}</textarea>
       <p class="mbar"><button type="button" class="btn primary" data-ok>Confirm</button><button type="button" class="btn" data-no>Don't send</button></p></div>`).join('') || H.emptyState('All clear', 'No auto-reply is waiting.')}</div>`;
@@ -197,10 +197,13 @@ async function confirmPage(main, me) {
 async function settings(main, me) {
   const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
   const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
+  const offRow = (o = {}) => `<div class="row" data-o><div><label>Person</label>${sel('u', pOpts, o.user_id)}</div><div><label>Role</label>${sel('r', Object.entries(ROLE), o.role || 'nodal')}</div>
+    <div><label>Backup while on leave</label>${sel('b', pOpts, o.backup_user_id)}</div><div style="flex:none;align-self:flex-end"><button type="button" class="btn" data-rmo aria-label="Remove officer">Remove</button></div></div>${o.is_active === 0 ? '<div class="err small">This person is deactivated: their backup gets the mail.</div>' : ''}`;
   const chCard = c => {
-    const off = Object.fromEntries(c.officers.map(o => [o.role, o])), def = c.sla.find(p => !p.lane), imp = c.sla.find(p => p.lane === 'important');
+    const def = c.sla.find(p => !p.lane), imp = c.sla.find(p => p.lane === 'important');
     return `<section class="card mset" data-ch="${c.id}"><div class="mt-h"><div><h2 style="margin:0">${e(c.address)}</h2><div class="muted small">${e(c.display_name || '')} · ${e(MODE[c.mode])}${c.subscribed ? ' · receiving mail' : c.mode !== 'off' ? ' · not subscribed yet' : ''}${c.last_synced_at ? ` · last sync ${H.shortDate(c.last_synced_at)}` : ''}</div>
-        ${c.last_error ? `<div class="err small">${e(c.last_error)}</div>` : ''}</div><div class="mbar"><button type="button" class="btn" data-test>Test connection</button>${c.mode !== 'off' ? '<button type="button" class="btn" data-sync>Check for new mail</button>' : ''}</div></div>
+        ${c.last_error ? `<div class="err small">${e(c.last_error)}</div>` : ''}</div><div class="mbar"><button type="button" class="btn" data-test>Test connection</button>${c.mode !== 'off' ? '<button type="button" class="btn" data-sync>Check for new mail</button>' : ''}
+          ${d.admin ? `<button type="button" class="btn" data-addr ${c.mode !== 'off' ? 'disabled title="Switch the mailbox off first"' : ''}>Change address</button><button type="button" class="btn" data-del>Delete</button>` : ''}</div></div>
       <form data-f="box"><div class="row"><div><label>Mode</label>${sel('mode', Object.entries(MODE), c.mode)}</div><div><label>"We received it" reply</label>${sel('ack_mode', [['approve', 'Wait for Confirm (recommended)'], ['auto', 'Send by itself']], c.ack_mode)}</div></div>
         <div class="row"><div><label>Display name</label><input name="display_name" value="${e(c.display_name || '')}" maxlength="120" placeholder="Admissions, St. Mary's"></div><div><label>Usual service for Forward</label>${sel('default_service_id', [['', '—'], ...d.services.map(s => [s.id, s.name])], c.default_service_id)}</div></div>
         <label>Signature <small>(added under every reply)</small></label><textarea name="signature" rows="3" maxlength="1000">${e(c.signature || '')}</textarea>
@@ -209,9 +212,10 @@ async function settings(main, me) {
           ${DAYS.map((x, i) => `<label class="small"><input type="checkbox" name="d${i}" ${(c.office_hours?.days || [1, 2, 3, 4, 5, 6]).includes(i) ? 'checked' : ''}>${x}</label>`).join('')}
           <input type="time" name="from" value="${e(c.office_hours?.from || '09:30')}" aria-label="From"><input type="time" name="to" value="${e(c.office_hours?.to || '17:00')}" aria-label="To"></div>
         <p><button class="btn primary">Save mailbox</button></p></form>
-      <form data-f="off"><b>Officers</b><div class="muted small">New mail shows on both nodal officers' Home. No reply in time: a reminder at the first mark, then the escalation officer, then the campus mail managers.</div>
-        ${['nodal_1', 'nodal_2', 'escalation'].map(r => `<div class="row"><div><label>${ROLE[r]}${r === 'nodal_1' ? ' *' : ''}</label>${sel(r, pOpts, off[r]?.user_id)}</div><div><label>Backup while on leave</label>${sel('b_' + r, pOpts, off[r]?.backup_user_id)}</div></div>`).join('')}
-        <p><button class="btn primary">Save officers</button></p></form>
+      <form data-f="off"><b>Officers</b> <span class="muted small">(${c.officers.filter(o => o.role === 'nodal').length} nodal, ${c.officers.filter(o => o.role === 'escalation').length} escalation)</span>
+        <div class="muted small">Every nodal officer gets this mailbox's mail on their Home and its reminders. No reply in time: the escalation officers, then the campus mail managers. A backup takes over while the officer is on leave.</div>
+        <div data-olist>${c.officers.map(o => offRow(o)).join('')}</div>
+        <p class="mbar"><button type="button" class="btn" data-addo="nodal">${H.I('plus', 16)}Nodal officer</button><button type="button" class="btn" data-addo="escalation">${H.I('plus', 16)}Escalation officer</button><button class="btn primary">Save officers</button></p></form>
       <form data-f="sla"><b>Reply targets</b> <span class="muted small">(working minutes; 450 = one office day of 7½ h)</span>
         ${[['', 'Needs reply / Review', def], ['important', 'Important', imp]].map(([lane, l, p]) => `<div class="row" data-lane="${lane}"><div><label>${l}: reply within (min)</label><input type="number" name="m" min="5" max="20000" value="${p?.first_response_mins || (lane ? 240 : 450)}"></div>
           <div><label>Reminder at %</label><input type="number" name="w" min="10" max="99" value="${p?.warn_at_pct || 75}"></div><div><label>Escalate at %</label><input type="number" name="x" min="50" max="500" value="${p?.escalate_at_pct || 100}"></div>
@@ -259,9 +263,14 @@ async function settings(main, me) {
     sec.querySelector('[data-f=box]').onsubmit = ev => { ev.preventDefault(); const f = ev.target, days = DAYS.map((_, i) => i).filter(i => f['d' + i].checked);
       go(() => H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { mode: f.mode.value, ack_mode: f.ack_mode.value, display_name: f.display_name.value, signature: f.signature.value, default_service_id: f.default_service_id.value,
         office_hours: f.own_hours.checked ? { days, from: f.from.value, to: f.to.value } : null } }), 'Mailbox saved'); };
-    sec.querySelector('[data-f=off]').onsubmit = ev => { ev.preventDefault(); const f = ev.target;
-      go(() => H.api(`/maildesk/channels/${id}/officers`, { method: 'PUT', body: { nodal_1: f.nodal_1.value, nodal_2: f.nodal_2.value || null, escalation: f.escalation.value || null,
-        backups: { nodal_1: f.b_nodal_1.value || null, nodal_2: f.b_nodal_2.value || null, escalation: f.b_escalation.value || null } } }), 'Officers saved'); };
+    const of = sec.querySelector('[data-f=off]'), wireO = () => of.querySelectorAll('[data-rmo]').forEach(b => b.onclick = () => b.closest('[data-o]').remove());
+    of.querySelectorAll('[data-addo]').forEach(b => b.onclick = () => { of.querySelector('[data-olist]').insertAdjacentHTML('beforeend', offRow({ role: b.dataset.addo })); wireO(); });
+    wireO(); of.onsubmit = ev => { ev.preventDefault();
+      const officers = [...of.querySelectorAll('[data-o]')].map(r => ({ user_id: r.querySelector('[name=u]').value, role: r.querySelector('[name=r]').value, backup_user_id: r.querySelector('[name=b]').value || null })).filter(o => o.user_id);
+      go(() => H.api(`/maildesk/channels/${id}/officers`, { method: 'PUT', body: { officers } }), 'Officers saved'); };
+    sec.querySelector('[data-addr]')?.addEventListener('click', () => { const dl = H.dlg(`<h2>Change the address</h2><label>New address</label><input name="address" type="email" required value="${e(c.address)}">`,
+      async f => { await H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { address: f.address.value } }); H.toast('Address changed'); redraw(); }); void dl; });
+    sec.querySelector('[data-del]')?.addEventListener('click', () => { if (confirm(`Delete ${c.address} from ONE Desk? The mailbox itself stays in Outlook.`)) go(() => H.api(`/maildesk/channels/${id}`, { method: 'DELETE' }), 'Mailbox deleted'); });
     sec.querySelector('[data-f=sla]').onsubmit = ev => { ev.preventDefault();
       const policies = [...ev.target.querySelectorAll('[data-lane]')].map(r => ({ lane: r.dataset.lane || null, first_response_mins: Number(r.querySelector('[name=m]').value), warn_at_pct: Number(r.querySelector('[name=w]').value),
         escalate_at_pct: Number(r.querySelector('[name=x]').value), second_escalate_at_pct: r.querySelector('[name=x2]').value ? Number(r.querySelector('[name=x2]').value) : null }));

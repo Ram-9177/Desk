@@ -162,9 +162,10 @@ Every public reply (a note, work started, on hold, resumed, closed, rejected) is
 
 Off unless `MAIL_ENABLED=true`. Off, `mail.js` is not even loaded and ONE Desk is exactly as before. On, it adds:
 
-- **Mail** in the header (`#/c/mail`) for nodal officers, mail managers and admins. Each mail is a thread, `MAIL-1001`, sorted into a lane (Important, Needs reply, Review, Auto-handled, Noise) by your rules first, then the AI. It has a reply target, and replies are sent from the mailbox itself, with 10 seconds to undo.
+- **Mail** in the header (`#/c/mail`) for nodal officers, mail managers and admins. Each mail gets a number per campus, like `SMRU-0001`. Every mail the sender gets carries it in the subject (`RE: [SMRU-0001] …`), so both sides quote the same number, and a mail quoting it joins the same thread. Mail is sorted into a lane (Important, Needs reply, Review, Auto-handled, Noise) by your rules first, then the AI. It has a reply target, and replies are sent from the mailbox itself, with 10 seconds to undo.
 - **The same Home**: a nodal officer's open mail sits in the same table and counts as their tickets, marked **Mail**.
-- **Reply targets**: at 75 % the nodal officers get a reminder, at 100 % the escalation officer is told, at 200 % the campus mail managers (or the campus admins). Targets count office hours only and pause on hold.
+- **Mailboxes per campus** (5–6 is typical): a super admin adds, re-addresses and deletes them; a campus admin sets each one up. Each mailbox has **any number of nodal officers** (all of them get its mail on their Home and its reminders) and any number of escalation officers, each with an optional backup for leave.
+- **Reply targets**: at 75 % the nodal officers get a reminder, at 100 % the escalation officers are told, at 200 % the campus mail managers (or the campus admins). Targets count office hours only and pause on hold.
 - **"We received it" replies**: these wait in **Confirm** until someone clicks, unless a mailbox is set to send them by itself. They never go to no-reply senders, auto-responders or mailing lists, and at most one goes to each sender a day.
 - **Forward to service**: makes a normal desk ticket with the desk's own form and rules (channel "mail"). The desk sends its usual mails, and the thread shows the ticket's status.
 

@@ -9,9 +9,18 @@ export const ACTIVE_THREAD = ['open', 'in_progress', 'hold'];
 export const LANES = ['important', 'needs_reply', 'auto', 'noise', 'review'];
 export const LANE_NAMES = { important: 'Important', needs_reply: 'Needs reply', auto: 'Auto-handled', noise: 'Noise', review: 'Review' };
 export const MODES = ['off', 'shadow', 'live'];
-export const OFFICER_ROLES = ['nodal_1', 'nodal_2', 'escalation'];
+export const OFFICER_ROLES = ['nodal', 'escalation']; // a mailbox has any number of each
 export const SLA_ORDER = ['on_track', 'warning', 'escalated', 'escalated_2'];
-export const refOf = n => `MAIL-${n}`;
+// The mail number both sides quote: the campus code and a running number per campus, e.g. SMRU-0001
+export const refOf = (code, n) => `${String(code || 'MAIL').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MAIL'}-${String(n).padStart(4, '0')}`;
+export const REF_RE = /\b([A-Z0-9]{2,12}-\d{4,})\b/i;
+// "[SMRU-0001] Fees for B.Tech": the number goes in front of every subject the sender gets (once), "RE:" kept for replies
+export function subjectWith(ref, subject, reply = false) {
+  let s = String(subject || '').replace(/\s+/g, ' ').trim(); const tag = `[${ref}]`;
+  s = s.split(tag).join('').replace(/\s+/g, ' ').trim();
+  const re = /^((re|fw|fwd)\s*:\s*)+/i; s = s.replace(re, '').trim();
+  return `${reply ? 'RE: ' : ''}${tag} ${s || '(no subject)'}`.slice(0, 255);
+}
 export const isEmail = v => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(String(v || '').trim());
 export const domainOf = v => String(v || '').trim().toLowerCase().split('@')[1] || '';
 
@@ -36,9 +45,12 @@ export const elapsedMins = (createdIso, nowIso, p, cal) => p.business_hours_only
   : Math.max(0, Math.round((Date.parse(nowIso) - Date.parse(createdIso)) / 6e4));
 
 // officers: { nodal_1, nodal_2, escalation } user ids; backups: { role: user id }; onLeave: Set of user ids
-const resolve = (o, role) => { const id = o[role]; if (!id) return undefined; return o.onLeave?.has(id) ? (o.backups?.[role] || id) : id; };
-export const queueFor = o => [...new Set([resolve(o, 'nodal_1'), resolve(o, 'nodal_2')].filter(Boolean))];
-export const escalationFor = o => resolve(o, 'escalation');
+// officers: { nodal: [user ids], escalation: [user ids], backups: { user id: backup id }, onLeave: Set of user ids (away or deactivated) }
+const resolve = (o, id) => o.onLeave?.has(id) ? (o.backups?.[id] || null) : id; // away with no backup: they are skipped (the others still get it)
+const uniq = a => [...new Set(a.filter(Boolean))];
+// every nodal officer of the mailbox gets the mail; if all are away with no backup, the escalation officers do
+export const queueFor = o => { const q = uniq((o.nodal || []).map(id => resolve(o, id))); return q.length ? q : uniq((o.escalation || []).map(id => resolve(o, id))); };
+export const escalationFor = o => uniq((o.escalation || []).map(id => resolve(o, id)));
 
 // The next step for one thread. Each step fires once: the state only moves forward.
 export function tick(t, p, cal, o, nowIso, managers = []) {
@@ -47,9 +59,9 @@ export function tick(t, p, cal, o, nowIso, managers = []) {
   const held = (t.paused_mins || 0) + (p.pause_on_hold && t.paused_since ? elapsedMins(t.paused_since, nowIso, p, cal) : 0);
   const pct = ((elapsedMins(t.sla_started_at || t.created_at, nowIso, p, cal) - held) / p.first_response_mins) * 100; // from arrival, or from reopening
   const before = s => SLA_ORDER.indexOf(t.sla_state || 'on_track') < SLA_ORDER.indexOf(s);
-  const uniq = a => [...new Set(a.filter(Boolean))], esc = escalationFor(o);
-  if (p.second_escalate_at_pct && pct >= p.second_escalate_at_pct && before('escalated_2')) return { kind: 'escalate_2', state: 'escalated_2', notify: uniq([esc, ...managers]), pct };
-  if (pct >= p.escalate_at_pct && before('escalated')) return { kind: 'escalate', state: 'escalated', notify: uniq([esc, ...queueFor(o)]), pct };
+  const esc = escalationFor(o);
+  if (p.second_escalate_at_pct && pct >= p.second_escalate_at_pct && before('escalated_2')) return { kind: 'escalate_2', state: 'escalated_2', notify: uniq([...esc, ...managers]), pct };
+  if (pct >= p.escalate_at_pct && before('escalated')) return { kind: 'escalate', state: 'escalated', notify: uniq([...esc, ...queueFor(o)]), pct };
   if (pct >= p.warn_at_pct && before('warning')) return { kind: 'warn', state: 'warning', notify: uniq(queueFor(o)), pct };
   return { kind: 'none' };
 }
@@ -149,9 +161,9 @@ export const laneFrom = (reading, min = 0.6) => !reading ? 'review' : reading.co
 /* ---------- one dashboard: mail rows in the desk's row shape ---------- */
 export function toWorkItem(r) {
   if (!ACTIVE_THREAD.includes(r.status)) return null; // forwarded: the desk ticket represents it, never shown twice
-  return { kind: 'mail', id: r.id, ref: refOf(r.ref_no), ref_no: r.ref_no, title: r.subject || '(no subject)', requester: r.requester_name || r.requester_email,
+  return { kind: 'mail', id: r.id, ref: r.ref, ref_no: r.ref_no, title: r.subject || '(no subject)', requester: r.requester_name || r.requester_email,
     requester_email: r.requester_email, where: r.address, status: r.status, lane: r.lane, sla: r.sla_state || null, due_at: r.first_response_due_at || null,
-    responded: !!r.first_responded_at, updated_at: r.updated_at, my_role: r.my_role || null, link: `#/c/mail/t/${r.ref_no}` };
+    responded: !!r.first_responded_at, updated_at: r.updated_at, my_role: r.my_role || null, link: `#/c/mail/t/${r.ref}` };
 }
 const RANK = { escalated_2: 0, escalated: 1, warning: 2, on_track: 3, met: 4, breached_met: 4 };
 export const mergeWork = (desk, mail) => [...desk, ...mail].sort((a, b) => (RANK[a.sla || 'on_track'] - RANK[b.sla || 'on_track'])

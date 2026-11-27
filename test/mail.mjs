@@ -24,7 +24,7 @@ function check(name, cond, detail = '') { if (cond) { passed++; console.log(`  �
 sec('SLA steps');
 const tn = { timezone: 'Asia/Kolkata', work_start: '09:30', work_end: '17:00', work_days: '1,2,3,4,5,6' }, cal = calendar(tn);
 const pol = { id: 'p', channel_id: 'c', lane: null, first_response_mins: 100, warn_at_pct: 75, escalate_at_pct: 100, second_escalate_at_pct: 200, business_hours_only: 0, pause_on_hold: 1, active: 1 };
-const off = { nodal_1: 'n1', nodal_2: 'n2', escalation: 'esc', backups: { nodal_1: 'b1' }, onLeave: new Set() };
+const off = { nodal: ['n1', 'n2'], escalation: ['esc'], backups: { n1: 'b1' }, onLeave: new Set() };
 const at = mins => new Date(Date.parse('2026-11-23T05:00:00Z') + mins * 6e4).toISOString(); // Monday 10:30 IST
 const th = s => ({ created_at: at(0), status: 'open', first_responded_at: null, paused_mins: 0, paused_since: null, sla_state: s });
 check('before 75 %: nothing', L.tick(th('on_track'), pol, cal, off, at(70)).kind === 'none');
@@ -39,6 +39,12 @@ check('minutes on hold are not counted', L.tick({ ...th('on_track'), paused_mins
 check('replied: no more steps', L.tick({ ...th('on_track'), first_responded_at: at(5) }, pol, cal, off, at(300)).kind === 'none');
 check('forwarded: the desk SLA takes over', L.tick({ ...th('on_track'), status: 'forwarded' }, pol, cal, off, at(300)).kind === 'none');
 check('officer on leave: the backup gets the alert', L.queueFor({ ...off, onLeave: new Set(['n1']) }).join() === 'b1,n2');
+check('any number of nodal officers all get it; away with no backup is skipped', L.queueFor({ nodal: ['a', 'b', 'c', 'd'], escalation: [], backups: {}, onLeave: new Set(['c']) }).join() === 'a,b,d');
+check('all nodal officers away with no backup: the escalation officers get it', L.queueFor({ nodal: ['a'], escalation: ['e1', 'e2'], backups: {}, onLeave: new Set(['a']) }).join() === 'e1,e2');
+check('several escalation officers are all told', (x => x.kind === 'escalate' && ['e1', 'e2', 'a'].every(id => x.notify.includes(id)))(L.tick(th('warning'), pol, cal, { nodal: ['a'], escalation: ['e1', 'e2'], backups: {}, onLeave: new Set() }, at(101))));
+check('mail number: campus code and four digits', L.refOf('smru', 1) === 'SMRU-0001' && L.refOf('SMRU', 12345) === 'SMRU-12345');
+check('the number goes in front of the subject once, RE: kept', L.subjectWith('SMRU-0001', 'RE: [SMRU-0001] Fees') === '[SMRU-0001] Fees' && L.subjectWith('SMRU-0001', 'Re: Fees', true) === 'RE: [SMRU-0001] Fees' && L.subjectWith('SMRU-0001', '', true) === 'RE: [SMRU-0001] (no subject)');
+check('the number is found in a subject the sender writes', L.REF_RE.exec('Re: about smru-0042 please')?.[1].toUpperCase() === 'SMRU-0042');
 check('a late first reply is "replied late"', L.onFirstResponse({ sla_state: 'escalated' }, at(0)).sla_state === 'breached_met' && L.onFirstResponse({ sla_state: 'warning' }, at(0)).sla_state === 'met');
 const bh = { ...pol, business_hours_only: 1, first_response_mins: 450 };
 check('office hours: a mail at 16:00 Saturday (1 h left that day) is due 16:00 Monday', L.dueAt('2026-11-28T10:30:00Z', bh, cal) === '2026-11-30T10:30:00.000Z', L.dueAt('2026-11-28T10:30:00Z', bh, cal));
@@ -72,7 +78,7 @@ check('quoted history is cut', L.cleanText('Thanks!\n\nOn Mon, 1 Dec 2026 Admin 
 check('a good AI answer is accepted', L.parseReading('{"lane":"needs_reply","category":"Fees","confidence":0.9,"summary":"fees"}')?.lane === 'needs_reply');
 check('a bad AI answer is refused', !L.parseReading('{"lane":"spam","confidence":2}') && !L.parseReading('not json'));
 check('low confidence goes to Review', L.laneFrom({ lane: 'needs_reply', confidence: 0.3 }) === 'review' && L.laneFrom(null) === 'review');
-check('forwarded threads never show twice on the Home', L.toWorkItem({ status: 'forwarded' }) === null && L.toWorkItem({ status: 'open', ref_no: 1001, requester_email: 'a@b.c' }).ref === 'MAIL-1001');
+check('forwarded threads never show twice on the Home', L.toWorkItem({ status: 'forwarded' }) === null && L.toWorkItem({ status: 'open', ref: 'SMRU-0001', requester_email: 'a@b.c' }).link === '#/c/mail/t/SMRU-0001');
 check('the Home sorts escalated first', L.mergeWork([{ sla: 'on_track', due_at: '2026-01-01' }], [{ sla: 'escalated', due_at: '2027-01-01' }])[0].sla === 'escalated');
 const key = L.keyFrom('', 'secret-x'), sealed = L.seal(key, { apiKey: 'sk-test' });
 check('keys are sealed (AES-256-GCM) and opened again', !sealed.includes('sk-test') && L.unseal(key, sealed).apiKey === 'sk-test');
@@ -119,8 +125,13 @@ const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b
     return send(404, { error: { message: 'stub drive: ' + u.pathname } });
   }
   let m = /^\/g\/users\/([^/]+)\/messages\/([^/]+)(\/reply)?$/.exec(u.pathname);
-  if (m && m[3] && !G.messages[decodeURIComponent(m[2])]) return send(404, { error: { message: 'The specified object was not found in the store.' } }); // moved in Outlook
-  if (m && m[3]) { G.replies.push({ box: decodeURIComponent(m[1]), id: decodeURIComponent(m[2]), ...JSON.parse(b) }); return send(202, {}); }
+  const cr = /^\/g\/users\/([^/]+)\/messages\/([^/]+)\/(createReply|send)$/.exec(u.pathname); G.drafts ||= {};
+  if (cr && cr[3] === 'createReply') { const id = decodeURIComponent(cr[2]); if (!G.messages[id]) return send(404, { error: { message: 'The specified object was not found in the store.' } }); // moved in Outlook
+    const d = { id: 'draft' + Object.keys(G.drafts).length, replyTo: id, box: decodeURIComponent(cr[1]), ...JSON.parse(b).message, subject: 'RE: ' + G.messages[id].subject, body: { content: '<html><body><p>quoted original</p></body></html>' } };
+    G.drafts[d.id] = d; return send(201, d); }
+  if (cr && cr[3] === 'send') { const d = G.drafts[decodeURIComponent(cr[2])]; if (!d) return send(404, {}); G.replies.push({ box: d.box, id: d.replyTo, message: d }); delete G.drafts[d.id]; return send(202, {}); }
+  if (m && G.drafts[decodeURIComponent(m[2])] && req.method === 'PATCH') { Object.assign(G.drafts[decodeURIComponent(m[2])], JSON.parse(b)); return send(200, {}); }
+  if (m && G.drafts[decodeURIComponent(m[2])] && req.method === 'DELETE') { delete G.drafts[decodeURIComponent(m[2])]; res.writeHead(204); return res.end(); }
   if (m && req.method === 'PATCH') { G.tagged.push(decodeURIComponent(m[2])); return send(200, {}); }
   if (m) { const msg = G.messages[decodeURIComponent(m[2])]; return msg ? send(200, msg) : send(404, { error: { message: 'not found' } }); }
   if (/^\/g\/users\/[^/]+\/sendMail$/.test(u.pathname)) { G.sent.push(JSON.parse(b)); return send(202, {}); }
@@ -190,8 +201,10 @@ try {
   await fails('the same mailbox twice is 409', '/maildesk/channels', { ...A, method: 'POST', body: { address: 'reach@smru.test' } }, 409);
   await fails('a campus admin cannot change the address', `/maildesk/channels/${ch.id}`, { token: cadmin.token, method: 'PATCH', body: { address: 'vc@smru.test' } }, 403);
   await fails('live needs Nodal officer 1 first', `/maildesk/channels/${ch.id}`, { token: cadmin.token, method: 'PATCH', body: { mode: 'live' } }, 400);
-  await fails('officers must be staff of this campus', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { nodal_1: 'nobody' } }, 400);
-  await ok('officers: Nita, Naveen, Esha', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { nodal_1: n1.id, nodal_2: n2.id, escalation: esc.id } });
+  await fails('officers must be staff of this campus', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: 'nobody', role: 'nodal' }] } }, 400);
+  await fails('at least one nodal officer', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: esc.id, role: 'escalation' }] } }, 400);
+  await fails('nobody is their own backup', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal', backup_user_id: n1.id }] } }, 400);
+  await ok('officers: Nita and Naveen nodal, Esha escalation', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal' }, { user_id: n2.id, role: 'nodal' }, { user_id: esc.id, role: 'escalation' }] } });
   await fails('a campus admin cannot add AI keys', '/maildesk/integrations', { token: cadmin.token, method: 'POST', body: { name: 'x', baseURL: 'https://x', model: 'm', apiKey: 'k' } }, 403);
   await ok('super admin adds an AI provider that is down (order 1)', '/maildesk/integrations', { ...A, method: 'POST', body: { name: 'Down', baseURL: STUB + '/ai-down', model: 'm', apiKey: 'sk-down', priority: 1, active: true } });
   await ok('…and one that works (order 2)', '/maildesk/integrations', { ...A, method: 'POST', body: { name: 'Groq', baseURL: STUB + '/ai', model: 'llama', apiKey: 'sk-secret-123', priority: 2, active: true } });
@@ -237,9 +250,9 @@ try {
     && (await q("SELECT failures FROM mail.ai_usage WHERE provider='Down'"))[0]?.failures >= 1);
   check('phone numbers were masked before the AI saw them', JSON.parse((await q('SELECT ai_json FROM mail.inbound_emails WHERE provider_message_id=?', sh))[0].ai_json) && true);
   check('no auto-reply and no Outlook tag in shadow mode', (await q('SELECT 1 FROM mail.outbound_emails WHERE thread_id=?', shT.id)).length === 0 && !G.tagged.includes(sh));
-  check('officers do not see shadow mail yet', (await api('/maildesk/my-work', { token: n1.token })).data?.length === 0 && (await api(`/maildesk/threads/${shT.ref_no}`, { token: n1.token })).status === 404);
-  check('the campus admin does', (await api(`/maildesk/threads/${shT.ref_no}`, { token: cadmin.token })).status === 200);
-  await fails('nothing can be sent from a shadow mailbox', `/maildesk/threads/${shT.ref_no}/reply`, { token: cadmin.token, method: 'POST', body: { body: 'hi' } }, 400);
+  check('officers do not see shadow mail yet', (await api('/maildesk/my-work', { token: n1.token })).data?.length === 0 && (await api(`/maildesk/threads/${shT.ref}`, { token: n1.token })).status === 404);
+  check('the campus admin does', (await api(`/maildesk/threads/${shT.ref}`, { token: cadmin.token })).status === 200);
+  await fails('nothing can be sent from a shadow mailbox', `/maildesk/threads/${shT.ref}/reply`, { token: cadmin.token, method: 'POST', body: { body: 'hi' } }, 400);
   await notifyGraph('sub-1', sh, 'wrong-state'); await notifyGraph('sub-1', sh);
   await sleep(1200);
   check('a notification with the wrong clientState, or a repeat, adds nothing', (await q('SELECT count(*)::int n FROM mail.inbound_emails WHERE provider_message_id=?', sh))[0].n === 1);
@@ -249,15 +262,15 @@ try {
   check('going live closes the shadow week\'s mail (it was handled in Outlook)', (await q('SELECT status FROM mail.threads WHERE id=?', shT.id))[0].status === 'closed');
   const m1 = mkMsg({ subject: 'Fees for B.Tech', conv: 'conv-A' }); await notifyGraph('sub-1', m1);
   const t1 = await waitFor(async () => (await q("SELECT t.* FROM mail.threads t WHERE t.conversation_id='conv-A'"))[0]);
-  check('a thread MAIL-#### is made with a reply target', t1?.ref_no >= 1001 && t1.sla_state === 'on_track' && !!t1.first_response_due_at);
+  check('the mail gets the campus number SMRU-#### and a reply target', /^SMRU-\d{4}$/.test(t1?.ref || '') && t1.sla_state === 'on_track' && !!t1.first_response_due_at, t1?.ref);
   const mw = await ok('Nita: my work', '/maildesk/my-work', { token: n1.token });
-  check('it shows on both nodal officers\' Home, in the desk row shape', mw.length === 1 && mw[0].ref === `MAIL-${t1.ref_no}` && mw[0].kind === 'mail' && mw[0].my_role === 'nodal_1' && mw[0].where === 'reach@smru.test'
+  check('it shows on both nodal officers\' Home, in the desk row shape', mw.length === 1 && mw[0].ref === `${t1.ref}` && mw[0].kind === 'mail' && mw[0].my_role === 'nodal' && mw[0].where === 'reach@smru.test'
     && (await api('/maildesk/my-work', { token: n2.token })).data?.length === 1);
   check('the mail role shows for the officer', (await api('/maildesk/me', { token: n1.token })).data?.role === 'officer');
-  check('someone else gets 404 (not 403) for the thread', (await api(`/maildesk/threads/${t1.ref_no}`, { token: other.token })).status === 404 && (await api('/maildesk/my-work', { token: other.token })).data?.length === 0);
+  check('someone else gets 404 (not 403) for the thread', (await api(`/maildesk/threads/${t1.ref}`, { token: other.token })).status === 404 && (await api('/maildesk/my-work', { token: other.token })).data?.length === 0);
   check('the mail is tagged "ONE ✓" in Outlook', await waitFor(async () => G.tagged.includes(m1)));
   const ack = await waitFor(async () => (await q("SELECT * FROM mail.outbound_emails WHERE thread_id=? AND origin='auto_ack'", t1.id))[0]);
-  check('an auto-reply is drafted and waits for Confirm', ack?.state === 'pending_approval' && ack.body_text.includes(`MAIL-${t1.ref_no}`) && ack.body_text.includes('Dear Ria'), ack?.body_text);
+  check('an auto-reply is drafted and waits for Confirm', ack?.state === 'pending_approval' && ack.body_text.includes(`${t1.ref}`) && ack.body_text.includes('Dear Ria'), ack?.body_text);
   const cq = await ok('Confirm queue', '/maildesk/confirm', { token: n1.token });
   check('…listed for the officer', cq.length === 1 && cq[0].id === ack.id);
   await fails('another person cannot confirm it', `/maildesk/outbound/${ack.id}/confirm`, { token: other.token, method: 'POST', body: {} }, 404);
@@ -268,20 +281,22 @@ try {
   check('an auto-reply does not count as the first response', !(await q('SELECT first_responded_at FROM mail.threads WHERE id=?', t1.id))[0].first_responded_at);
 
   sec('Replying');
-  await ok('Nita takes it', `/maildesk/threads/${t1.ref_no}/claim`, { token: n1.token, method: 'POST' });
-  await fails('Naveen cannot take it silently', `/maildesk/threads/${t1.ref_no}/claim`, { token: n2.token, method: 'POST' }, 409);
-  await fails('a bad cc is refused', `/maildesk/threads/${t1.ref_no}/reply`, { token: n1.token, method: 'POST', body: { body: 'x', cc: ['not-an-email'] } }, 400);
-  await fails('a reply to someone who did not write in the thread is refused', `/maildesk/threads/${t1.ref_no}/reply`, { token: n1.token, method: 'POST', body: { body: 'x', to: 'attacker@evil.com' } }, 400);
-  const undo = await ok('reply and close', `/maildesk/threads/${t1.ref_no}/reply`, { token: n1.token, method: 'POST', body: { body: 'Dear Ria,\nThe fees are ₹1,20,000 a year.', close: true } });
+  await ok('Nita takes it', `/maildesk/threads/${t1.ref}/claim`, { token: n1.token, method: 'POST' });
+  await fails('Naveen cannot take it silently', `/maildesk/threads/${t1.ref}/claim`, { token: n2.token, method: 'POST' }, 409);
+  await fails('a bad cc is refused', `/maildesk/threads/${t1.ref}/reply`, { token: n1.token, method: 'POST', body: { body: 'x', cc: ['not-an-email'] } }, 400);
+  await fails('a reply to someone who did not write in the thread is refused', `/maildesk/threads/${t1.ref}/reply`, { token: n1.token, method: 'POST', body: { body: 'x', to: 'attacker@evil.com' } }, 400);
+  const undo = await ok('reply and close', `/maildesk/threads/${t1.ref}/reply`, { token: n1.token, method: 'POST', body: { body: 'Dear Ria,\nThe fees are ₹1,20,000 a year.', close: true } });
   const tq = (await q('SELECT * FROM mail.threads WHERE id=?', t1.id))[0];
   check('while in the undo window the clock still runs and the thread stays open', !tq.first_responded_at && tq.status === 'in_progress');
   await ok('…undo within 10 s', `/maildesk/outbound/${undo.id}/cancel`, { token: n1.token, method: 'POST' });
   const tu = (await q('SELECT * FROM mail.threads WHERE id=?', t1.id))[0];
   check('after Undo: not answered, not closed, the reply target still counts', !tu.first_responded_at && tu.status === 'in_progress' && tu.sla_state === 'on_track');
-  const r2 = await ok('reply again', `/maildesk/threads/${t1.ref_no}/reply`, { token: n1.token, method: 'POST', body: { body: 'Dear Ria,\nThe fees are ₹1,20,000 a year.', cc: ['dean@smru.test'] } });
+  const r2 = await ok('reply again', `/maildesk/threads/${t1.ref}/reply`, { token: n1.token, method: 'POST', body: { body: 'Dear Ria,\nThe fees are ₹1,20,000 a year.', cc: ['dean@smru.test'] } });
   await q("UPDATE mail.outbound_emails SET send_after=? WHERE id=?", new Date(Date.now() - 1000).toISOString(), r2.id);
   const sent2 = await waitFor(async () => G.replies.filter(r => r.id === m1)[1]);
   check('To is the sender, cc kept', !!sent2 && sent2.message.toRecipients.length === 1 && sent2.message.toRecipients[0].emailAddress.address === 'ria@gmail.com' && sent2.message.ccRecipients[0].emailAddress.address === 'dean@smru.test');
+  check('the sender\'s reply has the mail number in its subject, threaded in Outlook, our text above the quoted mail', sent2.message.subject === `RE: [${t1.ref}] Fees for B.Tech`
+    && /<body[^>]*><div[^>]*><p>Dear Ria/.test(sent2.message.body.content) && sent2.message.body.content.includes('quoted original') && !Object.keys(G.drafts).length, sent2.message.subject);
   check('the cancelled reply never went out', G.replies.filter(r => r.id === m1).length === 2 && (await q('SELECT state FROM mail.outbound_emails WHERE id=?', undo.id))[0].state === 'cancelled');
   await fails('undo after sending is refused', `/maildesk/outbound/${r2.id}/cancel`, { token: n1.token, method: 'POST' }, 409);
   const t1b = await waitFor(async () => { const r = (await q('SELECT * FROM mail.threads WHERE id=?', t1.id))[0]; return r.first_responded_at ? r : null; }) || {};
@@ -290,10 +305,15 @@ try {
   await waitFor(async () => (await q('SELECT 1 FROM mail.inbound_emails WHERE provider_message_id=?', m1b)).length);
   check('her answer joins the same thread, with no second auto-reply', (await q('SELECT count(*)::int n FROM mail.inbound_emails WHERE thread_id=?', t1.id))[0].n === 2
     && (await q("SELECT count(*)::int n FROM mail.outbound_emails WHERE thread_id=? AND origin='auto_ack'", t1.id))[0].n === 1);
-  const view = await ok('open the thread', `/maildesk/threads/${t1.ref_no}`, { token: n1.token });
+  const view = await ok('open the thread', `/maildesk/threads/${t1.ref}`, { token: n1.token });
   check('thread view: 2 in, replies out, quick answers, can reply', view.messages.filter(m => m.dir === 'in').length === 2 && view.messages.some(m => m.dir === 'out' && m.state === 'sent') && view.templates.length === 1 && view.can.reply);
-  await ok('add a note', `/maildesk/threads/${t1.ref_no}/notes`, { token: n1.token, method: 'POST', body: { body: 'Asked accounts' } });
+  await ok('add a note', `/maildesk/threads/${t1.ref}/notes`, { token: n1.token, method: 'POST', body: { body: 'Asked accounts' } });
   check('every view and reply is in the mail audit log', (await q("SELECT count(*)::int n FROM mail.audit_log WHERE entity_id=? AND action IN ('view','reply','claim')", t1.id))[0].n >= 3);
+
+  // the sender writes a new mail (a new conversation) quoting the number: it joins the same mail
+  const mq = mkMsg({ subject: `About ${t1.ref.toLowerCase()} again`, conv: 'conv-QUOTE', body: 'Any update on my question?' }); await notifyGraph('sub-1', mq);
+  check('a new mail quoting the number joins that mail', await waitFor(async () => (await q('SELECT thread_id FROM mail.inbound_emails WHERE provider_message_id=?', mq))[0]?.thread_id === t1.id));
+  check('…and no second auto-reply', (await q("SELECT count(*)::int n FROM mail.outbound_emails WHERE thread_id=? AND origin='auto_ack'", t1.id))[0].n === 1);
 
   sec('Rules and loop guards on live mail');
   const nz = mkMsg({ from: 'offers@mail.news.com', subject: 'Big sale', conv: 'conv-N' }); const aiBefore = AI.calls; await notifyGraph('sub-1', nz);
@@ -323,26 +343,26 @@ try {
   check('each step was logged once', (await q("SELECT kind FROM mail.sla_events WHERE thread_id=? AND kind IN ('warned','escalated','escalated_2')", t3.id)).length === 3);
 
   sec('Forward to service: one normal desk ticket');
-  const tv = await ok('Naveen opens it', `/maildesk/threads/${t3.ref_no}`, { token: n2.token });
+  const tv = await ok('Naveen opens it', `/maildesk/threads/${t3.ref}`, { token: n2.token });
   check('the Hostel service is suggested from the category', tv.suggested_service?.id === hostel.id);
-  await fails('a general service needs a location (the desk form rules)', `/maildesk/threads/${t3.ref_no}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id } }, 400);
-  const fw = await ok('forward to Hostel', `/maildesk/threads/${t3.ref_no}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id, location: 'Block B, room 12' } });
-  const fw2 = await ok('forward again', `/maildesk/threads/${t3.ref_no}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id, location: 'x' } });
+  await fails('a general service needs a location (the desk form rules)', `/maildesk/threads/${t3.ref}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id } }, 400);
+  const fw = await ok('forward to Hostel', `/maildesk/threads/${t3.ref}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id, location: 'Block B, room 12' } });
+  const fw2 = await ok('forward again', `/maildesk/threads/${t3.ref}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id, location: 'x' } });
   const tk = await q("SELECT t.*, r.email FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.channel='mail'");
-  check('exactly one desk ticket, channel mail, for the sender', tk.length === 1 && fw2.ticket_id === fw.ticket_id && tk[0].email === 'sam@gmail.com' && tk[0].description.includes(`MAIL-${t3.ref_no}`) && tk[0].status === 'open');
+  check('exactly one desk ticket, channel mail, for the sender', tk.length === 1 && fw2.ticket_id === fw.ticket_id && tk[0].email === 'sam@gmail.com' && tk[0].description.includes(`${t3.ref}`) && tk[0].status === 'open');
   check('the desk sent its usual mails (received → sender, new ticket → provider)', await waitFor(async () => { const r = await q('SELECT template_key k, recipient FROM notifications WHERE ticket_id=?', tk[0].id);
     return r.some(x => x.k === 'created' && x.recipient === 'sam@gmail.com') && r.some(x => x.k === 'new_ticket' && x.recipient === 'hari@example.com'); }));
   check('the Hostel provider sees it as a normal ticket', (await api('/tickets?status=open', { token: hostP.token })).data?.some(x => x.id === fw.ticket_id));
   check('the thread is forwarded and leaves the officers\' Home', (await q('SELECT status, desk_ticket_id FROM mail.threads WHERE id=?', t3.id))[0].desk_ticket_id === fw.ticket_id
     && !(await api('/maildesk/my-work', { token: n2.token })).data.some(w => w.id === t3.id) && !(await api('/maildesk/my-work', { token: esc.token })).data.some(w => w.id === t3.id));
   await ok('the provider closes the desk ticket', `/tickets/${fw.ticket_id}/status`, { token: hostP.token, method: 'POST', body: { to: 'in_progress', note: 'On it', is_internal: true } });
-  check('the thread shows the desk ticket status, read-only', (await api(`/maildesk/threads/${t3.ref_no}`, { token: n2.token })).data?.desk?.status === 'in_progress' && !(await api(`/maildesk/threads/${t3.ref_no}`, { token: n2.token })).data.can.reply);
+  check('the thread shows the desk ticket status, read-only', (await api(`/maildesk/threads/${t3.ref}`, { token: n2.token })).data?.desk?.status === 'in_progress' && !(await api(`/maildesk/threads/${t3.ref}`, { token: n2.token })).data.can.reply);
   check('the mail SLA stops once forwarded', (await q("SELECT 1 FROM mail.sla_events WHERE thread_id=? AND kind='forwarded'", t3.id)).length === 1);
 
   sec('Status words, hold and catch-up');
-  await ok('hold', `/maildesk/threads/${t1.ref_no}/status`, { token: n1.token, method: 'POST', body: { status: 'hold', note: 'Waiting for accounts' } });
+  await ok('hold', `/maildesk/threads/${t1.ref}/status`, { token: n1.token, method: 'POST', body: { status: 'hold', note: 'Waiting for accounts' } });
   check('on hold: paused_since set', !!(await q('SELECT paused_since FROM mail.threads WHERE id=?', t1.id))[0].paused_since);
-  await ok('close', `/maildesk/threads/${t1.ref_no}/status`, { token: n1.token, method: 'POST', body: { status: 'closed' } });
+  await ok('close', `/maildesk/threads/${t1.ref}/status`, { token: n1.token, method: 'POST', body: { status: 'closed' } });
   check('closed: paused time added, out of the Home', (await q('SELECT status, paused_since FROM mail.threads WHERE id=?', t1.id))[0].status === 'closed' && !(await api('/maildesk/my-work', { token: n1.token })).data.some(w => w.id === t1.id));
   const m4 = mkMsg({ subject: 'Hello again', conv: 'conv-A', body: 'One more question' }); // no notification for this one (as if the server was down)
   await ok('check for new mail', `/maildesk/channels/${ch.id}/sync`, { token: cadmin.token, method: 'POST' });
@@ -354,30 +374,30 @@ try {
 
   sec('Edge cases');
   // two officers press Take it at once: one owner
-  await ok('Naveen takes MAIL t1 over knowingly', `/maildesk/threads/${t1.ref_no}/claim`, { token: n2.token, method: 'POST', body: { take: true } });
-  const cl = await Promise.all([api(`/maildesk/threads/${t1.ref_no}/claim`, { token: n1.token, method: 'POST' }), api(`/maildesk/threads/${t1.ref_no}/claim`, { token: esc.token, method: 'POST' })]);
+  await ok('Naveen takes MAIL t1 over knowingly', `/maildesk/threads/${t1.ref}/claim`, { token: n2.token, method: 'POST', body: { take: true } });
+  const cl = await Promise.all([api(`/maildesk/threads/${t1.ref}/claim`, { token: n1.token, method: 'POST' }), api(`/maildesk/threads/${t1.ref}/claim`, { token: esc.token, method: 'POST' })]);
   check('a silent take of someone else\'s mail is refused for both', cl.every(r => r.status === 409));
   // a reply-all from a third person: they can be answered, and only people from the thread
   const m5 = mkMsg({ from: 'father@gmail.com', name: 'Ria\'s father', subject: 'RE: Fees', conv: 'conv-A', body: 'Is there a discount for siblings?' }); await notifyGraph('sub-1', m5);
   await waitFor(async () => (await q('SELECT 1 FROM mail.inbound_emails WHERE provider_message_id=?', m5)).length);
-  const rf = await ok('reply to the father, who wrote in the thread', `/maildesk/threads/${t1.ref_no}/reply`, { token: n2.token, method: 'POST', body: { body: 'Yes, 10 %.', to: 'Father@gmail.com' } });
+  const rf = await ok('reply to the father, who wrote in the thread', `/maildesk/threads/${t1.ref}/reply`, { token: n2.token, method: 'POST', body: { body: 'Yes, 10 %.', to: 'Father@gmail.com' } });
   await q("UPDATE mail.outbound_emails SET send_after=? WHERE id=?", new Date(Date.now() - 1000).toISOString(), rf.id);
   check('…goes to him, as a reply to his own message', await waitFor(async () => G.replies.some(r => r.id === m5 && r.message.toRecipients[0].emailAddress.address === 'father@gmail.com')));
   // the message was moved in Outlook: the reply goes as a new mail instead
   delete G.messages[m5]; const sentBefore = G.sent.length;
-  const rmv = await ok('reply after the mail was moved in Outlook', `/maildesk/threads/${t1.ref_no}/reply`, { token: n2.token, method: 'POST', body: { body: 'Following up.', to: 'father@gmail.com' } });
+  const rmv = await ok('reply after the mail was moved in Outlook', `/maildesk/threads/${t1.ref}/reply`, { token: n2.token, method: 'POST', body: { body: 'Following up.', to: 'father@gmail.com' } });
   G.replyFails = 404; await q("UPDATE mail.outbound_emails SET send_after=? WHERE id=?", new Date(Date.now() - 1000).toISOString(), rmv.id);
   check('…is sent as a new mail, not lost', await waitFor(async () => G.sent.length === sentBefore + 1 && (await q('SELECT state FROM mail.outbound_emails WHERE id=?', rmv.id))[0].state === 'sent'));
   G.replyFails = 0;
   // the server restarts while a reply is being sent, and while a job runs
-  const st1 = await ok('a reply', `/maildesk/threads/${t1.ref_no}/reply`, { token: n2.token, method: 'POST', body: { body: 'Stuck one' } });
+  const st1 = await ok('a reply', `/maildesk/threads/${t1.ref}/reply`, { token: n2.token, method: 'POST', body: { body: 'Stuck one' } });
   await q("UPDATE mail.outbound_emails SET state='sending', started_at=? WHERE id=?", new Date(Date.now() - 3600e3).toISOString(), st1.id);
   await q("INSERT INTO mail.jobs (id, kind, payload, dedupe_key, state, run_after, created_at) VALUES ('stuckjob', 'catchup', ?, 'catchup:stuck', 'running', ?, ?)", JSON.stringify({ channel_id: ch.id }), new Date(Date.now() - 3600e3).toISOString(), new Date().toISOString());
   check('a reply left "sending" is reported (maybe sent), never sent twice', await waitFor(async () => (await q('SELECT state, error FROM mail.outbound_emails WHERE id=?', st1.id))[0].state === 'failed', 8000)
     && (await q("SELECT 1 FROM mail.thread_notes WHERE thread_id=? AND body LIKE 'A reply may not have been sent%'", t1.id)).length === 1);
   check('a job left "running" runs again', await waitFor(async () => (await q("SELECT state FROM mail.jobs WHERE id='stuckjob'"))[0].state === 'done', 8000));
   // a reply in its undo window when the mailbox leaves live mode
-  const lv = await ok('a reply', `/maildesk/threads/${t1.ref_no}/reply`, { token: n2.token, method: 'POST', body: { body: 'About to switch off' } });
+  const lv = await ok('a reply', `/maildesk/threads/${t1.ref}/reply`, { token: n2.token, method: 'POST', body: { body: 'About to switch off' } });
   await ok('mailbox to shadow', `/maildesk/channels/${ch.id}`, { token: cadmin.token, method: 'PATCH', body: { mode: 'shadow' } });
   check('…the reply is cancelled and the thread says so', (await q('SELECT state FROM mail.outbound_emails WHERE id=?', lv.id))[0].state === 'cancelled'
     && (await q("SELECT 1 FROM mail.thread_notes WHERE thread_id=? AND body LIKE 'A reply was not sent: the mailbox was switched%'", t1.id)).length === 1);
@@ -386,23 +406,32 @@ try {
   // forward ignores fields that are not the ticket's (no staff priority, no suggestion kind)
   const m6 = mkMsg({ from: 'kiran@gmail.com', subject: 'Hostel water', conv: 'conv-K', body: 'No water in hostel block C' }); await notifyGraph('sub-1', m6);
   const t6 = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-K'"))[0]);
-  const f6 = await ok('forward with extra fields', `/maildesk/threads/${t6.ref_no}/forward`, { token: n1.token, method: 'POST', body: { service_id: hostel.id, location: 'Block C', priority: 'critical', kind: 'suggestion', seen_notices: ['x'] } });
+  const f6 = await ok('forward with extra fields', `/maildesk/threads/${t6.ref}/forward`, { token: n1.token, method: 'POST', body: { service_id: hostel.id, location: 'Block C', priority: 'critical', kind: 'suggestion', seen_notices: ['x'] } });
   const tk6 = (await q('SELECT priority, kind FROM tickets WHERE id=?', f6.ticket_id))[0];
   check('…the desk ticket is a normal one: medium priority, an issue', tk6.priority === 'medium' && tk6.kind === 'issue', JSON.stringify(tk6));
   // pause on hold switched off: the clock keeps running on hold
   const pol = { id: 'x', first_response_mins: 60, warn_at_pct: 75, escalate_at_pct: 100, second_escalate_at_pct: null, business_hours_only: 0, pause_on_hold: 0, active: 1 };
   const old = new Date(Date.now() - 3 * 864e5).toISOString();
-  check('with "pause on hold" off, time on hold still counts', L.tick({ created_at: old, status: 'hold', paused_since: old, paused_mins: 0, sla_state: 'on_track', first_responded_at: null }, pol, L.calOf({ timezone: 'Asia/Kolkata' }, null), { nodal_1: 'a', escalation: 'b' }, new Date().toISOString()).kind === 'escalate');
+  check('with "pause on hold" off, time on hold still counts', L.tick({ created_at: old, status: 'hold', paused_since: old, paused_mins: 0, sla_state: 'on_track', first_responded_at: null }, pol, L.calOf({ timezone: 'Asia/Kolkata' }, null), { nodal: ['a'], escalation: ['b'], backups: {} }, new Date().toISOString()).kind === 'escalate');
   // a deactivated nodal officer: the backup gets the alerts
-  await ok('Esha is Nita\'s backup', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { nodal_1: n1.id, nodal_2: n2.id, escalation: esc.id, backups: { nodal_1: esc.id } } });
+  await ok('Esha is Nita\'s backup', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal', backup_user_id: esc.id }, { user_id: n2.id, role: 'nodal' }, { user_id: esc.id, role: 'escalation' }] } });
   await q('UPDATE users SET is_active=0 WHERE id=?', n1.id);
   const m7 = mkMsg({ from: 'leela@gmail.com', subject: 'Transfer certificate', conv: 'conv-L' }); await notifyGraph('sub-1', m7);
   const t7 = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-L'"))[0]);
   await q("UPDATE mail.sla_policies SET business_hours_only=0 WHERE id=?", t7.sla_policy_id);
   const p7 = (await q('SELECT first_response_mins m FROM mail.sla_policies WHERE id=?', t7.sla_policy_id))[0];
   await q("UPDATE mail.threads SET created_at=? WHERE id=?", new Date(Date.now() - p7.m * 0.8 * 6e4).toISOString(), t7.id);
-  check('…a deactivated officer\'s reminder goes to the backup', await waitFor(async () => (await q("SELECT recipient FROM notifications WHERE template_key='mail_sla_warn' AND subject LIKE ?", `%MAIL-${t7.ref_no}%`)).map(r => r.recipient).sort().join() === 'esha@example.com,naveen@example.com'));
+  check('…a deactivated officer\'s reminder goes to the backup', await waitFor(async () => (await q("SELECT recipient FROM notifications WHERE template_key='mail_sla_warn' AND subject LIKE ?", `%${t7.ref}%`)).map(r => r.recipient).sort().join() === 'esha@example.com,naveen@example.com'));
   await q('UPDATE users SET is_active=1 WHERE id=?', n1.id);
+
+  // mailboxes: add, change and delete (super admin), per campus
+  const ch2 = await ok('add exams@', '/maildesk/channels', { ...A, method: 'POST', body: { address: 'exams@smru.test', display_name: 'Examinations' } });
+  await ok('change its address while off', `/maildesk/channels/${ch2.id}`, { ...A, method: 'PATCH', body: { address: 'exam-cell@smru.test' } });
+  await ok('officers for exams@: four nodal officers', `/maildesk/channels/${ch2.id}/officers`, { ...A, method: 'PUT', body: { officers: [n1, n2, esc, other].map(u => ({ user_id: u.id, role: 'nodal' })) } });
+  check('…all four listed', (await api('/maildesk/settings', A)).data.channels.find(c => c.id === ch2.id)?.officers.filter(o => o.role === 'nodal').length === 4);
+  await ok('delete exams@ (no mail yet)', `/maildesk/channels/${ch2.id}`, { ...A, method: 'DELETE' });
+  await fails('reach@ has mail, so it cannot be deleted (switch it off instead)', `/maildesk/channels/${ch.id}`, { ...A, method: 'DELETE' }, 409);
+  check('numbers run per campus and never repeat', new Set((await q('SELECT ref FROM mail.threads')).map(r => r.ref)).size === (await q('SELECT count(*)::int n FROM mail.threads'))[0].n);
 
   sec('Desk unchanged with the mail desk on');
   const pubT = await api('/public/smru/tickets', { method: 'POST', body: { service_id: hostel.id, name: 'Ravi', email: 'ravi@example.com', phone: '9000000001', subject: 'Tap leaking', location: 'Block A', identifier: 'S1', department: 'BPT' } });
