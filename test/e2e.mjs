@@ -448,6 +448,31 @@ try {
   await ok('add Omar to Electrical', `/services/${elec.id}/members`, { token: T.asha, method: 'PUT', body: { user_ids: [pavan.id, omarR.id] } });
   await ok('deactivate Omar', `/users/${omarR.id}`, { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
   check('deactivated: cannot sign in, removed from the service', !(await login('omar@example.com', rs.temp_password)) && (await api('/services', { token: T.asha })).data.find(x => x.code === 'ELEC').members.length === 1);
+
+  // a limited campus admin: the super admin turns features off; the server refuses them, not just the menus
+  const lim = await ok('super admin adds a limited campus admin (no Email, People, Audit)', '/users', { ...A, method: 'POST', body: { name: 'Lina Limited', email: 'lina@example.com', role: 'tenant_admin', features_off: ['email', 'people', 'audit'] } });
+  await api('/me/password', { token: await login('lina@example.com', lim.temp_password), method: 'POST', body: { current: lim.temp_password, password: 'Lina2026okay' } });
+  const TL = await login('lina@example.com', 'Lina2026okay');
+  check('her account carries the features turned off', JSON.stringify((await api('/me', { token: TL })).data.user.perm_off && JSON.parse((await api('/me', { token: TL })).data.user.perm_off).sort()) === JSON.stringify(['audit', 'email', 'people']));
+  for (const [what, path] of [['People', '/users'], ['Audit', '/audit'], ['Email log', '/mail/log?status=all']]) await fails(`limited admin: ${what} refused`, path, { token: TL }, 403, 'turned off');
+  await fails('limited admin: cannot add people either', '/users', { token: TL, method: 'POST', body: { name: 'Y', email: 'y@example.com' } }, 403);
+  await ok('limited admin: Attention still works', '/attention', { token: TL });
+  await ok('limited admin: Reports still works', '/reports?days=30', { token: TL });
+  await fails('a campus admin cannot change features (not even their own)', `/users/${lim.id}`, { token: T.asha, method: 'PATCH', body: { features_off: [] } }, 403);
+  await fails('unknown feature names are refused', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { features_off: ['launch_rockets'] } }, 400);
+  await fails('features are only for campus admins', `/users/${pavan.id}`, { ...A, method: 'PATCH', body: { features_off: ['email'] } }, 400);
+  await ok('super admin also turns off Reports, Notices, SLA and Services', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { features_off: ['email', 'people', 'audit', 'reports', 'notices', 'sla', 'services'] } });
+  await fails('limited admin: Reports page refused', '/reports?days=30', { token: TL }, 403);
+  await ok('…but Home\'s own counts still load', '/reports?days=7&for=home', { token: TL });
+  await fails('limited admin: Notices refused', '/notices', { token: TL }, 403);
+  await fails('limited admin: cannot post a campus notice', '/notices', { token: TL, method: 'POST', body: { title: 'x', status: 'published' } }, 403);
+  await fails('limited admin: SLA settings refused', '/sla', { token: TL, method: 'PUT', body: {} }, 403);
+  await fails('limited admin: cannot add a service', '/services', { token: TL, method: 'POST', body: { code: 'ZZ', name: 'Z' } }, 403);
+  await ok('limited admin: still sees and works the campus tickets', '/tickets?status=all', { token: TL });
+  check('a full admin is untouched', (await api('/users', { token: T.asha })).status === 200 && (await api('/audit', { token: T.asha })).status === 200);
+  await ok('super admin ticks everything back on', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { features_off: [] } });
+  check('all features again: People and Audit open', (await api('/users', { token: TL })).status === 200 && (await api('/audit', { token: TL })).status === 200 && (await api('/me', { token: TL })).data.user.perm_off === null);
+  await ok('deactivate Lina', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { is_active: 0 } });
   await fails('providers cannot manage people', '/users', { token: T.pavan }, 403);
   const users = await ok('people list', '/users', { token: T.asha });
   check('list shows services per person', users.find(u => u.email === 'pavan@example.com')?.services?.includes('Electrical'));

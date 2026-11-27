@@ -11,7 +11,7 @@ import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
-import { assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
+import { ADMIN_FEATURES, ADMIN_FEATURE_KEYS, featuresOff, canUse, assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -89,6 +89,12 @@ const auth = mw(async (req, _res, next) => {
 const needTenant = mw(async (req, _r, next) => next(req.tenantId && await one('SELECT 1 FROM tenants WHERE id=?', req.tenantId) ? undefined : bad('Pick a tenant first')));
 const role = (...r) => (req, _r, next) => next(r.includes(req.user.role) ? undefined : forbid());
 const isAdmin = u => u.role !== 'provider';
+// a campus-admin feature (People → Edit → Features): the super admin always may; a campus admin unless it was turned off for them
+const featureName = k => ADMIN_FEATURES.find(f => f[0] === k)?.[1] || k;
+const noFeature = k => new HttpErr(403, 'FORBIDDEN', `${featureName(k)} is turned off for your account. Ask the super admin if you need it.`);
+const may = k => (req, _r, next) => next(canUse(req.user, k) ? undefined : req.user.role === 'provider' ? forbid() : noFeature(k));
+// for routes that providers also use: a campus admin without the feature is stopped, providers carry on
+const adminMay = (req, k) => { if (req.user.role === 'tenant_admin' && !canUse(req.user, k)) throw noFeature(k); };
 const myServiceIds = async (u, tenantId) => isAdmin(u)
   ? (await all('SELECT id FROM services WHERE tenant_id=?', tenantId)).map(r => r.id)
   : (await all(`SELECT service_id id FROM service_members WHERE tenant_id=? AND user_id=?
@@ -875,8 +881,8 @@ S.patch('/tenants/:id', role('super_admin'), wrap(async req => {
 
 // everything below is tenant scoped
 S.use(needTenant);
-S.get('/users', role('super_admin', 'tenant_admin'), wrap(async req =>
-  await all(`SELECT u.id,u.name,u.email,u.phone,u.role,u.is_active,u.last_login_at,u.must_change_pw,
+S.get('/users', may('people'), wrap(async req =>
+  await all(`SELECT u.id,u.name,u.email,u.phone,u.role,u.is_active,u.last_login_at,u.must_change_pw,u.perm_off,
     (SELECT string_agg(s.name, ', ' ORDER BY s.name) FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.user_id=u.id) services
     FROM users u WHERE u.tenant_id=? ORDER BY u.is_active DESC, u.role DESC, u.name`, req.tenantId)));
 const tempPw = () => crypto.randomBytes(6).toString('base64url').replace(/[-_]/g, 'x') + Math.floor(10 + Math.random() * 90);
@@ -886,7 +892,7 @@ async function managed(req) {
   if (req.user.role !== 'super_admin' && u.role !== 'provider' && u.id !== req.user.id) throw forbid();
   return u;
 }
-S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.post('/users', may('people'), wrap(async req => {
   const b = req.body; req_(b.name, 'Name required'); req_(b.email, 'Email required');
   const r = b.role === 'tenant_admin' ? 'tenant_admin' : 'provider';
   if (r === 'tenant_admin' && req.user.role !== 'super_admin') throw forbid();
@@ -897,13 +903,15 @@ S.post('/users', role('super_admin', 'tenant_admin'), wrap(async req => {
     svcs.push(s.id);
   }
   const pw = tempPw();
-  const u = await insert('users', { id: uid(), tenant_id: req.tenantId, name: b.name, email: String(b.email).trim(), phone: b.phone, role: r, password_hash: hashPw(pw), is_active: 1, must_change_pw: 1 });
+  const off = r === 'tenant_admin' && Array.isArray(b.features_off) ? [...new Set(b.features_off.map(String))] : [];
+  if (off.some(k => !ADMIN_FEATURE_KEYS.includes(k))) throw bad('Unknown feature');
+  const u = await insert('users', { id: uid(), tenant_id: req.tenantId, name: b.name, email: String(b.email).trim(), phone: b.phone, role: r, password_hash: hashPw(pw), is_active: 1, must_change_pw: 1, perm_off: off.length ? JSON.stringify(off) : null });
   for (const sid of svcs) await insert('service_members', { id: uid(), tenant_id: req.tenantId, service_id: sid, user_id: u.id, created_at: now() });
   await notify({ tenant_id: req.tenantId }, [u.email], 'invite', await staffVars(u, pw));
   await audit(req, 'user.create', 'user', u.id, { email: u.email, role: r });
   return { id: u.id, temp_password: pw };
 }));
-S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.patch('/users/:id', may('people'), wrap(async req => {
   const u = await managed(req), b = req.body;
   if (b.is_active === 0 && u.id === req.user.id) throw bad("You can't deactivate yourself");
   if (b.role && b.role !== u.role) {
@@ -914,9 +922,18 @@ S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (email.toLowerCase() !== u.email.toLowerCase() && await one('SELECT 1 FROM users WHERE lower(email)=lower(?)', email)) throw new HttpErr(409, 'CONFLICT', 'Email already in use');
   await run('UPDATE users SET name=?, email=?, phone=?, role=?, is_active=? WHERE id=?', String(b.name ?? u.name).trim() || u.name, email, b.phone ?? u.phone, b.role || u.role, b.is_active ?? u.is_active, u.id);
   if (b.is_active === 0) await run('DELETE FROM service_members WHERE user_id=?', u.id);
+  // features of a campus admin: only the super admin sets them (a campus admin can't widen or narrow their own)
+  if (b.features_off !== undefined) {
+    if (req.user.role !== 'super_admin') throw new HttpErr(403, 'FORBIDDEN', 'Only the super admin changes what a campus admin can see');
+    if ((b.role || u.role) !== 'tenant_admin') throw bad('Features are only for campus admins');
+    const off = [...new Set((Array.isArray(b.features_off) ? b.features_off : []).map(String))];
+    if (off.some(k => !ADMIN_FEATURE_KEYS.includes(k))) throw bad('Unknown feature');
+    await run('UPDATE users SET perm_off=? WHERE id=?', off.length ? JSON.stringify(off) : null, u.id);
+  }
+  if (b.role === 'provider' && u.role === 'tenant_admin') await run('UPDATE users SET perm_off=NULL WHERE id=?', u.id); // back to provider: nothing to keep
   await audit(req, 'user.update', 'user', u.id, b); return { ok: true };
 }));
-S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.post('/users/:id/reset-password', may('people'), wrap(async req => {
   const u = await managed(req);
   if (u.id === req.user.id) throw bad('Change your own password from Profile');
   if (!u.is_active) throw bad('Activate this account first');
@@ -971,7 +988,7 @@ S.get('/services', wrap(async req => Promise.all((await all('SELECT * FROM servi
     escalation_users: await escalationOfficers(s.id),
     escalation_user: s.escalation_user_id ? await one('SELECT id, name FROM users WHERE id=? AND is_active=1', s.escalation_user_id) || null : null,
     sla: Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id=?', req.tenantId, s.id)).map(x => [x.priority, x.target_hours])) })))));
-S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.post('/services', may('services'), wrap(async req => {
   const b = req.body; req_(b.code, 'Code required'); req_(b.name, 'Name required');
   b.code = String(b.code).trim().toUpperCase();
   if (!/^[A-Z0-9-]{2,12}$/.test(b.code)) throw bad('Code: 2–12 letters or digits (no spaces), e.g. ADM');
@@ -984,7 +1001,7 @@ S.post('/services', role('super_admin', 'tenant_admin'), wrap(async req => {
   if (b.sla) for (const p of PRIORITIES) if (Number(b.sla[p]) > 0) await insert('sla_policies', { id: uid(), tenant_id: req.tenantId, service_id: s.id, priority: p, target_hours: Number(b.sla[p]) });
   await audit(req, 'service.create', 'service', s.id, b); return s;
 }));
-S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.patch('/services/:id', may('services'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const b = req.body;
   await run('UPDATE services SET name=?, description=?, form_schema=?, is_active=?, sort_order=? WHERE id=?', b.name ?? s.name, b.description ?? s.description,
@@ -1001,7 +1018,7 @@ S.patch('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => 
   await audit(req, 'service.update', 'service', s.id, b); return { ok: true };
 }));
 // Delete a team for good: only when it never had a ticket and has no sub-teams (otherwise deactivate it, which keeps its history)
-S.delete('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.delete('/services/:id', may('services'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const { n } = await one('SELECT count(*)::int n FROM tickets WHERE service_id=?', s.id);
   if (n) throw new HttpErr(409, 'IN_USE', `${s.name} has ${n} ticket${n === 1 ? '' : 's'}, so it can't be deleted. Deactivate it instead: it leaves the portal and its tickets stay.`);
@@ -1013,7 +1030,7 @@ S.delete('/services/:id', role('super_admin', 'tenant_admin'), wrap(async req =>
   });
   await audit(req, 'service.delete', 'service', s.id, { code: s.code, name: s.name }); return { ok: true };
 }));
-S.put('/services/:id/members', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.put('/services/:id/members', may('services'), wrap(async req => {
   const s = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!s) throw notFound();
   const ids = [...new Set(req.body.user_ids || [])];
   for (const id of ids) if (!await one("SELECT 1 FROM users WHERE id=? AND tenant_id=? AND is_active=1 AND role IN ('provider','tenant_admin')", id, req.tenantId)) throw notFound();
@@ -1030,7 +1047,7 @@ S.get('/sla', wrap(async req => {
     hold_reasons: holdReasons(tn), daily_limits: dailyLimits(tn), point_rules: POINT_RULES.map(r => ({ ...r, upTo: r.upTo === Infinity ? null : r.upTo })), points: POINTS };
 }));
 // A department's own SLA settings: working hours and days, time to close by priority, escalation. Empty = the campus's.
-S.get('/sla/service/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.get('/sla/service/:id', may('sla'), wrap(async req => {
   const sv = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!sv) throw notFound();
   const tn = await tenantRow(req.tenantId), r = await svcHoursRow(sv.id), eff = teamHours(tn, r);
   const pol = async sid => Object.fromEntries((await all('SELECT priority,target_hours FROM sla_policies WHERE tenant_id=? AND service_id IS NOT DISTINCT FROM ?', req.tenantId, sid)).map(x => [x.priority, x.target_hours]));
@@ -1041,7 +1058,7 @@ S.get('/sla/service/:id', role('super_admin', 'tenant_admin'), wrap(async req =>
     escalate_after_hours: sv.escalate_after_hours, base_escalate_after_hours: parent?.escalate_after_hours ?? null, campus_escalate_after_days: tn.escalate_after_days ?? 0,
     escalate_holds: sv.escalate_holds, base_escalate_holds: !!(r.p_escalate_holds ?? tn.escalate_holds) };
 }));
-S.put('/sla/service/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.put('/sla/service/:id', may('sla'), wrap(async req => {
   const sv = await one('SELECT * FROM services WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!sv) throw notFound();
   const b = req.body || {}, hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
   let ws = null, we = null, wd = null;
@@ -1062,7 +1079,7 @@ S.put('/sla/service/:id', role('super_admin', 'tenant_admin'), wrap(async req =>
   });
   await audit(req, 'sla.service', 'service', sv.id, b); return { ok: true };
 }));
-S.put('/sla', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.put('/sla', may('sla'), wrap(async req => {
   const b = req.body, hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
   if (!hhmm.test(b.work_start) || !hhmm.test(b.work_end) || b.work_end <= b.work_start) throw bad('Working hours must be like 09:00 – 17:00');
   const days = [...new Set((b.work_days || []).map(Number))].filter(d => d >= 0 && d <= 6);
@@ -1273,7 +1290,7 @@ S.get('/fair', wrap(async req => { const f = await fairScores(req.tenantId), adm
   // everyone sees the department ranking; who is in each team (and who is active) only for admins
   const departments = f.departments.map(({ members, ...d }) => admin ? { ...d, members } : d);
   return { ...f, departments, me: f.rows.find(x => x.id === req.user.id) || null }; }));
-S.put('/fair', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.put('/fair', may('sla'), wrap(async req => {
   const b = req.body || {}, cur = fairCfg(await tenantRow(req.tenantId)), w = { ...cur.weights };
   for (const kk of Object.keys(w)) if (b.weights?.[kk] !== undefined) { const v = Number(b.weights[kk]); if (!(Number.isInteger(v) && v >= 0 && v <= 100)) throw bad('Weights: whole numbers 0 to 100'); w[kk] = v; }
   if (!Object.values(w).some(v => v > 0)) throw bad('At least one weight above 0');
@@ -1559,7 +1576,7 @@ const phrasesFor = (tn, serviceId, parentId) => { const p = phrasesOf(tn);
   return Object.fromEntries(Object.keys(REPLY_STEPS).map(k => [k, p[serviceId]?.[k] || (parentId && p[parentId]?.[k]) || p['*']?.[k] || REPLY_DEFAULTS[k]])); };
 S.get('/reply-phrases', wrap(async req => { const tn = await tenantRow(req.tenantId), sv = req.query.service ? await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.query.service, req.tenantId) : null;
   return { steps: REPLY_STEPS, phrases: phrasesFor(tn, sv?.id, sv?.parent_id), defaults: REPLY_DEFAULTS, saved: isAdmin(req.user) ? phrasesOf(tn) : undefined }; }));
-S.put('/reply-phrases', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.put('/reply-phrases', may('services'), wrap(async req => {
   const tn = await tenantRow(req.tenantId), b = req.body || {}, scope = b.scope || '*', p = phrasesOf(tn);
   if (scope !== '*' && !await one('SELECT 1 AS x FROM services WHERE id=? AND tenant_id=?', scope, req.tenantId)) throw notFound();
   const clean = {};
@@ -1574,8 +1591,9 @@ S.put('/reply-phrases', role('super_admin', 'tenant_admin'), wrap(async req => {
 // ---------- notice board (staff side) ----------
 // Admins: notices for any team or the whole campus. A team's providers: notices for their own team(s) (a main team's
 // providers also for its sub-teams). Create, edit, publish, end, delete; files one at a time (images, PDF, Word, Excel).
-const noticeTeams = async req => isAdmin(req.user) ? (await all('SELECT id FROM services WHERE tenant_id=?', req.tenantId)).map(r => r.id) : await myServiceIds(req.user, req.tenantId);
-const canNotice = async (req, serviceId) => serviceId ? (await noticeTeams(req)).includes(serviceId) : isAdmin(req.user);
+const noticeTeams = async req => !isAdmin(req.user) ? await myServiceIds(req.user, req.tenantId)
+  : canUse(req.user, 'notices') ? (await all('SELECT id FROM services WHERE tenant_id=?', req.tenantId)).map(r => r.id) : []; // a campus admin without Notices: none
+const canNotice = async (req, serviceId) => serviceId ? (await noticeTeams(req)).includes(serviceId) : isAdmin(req.user) && canUse(req.user, 'notices');
 const loadNotice = async req => { const x = await one('SELECT * FROM notices WHERE id=? AND tenant_id=? AND deleted_at IS NULL', req.params.id, req.tenantId);
   if (!x || !await canNotice(req, x.service_id)) throw notFound(); return x; };
 const noticeBody = async (req, b, cur = {}) => {
@@ -1593,7 +1611,7 @@ const noticeBody = async (req, b, cur = {}) => {
   if (kind === 'policy') return { kind, title, body: polish(body).text, service_id, audience, important: 0, starts_at: null, ends_at: b.end_now ? ends_at : null, status }; // a policy stands until removed
   return { kind, title, body: polish(body).text, service_id, audience, important: (b.important ?? cur.important) ? 1 : 0, starts_at, ends_at, status };
 };
-S.get('/notices', wrap(async req => {
+S.get('/notices', wrap(async req => { adminMay(req, 'notices');
   const teams = await noticeTeams(req), n = now(), admin = isAdmin(req.user);
   const rows = await all(`SELECT x.*, s.name team, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files FROM notices x LEFT JOIN services s ON s.id=x.service_id
     WHERE x.tenant_id=? AND x.deleted_at IS NULL AND (${admin ? 'TRUE' : 'FALSE'} OR x.service_id = ANY(?::text[])) ORDER BY coalesce(x.updated_at, x.created_at) DESC LIMIT 300`, req.tenantId, teams);
@@ -1635,7 +1653,7 @@ S.delete('/notices/:id/files/:key', wrap(async req => { const x = await loadNoti
   await run('DELETE FROM notice_files WHERE notice_id=? AND storage_key=?', x.id, req.params.key); return { ok: true }; }));
 
 // Send this campus's morning brief now (both kinds, even on a quiet day), e.g. to check how it looks
-S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
+S.post('/digest/send', may('email'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
 S.post('/tickets/:id/priority', wrap(async req => {
   const t = await loadTicket(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
@@ -1656,7 +1674,7 @@ S.post('/tickets/:id/extend', role('super_admin', 'tenant_admin'), wrap(async re
 }));
 
 // attention, reports, audit, notifications
-S.get('/attention', role('super_admin', 'tenant_admin'), wrap(async req => ({
+S.get('/attention', may('attention'), wrap(async req => ({
   no_provider: await all(`SELECT s.id,s.name,s.code,(SELECT count(*) FROM tickets t WHERE t.service_id=s.id AND t.status IN ('open','in_progress','hold')) open_count FROM services s
     WHERE s.tenant_id=? AND s.is_active=1 AND NOT EXISTS (SELECT 1 FROM service_members m JOIN users u ON u.id=m.user_id WHERE m.service_id=s.id AND u.is_active=1)`, req.tenantId),
   overdue: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status IN ('open','in_progress') AND t.due_at<? ORDER BY t.due_at`, req.tenantId, now()),
@@ -1665,10 +1683,10 @@ S.get('/attention', role('super_admin', 'tenant_admin'), wrap(async req => ({
   reopen_requests: await all(`${LIST_SQL} WHERE t.tenant_id=? AND t.status='closed' AND t.reopen_requested_at IS NOT NULL ORDER BY t.reopen_requested_at`, req.tenantId),
   failed_mail: await all("SELECT * FROM notifications WHERE tenant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 50", req.tenantId),
 })));
-S.post('/notifications/:id/resend', role('super_admin', 'tenant_admin'), wrap(async req => {
+S.post('/notifications/:id/resend', may('email'), wrap(async req => {
   await run("UPDATE notifications SET status='queued', attempts=0 WHERE id=? AND tenant_id=?", req.params.id, req.tenantId); queue.push(req.params.id); return { ok: true };
 }));
-S.get('/reports', wrap(async req => {
+S.get('/reports', wrap(async req => { if (req.query.for !== 'home') adminMay(req, 'reports'); // Home's own counts stay
   // my services' tickets plus any escalated to me
   const sids = await myServiceIds(req.user, req.tenantId);
   const inS = sids.length ? `(service_id IN (${sids.map(() => '?').join()}) OR escalated_to=?)` : 'escalated_to=?', base = [req.tenantId, ...sids, req.user.id];
@@ -1713,12 +1731,12 @@ S.put('/merge-mode', role('super_admin'), wrap(async req => {
   if (!MERGE_MODES.includes(req.body.mode)) throw bad('Pick silent or confirm');
   await setSetting('merge_mode', req.body.mode); await audit(req, 'merge.mode', 'setting', 'merge_mode', { mode: req.body.mode }); return { mode: req.body.mode };
 }));
-S.get('/audit', role('super_admin', 'tenant_admin'), wrap(async req =>
+S.get('/audit', may('audit'), wrap(async req =>
   await all('SELECT a.*, u.name actor FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id WHERE a.tenant_id=? ORDER BY a.created_at DESC LIMIT 200', req.tenantId)));
 // group-wide report (super admin; mounted before tenant scope via separate path)
 // ---------- Email page: connection, events, test, delivery log ----------
 const M = express.Router();
-M.use(auth, role('super_admin', 'tenant_admin'));
+M.use(auth, may('email'));
 const superOnly = role('super_admin');
 const SAMPLE_CAMPUS = "St. Mary's Rehabilitation University";
 const maskKey = k => k ? '•'.repeat(Math.max(0, Math.min(12, k.length - 4))) + k.slice(-4) : '';
@@ -1803,7 +1821,7 @@ app.get('/api/group/report', auth, role('super_admin'), wrap(async () =>
     FROM tenants tn LEFT JOIN tickets t ON t.tenant_id=tn.id GROUP BY tn.id ORDER BY tn.name`, now())));
 
 // Food & catering: rate a meal (feedback) or report a problem (ticket); kitchen dashboard; scheduled reports (food.js)
-food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicket, tenantRow, base, SECRET, getSettings, setSetting, providersFor,
+food({ adminMay, app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicket, tenantRow, base, SECRET, getSettings, setSetting, providersFor,
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 app.use('/api', S);

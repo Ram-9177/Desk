@@ -844,3 +844,8 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .dmr{flex:0 0 26px;height:26px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;background:#F2F4F7;color:var(--text-2)}
 .dmr.r1{background:#FEF3C7;color:#92400E}.dmr.r2{background:#E5E7EB;color:#374151}.dmr.r3{background:#FDE7D7;color:#9A3412}
 .dms{font-size:15px;color:var(--brand)}.dmu{padding:8px 2px 0}
+/* People → campus admin features (super admin) */
+.featbox{border:1px solid var(--input-border);border-radius:12px;padding:10px 12px;margin-top:6px;background:var(--surface)}.featwrap[hidden]{display:none}
+.feat-h{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.featrow{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--divider);margin:0;cursor:pointer;font-weight:400}
+.featrow input{margin-top:3px;flex:0 0 auto;width:18px;height:18px}.featrow span{display:flex;flex-direction:column}.featrow small{color:var(--text-2);font-size:12.5px;line-height:1.4}

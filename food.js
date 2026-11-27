@@ -143,6 +143,7 @@ export function food(d) {
 
   // ---------- staff: kitchen dashboard (food providers and admins) ----------
   const foodAccess = async req => {
+    d.adminMay(req, 'food'); // a campus admin with Food scores turned off
     const svc = await foodService(req.tenantId); if (!svc) throw new HttpErr(404, 'NOT_FOUND', 'No food service on this campus yet. Set a service’s form type to Food.');
     if (req.user.role === 'provider' && !(await one(`SELECT 1 AS x FROM service_members m JOIN services s ON s.id=m.service_id
       WHERE m.user_id=? AND s.tenant_id=? AND s.form_schema::jsonb->>'form_type'='food'`, req.user.id, req.tenantId))) throw new HttpErr(403, 'FORBIDDEN', 'Only the food team and admins see food scores');
@@ -188,10 +189,11 @@ export function food(d) {
     res.type('text/csv').attachment(`food-feedback-${from}-to-${to}.csv`).send([cols.join(','), ...rows.map(r => cols.map(c => cell(r[c])).join(','))].join('\n'));
   } catch (e) { next(e); } });
   // admin: messes / canteens and meal times
-  S.get('/food/settings', wrap(async req => ({ windows: windowsOf(await mealsOf(req.tenantId)), meals: await mealsOf(req.tenantId, true), chips: chipsOf(await tenantRow(req.tenantId)), default_chips: FOOD_CHIPS,
+  S.get('/food/settings', wrap(async req => (d.adminMay(req, 'food'), { windows: windowsOf(await mealsOf(req.tenantId)), meals: await mealsOf(req.tenantId, true), chips: chipsOf(await tenantRow(req.tenantId)), default_chips: FOOD_CHIPS,
     locations: await all('SELECT id, name, active, sort_order FROM food_locations WHERE tenant_id=? ORDER BY sort_order, name', req.tenantId) })));
   S.put('/food/settings', wrap(async req => {
     if (req.user.role === 'provider') throw new HttpErr(403, 'FORBIDDEN', 'Only admins change food settings');
+    d.adminMay(req, 'food');
     const b = req.body || {};
     // meals: the full list [{ key?, name, start, end, color?, active }]; windows: { key: [from, to] } (times only)
     let meals = await mealsOf(req.tenantId, true);

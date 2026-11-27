@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
+import { canUse, ADMIN_FEATURES, featuresOff, allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
 import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
@@ -559,14 +559,16 @@ async function shell(active, render, title) {
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
-  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
-    admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
+  // a campus admin sees only the features the super admin left on for them (People → Edit → Features); providers keep their screens
+  const f = k => admin && canUse(u, k), mine = k => !admin || canUse(u, k);
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], f('attention') && ['c/attention', 'Attention', 'bell'], mine('reports') && ['c/reports', 'Reports', 'chart'], mine('notices') && ['c/notices', 'Notices', 'notice'], f('services') && ['c/services', 'Services', 'grid'],
+    f('sla') && ['c/sla', 'SLA & points', 'clock'], f('email') && ['c/email', 'Email', 'mail'], f('people') && ['c/users', 'People', 'users'], f('audit') && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
   const MAIN = ['c', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
   const cur = h => active === h ? 'class="on" aria-current="page"' : '';
   // the bell: admins open Attention; providers their overdue tickets (they have no Attention page)
-  const bellHref = admin ? '#/c/attention' : '#/c', bellAttr = admin ? '' : 'data-overdue';
+  const bellHref = f('attention') ? '#/c/attention' : '#/c', bellAttr = f('attention') ? '' : 'data-overdue';
   const bn = (h, l, ic, extra = '') => `<a href="#/${h}" ${cur(h)} ${extra}>${I(ic, 22)}<span>${l}</span></a>`;
   app.innerHTML = `<header class="top"><div class="top-in">
     <a class="brandlink" href="#/c" aria-label="ONE Desk home"><span class="logo-tile">${I('ticket', 18)}</span>ONE Desk</a>
@@ -581,14 +583,14 @@ async function shell(active, render, title) {
     <nav class="bnav" aria-label="Primary">${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
-      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
+      ${mine('reports') ? bn('c/reports', 'Reports', 'chart') : bn('c/me', 'Profile', 'user')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
   app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
   if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
     mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
     mm.onkeydown = e => { if (e.key === 'Escape') { shut(); mb.focus(); } }; mm.querySelectorAll('a').forEach(x => x.onclick = shut);
     if (!S.navDoc) { S.navDoc = true; document.addEventListener('click', e => { const m = document.getElementById('navmm'); if (m && !e.target.closest('.navmore')) { m.hidden = true; document.getElementById('navmb')?.setAttribute('aria-expanded', 'false'); } }); } }
   $('#moreb').onclick = () => moreSheet(all.filter(n => !['c', 'c/new', 'c/attention', 'c/reports'].includes(n[0])));
-  bellDot(admin);
+  bellDot(f('attention'));
   if ($('#tsw')) $('#tsw').onchange = e => { S.tenant = e.target.value; localStorage.setItem('tid', S.tenant); route(); };
   const main = $('#main');
   S.nav = all;
@@ -597,11 +599,14 @@ async function shell(active, render, title) {
   try { await render(main, { sa, admin, u }); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 // The red dot on the bell: something needs attention (admins: the Attention lists; providers: overdue tickets). Checked at most once a minute.
+const NEED_FEATURE = { 'c/attention': 'attention', 'c/reports': 'reports', 'c/services': 'services', 'c/sla': 'sla', 'c/notices': 'notices', 'c/users': 'people', 'c/email': 'email', 'c/food': 'food', 'c/audit': 'audit' };
+const noAccess = k => main => { main.innerHTML = `<div class="card empty" style="text-align:center;padding:36px 20px"><div style="display:flex;justify-content:center">${tile('shield', 22)}</div><h2 style="margin:12px 0 6px">${esc(ADMIN_FEATURES.find(x => x[0] === k)[1])} is turned off for you</h2>
+  <p class="muted">The super admin decides which features each campus admin can use. Ask them if you need this one.</p><a class="btn" href="#/c">Back to Home</a></div>`; };
 async function bellDot(admin) {
   const show = () => document.querySelectorAll('.ndot').forEach(d => d.hidden = !S.bell?.on);
   show(); if (!S.tenant || (S.bell && S.bell.for === S.tenant && Date.now() - S.bell.at < 60e3)) return;
   try { const rem = (await api('/reminders').catch(() => ({ due: [] }))).due.length > 0;
-    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7')).counts || {}));
+    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7&for=home')).counts || {}));
     S.bell = { on, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
 }
 // Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
@@ -664,7 +669,7 @@ async function queue(main) {
   const draw = async () => {
     const keep = document.activeElement?.id === 'fq' ? [$('#fq').selectionStart, true] : null, more = $('.mt-more')?.classList.contains('open');
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
-    const [rows, rep, fair, rem] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] }))]), fm = fair.me;
+    const [rows, rep, fair, rem] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7&for=home'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] }))]), fm = fair.me;
     const c = rep.counts || {};
     const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
     const now = new Date(), h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now)), greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -1131,6 +1136,16 @@ function showTemp(title, u, pw) {
   d.querySelector('#cpw').onclick = () => navigator.clipboard.writeText(`ONE Desk sign-in\nEmail: ${u.email}\nTemporary password: ${pw}\n${location.origin}${location.pathname}#/login`).then(() => toast('Copied'));
 }
 
+// Features of a campus admin (super admin only): ticked = they can use it; all ticked = a full admin
+const featPick = (off = []) => `<div class="featwrap"><label>Features <small>(what this campus admin can see and use)</small></label><div class="featbox"><div class="feat-h"><label class="chk" style="margin:0"><input type="checkbox" id="featAll" ${off.length ? '' : 'checked'}> <b>All features</b></label>
+  <span class="muted small" id="featN"></span></div><div class="muted small" style="margin:2px 0 8px">Untick what this admin should not see. Tickets, Home and their own profile always stay.</div>
+  ${ADMIN_FEATURES.map(([k, l, d]) => `<label class="featrow"><input type="checkbox" name="feat" value="${k}" ${off.includes(k) ? '' : 'checked'}><span><b>${esc(l)}</b><small>${esc(d)}</small></span></label>`).join('')}</div></div>`;
+const wireFeat = (root, roleSel) => { const box = root.querySelector('.featwrap'), boxes = [...root.querySelectorAll('[name=feat]')], all_ = root.querySelector('#featAll');
+  const sync = () => { const on = boxes.filter(b => b.checked).length; all_.checked = on === boxes.length; all_.indeterminate = on > 0 && on < boxes.length;
+    root.querySelector('#featN').textContent = on === boxes.length ? 'Full admin' : `Limited admin · ${on} of ${boxes.length}`; };
+  all_.onchange = () => { boxes.forEach(b => { b.checked = all_.checked; }); sync(); }; boxes.forEach(b => b.onchange = sync); sync();
+  const show = () => { box.hidden = roleSel && roleSel.value !== 'tenant_admin'; }; if (roleSel) roleSel.addEventListener('change', show); show(); };
+const featOffOf = root => [...root.querySelectorAll('[name=feat]')].filter(b => !b.checked).map(b => b.value);
 async function users(main, { sa }) {
   const rows = await api('/users'), me = S.me.user;
   const st = JSON.parse(sessionStorage.getItem('uf') || '{"tab":"all","q":""}');
@@ -1148,6 +1163,7 @@ async function users(main, { sa }) {
         <div class="tm"><b>${esc(u.name)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ''}</b>
           <div class="sub"><span>${esc(u.email)}</span>${u.phone ? `·<span>${esc(u.phone)}</span>` : ''}</div>
           <div class="sub" style="margin-top:4px"><span class="pill ${u.role === 'tenant_admin' ? 'p-int' : 'c4'}">${roleName(u.role)}</span>
+            ${u.role === 'tenant_admin' ? (off => off.length ? `<span class="pill p-medium" title="Turned off: ${esc(ADMIN_FEATURES.filter(x => off.includes(x[0])).map(x => x[1]).join(', '))}">Limited · ${ADMIN_FEATURES.length - off.length} of ${ADMIN_FEATURES.length} features</span>` : '<span class="pill p-low">All features</span>')(featuresOff(u)) : ''}
             ${u.must_change_pw ? '<span class="pill p-medium">Must set password</span>' : ''}${!u.is_active ? '<span class="pill s-closed">Inactive</span>' : ''}
             <span>${u.services ? I('grid', 13) + ' ' + esc(u.services) : u.is_active ? '<span style="color:var(--hold)">No services</span>' : ''}</span>
             <span>· last sign-in ${u.last_login_at ? fmt(u.last_login_at) : 'never'}</span></div></div>
@@ -1161,14 +1177,18 @@ async function users(main, { sa }) {
       <label>Phone</label><input name="phone" type="tel"><label>Role</label><select name="role"><option value="provider">Service provider</option>${sa ? '<option value="tenant_admin">Campus admin</option>' : ''}</select>
       <label>Services <small>(the tickets they handle)</small></label>
       <div class="svcpick">${sv.map(s => `<label><input type="checkbox" name="svc" value="${s.id}"> ${esc(s.name)}</label>`).join('') || '<span class="muted small">No services yet. Add them under Services.</span>'}</div>
+      ${sa ? featPick() : ''}
       <p class="muted small">They are emailed a welcome with their role, services, sign-in link and a temporary password.</p>`,
-      async f => { const r = await api('/users', { method: 'POST', body: { ...formVals(f), svc: undefined, service_ids: [...f.querySelectorAll('[name=svc]:checked')].map(x => x.value) } });
-        showTemp('Account created', formVals(f), r.temp_password); reload(); }); };
+      async f => { const r = await api('/users', { method: 'POST', body: { ...formVals(f), svc: undefined, feat: undefined, service_ids: [...f.querySelectorAll('[name=svc]:checked')].map(x => x.value), ...(sa && f.role.value === 'tenant_admin' ? { features_off: featOffOf(f) } : {}) } });
+        showTemp('Account created', formVals(f), r.temp_password); reload(); });
+      if (sa) { const d = document.querySelector('dialog[open]'); wireFeat(d, d.querySelector('[name=role]')); } };
     main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.e);
       dlg(`<h2>Edit ${esc(u.name)}</h2><label>Full name</label><input name="name" required value="${esc(u.name)}"><label>Email <small>(used to sign in)</small></label><input name="email" type="email" required value="${esc(u.email)}">
         <label>Phone</label><input name="phone" type="tel" value="${esc(u.phone || '')}">
-        ${sa && u.id !== me.id ? `<label>Role</label><select name="role"><option value="provider" ${u.role === 'provider' ? 'selected' : ''}>Service provider</option><option value="tenant_admin" ${u.role === 'tenant_admin' ? 'selected' : ''}>Campus admin</option></select>` : ''}`,
-        async f => { await api('/users/' + u.id, { method: 'PATCH', body: formVals(f) }); toast('Saved'); reload(); }); });
+        ${sa && u.id !== me.id ? `<label>Role</label><select name="role"><option value="provider" ${u.role === 'provider' ? 'selected' : ''}>Service provider</option><option value="tenant_admin" ${u.role === 'tenant_admin' ? 'selected' : ''}>Campus admin</option></select>${featPick(featuresOff(u))}` : ''}`,
+        async f => { const body = { ...formVals(f), feat: undefined }; if (sa && u.id !== me.id && f.role.value === 'tenant_admin') body.features_off = featOffOf(f);
+          await api('/users/' + u.id, { method: 'PATCH', body }); toast('Saved'); reload(); });
+      if (sa && u.id !== me.id) { const d = document.querySelector('dialog[open]'); wireFeat(d, d.querySelector('[name=role]')); } });
     main.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.r);
       dlg(`<h2>Reset password?</h2><p>${esc(u.name)} gets a new temporary password by email and must set their own at next sign-in. Their old password stops working.</p>`,
         async () => { const r = await api(`/users/${u.id}/reset-password`, { method: 'POST' }); showTemp('Password reset', u, r.temp_password); reload(); }); });
@@ -1744,7 +1764,7 @@ function noticeEditor(d, n, done, kind = 'notice') {
 }
 
 async function profile(main) {
-  const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
+  const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7&for=home'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
   const mine = u.role === 'provider' ? svcs.filter(s => s.members.some(m => m.id === u.id)) : svcs;
   main.innerHTML = `<div style="max-width:560px;margin:0 auto"><div class="profile"><div class="avatar">${u.name.split(' ').map(w => w[0]).slice(0, 2).join('')}</div>
     <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
@@ -1815,6 +1835,8 @@ async function route() {
       const page = seg.slice(0, 2).join('/');
       const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage };
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
+      const need = NEED_FEATURE[page]; // a campus admin opening a screen that is turned off for them (an old link or bookmark)
+      if (need && S.me?.user.role === 'tenant_admin' && !canUse(S.me.user, need)) return await shell(page, noAccess(need), ADMIN_FEATURES.find(x => x[0] === need)[1]);
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }
     document.body.className = '';
