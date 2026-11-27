@@ -74,6 +74,11 @@ export const printHtml = html => new Promise(res => { const f = document.createE
 // record the print (so a second copy is marked), then print
 const printOrder = async (kind, o, name, pr) => { let dup = false; try { dup = (await H.api(`/canteen/orders/${o.id}/printed`, { method: 'POST', body: { kind } })).duplicate; } catch (e) { H.toast(e.message); return; }
   await printHtml(kind === 'kot' ? kotHtml(o, name, pr, dup) : billHtml(o, name, pr, dup)); };
+const thumb = (src, cls = '') => src ? `<img class="cn-th ${cls}" src="${src}" alt="" loading="lazy" onerror="this.remove()">` : '';
+// a photo picked on the phone or PC, made small (JPEG, longest side 900 px) before upload
+const shrinkImg = f => new Promise((ok, no) => { const u = URL.createObjectURL(f), im = new Image(); im.onload = () => { const k = Math.min(1, 900 / Math.max(im.naturalWidth, im.naturalHeight)), c = document.createElement('canvas');
+  c.width = Math.round(im.naturalWidth * k); c.height = Math.round(im.naturalHeight * k); const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u); ok(c.toDataURL('image/jpeg', .82)); };
+  im.onerror = () => { URL.revokeObjectURL(u); const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); }; im.src = u; }); // HEIC that the browser can't open goes as it is: the server converts it
 const vegDot = v => `<i class="cn-veg ${v ? 'v' : 'nv'}" title="${v ? 'Veg' : 'Non-veg'}" aria-label="${v ? 'Veg' : 'Non-veg'}"></i>`;
 
 // ================= student =================
@@ -100,7 +105,7 @@ export async function studentCanteen(slug, view, id, q) {
   const stepper = it => !c.open ? (it.sold_out ? '<span class="cn-so">Out of stock</span>' : '') : !cart[it.id] && it.sold_out ? `<button type="button" class="btn cn-add cn-book" data-inc="${it.id}" title="Out of stock: book it and the canteen confirms">Book</button>` : cart[it.id]
     ? `<span class="cn-step"><button type="button" data-dec="${it.id}" aria-label="One less ${esc(it.name)}">−</button><b>${cart[it.id]}</b><button type="button" data-inc="${it.id}" aria-label="One more ${esc(it.name)}">+</button></span>`
     : `<button type="button" class="btn soft cn-add" data-inc="${it.id}">Add</button>`;
-  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_now}" data-deal="${it.deal ? 1 : 0}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${it.sold_out ? ' <span class="cn-oos">Out of stock</span>' : ''}${fast.has(it.id) ? ' <span class="cn-fast">🔥 Fast moving</span>' : pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.deal ? ' ' + dealBadge(it.deal) : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${priceHtml(it)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
+  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_now}" data-deal="${it.deal ? 1 : 0}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${thumb(it.img, 'lg')}${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${it.sold_out ? ' <span class="cn-oos">Out of stock</span>' : ''}${fast.has(it.id) ? ' <span class="cn-fast">🔥 Fast moving</span>' : pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.deal ? ' ' + dealBadge(it.deal) : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${priceHtml(it)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
   const groups = [...c.categories, ...(c.uncategorised.length ? [{ id: 'x', name: c.categories.length ? 'More' : 'Menu', items: c.uncategorised }] : [])];
   const bar = () => { const n = count(), b = document.getElementById('cnbar'); if (!b) return;
     b.hidden = !n || !c.open; b.innerHTML = `<a class="btn primary big" href="#/d/${slug}/canteen/cart">${I('utensils', 18)} ${n} item${n === 1 ? '' : 's'} · ${rupees(total())} <span style="margin-left:auto">View cart ${I('chev', 16)}</span></a>`; };
@@ -209,11 +214,27 @@ export async function studentCanteen(slug, view, id, q) {
   }
 }
 
+// The live receipt: drawn from the server every few seconds, with today's colour and word (staff see the same),
+// this order's check code, a ticking clock and a moving band. A screenshot or an old copy freezes and shows "not live".
+let rcTick = null, rcLast = 0;
+const liveReceipt = o => `<div class="card cn-rc s-${o.status}" style="--ck:${o.check.hex}" aria-live="polite">
+  <div class="cn-rcband"><span>${pesc(o.check.color)}</span><b>${pesc(o.check.word)}</b><span>${pesc(o.check.day.split('-').reverse().join('/'))}</span></div>
+  <div class="cn-rcbody"><div class="cn-rcrow"><span>Receipt · ${pesc(o.canteen)}</span><span class="cn-rclive" id="rclive">● LIVE</span></div>
+    <div class="cn-rcbig"><div><small>Token</small><b>${o.token}</b></div><div><small>Check code</small><b class="mono">${o.check.code}</b></div><div><small>Bill no.</small><b>${o.bill_no ?? '—'}</b></div></div>
+    <div class="cn-rcclock" id="rcclock"></div>
+    <div class="cn-rcitems">${o.items.map(i => `<div><span>${i.qty} × ${pesc(i.name)}</span><b>${rupees(i.qty * i.price_paise)}</b></div>`).join('')}${o.delivery_fee_paise ? `<div><span>Delivery</span><b>${rupees(o.delivery_fee_paise)}</b></div>` : ''}
+      <div class="t"><span>Paid · ${o.pay_mode === 'upi' ? 'UPI' : 'Cash'}</span><b>${o.total}</b></div></div>
+    <div class="muted small" id="rcseen"></div>${o.status === 'collected' ? `<div class="cn-rcstamp">${o.fulfil === 'delivery' ? 'DELIVERED' : 'COLLECTED'}</div>` : ''}</div>
+  <div class="muted small cn-rchelp">Show this live screen at the counter. Staff check today's colour and word and the check code. Screenshots don't work: the clock stops and it says not live.</div></div>`;
+const rcStart = () => { clearInterval(rcTick); rcTick = setInterval(() => { const c = document.getElementById('rcclock'), l = document.getElementById('rclive'), seen = document.getElementById('rcseen'); if (!c) return clearInterval(rcTick);
+  c.textContent = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const age = Math.round((Date.now() - rcLast) / 1000), stale = age > 25 || !navigator.onLine; l.textContent = stale ? '● NOT LIVE' : '● LIVE'; l.classList.toggle('off', stale);
+  seen.textContent = stale ? 'Not checked with the canteen just now: connect to the internet and reload.' : `Checked with the canteen ${age <= 1 ? 'just now' : age + ' s ago'}`; }, 1000); };
 async function orderPage(slug, id, key) {
   const { app, I, esc } = H, hash = location.hash.split('?')[0]; let prev = null;
   const draw = async () => {
     if (document.activeElement?.id === 'cnutr' || document.getElementById('cnutr')?.value || document.querySelector('.cn-qrpay[open]')) return; // keep a typed reference and an open UPI QR
-    let o; try { o = await H.api(`/public/${slug}/canteen/orders/${id}?k=${encodeURIComponent(key || '')}`); } catch (e) { app.innerHTML = `<div class="wrap"><h1>Order not found</h1><p class="muted">${esc(e.message)}</p><a href="#/d/${slug}/canteen">Back to the menu</a></div>`; return clearInterval(timer); }
+    let o; try { o = await H.api(`/public/${slug}/canteen/orders/${id}?k=${encodeURIComponent(key || '')}`); rcLast = Date.now(); } catch (e) { app.innerHTML = `<div class="wrap"><h1>Order not found</h1><p class="muted">${esc(e.message)}</p><a href="#/d/${slug}/canteen">Back to the menu</a></div>`; return clearInterval(timer); }
     const del = o.fulfil === 'delivery', steps = [['placed', o.status === 'placed' ? 'Payment' : 'Paid'], ['accepted', 'Preparing'], del ? ['out', 'On the way'] : ['ready', 'Ready'], ['collected', del ? 'Delivered' : 'Collected']];
     const rank = { placed: 0, accepted: 1, ready: del ? 1.5 : 2, out: 2, collected: 3 }[o.status] ?? -1, end = ['rejected', 'cancelled'].includes(o.status);
     const mins = o.pay_by ? Math.max(0, Math.ceil((Date.parse(o.pay_by) - Date.now()) / 6e4)) : null;
@@ -233,13 +254,14 @@ async function orderPage(slug, id, key) {
       <div class="card cn-token s-${o.status}"><span class="muted small">Token</span><b>${o.token}</b><span class="cn-stat">${esc(o.status_text)}</span>${msg ? `<p>${msg}</p>` : ''}
         ${o.status === 'accepted' ? `<p class="cn-eta">${o.ahead ? `${o.ahead} order${o.ahead === 1 ? '' : 's'} ahead of you` : 'You are next'}${o.wait_min ? ` · usually about ${o.wait_min} min` : ''}</p>` : ''}
         ${end && o.reject_reason ? `<p class="err">${o.status === 'cancelled' ? '' : 'Reason: '}${esc(o.reject_reason)}</p>` : ''}${o.status === 'rejected' && ['paid', 'claimed'].includes(o.pay_status) ? '<p>If you paid, collect your refund at the counter with this token.</p>' : ''}</div>
-      ${payBox}
+      ${payBox}${o.check ? liveReceipt(o) : ''}
       ${end ? '' : `<ol class="cn-steps">${steps.map(([k, l], i) => `<li class="${i < rank ? 'done' : i === Math.floor(rank) || (o.status === 'placed' && i === 0) ? 'now' : ''}"><i></i>${l}</li>`).join('')}</ol>`}
-      <div class="card cn-list">${o.items.map(it => `<div class="cn-item"><span>${it.qty} × ${esc(it.name)}</span><b>${rupees(it.qty * it.price_paise)}</b></div>`).join('')}
+      <div class="card cn-list">${o.items.map(it => `<div class="cn-item"><span class="cn-in">${thumb(it.img, 'sm')}<span>${it.qty} × ${esc(it.name)}</span></span><b>${rupees(it.qty * it.price_paise)}</b></div>`).join('')}
         ${o.delivery_fee_paise ? `<div class="cn-item"><span>Delivery</span><b>${rupees(o.delivery_fee_paise)}</b></div>` : ''}
         <div class="cn-item cn-tot"><b>Total${o.pay_status === 'paid' ? ' · paid' : ''}</b><b>${o.total}</b></div>${o.note ? `<div class="muted small" style="padding-top:8px">Note: ${esc(o.note)}</div>` : ''}</div>
       ${o.status === 'placed' && o.pay_status === 'unpaid' ? '<p><button class="btn danger" id="cncancel">Cancel order</button></p>' : ''}
       <p><a class="btn" href="#/d/${slug}/canteen">${I('utensils', 18)} Back to the menu</a></p></div>`;
+    if (o.check) rcStart();
     const cb = document.getElementById('cncancel');
     if (cb) cb.onclick = async () => { if (!confirm('Cancel this order?')) return; try { await H.api(`/public/${slug}/canteen/orders/${id}/cancel`, { method: 'POST', body: { k: key } }); H.toast('Order cancelled'); draw(); } catch (e) { H.toast(e.message); draw(); } };
     const uf = document.getElementById('cnutrf');
@@ -291,7 +313,7 @@ export async function canteenPage(main, { sa }) {
   async function orders() {
     const d = await api('/canteen/orders'), by = s => d.orders.filter(o => s.includes(o.status));
     const card = o => `<div class="card cn-oc s-${o.status}" data-tk="${o.token_no}"><div class="cn-oh"><span class="cn-tk s-${o.status}">${o.token}</span><div><b>${esc(o.name)}</b>${o.earlier ? ` <span class="cn-so">from ${esc(o.day)}</span>` : ''}<div class="muted small">${new Date(o.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}${o.phone ? ' · ' + esc(o.phone) : ''}</div></div><b class="cn-amt">${o.total}</b></div>
-      <div class="cn-sum"><span><small>Order</small><b>${o.token}</b></span><span><small>Amount</small><b>${o.total}</b></span><span><small>${o.pay_mode === 'upi' ? 'UTR' : 'Payment'}</small><b class="mono">${o.pay_mode === 'upi' ? (o.upi_ref ? esc(o.upi_ref) : '—') : 'Cash'}</b></span></div>
+      <div class="cn-sum"><span><small>Order</small><b>${o.token}</b></span><span><small>Amount</small><b>${o.total}</b></span>${o.pay_status === 'paid' && o.check_code ? `<span><small>Check</small><b class="mono">${o.check_code}</b></span>` : ''}<span><small>${o.pay_mode === 'upi' ? 'UTR' : 'Payment'}</small><b class="mono">${o.pay_mode === 'upi' ? (o.upi_ref ? esc(o.upi_ref) : '—') : 'Cash'}</b></span></div>
       ${o.has_booked && o.status === 'placed' ? `<div class="cn-warn">${I('alert', 14)} Has out-of-stock items: confirm you can make them before sending to the kitchen.</div>` : ''}
       <div class="cn-badges">${o.channel === 'counter' ? '<span class="cn-b ctr">Counter</span>' : ''}<span class="cn-b ${o.pay_status}">${o.pay_mode === 'upi' ? 'UPI' : 'Cash'} · ${o.pay_status === 'paid' ? 'paid' : o.pay_status === 'claimed' ? `ref ${esc(o.upi_ref)}` : 'not paid yet'}</span>${o.fulfil === 'delivery' ? `<span class="cn-b del">${I('pin', 12)} ${esc(o.deliver_to)}</span>` : '<span class="cn-b">Pickup</span>'}</div>
       <table class="cn-itab"><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>${o.items.map(i => `<tr><td>${esc(i.name)}${i.booked ? ' <span class="cn-oos">out of stock</span>' : ''}</td><td>${i.qty}</td><td>${rupees(i.qty * i.price_paise)}</td></tr>`).join('')}
@@ -304,7 +326,7 @@ export async function canteenPage(main, { sa }) {
         : o.status === 'out' ? `<button class="btn primary" data-a="collected" data-id="${o.id}">${I('ccheck', 16)} Delivered</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Not delivered</button>` : ''}</div></div>`;
     const col = (t, list, empty) => `<section class="cn-col"><h3>${t} <span class="cnt">${list.length}</span></h3>${list.map(card).join('') || `<p class="muted small">${empty}</p>`}</section>`;
     const done = by(['collected', 'rejected', 'cancelled']), pend = by(['placed', 'accepted', 'ready', 'out']).length;
-    main.innerHTML = `${head()}<div class="card cn-openbar ${d.open ? 'on' : ''}"><div>${I(d.open ? 'ccheck' : 'clock', 18)} <b>${esc(d.name)}: ${d.open ? 'open for orders today' : 'closed'}</b><div class="muted small">${d.open && d.state && !d.state.accepting ? 'Opened, but outside the canteen timings: students can order once the timings allow. ' : ''}${d.state?.hours ? hoursText(d.state.hours) + ' · ' : ''}${d.open ? 'Students can order now. Mark items sold out with the Stock button.' : 'Open the canteen to start taking orders. Sold-out marks reset each new day.'}</div></div>
+    main.innerHTML = `${head()}<div class="card cn-openbar ${d.open ? 'on' : ''}"><div>${I(d.open ? 'ccheck' : 'clock', 18)} ${d.today_check ? `<div class="cn-todayck" style="--ck:${d.today_check.hex}"><span>Today's receipt</span><b>${esc(d.today_check.color)} · ${esc(d.today_check.word)}</b></div>` : ''}<b>${esc(d.name)}: ${d.open ? 'open for orders today' : 'closed'}</b><div class="muted small">${d.open && d.state && !d.state.accepting ? 'Opened, but outside the canteen timings: students can order once the timings allow. ' : ''}${d.state?.hours ? hoursText(d.state.hours) + ' · ' : ''}${d.open ? 'Students can order now. Mark items sold out with the Stock button.' : 'Open the canteen to start taking orders. Sold-out marks reset each new day.'}</div></div>
       <input id="cnfind" class="cn-find" inputmode="numeric" placeholder="Find token, e.g. 47" aria-label="Find token"><button class="btn ${d.open ? '' : 'primary'}" id="cnopen">${d.open ? 'Close for today' : 'Open canteen for the day'}</button></div>
       <div class="cn-board">${col('Waiting for payment', by(['placed']).reverse(), 'Nobody waiting to pay')}${col('In the kitchen', by(['accepted']).reverse(), 'Nothing being prepared')}${col('Ready', by(['ready']).reverse(), 'Nothing waiting')}${col('Out for delivery', by(['out']).reverse(), 'No deliveries on the way')}</div>
       <details class="card cn-done" ${openDone ? 'open' : ''}><summary><b>Done today</b> · ${done.length} (${by(['collected']).length} collected)</summary>${done.map(o => `<div class="cn-item"><span><span class="cn-tk sm s-${o.status}">${o.token}</span> ${esc(o.name)} · ${o.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span><span class="muted small">${o.status === 'rejected' ? (['paid', 'claimed'].includes(o.pay_status) ? 'Rejected · refund ' + o.total : 'Rejected') : o.status === 'cancelled' ? esc(o.reject_reason || 'Cancelled by student') : o.total + (o.fulfil === 'delivery' ? ' · delivered' : '')}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>`;
@@ -363,7 +385,7 @@ export async function canteenPage(main, { sa }) {
       ch.innerHTML = !t || !cash ? '' : !Number.isFinite(got) ? '<span class="err">Enter a number</span>' : got < t ? `<span class="err">Short by ${rupees(t - got)}</span>` : `Give change <b>${rupees(got - t)}</b>`; };
     const add = (k, d) => { posCart[k] = Math.max(0, Math.min(99, (posCart[k] || 0) + d)); if (!posCart[k]) delete posCart[k]; render(); };
     // the middle column: the chosen category (or a search across all), in two sections, Veg and Non-veg
-    const tile = i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''} ${i.is_veg ? 'v' : 'nv'}" data-add="${i.id}" ${i.sold_out ? 'disabled' : ''}>${vegDot(i.is_veg)}<b>${esc(i.name)}</b><span>${i.sold_out ? 'Sold out' : priceHtml(i)}</span>${i.deal ? dealBadge(i.deal) : ''}</button>`;
+    const tile = i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''} ${i.is_veg ? 'v' : 'nv'}" data-add="${i.id}" ${i.sold_out ? 'disabled' : ''}>${i.img ? `<img class="cn-pbimg" src="${i.img}" alt="" loading="lazy" onerror="this.remove()">` : ''}${vegDot(i.is_veg)}<b>${esc(i.name)}</b><span>${i.sold_out ? 'Sold out' : priceHtml(i)}</span>${i.deal ? dealBadge(i.deal) : ''}</button>`;
     const grid = () => { const v = (document.getElementById('posq')?.value || '').trim().toLowerCase(), g = document.getElementById('posgrid');
       if (!list.length) { g.innerHTML = `<div class="card empty"><span class="et">No items on the menu yet</span><span>${acc.manage ? 'Add categories and items with prices on the <b>Menu</b> tab.' : 'Ask the canteen manager to add items on the Menu tab.'}</span></div>`; return; }
       const shown = list.filter(i => v ? i.name.toLowerCase().includes(v) || (i.description || '').toLowerCase().includes(v) : posCat === 'all' || i.cat === posCat);
@@ -410,7 +432,7 @@ export async function canteenPage(main, { sa }) {
     if (fresh.length) { chime(); toast('New KOT in the kitchen'); } kotSeen = ids;
     if (k.print.auto_kot) for (const o of k.kots) if (!o.kot_prints) { o.kot_prints = 1; await printOrder('kot', o, k.name, k.print); } // the kitchen printer catches every KOT not printed yet
     const kot = o => `<div class="card cn-kot ${o.kot_started_at ? 'cooking' : 'new'} ${age(o.accepted_at) > (k.sla?.prep || 15) ? 'late' : ''}" data-tk="${o.token_no}"><div class="cn-koth"><b>KOT ${o.token}</b><span>${o.fulfil === 'delivery' ? `${I('pin', 13)} Delivery` : 'Pickup'}</span><span class="cn-age">${age(o.accepted_at)} min</span></div>
-      <table class="cn-ktab"><tbody>${o.items.map(i => `<tr><td class="q">${i.qty}</td><td>${esc(i.name)}${i.booked ? ' <span class="cn-oos">was out of stock</span>' : ''}</td></tr>`).join('')}</tbody></table>
+      <table class="cn-ktab"><tbody>${o.items.map(i => `<tr><td class="q">${i.qty}</td><td>${thumb(i.img, 'sm')}${esc(i.name)}${i.booked ? ' <span class="cn-oos">was out of stock</span>' : ''}</td></tr>`).join('')}</tbody></table>
       ${o.note ? `<div class="cn-note">${I('pencil', 13)} ${esc(o.note)}</div>` : ''}<div class="muted small">${esc(o.name)} · paid ${new Date(o.accepted_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}</div>
       <div class="fact">${o.kot_started_at ? `<button class="btn primary" data-k="ready" data-id="${o.id}">${I('bell', 16)} ${o.fulfil === 'delivery' ? 'Ready · packed' : 'Ready'}</button>` : `<button class="btn primary" data-k="start" data-id="${o.id}">${I('play', 16)} Start cooking</button>`}<button class="btn" data-print="${o.id}" aria-label="Print KOT ${o.token}">Print</button></div></div>`;
     main.innerHTML = `${acc.cook ? '' : head()}<div class="cn-kh"><b>${esc(k.name)} · Kitchen</b><span class="muted small">${k.kots.length} KOT${k.kots.length === 1 ? '' : 's'} · refreshes by itself</span><button type="button" class="btn soft" id="kstock">Stock (sold out)</button></div>
@@ -426,7 +448,7 @@ export async function canteenPage(main, { sa }) {
 
   async function menu() {
     const m = await api('/canteen/menu'), cats = m.categories;
-    const itemRow = it => `<div class="cn-item ${it.active ? '' : 'gone'}"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b> ${it.active ? `<label class="cn-qp">₹<input inputmode="decimal" data-price="${it.id}" value="${it.price_paise / 100}" aria-label="Price of ${esc(it.name)} in rupees"></label>` : `<span class="cn-price">${rupees(it.price_paise)}</span>`}${it.deal ? ' ' + dealBadge(it.deal) + ` <b class="cn-price">${rupees(it.price_now)}</b>` : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}</div></div>
+    const itemRow = it => `<div class="cn-item ${it.active ? '' : 'gone'}"><div class="cn-in">${it.active ? `<button type="button" class="cn-phb" data-photo="${it.id}" title="${it.img ? 'Change photo' : 'Add photo'}" aria-label="Photo of ${esc(it.name)}">${it.img ? thumb(it.img) : I('camera', 18)}</button>` : ''}${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b> ${it.active ? `<label class="cn-qp">₹<input inputmode="decimal" data-price="${it.id}" value="${it.price_paise / 100}" aria-label="Price of ${esc(it.name)} in rupees"></label>` : `<span class="cn-price">${rupees(it.price_paise)}</span>`}${it.deal ? ' ' + dealBadge(it.deal) + ` <b class="cn-price">${rupees(it.price_now)}</b>` : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}</div></div>
       <div class="cn-acts">${it.active ? `<button class="iconbtn" data-deal="${it.id}" aria-label="Deal on ${esc(it.name)}" title="Discount / flash sale">🏷️</button><label class="chk cn-sw"><input type="checkbox" data-so="${it.id}" ${it.sold_out ? 'checked' : ''}> Sold out</label>
         <button class="iconbtn" data-edit="${it.id}" aria-label="Edit ${esc(it.name)}">${I('pencil', 16)}</button><button class="iconbtn" data-del="${it.id}" aria-label="Remove ${esc(it.name)}">${I('x', 16)}</button>`
         : `<button class="btn soft" data-back="${it.id}">Put back</button>`}</div></div>`;
@@ -490,6 +512,13 @@ export async function canteenPage(main, { sa }) {
     const dealForm = (t, kinds) => `<h3>${t}</h3><label>Type</label><select name="kind">${kinds.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
       <label>Discount (%)</label><input name="pct" type="number" min="1" max="90" required value="20"><label>For how long</label><select name="mins"><option value="15">15 minutes</option><option value="30" selected>30 minutes</option><option value="60">1 hour</option><option value="120">2 hours</option><option value="240">4 hours</option><option value="0">Until I end it (discount only)</option></select>
       <p class="muted small">Students see the badge and the new price straight away; a flash or end-of-day sale also pops up on their menu.</p>`;
+    main.querySelectorAll('[data-photo]').forEach(b => b.onclick = () => { const it = all_.find(x => x.id === b.dataset.photo);
+      const d = dlg(`<h3>Photo · ${esc(it.name)}</h3><p class="muted small">Shown to students, at the counter and in the kitchen. Not printed on bills or KOTs.</p>
+        <div class="cn-phprev">${it.img ? `<img src="${it.img}" alt="">` : '<span class="muted">No photo yet</span>'}</div>
+        <input type="file" accept="image/*" name="file" aria-label="Choose a photo">${it.img ? '<p><button type="button" class="btn danger" id="phdel">Remove photo</button></p>' : ''}`, async f => {
+          const file = f.file.files[0]; if (!file) throw new Error('Choose a photo first'); await api(`/canteen/items/${it.id}/photo`, { method: 'PUT', body: { data: await shrinkImg(file) } }); toast('Photo saved'); draw(); });
+      d.querySelector('[name=file]').onchange = async e => { const file = e.target.files[0]; if (file) d.querySelector('.cn-phprev').innerHTML = `<img src="${await shrinkImg(file)}" alt="">`; };
+      const pd = d.querySelector('#phdel'); if (pd) pd.onclick = async () => { try { await api(`/canteen/items/${it.id}/photo`, { method: 'DELETE' }); d.close(); toast('Photo removed'); draw(); } catch (e) { toast(e.message); } }; });
     main.querySelectorAll('[data-deal]').forEach(b => b.onclick = () => { const it = all_.find(x => x.id === b.dataset.deal);
       const d = dlg(dealForm(`Deal on ${esc(it.name)} (${rupees(it.price_paise)})`, [['flash', '⚡ Flash sale'], ['eod', '🌙 End-of-day sale'], ['discount', 'Discount']]) + (it.deal ? '<p><button type="button" class="btn danger" id="nodeal">End this deal</button></p>' : ''),
         async f => { await api('/canteen/items/' + it.id, { method: 'PATCH', body: { deal_pct: +f.pct.value, deal_kind: f.kind.value, deal_minutes: +f.mins.value } }); toast('Deal is live'); draw(); });

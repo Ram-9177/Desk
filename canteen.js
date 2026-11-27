@@ -5,6 +5,9 @@
 // Students browse without logging in; the first order on a device verifies their email with a one-time code.
 // Self-contained: own tables, own routes; wired from server.js with one call.
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { kindOf, heicToJpeg, SHOWN } from './images.js';
 // qrcode is loaded only when a QR code is asked for: if the package is missing (npm ci not run after a deploy),
 // only the QR image fails, with a clear message, and the rest of ONE Desk keeps running
 let qrLib = null;
@@ -51,6 +54,7 @@ ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS kot_by TEXT;
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS has_booked INT DEFAULT 0;
 -- deals on an item: a plain discount, a flash sale or an end-of-day sale, as % off, until a time (NULL = until ended)
 ALTER TABLE canteen_items ADD COLUMN IF NOT EXISTS deal_pct INT DEFAULT 0;
+ALTER TABLE canteen_items ADD COLUMN IF NOT EXISTS image_key TEXT;
 -- the counter (POS): walk-in sales by counter staff (kind='counter'), cash received / change, and printed bills and KOTs
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'online';
 ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS cash_tendered_paise INT;
@@ -119,6 +123,18 @@ const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, 
 
 export function canteen(d) {
   const { app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, sendMail, SECRET } = d;
+  // ---- anti-fake receipt: a colour and word for the day (same for students and staff) and a check code per order ----
+  const COLORS = [['Teal', '#0F766E'], ['Purple', '#7E22CE'], ['Orange', '#EA580C'], ['Blue', '#1D4ED8'], ['Pink', '#DB2777'], ['Green', '#15803D'], ['Brown', '#92400E'], ['Red', '#B91C1C'], ['Indigo', '#4338CA'], ['Olive', '#4D7C0F']];
+  const WORDS = ['MANGO', 'LOTUS', 'TIGER', 'RIVER', 'PEARL', 'CEDAR', 'MAPLE', 'COMET', 'EAGLE', 'JASMINE', 'MONSOON', 'SAFFRON', 'GINGER', 'NEEM', 'BANYAN', 'COCONUT', 'PEACOCK', 'TULSI', 'CARDAMOM', 'LYCHEE'];
+  const hmac = v => crypto.createHmac('sha256', SECRET).update(v).digest();
+  const dayCheck = (tid, day) => { const h = hmac(`canteen-day\n${tid}\n${day}`); const c = COLORS[h[0] % COLORS.length]; return { color: c[0], hex: c[1], word: WORDS[h[1] % WORDS.length], day }; };
+  const checkCode = o => String(hmac(`canteen-order\n${o.id}`).readUInt32BE(0) % 9000 + 1000);
+  // ---- item photos: kept beside the desk's other uploads, shown on screens (menu, counter, kitchen), never printed ----
+  const UP = process.env.UPLOAD_DIR || 'data/uploads', IMG = /^canteen-[a-f0-9]{24}\.(jpg|png|gif|webp)$/;
+  var imgUrl = k => k && IMG.test(k) ? `/api/canteen-img/${k}` : null;
+  app.get('/api/canteen-img/:key', (req, res, next) => { if (!IMG.test(req.params.key)) return next(notFound());
+    const f = path.resolve(UP, req.params.key); if (!fs.existsSync(f)) return next(notFound());
+    res.set('Cache-Control', 'public, max-age=86400').sendFile(f); });
   const forbid = () => new HttpErr(403, 'FORBIDDEN', 'Only the canteen managers can do this');
   const otpHash = (tid, email, code) => crypto.createHmac('sha256', SECRET).update(`${tid}\n${email}\n${code}`).digest('hex');
 
@@ -135,8 +151,8 @@ export function canteen(d) {
 
   const menuOf = async (tid, all_ = false) => {
     const cats = await all('SELECT id, name, sort_order FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid);
-    const items = (await all(`SELECT id, category_id, name, description, price_paise, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_until FROM canteen_items WHERE tenant_id=? ${all_ ? '' : 'AND active=1'} ORDER BY sort_order, name`, tid))
-      .map(({ deal_pct, deal_kind, deal_until, ...i }) => { const deal = dealOf({ deal_pct, deal_kind, deal_until }); return { ...i, deal, price_now: deal ? priceNow({ ...i, deal_pct, deal_kind, deal_until }) : i.price_paise }; });
+    const items = (await all(`SELECT id, category_id, name, description, price_paise, is_veg, sold_out, active, sort_order, image_key, deal_pct, deal_kind, deal_until FROM canteen_items WHERE tenant_id=? ${all_ ? '' : 'AND active=1'} ORDER BY sort_order, name`, tid))
+      .map(({ deal_pct, deal_kind, deal_until, image_key, ...i }) => { const deal = dealOf({ deal_pct, deal_kind, deal_until }); return { ...i, img: imgUrl(image_key), deal, price_now: deal ? priceNow({ ...i, deal_pct, deal_kind, deal_until }) : i.price_paise }; });
     return { categories: cats.map(c => ({ ...c, items: items.filter(i => i.category_id === c.id) })).filter(c => all_ || c.items.length),
       uncategorised: items.filter(i => !i.category_id || !cats.some(c => c.id === i.category_id)) };
   };
@@ -276,7 +292,7 @@ export function canteen(d) {
       if (!(qty >= 1 && qty <= MAX_QTY)) throw bad(`Quantity for ${it.name} must be 1 to ${MAX_QTY}`);
       const prev = out.find(x => x.id === it.id); if (prev) { prev.qty = Math.min(MAX_QTY, prev.qty + qty); continue; }
       const d = dealOf(it), cat = cats.find(c => c.id === it.category_id)?.name || null;
-      out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}), ...(it.sold_out ? { booked: true } : {}) });
+      out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(it.image_key ? { img: imgUrl(it.image_key) } : {}), ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}), ...(it.sold_out ? { booked: true } : {}) });
     }
     const fee = fulfil === 'delivery' ? Math.round(pay.delivery_fee * 100) : 0, total = out.reduce((s, x) => s + x.price_paise * x.qty, 0) + fee, day = dayOf(tn.timezone);
     // the student saw a total; if a deal ended or a price changed meanwhile, say so instead of charging a different amount
@@ -304,7 +320,7 @@ export function canteen(d) {
     const pay = payOf(tn), upi = o.status === 'placed' && o.pay_mode === 'upi' && pay.upi_id ? { link: upiLink(pay, o), id: pay.upi_id, name: pay.upi_name } : null;
     const pay_by = o.status === 'placed' && o.pay_status === 'unpaid' ? new Date(Date.parse(o.created_at) + pay.pay_window_min * 6e4).toISOString() : null;
     const ahead = ['placed', 'accepted'].includes(o.status) ? (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND token_no<? AND status='accepted'`, tn.id, o.day, o.token_no)).n : 0;
-    return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id), upi, pay_by }; }));
+    return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id), upi, pay_by, server_time: now(), check: o.pay_status === 'paid' ? { ...dayCheck(tn.id, dayOf(tn.timezone)), code: checkCode(o) } : null }; }));
   // the student paid by UPI: they send the reference number (UTR) from their UPI app; staff check it and send the order to the kitchen
   P.post('/:slug/canteen/orders/:id/upi-ref', wrap(async req => {
     const { tn } = await orderByKey(req); await expire(tn); const o = await one('SELECT * FROM canteen_orders WHERE id=?', req.params.id); // past the pay time: already cancelled
@@ -441,6 +457,21 @@ export function canteen(d) {
     const r = await run('UPDATE canteen_items SET sold_out=? WHERE id=? AND tenant_id=? AND active=1', req.body.sold_out ? 1 : 0, req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
   S.get('/canteen/stock', wrap(async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.counter && !a.kitchen) throw forbid();
     return (await all('SELECT id, name, sold_out FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY name', req.tenantId)); }));
+  // an item's photo: a JPEG/PNG/GIF/WebP (iPhone HEIC is turned into JPEG), up to 4 MB; replacing or removing deletes the old file
+  S.put('/canteen/items/:id/photo', wrap(async req => { await need(req);
+    const it = await one('SELECT id, image_key FROM canteen_items WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!it) throw notFound();
+    let buf = Buffer.from(String(req.body.data || '').split(',').pop(), 'base64'), kind = kindOf(buf);
+    if (kind === 'heic') try { buf = await heicToJpeg(buf); kind = 'jpeg'; } catch { throw bad('This photo could not be read. Please try a JPEG or PNG.'); }
+    if (!SHOWN[kind]) throw bad('Please choose a photo (JPEG, PNG, GIF or WebP)'); if (buf.length > 4e6) throw bad('That photo is too big (up to 4 MB)');
+    const key = `canteen-${crypto.randomBytes(12).toString('hex')}.${kind === 'jpeg' ? 'jpg' : kind}`;
+    fs.mkdirSync(UP, { recursive: true }); fs.writeFileSync(path.join(UP, key), buf);
+    await run('UPDATE canteen_items SET image_key=? WHERE id=?', key, it.id);
+    if (it.image_key && IMG.test(it.image_key)) fs.rm(path.join(UP, it.image_key), { force: true }, () => {});
+    return { img: imgUrl(key) }; }));
+  S.delete('/canteen/items/:id/photo', wrap(async req => { await need(req);
+    const it = await one('SELECT id, image_key FROM canteen_items WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!it) throw notFound();
+    await run('UPDATE canteen_items SET image_key=NULL WHERE id=?', it.id); if (it.image_key && IMG.test(it.image_key)) fs.rm(path.join(UP, it.image_key), { force: true }, () => {});
+    return { ok: true }; }));
   // removing an item hides it (old orders keep their copy of the name and price)
   S.delete('/canteen/items/:id', wrap(async req => { await need(req);
     const r = await run('UPDATE canteen_items SET active=0 WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -463,7 +494,7 @@ export function canteen(d) {
   S.get('/canteen/orders', wrap(async req => { const a0 = await needCounter(req); await expire(a0.tenant); const a = a0, day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : dayOf(a.tenant.timezone);
     const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ${LIVE})) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
     const pr = payOf(a.tenant);
-    return { sla: { prep: pr.prep_sla_min, delivery: pr.delivery_sla_min }, print: { paper: pr.paper, auto_bill: pr.auto_bill, kot_at_counter: pr.kot_at_counter, footer: pr.bill_footer, tagline: pr.tagline }, day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: (await withCashier(rows)).map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
+    return { sla: { prep: pr.prep_sla_min, delivery: pr.delivery_sla_min }, print: { paper: pr.paper, auto_bill: pr.auto_bill, kot_at_counter: pr.kot_at_counter, footer: pr.bill_footer, tagline: pr.tagline }, day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), today_check: dayCheck(req.tenantId, day), orders: (await withCashier(rows)).map(o => ({ ...pub(o), check_code: checkCode(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
   S.post('/canteen/orders/:id/:to(accepted|rejected|ready|out|collected)', wrap(async req => {
     const to = req.params.to, a = to === 'ready' ? await (async () => { const x = await access(req); if (!x.tenant) throw bad('Pick a campus first'); if (!x.kitchen && !x.counter) throw forbid(); return x; })() : await needCounter(req), o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
@@ -505,7 +536,7 @@ export function canteen(d) {
       if (!(qty >= 1 && qty <= 99)) throw bad(`Quantity for ${it.name} must be 1 to 99`);
       const prev = out.find(x => x.id === it.id); if (prev) { prev.qty = Math.min(99, prev.qty + qty); continue; }
       const d = dealOf(it), cat = cats.find(c => c.id === it.category_id)?.name || null;
-      out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}) }); }
+      out.push({ id: it.id, name: it.name, price_paise: priceNow(it), qty, ...(it.image_key ? { img: imgUrl(it.image_key) } : {}), ...(d ? { mrp_paise: it.price_paise, deal: d.kind, pct: d.pct } : {}), ...(cat ? { category: cat } : {}) }); }
     const total = out.reduce((s, x) => s + x.price_paise * x.qty, 0);
     if (b.expect_paise != null && Number(b.expect_paise) !== total) throw new HttpErr(409, 'PRICE_CHANGED', `Prices changed (a deal ended or a price was edited). The bill is now ${rupees(total)}: check it with the customer and charge again.`);
     let tendered = null, ref = null;

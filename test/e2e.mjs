@@ -1432,6 +1432,24 @@ try {
   check('walk-in UPI: the counter gets a QR for the exact bill', uq.status === 200 && /svg/.test(uq.headers.get('content-type')) && /<svg/.test(await uq.text()));
   check('…not the kitchen, and not without an amount', (await fetch(API + '/canteen/pos/upi.svg?amount=1250', { headers: { authorization: 'Bearer ' + T.lata } })).status === 403
     && (await fetch(API + '/canteen/pos/upi.svg', { headers: { authorization: 'Bearer ' + T.kavya } })).status === 400);
+  await fails('counter staff cannot change item photos', `/canteen/items/${dosa.id}/photo`, { token: T.kavya, method: 'PUT', body: { data: PNG } }, 403);
+  await fails('a non-picture is refused as a photo', `/canteen/items/${dosa.id}/photo`, { token: T.pavan, method: 'PUT', body: { data: 'data:text/plain;base64,aGVsbG8gd29ybGQgdGhpcyBpcyB0ZXh0' } }, 400, 'photo');
+  const cph = await ok('manager adds a photo to Masala dosa', `/canteen/items/${dosa.id}/photo`, { token: T.pavan, method: 'PUT', body: { data: PNG } });
+  check('…served for everyone to see', /^\/api\/canteen-img\/canteen-[a-f0-9]{24}\.png$/.test(cph.img) && (await fetch(APP + cph.img)).status === 200);
+  check('…on the student menu and the counter', [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].find(i => i.id === dosa.id).img === cph.img
+    && (await api('/canteen/pos', { token: T.kavya })).data.categories.flatMap(c => c.items).find(i => i.id === dosa.id).img === cph.img);
+  const pho = await ok('an order with it', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }] } });
+  check('…the kitchen KOT shows the photo (screens only)', (await api('/canteen/kitchen', { token: T.lata })).data.kots.find(o => o.id === pho.id)?.items[0].img === cph.img);
+  check('a made-up photo name is not served', (await fetch(APP + '/api/canteen-img/..%2F..%2Fetc%2Fpasswd')).status === 404 && (await fetch(APP + '/api/canteen-img/canteen-zz.png')).status === 404);
+  await api(`/canteen/orders/${pho.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${pho.id}/collected`, { token: T.kavya, method: 'POST' });
+  // the live receipt: today's colour and word and a check code, the same on the student's screen and the counter's
+  const rcO = await ok('a student order for the receipt', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Receipt', items: [{ id: tea.id, qty: 1 }] } });
+  check('no receipt before payment', !(await api(`/public/alpha/canteen/orders/${rcO.id}?k=${rcO.key}`)).data.check);
+  await ok('…paid at the counter', `/canteen/orders/${rcO.id}/accepted`, { token: T.kavya, method: 'POST' });
+  const rcS = (await api(`/public/alpha/canteen/orders/${rcO.id}?k=${rcO.key}`)).data, rcB = (await api('/canteen/orders', { token: T.kavya })).data;
+  check("the receipt's colour, word and check code match what the counter sees", !!rcS.check && rcS.check.word === rcB.today_check.word && rcS.check.color === rcB.today_check.color
+    && rcS.check.code === rcB.orders.find(o => o.id === rcO.id).check_code && /^\d{4}$/.test(rcS.check.code) && !!rcS.server_time);
+  await api(`/canteen/orders/${rcO.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${rcO.id}/collected`, { token: T.kavya, method: 'POST' });
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
@@ -1707,6 +1725,10 @@ async function uiSmoke(tok, id) {
     check('student: the cart asks to verify the email first', await js(`document.querySelector('#cnbar a').click(); for (let i = 0; i < 30 && !document.querySelector('#cnf [name=email]'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('#cnf [name=email]') && /Place order/.test(document.querySelector('#cnf').textContent)`));
     const co = (await q("SELECT id, view_key FROM canteen_orders ORDER BY created_at LIMIT 1"))[0];
     await visit('student: order page shows the token', `/d/alpha/canteen/o/${co.id}?k=${co.view_key}`, null, '.cn-token b');
+    const rcx = (await q("SELECT id, view_key FROM canteen_orders WHERE name='Receipt' ORDER BY created_at DESC LIMIT 1"))[0];
+    if (rcx) { await visit('student: the live receipt', `/d/alpha/canteen/o/${rcx.id}?k=${rcx.view_key}`, null, '.cn-rc');
+      check('…ticking clock, check code, today\'s word and the COLLECTED stamp', await js(`await new Promise(r => setTimeout(r, 1300)); const t1 = document.querySelector('#rcclock').textContent; await new Promise(r => setTimeout(r, 1100));
+        return /^\\d{2}:\\d{2}:\\d{2}$/.test(t1) && document.querySelector('#rcclock').textContent !== t1 && /^\\d{4}$/.test(document.querySelector('.cn-rcbig .mono').textContent) && !!document.querySelector('.cn-rcstamp')`)); }
     await visit('student: menu shows category, price and description', '/d/alpha/canteen', null, '.cn-cat h2');
     check('…with filters; "Veg only" and price sorting work', await js(`const d = document.querySelector('.cn-item .cn-price'); document.querySelector('[data-f=sort]').click(); await new Promise(r => setTimeout(r, 100));
       const p = [...document.querySelector('.cn-list').querySelectorAll('.cn-item')].map(r => +r.dataset.price); document.querySelector('[data-f=sort]').click();
