@@ -999,3 +999,4 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-pb .cn-pbl{color:#15803D;font-size:34px;font-weight:700}.cn-pb.nv .cn-pbl{color:#B91C1C}
 .cn-pb .cn-pbq{color:#fff;font-size:13px;font-weight:700}.cn-pb .cn-pbdeal{color:#fff;font-size:11px;font-weight:700}.cn-pb .cn-pbso{color:#991B1B;font-size:13px;font-weight:800}
 .cn-pb.off .cn-pbl{display:none}
+.cn-rcband b{font-size:18px;letter-spacing:.04em;text-align:center;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

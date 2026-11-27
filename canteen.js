@@ -123,7 +123,7 @@ const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, 
 
 export function canteen(d) {
   const { app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, sendMail, SECRET } = d;
-  // ---- anti-fake receipt: a colour and word for the day (same for students and staff) and a check code per order ----
+  // ---- anti-fake receipt: a colour for the day (same for students and staff) and a check code per order; the band shows the canteen's name ----
   const COLORS = [['Teal', '#0F766E'], ['Purple', '#7E22CE'], ['Orange', '#EA580C'], ['Blue', '#1D4ED8'], ['Pink', '#DB2777'], ['Green', '#15803D'], ['Brown', '#92400E'], ['Red', '#B91C1C'], ['Indigo', '#4338CA'], ['Olive', '#4D7C0F']];
   const WORDS = ['MANGO', 'LOTUS', 'TIGER', 'RIVER', 'PEARL', 'CEDAR', 'MAPLE', 'COMET', 'EAGLE', 'JASMINE', 'MONSOON', 'SAFFRON', 'GINGER', 'NEEM', 'BANYAN', 'COCONUT', 'PEACOCK', 'TULSI', 'CARDAMOM', 'LYCHEE'];
   const hmac = v => crypto.createHmac('sha256', SECRET).update(v).digest();

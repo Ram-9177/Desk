@@ -1447,7 +1447,7 @@ try {
   check('no receipt before payment', !(await api(`/public/alpha/canteen/orders/${rcO.id}?k=${rcO.key}`)).data.check);
   await ok('…paid at the counter', `/canteen/orders/${rcO.id}/accepted`, { token: T.kavya, method: 'POST' });
   const rcS = (await api(`/public/alpha/canteen/orders/${rcO.id}?k=${rcO.key}`)).data, rcB = (await api('/canteen/orders', { token: T.kavya })).data;
-  check("the receipt's colour, word and check code match what the counter sees", !!rcS.check && rcS.check.word === rcB.today_check.word && rcS.check.color === rcB.today_check.color
+  check("the receipt's daily colour and check code match what the counter sees", !!rcS.check && rcS.check.color === rcB.today_check.color && rcS.check.hex === rcB.today_check.hex
     && rcS.check.code === rcB.orders.find(o => o.id === rcO.id).check_code && /^\d{4}$/.test(rcS.check.code) && !!rcS.server_time);
   await api(`/canteen/orders/${rcO.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${rcO.id}/collected`, { token: T.kavya, method: 'POST' });
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
@@ -1727,8 +1727,8 @@ async function uiSmoke(tok, id) {
     await visit('student: order page shows the token', `/d/alpha/canteen/o/${co.id}?k=${co.view_key}`, null, '.cn-token b');
     const rcx = (await q("SELECT id, view_key FROM canteen_orders WHERE name='Receipt' ORDER BY created_at DESC LIMIT 1"))[0];
     if (rcx) { await visit('student: the live receipt', `/d/alpha/canteen/o/${rcx.id}?k=${rcx.view_key}`, null, '.cn-rc');
-      check('…ticking clock, check code, today\'s word and the COLLECTED stamp', await js(`await new Promise(r => setTimeout(r, 1300)); const t1 = document.querySelector('#rcclock').textContent; await new Promise(r => setTimeout(r, 1100));
-        return /^\\d{2}:\\d{2}:\\d{2}$/.test(t1) && document.querySelector('#rcclock').textContent !== t1 && /^\\d{4}$/.test(document.querySelector('.cn-rcbig .mono').textContent) && !!document.querySelector('.cn-rcstamp')`)); }
+      check('…ticking clock, check code, the canteen name in the colour band and the COLLECTED stamp', await js(`await new Promise(r => setTimeout(r, 1300)); const t1 = document.querySelector('#rcclock').textContent; await new Promise(r => setTimeout(r, 1100));
+        return /^\\d{2}:\\d{2}:\\d{2}$/.test(t1) && document.querySelector('#rcclock').textContent !== t1 && /^\\d{4}$/.test(document.querySelector('.cn-rcbig .mono').textContent) && /Hilltop/.test(document.querySelector('.cn-rcband b').textContent) && !!document.querySelector('.cn-rcstamp')`)); }
     await visit('student: menu shows category, price and description', '/d/alpha/canteen', null, '.cn-cat h2');
     check('…with filters; "Veg only" and price sorting work', await js(`const d = document.querySelector('.cn-item .cn-price'); document.querySelector('[data-f=sort]').click(); await new Promise(r => setTimeout(r, 100));
       const p = [...document.querySelector('.cn-list').querySelectorAll('.cn-item')].map(r => +r.dataset.price); document.querySelector('[data-f=sort]').click();
