@@ -191,7 +191,7 @@ async function confirmPage(main, me) {
 
 /* ================= Settings ================= */
 async function settings(main, me) {
-  const d = await H.api('/maildesk/settings'), people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
+  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
   const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
   const chCard = c => {
     const off = Object.fromEntries(c.officers.map(o => [o.role, o])), def = c.sla.find(p => !p.lane), imp = c.sla.find(p => p.lane === 'important');
@@ -218,8 +218,8 @@ async function settings(main, me) {
         <p class="mbar"><button type="button" class="btn" data-addm>Add person</button><button class="btn primary">Save people</button></p></form></section>`;
   };
   main.innerHTML = `${subnav(me, 'settings')}
-    <section class="card"><div class="chead">${H.I('settings', 16)}<span>Connection</span></div>
-      <p class="small">Microsoft 365: ${d.graph.ready ? '<b>connected</b> (keys in .env)' : '<b>not connected</b>: set MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET in .env and restart'}. Notification address: <span class="mono">${e(d.graph.notify_url)}</span>${d.graph.client_state ? '' : ' · set GRAPH_CLIENT_STATE in .env'}.</p>
+    ${cx ? connCards(cx) : `<section class="card"><div class="chead">${H.I('settings', 16)}<span>Connections</span></div><p class="small">Microsoft 365: <b>${d.graph.ready ? 'connected' : 'not connected yet'}</b>. A super admin connects Microsoft 365 and OneDrive here.</p></section>`}
+    <section class="card"><div class="chead">${H.I('clock', 16)}<span>Work in the background</span></div>
       <p class="small">Jobs waiting: ${d.jobs?.queued || 0} · failed: ${d.jobs?.failed || 0}${d.ai_today.length ? ` · AI today: ${d.ai_today.map(a => `${e(a.provider)} ${a.calls} calls${a.failures ? `, ${a.failures} failed` : ''}`).join('; ')}` : ''}</p>
       ${d.admin ? `<label class="small"><input type="checkbox" id="kill" ${d.auto_reply_paused ? 'checked' : ''}> Pause every auto-reply (all mailboxes)</label>` : ''}</section>
     ${d.channels.map(chCard).join('')}
@@ -248,6 +248,7 @@ async function settings(main, me) {
       <p><button type="button" class="btn" data-ai="">Add AI provider</button></p></section>` : ''}`;
 
   const redraw = () => settings(main, me), go = async (fn, m) => { try { await fn(); H.toast(m); redraw(); } catch (er) { H.toast(er.message); } };
+  if (cx) wireConn(main, cx, go, redraw);
   main.querySelectorAll('.mset').forEach(sec => { const id = sec.dataset.ch, c = d.channels.find(x => x.id === id);
     sec.querySelector('[data-test]').onclick = async () => { try { const r = await H.api(`/maildesk/channels/${id}/test`, { method: 'POST' }); H.toast(r.message); } catch (er) { H.toast(er.message); } };
     sec.querySelector('[data-sync]')?.addEventListener('click', () => go(() => H.api(`/maildesk/channels/${id}/sync`, { method: 'POST' }), 'Checking the inbox'));
@@ -296,4 +297,47 @@ async function settings(main, me) {
         await H.api(i.id ? '/maildesk/integrations/' + i.id : '/maildesk/integrations', { method: i.id ? 'PATCH' : 'POST', body }); H.toast('Saved'); redraw(); });
     dl.querySelector('#aidel')?.addEventListener('click', async () => { if (!confirm('Delete this AI provider?')) return; try { await H.api('/maildesk/integrations/' + i.id, { method: 'DELETE' }); dl.close(); redraw(); } catch (er) { H.toast(er.message); } }); });
   main.querySelectorAll('[data-aitest]').forEach(b => b.onclick = async () => { b.disabled = true; try { const r = await H.api(`/maildesk/integrations/${b.dataset.aitest}/test`, { method: 'POST' }); H.toast(r.message); redraw(); } catch (er) { H.toast(er.message); b.disabled = false; } });
+}
+
+/* ================= Connections: Microsoft 365 (mailboxes) and OneDrive (resumes and CVs) ================= */
+const steps = t => t ? `<ul class="msteps">${t.steps.map(x => `<li class="${x.ok ? 'ok' : 'bad'}">${H.I(x.ok ? 'check' : 'x', 14)}<span>${e(x.text)}</span></li>`).join('')}</ul><div class="muted small">Tested ${H.shortDate(t.at)}</div>` : '';
+const stateChip = (on, tested) => !on ? '<span class="mchip">Not connected</span>' : tested?.ok ? '<span class="mchip sla-closed">Connected · tested</span>' : tested ? '<span class="mchip sla-overdue">Connected · test failed</span>' : '<span class="mchip sla-hold">Saved · not tested yet</span>';
+function connCards(cx) {
+  const m = cx.ms365, o = cx.onedrive;
+  return `<section class="card mconn" id="c365"><div class="mt-h"><div class="chead">${H.I('mail', 16)}<span>Microsoft 365 (the mailboxes)</span></div>${stateChip(m.connected, m.last_test)}</div>
+    <details ${m.connected ? '' : 'open'}><summary class="small">How to get these (Entra admin centre, once)</summary><ol class="small">
+      <li>entra.microsoft.com → App registrations → New registration → name it <b>ONE Desk</b> → Register.</li>
+      <li>Copy the <b>Application (client) ID</b> and <b>Directory (tenant) ID</b> from its Overview page.</li>
+      <li>Certificates &amp; secrets → New client secret → copy its <b>Value</b> (shown once).</li>
+      <li>API permissions → Add → Microsoft Graph → <b>Application permissions</b> → ${cx.permissions.mail.map(x => `<b>${e(x)}</b>`).join(', ')}, and for OneDrive <b>${e(cx.permissions.onedrive.join(', '))}</b> → <b>Grant admin consent</b>.</li>
+      <li>Microsoft sends new-mail notices to <span class="mono">${e(m.notify_url)}</span> (must be the site's https address).</li></ol></details>
+    ${m.source === 'env' ? '<p class="muted small">Now using the keys in the server\'s .env file. Saving here replaces them.</p>' : ''}
+    <form id="f365"><div class="row"><div><label>Directory (tenant) ID</label><input name="tenant_id" required value="${e(m.tenant_id)}" placeholder="0206568c-1515-49fd-90d4-f6dad0784500" autocomplete="off"></div>
+      <div><label>Application (client) ID</label><input name="client_id" required value="${e(m.client_id)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off"></div></div>
+      <label>Client secret ${m.has_secret && m.source === 'app' ? '<small>(saved; leave empty to keep it)</small>' : ''}</label><input name="client_secret" type="password" autocomplete="new-password" ${m.has_secret && m.source === 'app' ? '' : 'required'}>
+      <label>Mailbox to test with <small>(optional)</small></label><input name="mailbox" type="email" placeholder="reach@smru.edu.in">
+      <p class="mbar"><button class="btn primary">Save and test</button>${m.connected ? '<button type="button" class="btn" id="t365">Test again</button>' : ''}${m.source === 'app' ? '<button type="button" class="btn" id="d365">Disconnect</button>' : ''}</p></form>
+    <div id="r365">${steps(m.last_test)}</div></section>
+  <section class="card mconn" id="cod"><div class="mt-h"><div class="chead">${H.I('file', 16)}<span>OneDrive (resumes and CVs)</span></div>${stateChip(o.connected, o.last_test)}</div>
+    <p class="muted small">Resumes and CVs that arrive by mail are kept in one account's OneDrive, in this folder. Use a shared account such as hr@, not a person's own, so the files stay when people move on. Files open only through ONE Desk; no public link is made.${m.connected ? '' : ' Connect Microsoft 365 first: OneDrive uses the same app.'}</p>
+    <form id="fod"><div class="row"><div><label>OneDrive of</label><input name="account" type="email" required value="${e(o.account || '')}" placeholder="hr@smru.edu.in"></div>
+      <div><label>Folder</label><input name="folder" value="${e(o.folder || 'Resumes')}" maxlength="200"></div></div>
+      <p class="mbar"><button class="btn primary" ${m.connected ? '' : 'disabled'}>Save and test</button>${o.connected ? '<button type="button" class="btn" id="tod">Test again</button><button type="button" class="btn" id="dod">Disconnect</button>' : ''}
+      ${o.web_url ? `<a class="btn" href="${e(o.web_url)}" target="_blank" rel="noopener">Open the folder</a>` : ''}</p></form>
+    <div id="rod">${steps(o.last_test)}</div></section>`;
+}
+function wireConn(main, cx, go, redraw) {
+  const show = (id, r) => { main.querySelector(id).innerHTML = steps(r); };
+  const test365 = async mailbox => { const r = await H.api('/maildesk/connections/ms365/test', { method: 'POST', body: { mailbox } }); H.toast(r.ok ? 'Microsoft 365 works' : 'Test failed: see the steps'); return r; };
+  const f = main.querySelector('#f365');
+  f.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; sb.disabled = true;
+    try { await H.api('/maildesk/connections/ms365', { method: 'PUT', body: { tenant_id: f.tenant_id.value.trim(), client_id: f.client_id.value.trim(), client_secret: f.client_secret.value.trim() || undefined } });
+      await test365(f.mailbox.value.trim()); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
+  main.querySelector('#t365')?.addEventListener('click', async ev => { ev.target.disabled = true; try { show('#r365', await test365(f.mailbox.value.trim())); } catch (er) { H.toast(er.message); } ev.target.disabled = false; });
+  main.querySelector('#d365')?.addEventListener('click', () => { if (confirm('Disconnect Microsoft 365? Mail stops coming in until it is connected again.')) go(() => H.api('/maildesk/connections/ms365', { method: 'DELETE' }), 'Disconnected'); });
+  const fo = main.querySelector('#fod'), testOd = async () => { const r = await H.api('/maildesk/connections/onedrive/test', { method: 'POST' }); H.toast(r.ok ? 'OneDrive works' : 'Test failed: see the steps'); return r; };
+  fo.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; sb.disabled = true;
+    try { await H.api('/maildesk/connections/onedrive', { method: 'PUT', body: { account: fo.account.value.trim(), folder: fo.folder.value.trim() } }); await testOd(); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
+  main.querySelector('#tod')?.addEventListener('click', async ev => { ev.target.disabled = true; try { show('#rod', await testOd()); } catch (er) { H.toast(er.message); } ev.target.disabled = false; });
+  main.querySelector('#dod')?.addEventListener('click', () => { if (confirm('Disconnect OneDrive? Files already saved stay in OneDrive.')) go(() => H.api('/maildesk/connections/onedrive', { method: 'DELETE' }), 'Disconnected'); });
 }

@@ -174,14 +174,15 @@ Kept apart from the desk: every mail table is in its own Postgres schema `mail`,
 
 ```bash
 MAIL_ENABLED=true
-MS_TENANT_ID=<Entra tenant id>
-MS_CLIENT_ID=<app id>
-MS_CLIENT_SECRET=<app secret>
-GRAPH_CLIENT_STATE=<any long random string>
-INTEGRATIONS_KEY=<64 hex characters, encrypts the AI keys; openssl rand -hex 32>
+INTEGRATIONS_KEY=<64 hex characters: encrypts the saved Microsoft secret and AI keys; openssl rand -hex 32; keep it, or they must be entered again>
 ```
 
-The Entra app needs the application permissions Mail.ReadWrite and Mail.Send, limited to the shared mailboxes. Microsoft posts new-mail notices to `https://<site>/api/inbound/graph`, which must be reachable over HTTPS (nginx already passes `/api`). AI keys are entered in Mail → Settings → AI providers (super admin) and stored encrypted. Names, phone numbers and emails are masked before any text goes to an AI.
+**Connections are made on screen** (super admin, Mail → Settings):
+
+- **Microsoft 365 (the mailboxes)**: the Directory (tenant) ID, Application (client) ID and client secret of an Entra app with the Application permissions Mail.ReadWrite and Mail.Send, plus admin consent. **Save and test** signs in and reads a mailbox's inbox, showing each step. The secret is stored encrypted and never shown again. `MS_TENANT_ID`, `MS_CLIENT_ID` and `MS_CLIENT_SECRET` in `.env` still work; details saved on screen take their place.
+- **OneDrive (resumes and CVs)**: the account whose OneDrive keeps the files (a shared one such as hr@) and a folder (default `Resumes`). It uses the same app, which also needs Files.ReadWrite.All. **Save and test** opens the drive, makes the folder, and saves and removes a test file.
+
+Microsoft posts new-mail notices to `https://<site>/api/inbound/graph`, which must be reachable over HTTPS (nginx already passes `/api`). The check value for those notices is made automatically (or set `GRAPH_CLIENT_STATE`). AI keys are entered in Mail → Settings → AI providers (super admin) and stored encrypted. Names, phone numbers and emails are masked before any text goes to an AI.
 
 Rollout per mailbox: add it (it starts **Off**) → pick the officers → **Shadow** for a week (mail is read and sorted, nothing is sent, officers do not see it yet) → **Live**. On going live, the shadow week's mail is closed, since it was answered in Outlook.
 

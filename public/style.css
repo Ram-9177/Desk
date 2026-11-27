@@ -964,3 +964,6 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .mundo .btn{background:#fff;color:#101828}
 .mbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.mbar>*{flex:none}.mbar>input:not([type=checkbox]),.mbar>select{flex:1 1 160px;min-width:0;width:auto}
 .mbar .sp{flex:1 1 auto}.mbar label.small{margin:0;white-space:nowrap}
+.mconn .mt-h{align-items:center}.mconn ol{padding-left:20px;line-height:1.6}.mconn details{margin:6px 0 8px}
+.msteps{list-style:none;padding:0;margin:10px 0 4px;display:grid;gap:4px}.msteps li{display:flex;gap:8px;align-items:flex-start;font-size:13.5px}
+.msteps li.ok svg{color:var(--st-closed-icon)}.msteps li.bad{color:#B42318}.msteps li svg{flex:none;margin-top:2px}

@@ -10,6 +10,7 @@
 //  • Same app, login, campuses, roles and email queue. Same single process: the jobs (reading new mail, sending replies,
 //    the SLA minute tick, renewing the Graph subscription, catch-up) run on timers here, from a job table in Postgres.
 //  • Microsoft Graph and the AI providers are called with fetch: no new packages.
+import crypto from 'node:crypto';
 import { pool, one, all, run, uid, now, tx, insert } from './db.js';
 import * as L from './mail-logic.js';
 
@@ -125,14 +126,24 @@ export async function mail(d) {
   const today = tz => new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Asia/Kolkata' }).format(new Date());
 
   /* ================= Microsoft Graph (fetch, app-only token) ================= */
-  const graphReady = () => !!(env.MS_TENANT_ID && env.MS_CLIENT_ID && env.MS_CLIENT_SECRET);
+  // The Microsoft 365 app: entered on Mail → Settings (sealed in mail.settings), else from .env. Kept in memory (one process).
+  let ms = null, clientState = '';
+  async function loadMs() {
+    let saved = null; try { const v = await getSet('ms365'); saved = v ? L.unseal(KEY, v) : null; } catch (e) { console.error('mail: the saved Microsoft 365 details cannot be opened (INTEGRATIONS_KEY changed?)', e.message); }
+    ms = saved?.tenantId && saved?.clientId && saved?.clientSecret ? { ...saved, source: 'app' }
+      : env.MS_TENANT_ID && env.MS_CLIENT_ID && env.MS_CLIENT_SECRET ? { tenantId: env.MS_TENANT_ID, clientId: env.MS_CLIENT_ID, clientSecret: env.MS_CLIENT_SECRET, source: 'env' } : null;
+    clientState = env.GRAPH_CLIENT_STATE || await getSet('graph_client_state') || '';
+    if (!clientState) { clientState = crypto.randomBytes(24).toString('base64url'); await putSet('graph_client_state', clientState); } // checks that a notice really came from our subscription
+    tok = null;
+  }
+  const graphReady = () => !!ms;
   let tok = null;
   async function token() {
     if (tok && tok.exp > Date.now() + 60e3) return tok.v;
-    if (!graphReady()) throw new HttpErr(503, 'GRAPH_NOT_SET', 'Microsoft 365 is not connected: set MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET in .env and restart');
-    const r = await fetch(`${LOGIN}/${encodeURIComponent(env.MS_TENANT_ID)}/oauth2/v2.0/token`, { method: 'POST', signal: AbortSignal.timeout(20000),
+    if (!graphReady()) throw new HttpErr(503, 'GRAPH_NOT_SET', 'Microsoft 365 is not connected yet: a super admin connects it on Mail → Settings');
+    const r = await fetch(`${LOGIN}/${encodeURIComponent(ms.tenantId)}/oauth2/v2.0/token`, { method: 'POST', signal: AbortSignal.timeout(20000),
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET, scope: 'https://graph.microsoft.com/.default', grant_type: 'client_credentials' }) });
+      body: new URLSearchParams({ client_id: ms.clientId, client_secret: ms.clientSecret, scope: 'https://graph.microsoft.com/.default', grant_type: 'client_credentials' }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.access_token) throw new Error(`Microsoft sign-in failed: ${j.error_description || j.error || r.status}`);
     tok = { v: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 }; return tok.v;
@@ -400,7 +411,7 @@ export async function mail(d) {
       if (ch.graph_sub_id) { try { await graph('PATCH', `/subscriptions/${encodeURIComponent(ch.graph_sub_id)}`, { expirationDateTime: exp });
         return run('UPDATE mail.channels SET sub_expires_at=?, last_error=NULL WHERE id=?', exp, ch.id); } catch (e) { if (e.status !== 404) throw e; } }
       const s = await graph('POST', '/subscriptions', { changeType: 'created', notificationUrl: notifyUrl(), resource: `users/${ch.address}/mailFolders('inbox')/messages`,
-        expirationDateTime: exp, clientState: env.GRAPH_CLIENT_STATE || '' });
+        expirationDateTime: exp, clientState });
       await run('UPDATE mail.channels SET graph_sub_id=?, sub_expires_at=?, last_error=NULL WHERE id=?', s.id, s.expirationDateTime || exp, ch.id);
     } catch (e) { await run('UPDATE mail.channels SET last_error=? WHERE id=?', String(e.message).slice(0, 300), ch.id); console.error('mail subscribe', ch.address, e.message); }
   }
@@ -428,7 +439,7 @@ export async function mail(d) {
     res.status(202).end(); // answer at once; the work happens in the job loop
     try {
       for (const n of Array.isArray(req.body?.value) ? req.body.value.slice(0, 200) : []) {
-        if ((env.GRAPH_CLIENT_STATE || '') !== (n.clientState || '')) { console.warn('mail webhook: clientState does not match, ignored'); continue; }
+        if (!clientState || clientState !== (n.clientState || '')) { console.warn('mail webhook: clientState does not match, ignored'); continue; }
         const ch = await one("SELECT id FROM mail.channels WHERE graph_sub_id=? AND mode IN ('shadow','live')", String(n.subscriptionId || ''));
         const mid = n.resourceData?.id || /messages\/([^/]+)$/i.exec(n.resource || '')?.[1];
         if (ch && mid) await enqueue('ingest', { channel_id: ch.id, message_id: mid }, `ingest:${mid}`);
@@ -602,7 +613,7 @@ export async function mail(d) {
   S.get('/maildesk/settings', wrap(async req => {
     const a = await needSetup(req), tid = req.tenantId;
     const chans = await all('SELECT * FROM mail.channels WHERE tenant_id=? ORDER BY address', tid);
-    return { admin: a.admin, graph: { ready: graphReady(), notify_url: notifyUrl(), client_state: !!env.GRAPH_CLIENT_STATE }, auto_reply_paused: (await getSet('auto_reply_paused')) === '1',
+    return { admin: a.admin, graph: { ready: graphReady(), notify_url: notifyUrl() }, auto_reply_paused: (await getSet('auto_reply_paused')) === '1',
       channels: await Promise.all(chans.map(pubChannel)),
       people: await all("SELECT id, name, email, role FROM users WHERE tenant_id=? AND is_active=1 ORDER BY name", tid),
       services: await all('SELECT id, name FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order, name', tid),
@@ -769,5 +780,79 @@ export async function mail(d) {
     catch (e) { msg = `Failed: ${e.message}`; }
     await run('UPDATE mail.integrations SET last_test_at=?, last_test_result=? WHERE id=?', now(), msg.slice(0, 255), i.id); return { ok: msg.startsWith('Works'), message: msg }; }));
 
-  console.log('Mail desk on (MAIL_ENABLED=true)' + (graphReady() ? '' : ': Microsoft 365 not connected yet (MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET)'));
+  /* ================= Connections (super admin, on screen): Microsoft 365 and OneDrive ================= */
+  // OneDrive: one account's OneDrive (e.g. hr@) holds the resumes and CVs, in one folder; files are read through ONE Desk, never shared publicly
+  const drive = async () => { const v = await getSet('onedrive'); return v ? json(v, null) : null; };
+  const drivePath = (d, rel) => `${mbox(d.account)}/drive/root:/${[d.folder, ...String(rel || '').split('/')].filter(Boolean).map(encodeURIComponent).join('/')}`;
+  async function ensureFolder(d) {
+    try { return await graph('GET', `${drivePath(d)}?$select=id,name,webUrl`); } catch (e) { if (e.status !== 404) throw e; }
+    let parent = `${mbox(d.account)}/drive/root`, made = null;
+    for (const part of d.folder.split('/').filter(Boolean)) {
+      try { made = await graph('POST', `${parent}/children`, { name: part, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }); }
+      catch (e) { if (e.status !== 409) throw e; made = await graph('GET', `${parent}:/${encodeURIComponent(part)}?$select=id`).catch(() => graph('GET', `${parent}/children?$filter=name eq '${part.replace(/'/g, "''")}'`).then(r => r.value?.[0])); }
+      parent = `${mbox(d.account)}/drive/items/${made.id}`;
+    }
+    return made;
+  }
+  // put a file in the folder (small files; resumes are well under 4 MB): returns its OneDrive item id
+  async function storePut(rel, buf, mime) {
+    const d = await drive(); if (!d?.account) throw new HttpErr(503, 'DRIVE_NOT_SET', 'OneDrive is not connected yet: a super admin connects it on Mail → Settings');
+    const r = await fetch(`${GRAPH}${drivePath(d, rel)}:/content?@microsoft.graph.conflictBehavior=rename`, { method: 'PUT', signal: AbortSignal.timeout(60000),
+      headers: { authorization: 'Bearer ' + await token(), 'content-type': mime || 'application/octet-stream' }, body: buf });
+    const j = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(`OneDrive: ${j.error?.message || r.status}`), { status: r.status });
+    return { externalId: j.id, path: `${d.folder}/${rel}`, size: j.size };
+  }
+  const storeRemove = id => drive().then(d => graph('DELETE', `${mbox(d.account)}/drive/items/${encodeURIComponent(id)}`));
+  const msOut = async () => { const t = json(await getSet('ms365_test') || 'null', null);
+    return { connected: !!ms, source: ms?.source || null, tenant_id: ms?.tenantId || '', client_id: ms?.clientId || '', has_secret: !!ms?.clientSecret, notify_url: notifyUrl(), last_test: t }; };
+  const driveOut = async () => { const d = await drive(); return d ? { connected: !!d.account, account: d.account, folder: d.folder, web_url: d.web_url || null, last_test: d.last_test || null } : { connected: false }; };
+  S.get('/maildesk/connections', wrap(async req => { await needAdmin(req); return { ms365: await msOut(), onedrive: await driveOut(), permissions: {
+    mail: ['Mail.ReadWrite', 'Mail.Send'], onedrive: ['Files.ReadWrite.All'] } }; }));
+  const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  S.put('/maildesk/connections/ms365', wrap(async req => {
+    await needAdmin(req); const b = req.body || {}, cur = ms?.source === 'app' ? ms : {};
+    const tenantId = str(b.tenant_id, 64), clientId = str(b.client_id, 64), clientSecret = str(b.client_secret, 400) || cur.clientSecret;
+    if (!GUID.test(tenantId)) throw bad('Directory (tenant) ID: the 36-character ID on the app\'s Overview page in Entra');
+    if (!GUID.test(clientId)) throw bad('Application (client) ID: the 36-character ID on the app\'s Overview page in Entra');
+    if (!clientSecret) throw bad('Client secret: the Value of a secret under Certificates & secrets (not its Secret ID)');
+    await putSet('ms365', L.seal(KEY, { tenantId, clientId, clientSecret })); await run("DELETE FROM mail.settings WHERE key='ms365_test'"); await loadMs();
+    audit(req, 'key_replace', 'connection', 'ms365', { tenant_id: tenantId, client_id: clientId }); return msOut();
+  }));
+  S.delete('/maildesk/connections/ms365', wrap(async req => { await needAdmin(req);
+    await run("DELETE FROM mail.settings WHERE key IN ('ms365','ms365_test')"); await loadMs(); audit(req, 'setting_change', 'connection', 'ms365', { disconnected: true }); return msOut(); }));
+  S.post('/maildesk/connections/ms365/test', wrap(async req => {
+    await needAdmin(req); const steps = [];
+    try { tok = null; await token(); steps.push({ ok: true, text: 'Signed in to Microsoft 365 with the app' }); }
+    catch (e) { steps.push({ ok: false, text: e.message }); }
+    const box = str(req.body?.mailbox, 320).toLowerCase() || (await one('SELECT address FROM mail.channels WHERE tenant_id=? ORDER BY created_at LIMIT 1', req.tenantId))?.address;
+    if (steps[0].ok && box) {
+      try { const r = await graph('GET', `${mbox(box)}/mailFolders/inbox?$select=totalItemCount,unreadItemCount`); steps.push({ ok: true, text: `Read the inbox of ${box}: ${r.totalItemCount ?? '?'} mails (Mail.ReadWrite works)` }); }
+      catch (e) { steps.push({ ok: false, text: `${box}: ${e.status === 403 ? 'access denied. Add Mail.ReadWrite and Mail.Send (Application) and click Grant admin consent; if mail access is limited to some mailboxes, include this one' : e.status === 404 ? 'no such mailbox in this Microsoft 365' : e.message}` }); }
+    }
+    const res = { ok: steps.every(x => x.ok), steps, at: now() }; await putSet('ms365_test', JSON.stringify(res)); return res;
+  }));
+  S.put('/maildesk/connections/onedrive', wrap(async req => {
+    await needAdmin(req); const b = req.body || {}, account = str(b.account, 320).toLowerCase(), folder = str(b.folder, 200).replace(/^\/+|\/+$/g, '') || 'Resumes';
+    if (!L.isEmail(account)) throw bad('OneDrive account: the email of the account whose OneDrive keeps the files, e.g. hr@smru.edu.in');
+    if (/[\\:*?"<>|#%]|\.\./.test(folder)) throw bad('Folder: letters, numbers, spaces and / only');
+    await putSet('onedrive', JSON.stringify({ account, folder })); audit(req, 'setting_change', 'connection', 'onedrive', { account, folder }); return driveOut();
+  }));
+  S.delete('/maildesk/connections/onedrive', wrap(async req => { await needAdmin(req); await run("DELETE FROM mail.settings WHERE key='onedrive'"); audit(req, 'setting_change', 'connection', 'onedrive', { disconnected: true }); return driveOut(); }));
+  S.post('/maildesk/connections/onedrive/test', wrap(async req => {
+    await needAdmin(req); const d = await drive(); if (!d?.account) throw bad('Save the OneDrive account first'); const steps = [];
+    const step = async (text, fn, why) => { if (steps.some(x => !x.ok)) return; try { const r = await fn(); steps.push({ ok: true, text: typeof text === 'function' ? text(r) : text }); return r; }
+      catch (e) { steps.push({ ok: false, text: why(e) }); } };
+    const denied = e => e.status === 403 || e.status === 401 ? 'access denied. Add Files.ReadWrite.All (Application) to the app and click Grant admin consent' : e.message;
+    await step(r => `Opened the OneDrive of ${d.account}${r?.quota?.remaining ? ` (${Math.round(r.quota.remaining / 1073741824)} GB free)` : ''}`, () => graph('GET', `${mbox(d.account)}/drive?$select=id,quota`),
+      e => e.status === 404 ? `${d.account} has no OneDrive yet: sign in once at office.com with that account, or check the address` : denied(e));
+    const f = await step(`Folder "${d.folder}" is ready`, () => ensureFolder(d), denied);
+    const put = await step('Saved a test file', () => storePut('.onedesk-test.txt', Buffer.from(`ONE Desk test ${now()}`), 'text/plain'), denied);
+    await step('Removed the test file', () => storeRemove(put.externalId), denied);
+    const res = { ok: steps.every(x => x.ok), steps, at: now() };
+    await putSet('onedrive', JSON.stringify({ ...d, web_url: f?.webUrl || d.web_url || null, last_test: res })); return res;
+  }));
+  void storePut; // used by the HR resumes step next
+
+  await loadMs();
+  console.log('Mail desk on (MAIL_ENABLED=true)' + (graphReady() ? ` · Microsoft 365 connected (${ms.source === 'env' ? '.env' : 'Mail → Settings'})` : ': Microsoft 365 not connected yet (Mail → Settings → Connections)'));
 }

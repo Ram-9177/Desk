@@ -107,6 +107,17 @@ const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b
   if (req.headers.authorization !== 'Bearer tok') return send(401, { error: { message: 'no token' } });
   if (u.pathname === '/g/subscriptions' && req.method === 'POST') { const s = { id: 'sub-' + (G.subs.length + 1), ...JSON.parse(b) }; G.subs.push(s); return send(201, { id: s.id, expirationDateTime: s.expirationDateTime }); }
   if (u.pathname.startsWith('/g/subscriptions/')) return send(200, {});
+  if (u.pathname.startsWith('/g/users/') && u.pathname.includes('/drive')) { // a stand-in OneDrive
+    const acct = decodeURIComponent(u.pathname.split('/')[3]); G.drive ||= { files: {}, folder: false };
+    if (acct === 'nobody@smru.test') return send(404, { error: { message: 'User not found' } });
+    if (/\/drive$/.test(u.pathname)) return send(200, { id: 'drv', quota: { remaining: 5 * 1073741824 } });
+    if (/\/drive\/root:\/Resumes$/.test(u.pathname) && req.method === 'GET') return G.drive.folder ? send(200, { id: 'fold', name: 'Resumes', webUrl: 'https://onedrive.example/Resumes' }) : send(404, { error: { message: 'itemNotFound' } });
+    if (/\/drive\/root\/children$/.test(u.pathname) && req.method === 'POST') { G.drive.folder = true; return send(201, { id: 'fold', name: JSON.parse(b).name, webUrl: 'https://onedrive.example/Resumes' }); }
+    const put = /\/drive\/root:\/(.+):\/content$/.exec(u.pathname);
+    if (put && req.method === 'PUT') { const id = 'f' + Object.keys(G.drive.files).length; G.drive.files[id] = { path: decodeURIComponent(put[1]), body: b, type: req.headers['content-type'] }; return send(201, { id, size: b.length }); }
+    const del = /\/drive\/items\/([^/]+)$/.exec(u.pathname); if (del && req.method === 'DELETE') { delete G.drive.files[del[1]]; res.writeHead(204); return res.end(); }
+    return send(404, { error: { message: 'stub drive: ' + u.pathname } });
+  }
   let m = /^\/g\/users\/([^/]+)\/messages\/([^/]+)(\/reply)?$/.exec(u.pathname);
   if (m && m[3]) { G.replies.push({ box: decodeURIComponent(m[1]), id: decodeURIComponent(m[2]), ...JSON.parse(b) }); return send(202, {}); }
   if (m && req.method === 'PATCH') { G.tagged.push(decodeURIComponent(m[2])); return send(200, {}); }
@@ -187,6 +198,29 @@ try {
   await ok('route: Hostel → Hostel service', '/maildesk/routes', { token: cadmin.token, method: 'POST', body: { category: 'Hostel', service_id: hostel.id } });
   await fails('a template with an unknown fill-in is refused', '/maildesk/templates', { token: cadmin.token, method: 'POST', body: { kind: 'manual', name: 'x', body: 'Hi {{nme}}' } }, 400);
   await ok('quick answer template', '/maildesk/templates', { token: cadmin.token, method: 'POST', body: { kind: 'manual', name: 'Fees', body: 'Dear {{first_name}}, the fees are on our website.' } });
+  sec('Connections on screen: Microsoft 365 and OneDrive');
+  let cx = await ok('read the connections', '/maildesk/connections', A);
+  check('Microsoft 365 shows as connected from .env', cx.ms365.connected && cx.ms365.source === 'env' && !JSON.stringify(cx).includes('csecret'));
+  await fails('a campus admin cannot see or change the connections', '/maildesk/connections', { token: cadmin.token }, 403);
+  await fails('a bad tenant ID is refused', '/maildesk/connections/ms365', { ...A, method: 'PUT', body: { tenant_id: 'abc', client_id: '11111111-2222-3333-4444-555555555555', client_secret: 's' } }, 400);
+  await fails('the secret is required the first time', '/maildesk/connections/ms365', { ...A, method: 'PUT', body: { tenant_id: '0206568c-1515-49fd-90d4-f6dad0784500', client_id: '11111111-2222-3333-4444-555555555555' } }, 400);
+  cx = { ms365: await ok('save the Microsoft 365 app on screen', '/maildesk/connections/ms365', { ...A, method: 'PUT', body: { tenant_id: '0206568c-1515-49fd-90d4-f6dad0784500', client_id: '11111111-2222-3333-4444-555555555555', client_secret: 'screen-secret-value' } }) };
+  check('saved on screen replaces .env; the secret is never sent back nor stored readable', cx.ms365.source === 'app' && cx.ms365.has_secret && !JSON.stringify(cx).includes('screen-secret')
+    && !JSON.stringify(await q("SELECT value FROM mail.settings WHERE key='ms365'")).includes('screen-secret'));
+  await ok('save again without the secret keeps it', '/maildesk/connections/ms365', { ...A, method: 'PUT', body: { tenant_id: '0206568c-1515-49fd-90d4-f6dad0784500', client_id: '11111111-2222-3333-4444-555555555555' } });
+  const t365 = await ok('test Microsoft 365 with reach@', '/maildesk/connections/ms365/test', { ...A, method: 'POST', body: { mailbox: 'reach@smru.test' } });
+  check('…signed in and read the inbox, step by step', t365.ok && t365.steps.length === 2 && /3 mails/.test(t365.steps[1].text), JSON.stringify(t365));
+  await fails('OneDrive needs a valid account', '/maildesk/connections/onedrive', { ...A, method: 'PUT', body: { account: 'hr' } }, 400);
+  await ok('OneDrive: hr@, folder Resumes', '/maildesk/connections/onedrive', { ...A, method: 'PUT', body: { account: 'HR@smru.test', folder: '/Resumes/' } });
+  const tod = await ok('test OneDrive', '/maildesk/connections/onedrive/test', { ...A, method: 'POST' });
+  check('…opened the drive, made the folder, saved and removed a test file', tod.ok && tod.steps.length === 4 && G.drive.folder && Object.keys(G.drive.files).length === 0, JSON.stringify(tod));
+  cx = await ok('read the connections again', '/maildesk/connections', A);
+  check('both show as connected and tested, with the folder link', cx.onedrive.connected && cx.onedrive.account === 'hr@smru.test' && cx.onedrive.folder === 'Resumes' && cx.onedrive.last_test.ok && cx.onedrive.web_url && cx.ms365.last_test.ok);
+  await ok('OneDrive of an account with no OneDrive', '/maildesk/connections/onedrive', { ...A, method: 'PUT', body: { account: 'nobody@smru.test' } });
+  const bad1 = await ok('…test it', '/maildesk/connections/onedrive/test', { ...A, method: 'POST' });
+  check('…says plainly what is wrong and stops', !bad1.ok && bad1.steps.length === 1 && /no OneDrive yet/.test(bad1.steps[0].text));
+  await ok('back to hr@', '/maildesk/connections/onedrive', { ...A, method: 'PUT', body: { account: 'hr@smru.test', folder: 'Resumes' } });
+
   await ok('shadow mode', `/maildesk/channels/${ch.id}`, { token: cadmin.token, method: 'PATCH', body: { mode: 'shadow' } });
   check('switching on subscribes to the inbox, with our clientState', G.subs.length === 1 && G.subs[0].clientState === 'cs-test' && G.subs[0].resource.includes('reach@smru.test') && G.subs[0].notificationUrl === MAIL_ENV.MAIL_NOTIFY_URL);
   const test = await ok('test connection', `/maildesk/channels/${ch.id}/test`, { token: cadmin.token, method: 'POST' });
