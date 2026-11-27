@@ -1239,6 +1239,52 @@ try {
   check('popular items need at least two sold this week', Array.isArray(cs2.popular));
   await ok('"No time limit" clears the timings', '/canteen/hours', { token: T.pavan, method: 'PUT', body: { clear: true } });
 
+  sec('Canteen: payment before the kitchen, door delivery');
+  await api(`/canteen/orders/${ow.id}/rejected`, { token: T.pavan, method: 'POST', body: { reason: 'Test clean-up' } });
+  const ord = (b) => api('/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', phone: '9000000001', items: [{ id: dosa.id, qty: 2 }], ...b } });
+  await fails('UPI is refused until the canteen adds its UPI ID', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }], pay_mode: 'upi' } }, 400, 'UPI');
+  await fails('a wrong UPI ID is refused', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'not a upi id' } }, 400, 'UPI ID');
+  await fails('there must be some way to pay', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: false, upi_id: '' } }, 400);
+  await fails('another provider cannot change payments', '/canteen/payments', { token: T.lata, method: 'PUT', body: { cash: true } }, 403);
+  await ok('manager sets the canteen UPI ID, door delivery with a ₹10 charge', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', upi_name: 'Hilltop Cafe', delivery: true, delivery_fee: 10, pay_window_min: 20 } });
+  const pm = (await api('/public/alpha/canteen')).data.pay;
+  check('students see cash, UPI and delivery with its charge', pm.cash && pm.upi && pm.delivery && pm.delivery_fee_paise === 1000);
+  await fails('delivery needs a place', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', phone: '9000000001', items: [{ id: dosa.id, qty: 1 }], fulfil: 'delivery' } }, 400, 'deliver');
+  await fails('delivery needs a phone number', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }], fulfil: 'delivery', deliver_to: 'B-Block 214' } }, 400, 'phone');
+  const du = (await ord({ fulfil: 'delivery', deliver_to: 'B-Block, Room 214', pay_mode: 'upi' })).data;
+  check('a UPI delivery order: total includes the delivery charge, waiting for payment', du.total_paise === 9000 + 1000 && du.status === 'placed' && du.pay_status === 'unpaid' && du.status_text === 'Waiting for UPI payment');
+  const dv1 = (await api(`/public/alpha/canteen/orders/${du.id}?k=${du.key}`)).data;
+  check('the order page has a UPI pay link to the canteen for the exact amount', /^upi:\/\/pay\?/.test(dv1.upi.link) && dv1.upi.link.includes('pa=hilltop%40okhdfcbank') && dv1.upi.link.includes('am=100.00') && !!dv1.pay_by);
+  check('…and a UPI QR code', (await fetch(`${API}/public/alpha/canteen/orders/${du.id}/upi.svg?k=${du.key}`)).status === 200);
+  await fails('the order cannot go to the kitchen by itself', `/public/alpha/canteen/orders/${du.id}/upi-ref`, { method: 'POST', body: { k: du.key, ref: '12' } }, 400, 'reference');
+  await ok('student sends the UPI reference number', `/public/alpha/canteen/orders/${du.id}/upi-ref`, { method: 'POST', body: { k: du.key, ref: '412345678901' } });
+  check('…the order shows the payment is being checked', (await api(`/public/alpha/canteen/orders/${du.id}?k=${du.key}`)).data.pay_status === 'claimed');
+  await fails('a paid-by-UPI order cannot be cancelled by the student', `/public/alpha/canteen/orders/${du.id}/cancel`, { method: 'POST', body: { k: du.key } }, 400, 'UPI');
+  const cu = (await ord({ pay_mode: 'cash' })).data;
+  check('a cash pickup order waits for payment at the counter', cu.status_text === 'Pay at the counter' && cu.fulfil === 'pickup');
+  const du2 = (await ord({ pay_mode: 'upi' })).data;
+  await fails('the same UPI reference cannot be used twice', `/public/alpha/canteen/orders/${du2.id}/upi-ref`, { method: 'POST', body: { k: du2.key, ref: '412345678901' } }, 400, 'already used');
+  const bd = (await api('/canteen/orders', { token: T.pavan })).data.orders;
+  check('the board shows payment mode, reference and delivery place', bd.find(o => o.id === du.id).upi_ref === '412345678901' && bd.find(o => o.id === du.id).deliver_to === 'B-Block, Room 214');
+  await ok('staff confirm the cash → it goes to the kitchen', `/canteen/orders/${cu.id}/accepted`, { token: T.pavan, method: 'POST' });
+  check('…and is marked paid', (await q('SELECT pay_status, paid_by FROM canteen_orders WHERE id=?', cu.id))[0].pay_status === 'paid');
+  await ok('staff verify the UPI payment → kitchen', `/canteen/orders/${du.id}/accepted`, { token: T.pavan, method: 'POST' });
+  await ok('packed', `/canteen/orders/${du.id}/ready`, { token: T.pavan, method: 'POST' });
+  await ok('…ready (pickup)', `/canteen/orders/${cu.id}/ready`, { token: T.pavan, method: 'POST' });
+  await fails('a pickup order cannot go out for delivery', `/canteen/orders/${cu.id}/out`, { token: T.pavan, method: 'POST' }, 400, 'pickup');
+  await ok('out for delivery', `/canteen/orders/${du.id}/out`, { token: T.pavan, method: 'POST' });
+  check('the student is told it is on its way', (await q("SELECT 1 FROM notifications WHERE template_key='canteen_out'")).length === 1 && (await api(`/public/alpha/canteen/orders/${du.id}?k=${du.key}`)).data.status_text === 'Out for delivery');
+  await ok('delivered', `/canteen/orders/${du.id}/collected`, { token: T.pavan, method: 'POST' });
+  check('…shows Delivered', (await api(`/public/alpha/canteen/orders/${du.id}?k=${du.key}`)).data.status_text === 'Delivered');
+  await ok('pickup collected', `/canteen/orders/${cu.id}/collected`, { token: T.pavan, method: 'POST' });
+  await run("UPDATE canteen_orders SET created_at=? WHERE id=?", new Date(Date.now() - 3600e3).toISOString(), du2.id);
+  const ex = (await api(`/public/alpha/canteen/orders/${du2.id}?k=${du2.key}`)).data;
+  check('an order not paid in time is cancelled by itself', ex.status === 'cancelled' && ex.reject_reason === 'Not paid in time');
+  const pr = await ok('paid, then rejected…', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Stu', items: [{ id: dosa.id, qty: 1 }] } });
+  await api(`/canteen/orders/${pr.id}/accepted`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${pr.id}/rejected`, { token: T.pavan, method: 'POST', body: { reason: 'Kitchen problem' } });
+  const crep = (await api('/canteen/report', { token: T.pavan })).data;
+  check('report: cash and UPI sales, deliveries, not paid, refunds to give', crep.upi_paise >= 10000 && crep.cash_paise >= 9000 && crep.deliveries >= 1 && crep.not_paid >= 1 && crep.refunds.some(x => x.token === pr.token));
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {

@@ -894,3 +894,12 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-cat h2 .muted{font-weight:500}
 .cn-qp{display:inline-flex;align-items:center;gap:2px;font-weight:600;color:var(--brand);font-size:14px;margin:0}.cn-qp input{width:72px;min-height:32px;padding:4px 8px;margin:0;font-weight:600}
 .cn-qr{width:112px;height:112px;border-radius:10px;border:1px solid var(--line);background:#fff;flex-shrink:0}@media(max-width:560px){.cn-qr{width:160px;height:160px;align-self:center}}
+.cn-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0}.cn-opt{margin:0;cursor:pointer}.cn-opt input{position:absolute;opacity:0;pointer-events:none}
+.cn-opt>span{display:flex;flex-direction:column;gap:2px;height:100%;border:1.5px solid var(--line);border-radius:14px;padding:12px;background:var(--card)}.cn-opt>span svg{color:var(--brand)}.cn-opt small{color:var(--muted);font-size:12px;font-weight:400}
+.cn-opt input:checked+span{border-color:var(--brand);background:var(--brand-2);box-shadow:0 0 0 2px var(--brand-2)}.cn-opt input:focus-visible+span{outline:3px solid var(--brand);outline-offset:2px}
+.cn-pay{border-left:4px solid #F59E0B}.cn-pay.ok{border-left-color:#16A34A}.cn-pay>b{display:flex;align-items:center;gap:8px;font-size:16px}.cn-pay p{margin:8px 0}.cn-pay .btn.big{margin:10px 0;text-decoration:none}
+.cn-qrpay{margin:6px 0 12px}.cn-qrpay summary{cursor:pointer;color:var(--brand);font-weight:600;font-size:14px}.cn-qrpay img{display:block;margin:10px auto;border:1px solid var(--line);border-radius:10px;background:#fff}.cn-qrpay div{text-align:center}
+.cn-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.cn-b{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;border-radius:99px;padding:2px 9px;background:#F3F4F6;color:#374151}
+.cn-b.unpaid{background:#FEF3C7;color:#92400E}.cn-b.claimed{background:#DBEAFE;color:#1E40AF}.cn-b.paid{background:#DCFCE7;color:#166534}.cn-b.del{background:#EDE9FE;color:#5B21B6}
+.cn-board{grid-template-columns:repeat(4,1fr)}@media(max-width:1200px){.cn-board{grid-template-columns:repeat(2,1fr)}}@media(max-width:700px){.cn-board{grid-template-columns:1fr}}
+.cn-tk.s-out{background:#EDE9FE;color:#5B21B6}.cn-oc.s-out{border-left:4px solid #7C3AED}.cn-token.s-out b{color:#6D28D9}

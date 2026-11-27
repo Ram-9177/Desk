@@ -30,10 +30,31 @@ CREATE TABLE IF NOT EXISTS canteen_orders (id TEXT PRIMARY KEY, tenant_id TEXT N
   created_at TEXT, accepted_at TEXT, ready_at TEXT, collected_at TEXT, closed_at TEXT, handled_by TEXT, UNIQUE (tenant_id, day, token_no));
 CREATE INDEX IF NOT EXISTS cord_day ON canteen_orders(tenant_id, day, status);
 CREATE INDEX IF NOT EXISTS cord_dev ON canteen_orders(device_hash, created_at);
+-- payment before the kitchen (cash at the counter, or UPI to the canteen's own UPI ID with the student's reference number), and door delivery
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_pay TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS pay_mode TEXT DEFAULT 'cash';
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS pay_status TEXT DEFAULT 'unpaid';
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS upi_ref TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS paid_at TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS paid_by TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS fulfil TEXT DEFAULT 'pickup';
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS deliver_to TEXT;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS delivery_fee_paise INT DEFAULT 0;
+ALTER TABLE canteen_orders ADD COLUMN IF NOT EXISTS out_at TEXT;
+ALTER TABLE canteen_orders DROP CONSTRAINT IF EXISTS canteen_orders_status_check;
+ALTER TABLE canteen_orders ADD CONSTRAINT canteen_orders_status_check CHECK (status IN ('placed','accepted','rejected','ready','out','collected','cancelled'));
+CREATE UNIQUE INDEX IF NOT EXISTS cord_upi ON canteen_orders(tenant_id, upper(upi_ref)) WHERE upi_ref IS NOT NULL;
 `);
 
-export const STATUS = { placed: 'Waiting for the canteen', accepted: 'Being prepared', rejected: 'Rejected', ready: 'Ready to collect', collected: 'Collected', cancelled: 'Cancelled' };
-const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected', 'rejected'] }; // ready → rejected: the student never came
+export const STATUS = { placed: 'Waiting for payment', accepted: 'Being prepared', rejected: 'Rejected', ready: 'Ready to collect', out: 'Out for delivery', collected: 'Collected', cancelled: 'Cancelled' };
+// placed = waiting for payment; accepted = paid and in the kitchen (only staff confirming the payment moves it there)
+const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected', 'out', 'rejected'], out: ['collected', 'rejected'] }; // ready/out → rejected: never collected
+const LIVE = "('placed','accepted','ready','out')";
+// Payments and delivery, per campus. Defaults: cash only, pickup only, 20 minutes to pay.
+const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20 };
+export const payOf = tn => { try { return { ...PAY_DEFAULT, ...JSON.parse(tn.canteen_pay || '{}') }; } catch { return { ...PAY_DEFAULT }; } };
+const UPI_ID = /^[\w.\-]{2,60}@[A-Za-z][\w.\-]{1,40}$/, UTR = /^[A-Za-z0-9]{6,30}$/;
+const upiLink = (p, o) => `upi://pay?${new URLSearchParams({ pa: p.upi_id, pn: p.upi_name || 'Canteen', am: (o.total_paise / 100).toFixed(2), cu: 'INR', tn: `Canteen order ${tokenLabel(o.token_no)}` })}`;
 const MAX_MANAGERS = 2, MAX_LINES = 30, MAX_QTY = 20, MAX_OPEN_PER_DEVICE = 3, OTP_MIN = 10, DEVICE_DAYS = 180;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -88,7 +109,11 @@ export function canteen(d) {
   };
   const pub = o => ({ id: o.id, token: tokenLabel(o.token_no), token_no: o.token_no, day: o.day, status: o.status, status_text: STATUS[o.status], reject_reason: o.reject_reason,
     items: JSON.parse(o.items), total_paise: o.total_paise, total: rupees(o.total_paise), name: o.name, note: o.note, created_at: o.created_at,
-    accepted_at: o.accepted_at, ready_at: o.ready_at, collected_at: o.collected_at });
+    accepted_at: o.accepted_at, ready_at: o.ready_at, collected_at: o.collected_at, out_at: o.out_at,
+    pay_mode: o.pay_mode || 'cash', pay_status: o.pay_status || 'unpaid', upi_ref: o.upi_ref, paid_at: o.paid_at,
+    fulfil: o.fulfil || 'pickup', deliver_to: o.deliver_to, delivery_fee_paise: o.delivery_fee_paise || 0,
+    status_text: o.status === 'placed' ? (o.pay_mode === 'upi' ? (o.pay_status === 'claimed' ? 'Payment being checked' : 'Waiting for UPI payment') : 'Pay at the counter')
+      : o.status === 'collected' && o.fulfil === 'delivery' ? 'Delivered' : STATUS[o.status] });
   const deviceOf = async (tid, token) => {
     if (!token || typeof token !== 'string' || token.length > 100) return null;
     const r = await one('SELECT * FROM canteen_devices WHERE token_hash=? AND tenant_id=?', sha(token), tid);
@@ -101,6 +126,9 @@ export function canteen(d) {
     try { await sendMail(tn.id, [to], key, subject, html, text); } catch (e) { console.error('canteen mail', e.message); }
   };
   // typical minutes from accepted to ready over the last week (for "about N min")
+  // unpaid orders past the payment window are cancelled (an order with a UPI reference waits for staff to check it)
+  const expire = async tn => { const p = payOf(tn), cut = new Date(Date.now() - p.pay_window_min * 6e4).toISOString();
+    await run(`UPDATE canteen_orders SET status='cancelled', closed_at=?, reject_reason='Not paid in time' WHERE tenant_id=? AND status='placed' AND coalesce(pay_status,'unpaid')='unpaid' AND created_at < ?`, now(), tn.id, cut); };
   const prepMin = async tid => { const r = await one(`SELECT avg(EXTRACT(EPOCH FROM (ready_at::timestamptz - accepted_at::timestamptz)) / 60) m FROM canteen_orders WHERE tenant_id=? AND ready_at IS NOT NULL AND accepted_at IS NOT NULL AND created_at > ?`, tid, new Date(Date.now() - 7 * 864e5).toISOString());
     return r?.m == null ? null : Math.max(1, Math.round(r.m)); };
   const shortLink = tn => `${base()}/${tn.slug}/cafeteria`;
@@ -122,10 +150,10 @@ export function canteen(d) {
   P.get('/:slug/canteen', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug);
     if (!tn.canteen_on) return { on: false, campus: tn.name, name: canteenName(tn) };
-    const st = stateOf(tn), since = addDays(dayOf(tn.timezone), -6), pop = {};
+    await expire(tn); const st = stateOf(tn), since = addDays(dayOf(tn.timezone), -6), pop = {}, pay = payOf(tn);
     for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day>=? AND status='collected'`, tn.id, since)) for (const it of JSON.parse(o.items)) pop[it.id] = (pop[it.id] || 0) + it.qty;
     const busy = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND status IN ('placed','accepted')`, tn.id, dayOf(tn.timezone))).n;
-    return { on: true, open: st.accepting, state: st, busy, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
+    return { on: true, open: st.accepting, state: st, busy, pay: { cash: pay.cash, upi: !!pay.upi_id, delivery: pay.delivery, delivery_fee_paise: Math.round(pay.delivery_fee * 100), delivery_note: pay.delivery_note, pay_window_min: pay.pay_window_min }, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
       campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
   }));
   // step 1 of the first order on a device: email a six-digit code
@@ -169,7 +197,14 @@ export function canteen(d) {
     const name = str(b.name, 80); if (!name) throw bad('Please enter your name');
     const lines = Array.isArray(b.items) ? b.items.slice(0, MAX_LINES + 1) : [];
     if (!lines.length) throw bad('Your cart is empty'); if (lines.length > MAX_LINES) throw bad('Too many different items in one order');
-    const open = await one(`SELECT count(*) n FROM canteen_orders WHERE device_hash=? AND status IN ('placed','accepted','ready')`, dv.token_hash);
+    const pay = payOf(tn), mode = b.pay_mode === 'upi' ? 'upi' : 'cash', fulfil = b.fulfil === 'delivery' ? 'delivery' : 'pickup';
+    if (mode === 'upi' && !pay.upi_id) throw bad('UPI payment is not set up here. Please choose cash.');
+    if (mode === 'cash' && !pay.cash) throw bad('This canteen takes UPI only.');
+    if (fulfil === 'delivery' && !pay.delivery) throw bad('Delivery is not available. Please choose pickup.');
+    const deliverTo = fulfil === 'delivery' ? str(b.deliver_to, 120) : null; if (fulfil === 'delivery' && deliverTo.length < 3) throw bad('Please say where to deliver (block, floor, room)');
+    if (fulfil === 'delivery' && !str(b.phone, 20)) throw bad('Please give a phone number so the delivery person can reach you');
+    await expire(tn);
+    const open = await one(`SELECT count(*) n FROM canteen_orders WHERE device_hash=? AND status IN ${LIVE}`, dv.token_hash);
     if (open.n >= MAX_OPEN_PER_DEVICE) throw bad(`You already have ${open.n} orders in progress. Please collect them first.`);
     const ids = [...new Set(lines.map(l => String(l.id)))];
     const rows = await all(`SELECT * FROM canteen_items WHERE tenant_id=? AND id = ANY(?::text[])`, tn.id, ids);
@@ -182,12 +217,12 @@ export function canteen(d) {
       const prev = out.find(x => x.id === it.id); if (prev) { prev.qty = Math.min(MAX_QTY, prev.qty + qty); continue; }
       out.push({ id: it.id, name: it.name, price_paise: it.price_paise, qty });
     }
-    const total = out.reduce((s, x) => s + x.price_paise * x.qty, 0), day = dayOf(tn.timezone);
+    const fee = fulfil === 'delivery' ? Math.round(pay.delivery_fee * 100) : 0, total = out.reduce((s, x) => s + x.price_paise * x.qty, 0) + fee, day = dayOf(tn.timezone);
     await run('UPDATE canteen_devices SET last_used_at=? WHERE token_hash=?', now(), dv.token_hash);
     for (let i = 0; i < 5; i++) { // the next token of the day; a race on the unique index just takes the next one
       const n = ((await one('SELECT max(token_no) m FROM canteen_orders WHERE tenant_id=? AND day=?', tn.id, day)).m || 0) + 1;
       const o = { id: uid(), tenant_id: tn.id, day, token_no: n, view_key: crypto.randomBytes(12).toString('base64url'), device_hash: dv.token_hash, email: dv.email, name,
-        phone: str(b.phone, 20) || null, note: str(b.note, 200) || null, items: JSON.stringify(out), total_paise: total, status: 'placed', created_at: now() };
+        phone: str(b.phone, 20) || null, note: str(b.note, 200) || null, items: JSON.stringify(out), total_paise: total, status: 'placed', created_at: now(), pay_mode: mode, pay_status: 'unpaid', fulfil, deliver_to: deliverTo, delivery_fee_paise: fee };
       try {
         await run(`INSERT INTO canteen_orders (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o));
         return { ...pub(o), key: o.view_key };
@@ -201,18 +236,35 @@ export function canteen(d) {
     if (!o || k.length !== o.view_key.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(o.view_key))) throw notFound();
     return { tn, o };
   };
-  P.get('/:slug/canteen/orders/:id', wrap(async req => { const { tn, o } = await orderByKey(req);
-    const ahead = ['placed', 'accepted'].includes(o.status) ? (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND token_no<? AND status IN ('placed','accepted')`, tn.id, o.day, o.token_no)).n : 0;
-    return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id) }; }));
+  P.get('/:slug/canteen/orders/:id', wrap(async req => { let { tn, o } = await orderByKey(req);
+    if (o.status === 'placed') { await expire(tn); o = await one('SELECT * FROM canteen_orders WHERE id=?', o.id); }
+    const pay = payOf(tn), upi = o.status === 'placed' && o.pay_mode === 'upi' && pay.upi_id ? { link: upiLink(pay, o), id: pay.upi_id, name: pay.upi_name } : null;
+    const pay_by = o.status === 'placed' && o.pay_status === 'unpaid' ? new Date(Date.parse(o.created_at) + pay.pay_window_min * 6e4).toISOString() : null;
+    const ahead = ['placed', 'accepted'].includes(o.status) ? (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND token_no<? AND status='accepted'`, tn.id, o.day, o.token_no)).n : 0;
+    return { ...pub(o), canteen: canteenName(tn), ahead, wait_min: await prepMin(tn.id), upi, pay_by }; }));
+  // the student paid by UPI: they send the reference number (UTR) from their UPI app; staff check it and send the order to the kitchen
+  P.post('/:slug/canteen/orders/:id/upi-ref', wrap(async req => {
+    const { tn, o } = await orderByKey(req); limit('cupi:' + o.id, 10);
+    const ref = str(req.body.ref, 40).replace(/\s/g, ''); if (!UTR.test(ref)) throw bad('Enter the UPI reference number (UTR) from your UPI app: 6 to 30 letters or digits');
+    if (o.status !== 'placed' || o.pay_mode !== 'upi') throw bad('This order is not waiting for a UPI payment');
+    if (await one('SELECT 1 FROM canteen_orders WHERE tenant_id=? AND upper(upi_ref)=upper(?) AND id<>?', tn.id, ref, o.id)) throw bad('That reference number is already used on another order');
+    await run(`UPDATE canteen_orders SET upi_ref=?, pay_status='claimed' WHERE id=? AND status='placed'`, ref, o.id);
+    return { ok: true, pay_status: 'claimed' };
+  }));
+  // the same UPI payment as a QR code (for paying from another phone or a laptop screen)
+  P.get('/:slug/canteen/orders/:id/upi.svg', async (req, res, next) => { try { const { tn, o } = await orderByKey(req), pay = payOf(tn);
+    if (!pay.upi_id || o.pay_mode !== 'upi') throw notFound();
+    res.set('Content-Type', 'image/svg+xml').send(await QRCode.toString(upiLink(pay, o), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' })); } catch (e) { next(e); } });
   P.post('/:slug/canteen/orders/:id/cancel', wrap(async req => {
     const { o } = await orderByKey(req);
-    const r = await run(`UPDATE canteen_orders SET status='cancelled', closed_at=? WHERE id=? AND status='placed'`, now(), o.id);
-    if (!r.changes) throw bad('The canteen has already accepted this order, so it can no longer be cancelled.');
+    if (o.pay_status === 'claimed') throw bad('You sent a UPI payment for this order. Please ask at the counter.');
+    const r = await run(`UPDATE canteen_orders SET status='cancelled', closed_at=? WHERE id=? AND status='placed' AND coalesce(pay_status,'unpaid')='unpaid'`, now(), o.id);
+    if (!r.changes) throw bad('The canteen has already taken this order, so it can no longer be cancelled.');
     return pub({ ...o, status: 'cancelled' });
   }));
   // this device's recent orders (the last 3 days), for "My orders"
   P.post('/:slug/canteen/mine', wrap(async req => {
-    const tn = await tenantBySlug(req.params.slug), dv = await deviceOf(tn.id, req.body.device); if (!dv) return [];
+    const tn = await tenantBySlug(req.params.slug), dv = await deviceOf(tn.id, req.body.device); if (!dv) return []; await expire(tn);
     const rows = await all('SELECT * FROM canteen_orders WHERE device_hash=? AND tenant_id=? AND day>=? ORDER BY created_at DESC LIMIT 20', dv.token_hash, tn.id, addDays(dayOf(tn.timezone), -2));
     return rows.map(o => ({ ...pub(o), key: o.view_key }));
   }));
@@ -253,8 +305,17 @@ export function canteen(d) {
     const last = Math.max(0, Math.min(120, Math.floor(Number(b.last_order_min) || 0))); if (last >= toMin(b.close) - toMin(b.open)) throw bad('The last-order cut-off is longer than the opening hours');
     const h = { open: b.open, close: b.close, days, last_order_min: last };
     await run('UPDATE tenants SET canteen_hours=? WHERE id=?', JSON.stringify(h), req.tenantId); return { hours: h }; }));
+  // payments and delivery (same people as the name and timings)
+  S.put('/canteen/payments', wrap(async req => { const a = await need(req); if (!(a.setup || a.manager || req.user.role === 'tenant_admin')) throw forbid();
+    const b = req.body, p = { cash: !!b.cash, upi_id: str(b.upi_id, 100), upi_name: str(b.upi_name, 60), delivery: !!b.delivery,
+      delivery_fee: Number(b.delivery_fee) || 0, delivery_note: str(b.delivery_note, 120), pay_window_min: Math.floor(Number(b.pay_window_min) || 20) };
+    if (p.upi_id && !UPI_ID.test(p.upi_id)) throw bad('Enter a UPI ID like canteen@okhdfcbank');
+    if (!p.cash && !p.upi_id) throw bad('Turn on cash or add a UPI ID: students need a way to pay');
+    if (p.delivery_fee < 0 || p.delivery_fee > 500) throw bad('Delivery charge must be ₹0 to ₹500');
+    if (p.pay_window_min < 5 || p.pay_window_min > 120) throw bad('Time to pay must be 5 to 120 minutes');
+    await run('UPDATE tenants SET canteen_pay=? WHERE id=?', JSON.stringify(p), req.tenantId); return p; }));
   // ---- menu ----
-  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
+  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { pay: payOf(a.tenant), link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
   S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
     const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
     const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
@@ -295,24 +356,29 @@ export function canteen(d) {
     if (a.tenant.canteen_stock_day !== day) await run('UPDATE canteen_items SET sold_out=0 WHERE tenant_id=?', req.tenantId); // a fresh day: everything back in stock (reopening the same day keeps the marks)
     await run('UPDATE tenants SET canteen_open_day=?, canteen_stock_day=? WHERE id=?', day, day, req.tenantId); return { open: true, day }; }));
   S.post('/canteen/close', wrap(async req => { await need(req); await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId);
-    const p = await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND status IN ('placed','accepted','ready')`, req.tenantId); return { open: false, pending: p.n }; }));
+    const p = await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND status IN ${LIVE}`, req.tenantId); return { open: false, pending: p.n }; }));
 
   // ---- orders ----
-  S.get('/canteen/orders', wrap(async req => { const a = await need(req), day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : dayOf(a.tenant.timezone);
-    const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ('placed','accepted','ready'))) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
+  S.get('/canteen/orders', wrap(async req => { const a0 = await need(req); await expire(a0.tenant); const a = a0, day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : dayOf(a.tenant.timezone);
+    const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ${LIVE})) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
     return { day, open: isOpen(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), orders: rows.map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
-  S.post('/canteen/orders/:id/:to(accepted|rejected|ready|collected)', wrap(async req => {
+  S.post('/canteen/orders/:id/:to(accepted|rejected|ready|out|collected)', wrap(async req => {
     const a = await need(req), to = req.params.to, o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
     if (!(NEXT[o.status] || []).includes(to)) throw bad(`This order is ${STATUS[o.status].toLowerCase()}; it can't be marked ${to}.`);
     const reason = str(req.body.reason, 200); if (to === 'rejected' && reason.length < 3) throw bad('Please give the student a reason for rejecting');
-    const col = { accepted: 'accepted_at', ready: 'ready_at', collected: 'collected_at', rejected: 'closed_at' }[to];
+    if (to === 'out' && o.fulfil !== 'delivery') throw bad('This order is for pickup at the counter');
+    if (to === 'accepted') { // payment confirmed by staff: cash taken at the counter, or the UPI payment seen in the canteen's UPI app
+      const r0 = await run(`UPDATE canteen_orders SET pay_status='paid', paid_at=?, paid_by=? WHERE id=? AND status='placed'`, now(), req.user.id, o.id); if (!r0.changes) throw bad('Someone else just updated this order. Please refresh.'); }
+    const col = { accepted: 'accepted_at', ready: 'ready_at', out: 'out_at', collected: 'collected_at', rejected: 'closed_at' }[to];
     const r = await run(`UPDATE canteen_orders SET status=?, ${col}=?, ${to === 'collected' ? 'closed_at=?,' : ''} reject_reason=?, handled_by=? WHERE id=? AND status=?`,
       to, now(), ...(to === 'collected' ? [now()] : []), to === 'rejected' ? reason : o.reject_reason, req.user.id, o.id, o.status);
     if (!r.changes) throw bad('Someone else just updated this order. Please refresh.');
     const n = { ...o, status: to, reject_reason: to === 'rejected' ? reason : o.reject_reason }, tk = tokenLabel(o.token_no);
-    if (to === 'ready') await mail(a.tenant, o.email, 'canteen_ready', `Order ${tk} is ready to collect`, [`Hi ${esc(o.name)},`, `Your order <b>${tk}</b> is ready. Show the token at the counter and pay ${rupees(o.total_paise)}.`], orderLink(a.tenant, o));
-    if (to === 'rejected') await mail(a.tenant, o.email, 'canteen_rejected', `Order ${tk} could not be accepted`, [`Hi ${esc(o.name)},`, `Sorry, the canteen could not accept your order <b>${tk}</b>.`, `Reason: ${esc(reason)}`], orderLink(a.tenant, o));
+    if (to === 'ready' && o.fulfil !== 'delivery') await mail(a.tenant, o.email, 'canteen_ready', `Order ${tk} is ready to collect`, [`Hi ${esc(o.name)},`, `Your order <b>${tk}</b> is ready. Show the token at the counter to collect it.`], orderLink(a.tenant, o));
+    if (to === 'out') await mail(a.tenant, o.email, 'canteen_out', `Order ${tk} is on its way`, [`Hi ${esc(o.name)},`, `Your order <b>${tk}</b> is out for delivery to ${esc(o.deliver_to)}.`], orderLink(a.tenant, o));
+    if (to === 'rejected') await mail(a.tenant, o.email, 'canteen_rejected', `Order ${tk} could not be accepted`, [`Hi ${esc(o.name)},`, `Sorry, the canteen could not take your order <b>${tk}</b>.`, `Reason: ${esc(reason)}`,
+      ...(o.pay_status === 'paid' || o.pay_status === 'claimed' ? [`If you already paid ${rupees(o.total_paise)}, please collect your refund at the counter with this token.`] : [])], orderLink(a.tenant, o));
     return pub(n);
   }));
 
@@ -329,6 +395,9 @@ export function canteen(d) {
       rejected: rows.filter(o => o.status === 'rejected').length, cancelled: rows.filter(o => o.status === 'cancelled').length,
       avg_prep_min: prep.length ? Math.round(prep.reduce((x, y) => x + y, 0) / prep.length) : null,
       reasons: Object.entries(rows.filter(o => o.status === 'rejected').reduce((m, o) => (m[o.reject_reason] = (m[o.reject_reason] || 0) + 1, m), {})).map(([reason, count]) => ({ reason, count })).sort((x, y) => y.count - x.count).slice(0, 8),
-      top: Object.values(items).sort((x, y) => y.qty - x.qty).slice(0, 15), days };
+      top: Object.values(items).sort((x, y) => y.qty - x.qty).slice(0, 15), days,
+      cash_paise: done.filter(o => (o.pay_mode || 'cash') === 'cash').reduce((s, o) => s + o.total_paise, 0), upi_paise: done.filter(o => o.pay_mode === 'upi').reduce((s, o) => s + o.total_paise, 0),
+      deliveries: done.filter(o => o.fulfil === 'delivery').length, not_paid: rows.filter(o => o.reject_reason === 'Not paid in time').length,
+      refunds: rows.filter(o => o.status === 'rejected' && ['paid', 'claimed'].includes(o.pay_status)).map(o => ({ token: tokenLabel(o.token_no), day: o.day, name: o.name, paise: o.total_paise, mode: o.pay_mode, ref: o.upi_ref })) };
   }));
 }

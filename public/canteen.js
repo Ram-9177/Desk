@@ -80,8 +80,8 @@ export async function studentCanteen(slug, view, id, q) {
   // a live order on this phone sits on top; the last collected one can be ordered again in one tap
   const dev0 = localStorage.getItem(devKey);
   if (dev0) H.api(`/public/${slug}/canteen/mine`, { method: 'POST', body: { device: dev0 } }).then(rows => { const el = document.getElementById('cnlive'); if (!el) return;
-    const live = rows.filter(o => ['placed', 'accepted', 'ready'].includes(o.status)), last = rows.find(o => o.status === 'collected');
-    el.innerHTML = live.map(o => `<a class="cn-livecard s-${o.status}" href="#/d/${slug}/canteen/o/${o.id}?k=${o.key}"><span class="cn-tk s-${o.status}">${o.token}</span><span><b>${esc(o.status_text)}</b><span class="muted small">${o.status === 'ready' ? 'Show the token at the counter' : 'Tap to follow it live'}</span></span>${I('chev', 18)}</a>`).join('')
+    const live = rows.filter(o => ['placed', 'accepted', 'ready', 'out'].includes(o.status)), last = rows.find(o => o.status === 'collected');
+    el.innerHTML = live.map(o => `<a class="cn-livecard s-${o.status}" href="#/d/${slug}/canteen/o/${o.id}?k=${o.key}"><span class="cn-tk s-${o.status}">${o.token}</span><span><b>${esc(o.status_text)}</b><span class="muted small">${o.status === 'placed' ? (o.pay_mode === 'cash' ? `Pay ${o.total} at the counter with this token` : o.pay_status === 'claimed' ? 'Payment being checked' : `Pay ${o.total} by UPI`) : o.status === 'ready' && o.fulfil !== 'delivery' ? 'Show the token at the counter' : 'Tap to follow it live'}</span></span>${I('chev', 18)}</a>`).join('')
       + (last && c.open ? `<button type="button" class="cn-again" id="cnagain">${I('history', 18)}<span><b>Order again</b><span class="muted small">${last.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span></span></button>` : '');
     const ag = document.getElementById('cnagain'); if (ag) ag.onclick = () => { let n = 0; for (const i of last.items) { const it = items.get(i.id); if (it && !it.sold_out) { cart[i.id] = Math.min(20, (cart[i.id] || 0) + i.qty); n++; } }
       save(); if (!n) return H.toast('Those items are not available right now'); location.hash = `#/d/${slug}/canteen/cart`; };
@@ -93,13 +93,28 @@ export async function studentCanteen(slug, view, id, q) {
     const who = ls.get('canteen-who', {}), dev = localStorage.getItem(devKey);
     app.innerHTML = `<div class="wrap">${back(`#/d/${slug}/canteen`, 'Your order')}
       <div class="card cn-list">${Object.entries(cart).map(([k, n]) => { const it = items.get(k); return `<div class="cn-item"><div class="cn-in">${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b><div class="muted small">${n} × ${rupees(it.price_paise)}</div></div></div><b>${rupees(n * it.price_paise)}</b></div>`; }).join('')}
-        <div class="cn-item cn-tot"><b>Total · pay at the counter</b><b>${rupees(total())}</b></div></div>
-      <form id="cnf" class="card"><label>Your name</label><input name="name" required maxlength="80" value="${esc(who.name || '')}" autocomplete="name">
-        <label>Phone <span class="muted small">(optional)</span></label><input name="phone" type="tel" maxlength="20" value="${esc(who.phone || '')}" autocomplete="tel">
+        <div class="cn-item" id="feerow" hidden><span>Delivery</span><b>${rupees(c.pay.delivery_fee_paise)}</b></div>
+        <div class="cn-item cn-tot"><b>Total</b><b id="cntot">${rupees(total())}</b></div></div>
+      <form id="cnf" class="card">
+        ${c.pay.delivery ? `<b>How do you want it?</b><div class="cn-opts"><label class="cn-opt"><input type="radio" name="fulfil" value="pickup" ${who.fulfil !== 'delivery' ? 'checked' : ''}><span>${I('utensils', 18)}<b>Pickup</b><small>Collect at the counter</small></span></label>
+          <label class="cn-opt"><input type="radio" name="fulfil" value="delivery" ${who.fulfil === 'delivery' ? 'checked' : ''}><span>${I('pin', 18)}<b>Deliver to me</b><small>${c.pay.delivery_fee_paise ? rupees(c.pay.delivery_fee_paise) + ' delivery' : 'Free delivery'}</small></span></label></div>
+          <div id="dbox" hidden><label>Deliver to</label><input name="deliver_to" maxlength="120" value="${esc(who.deliver_to || '')}" placeholder="Block, floor, room (e.g. B-Block, 2nd floor, Room 214)">${c.pay.delivery_note ? `<div class="muted small">${esc(c.pay.delivery_note)}</div>` : ''}</div>` : ''}
+        <b style="display:block;margin-top:12px">How will you pay?</b><div class="cn-opts">
+          ${c.pay.cash ? `<label class="cn-opt"><input type="radio" name="pay_mode" value="cash" ${who.pay_mode !== 'upi' || !c.pay.upi ? 'checked' : ''}><span>${I('cash', 18)}<b>Cash at the counter</b><small>Pay first, then it goes to the kitchen</small></span></label>` : ''}
+          ${c.pay.upi ? `<label class="cn-opt"><input type="radio" name="pay_mode" value="upi" ${who.pay_mode === 'upi' || !c.pay.cash ? 'checked' : ''}><span>${I('phone', 18)}<b>UPI</b><small>GPay, PhonePe, Paytm…</small></span></label>` : ''}</div>
+        <div class="muted small" id="paynote"></div>
+        <label>Your name</label><input name="name" required maxlength="80" value="${esc(who.name || '')}" autocomplete="name">
+        <label>Phone <span class="muted small" id="phopt">(optional)</span></label><input name="phone" type="tel" maxlength="20" value="${esc(who.phone || '')}" autocomplete="tel">
         <label>Note for the canteen <span class="muted small">(optional)</span></label><input name="note" maxlength="200" placeholder="e.g. less spicy">
         <div id="vbox"></div><div class="err" id="cnerr"></div>
         <button class="btn primary big" id="cnplace">${I('check', 18)} Place order</button></form></div>`;
     const f = document.getElementById('cnf'), err = document.getElementById('cnerr'), vbox = document.getElementById('vbox');
+    const sync = () => { const del = f.fulfil && f.fulfil.value === 'delivery'; const db = document.getElementById('dbox'); if (db) db.hidden = !del; if (f.deliver_to) f.deliver_to.required = del;
+      f.phone.required = del; document.getElementById('phopt').textContent = del ? '(for the delivery person)' : '(optional)';
+      document.getElementById('feerow').hidden = !del; document.getElementById('cntot').textContent = rupees(total() + (del ? c.pay.delivery_fee_paise : 0));
+      const pm = f.querySelector('[name=pay_mode]:checked')?.value; document.getElementById('paynote').textContent = pm === 'upi' ? 'After placing the order you pay with your UPI app and enter the reference number. The canteen checks it, then starts cooking.'
+        : `Go to the counter and pay with your token. The order goes to the kitchen once you have paid${c.pay.pay_window_min ? ` (within ${c.pay.pay_window_min} min)` : ''}.`; };
+    f.onchange = sync; sync();
     let verified = false;
     const verifyUI = () => { vbox.innerHTML = `<div class="cn-otp"><b>Verify your email</b><div class="muted small">Only for your first order on this phone. We send a 6-digit code; the canteen emails you when your food is ready.</div>
         <label>Email</label><div class="row"><input name="email" type="email" required maxlength="120" value="${esc(who.email || '')}" autocomplete="email" style="flex:1"><button type="button" class="btn soft" id="sendc">Send code</button></div>
@@ -114,8 +129,9 @@ export async function studentCanteen(slug, view, id, q) {
         if (!verified) { if (!f.code || f.code.closest('[hidden]')) throw new Error('Tap “Send code” and enter the code from your email');
           const r = await H.api(`/public/${slug}/canteen/verify`, { method: 'POST', body: { email: f.email.value.trim(), code: f.code.value.trim() } });
           localStorage.setItem(devKey, r.device); verified = true; ls.set('canteen-who', { ...ls.get('canteen-who', {}), email: r.email }); }
-        ls.set('canteen-who', { ...ls.get('canteen-who', {}), name: f.name.value.trim(), phone: f.phone.value.trim() });
-        const o = await H.api(`/public/${slug}/canteen/orders`, { method: 'POST', body: { device: localStorage.getItem(devKey), name: f.name.value, phone: f.phone.value, note: f.note.value, items: Object.entries(cart).map(([id, qty]) => ({ id, qty })) } });
+        const fulfil = f.fulfil?.value || 'pickup', pay_mode = f.querySelector('[name=pay_mode]:checked')?.value || 'cash', deliver_to = f.deliver_to?.value || '';
+        ls.set('canteen-who', { ...ls.get('canteen-who', {}), name: f.name.value.trim(), phone: f.phone.value.trim(), fulfil, pay_mode, deliver_to });
+        const o = await H.api(`/public/${slug}/canteen/orders`, { method: 'POST', body: { device: localStorage.getItem(devKey), name: f.name.value, phone: f.phone.value, note: f.note.value, fulfil, pay_mode, deliver_to, items: Object.entries(cart).map(([id, qty]) => ({ id, qty })) } });
         cart = {}; save(); ls.set('canteen-mine:' + slug, [{ id: o.id, key: o.key }, ...ls.get('canteen-mine:' + slug, [])].slice(0, 20));
         location.hash = `#/d/${slug}/canteen/o/${o.id}?k=${o.key}&new=1`;
       } catch (e2) { err.textContent = e2.message; if (e2.code === 'VERIFY') { localStorage.removeItem(devKey); verified = false; verifyUI(); } btn.disabled = false; } };
@@ -125,22 +141,44 @@ export async function studentCanteen(slug, view, id, q) {
 async function orderPage(slug, id, key) {
   const { app, I, esc } = H, hash = location.hash.split('?')[0]; let prev = null;
   const draw = async () => {
+    if (document.activeElement?.id === 'cnutr') return; // don't wipe the reference number while it is being typed
     let o; try { o = await H.api(`/public/${slug}/canteen/orders/${id}?k=${encodeURIComponent(key || '')}`); } catch (e) { app.innerHTML = `<div class="wrap"><h1>Order not found</h1><p class="muted">${esc(e.message)}</p><a href="#/d/${slug}/canteen">Back to the menu</a></div>`; return clearInterval(timer); }
-    const at = STEPS.findIndex(s => s[0] === o.status), end = ['rejected', 'cancelled'].includes(o.status);
-    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/canteen" aria-label="Back">${I('back')}</a><h1>Your order</h1></div><p class="muted small">${esc(o.canteen)}</p>
-      <div class="card cn-token s-${o.status}"><span class="muted small">Token</span><b>${o.token}</b><span class="cn-stat">${esc(o.status_text)}</span>
-        ${o.status === 'ready' ? '<p>Show this token at the counter and pay there.</p>' : o.status === 'placed' ? '<p>Waiting for the canteen to accept your order.</p>' : o.status === 'accepted' ? '<p>Your food is being prepared. This page refreshes by itself.</p>' : ''}
-        ${['placed', 'accepted'].includes(o.status) ? `<p class="cn-eta">${o.ahead ? `${o.ahead} order${o.ahead === 1 ? '' : 's'} ahead of you` : 'You are next'}${o.wait_min ? ` · usually about ${o.wait_min} min` : ''}</p>` : ''}
-        ${o.status === 'rejected' ? `<p class="err">Reason: ${esc(o.reject_reason)}</p>` : ''}</div>
-      ${end ? '' : `<ol class="cn-steps">${STEPS.map(([k, l], i) => `<li class="${i < at ? 'done' : i === at ? 'now' : ''}"><i></i>${l}</li>`).join('')}</ol>`}
+    const del = o.fulfil === 'delivery', steps = [['placed', 'Paid'], ['accepted', 'Preparing'], del ? ['out', 'On the way'] : ['ready', 'Ready'], ['collected', del ? 'Delivered' : 'Collected']];
+    const rank = { placed: 0, accepted: 1, ready: del ? 1.5 : 2, out: 2, collected: 3 }[o.status] ?? -1, end = ['rejected', 'cancelled'].includes(o.status);
+    const mins = o.pay_by ? Math.max(0, Math.ceil((Date.parse(o.pay_by) - Date.now()) / 6e4)) : null;
+    const payBox = o.status !== 'placed' ? '' : o.pay_mode === 'cash'
+      ? `<div class="card cn-pay"><b>${I('cash', 18)} Pay ${o.total} at the counter</b><p>Show token <b>${o.token}</b> and pay in cash. Your order goes to the kitchen as soon as you have paid.</p>${mins != null ? `<p class="muted small">Please pay within ${mins} min, or the order is cancelled.</p>` : ''}</div>`
+      : o.pay_status === 'claimed'
+        ? `<div class="card cn-pay ok"><b>${I('ccheck', 18)} Payment sent</b><p>The canteen is checking UPI reference <b>${esc(o.upi_ref)}</b>. Your order goes to the kitchen once it is confirmed.</p></div>`
+        : `<div class="card cn-pay"><b>${I('cash', 18)} Pay ${o.total} with UPI</b>
+            ${o.upi ? `<a class="btn primary big" href="${esc(o.upi.link)}">Pay with GPay / PhonePe / Paytm</a>
+            <details class="cn-qrpay"><summary>Paying from another phone? Show the UPI QR</summary><img src="/api/public/${slug}/canteen/orders/${id}/upi.svg?k=${encodeURIComponent(key)}" alt="UPI QR code" width="200" height="200"><div class="muted small">UPI ID: ${esc(o.upi.id)}</div></details>` : ''}
+            <form id="cnutrf"><label>After paying, enter the UPI reference number (UTR)</label><div class="row"><input id="cnutr" inputmode="text" maxlength="30" placeholder="e.g. 412345678901" autocomplete="off" style="flex:1" required><button class="btn">Send</button></div>
+            <div class="muted small">You find it in your UPI app under the payment's details. The order goes to the kitchen once the canteen sees your payment.</div><div class="err" id="cnutre"></div></form>
+            ${mins != null ? `<p class="muted small">Please pay within ${mins} min, or the order is cancelled.</p>` : ''}</div>`;
+    const msg = { accepted: 'Paid. Your food is being prepared; this page refreshes by itself.', ready: del ? 'Packed and waiting for the delivery person.' : 'Show this token at the counter to collect.', out: `On its way to ${esc(o.deliver_to || '')}.`,
+      collected: del ? 'Delivered. Enjoy your food!' : 'Collected. Enjoy your food!' }[o.status];
+    app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}/canteen" aria-label="Back">${I('back')}</a><h1>Your order</h1></div><p class="muted small">${esc(o.canteen)} · ${del ? `Delivery to ${esc(o.deliver_to)}` : 'Pickup at the counter'} · ${o.pay_mode === 'upi' ? 'UPI' : 'Cash'}</p>
+      <div class="card cn-token s-${o.status}"><span class="muted small">Token</span><b>${o.token}</b><span class="cn-stat">${esc(o.status_text)}</span>${msg ? `<p>${msg}</p>` : ''}
+        ${o.status === 'accepted' ? `<p class="cn-eta">${o.ahead ? `${o.ahead} order${o.ahead === 1 ? '' : 's'} ahead of you` : 'You are next'}${o.wait_min ? ` · usually about ${o.wait_min} min` : ''}</p>` : ''}
+        ${end && o.reject_reason ? `<p class="err">${o.status === 'cancelled' ? '' : 'Reason: '}${esc(o.reject_reason)}</p>` : ''}${o.status === 'rejected' && ['paid', 'claimed'].includes(o.pay_status) ? '<p>If you paid, collect your refund at the counter with this token.</p>' : ''}</div>
+      ${payBox}
+      ${end ? '' : `<ol class="cn-steps">${steps.map(([k, l], i) => `<li class="${i < rank ? 'done' : i === Math.floor(rank) || (o.status === 'placed' && i === 0) ? 'now' : ''}"><i></i>${l}</li>`).join('')}</ol>`}
       <div class="card cn-list">${o.items.map(it => `<div class="cn-item"><span>${it.qty} × ${esc(it.name)}</span><b>${rupees(it.qty * it.price_paise)}</b></div>`).join('')}
-        <div class="cn-item cn-tot"><b>Total · pay at the counter</b><b>${o.total}</b></div>${o.note ? `<div class="muted small" style="padding-top:8px">Note: ${esc(o.note)}</div>` : ''}</div>
-      ${o.status === 'placed' ? '<p><button class="btn danger" id="cncancel">Cancel order</button></p>' : ''}
+        ${o.delivery_fee_paise ? `<div class="cn-item"><span>Delivery</span><b>${rupees(o.delivery_fee_paise)}</b></div>` : ''}
+        <div class="cn-item cn-tot"><b>Total${o.pay_status === 'paid' ? ' · paid' : ''}</b><b>${o.total}</b></div>${o.note ? `<div class="muted small" style="padding-top:8px">Note: ${esc(o.note)}</div>` : ''}</div>
+      ${o.status === 'placed' && o.pay_status === 'unpaid' ? '<p><button class="btn danger" id="cncancel">Cancel order</button></p>' : ''}
       <p><a class="btn" href="#/d/${slug}/canteen">${I('utensils', 18)} Back to the menu</a></p></div>`;
     const cb = document.getElementById('cncancel');
     if (cb) cb.onclick = async () => { if (!confirm('Cancel this order?')) return; try { await H.api(`/public/${slug}/canteen/orders/${id}/cancel`, { method: 'POST', body: { k: key } }); H.toast('Order cancelled'); draw(); } catch (e) { H.toast(e.message); draw(); } };
-    if (o.status === 'ready' && prev && prev !== 'ready') { chime(); H.toast(`Your order ${o.token} is ready!`, 6000); }
-    document.title = o.status === 'ready' ? `✅ ${o.token} ready · ${o.canteen}` : `${o.token} · ${o.canteen}`; prev = o.status;
+    const uf = document.getElementById('cnutrf');
+    if (uf) uf.onsubmit = async e => { e.preventDefault(); const v = document.getElementById('cnutr').value; document.getElementById('cnutr').blur();
+      try { await H.api(`/public/${slug}/canteen/orders/${id}/upi-ref`, { method: 'POST', body: { k: key, ref: v } }); H.toast('Thanks! The canteen will check your payment.'); draw(); }
+      catch (er) { document.getElementById('cnutre').textContent = er.message; } };
+    const done = del ? 'out' : 'ready';
+    if (o.status === done && prev && prev !== done) { chime(); H.toast(del ? `Your order ${o.token} is on its way!` : `Your order ${o.token} is ready!`, 6000); }
+    if (o.status === 'accepted' && prev === 'placed') H.toast('Payment confirmed. Your order is in the kitchen.', 5000);
+    document.title = o.status === 'ready' && !del ? `✅ ${o.token} ready · ${o.canteen}` : o.status === 'out' ? `🛵 ${o.token} on its way` : `${o.token} · ${o.canteen}`; prev = o.status;
     if (['collected', 'rejected', 'cancelled'].includes(o.status)) clearInterval(timer);
     return o;
   };
@@ -174,24 +212,27 @@ export async function canteenPage(main, { sa }) {
   async function orders() {
     const d = await api('/canteen/orders'), by = s => d.orders.filter(o => s.includes(o.status));
     const card = o => `<div class="card cn-oc s-${o.status}" data-tk="${o.token_no}"><div class="cn-oh"><span class="cn-tk s-${o.status}">${o.token}</span><div><b>${esc(o.name)}</b>${o.earlier ? ` <span class="cn-so">from ${esc(o.day)}</span>` : ''}<div class="muted small">${new Date(o.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}${o.phone ? ' · ' + esc(o.phone) : ''}</div></div><b class="cn-amt">${o.total}</b></div>
+      <div class="cn-badges"><span class="cn-b ${o.pay_status}">${o.pay_mode === 'upi' ? 'UPI' : 'Cash'} · ${o.pay_status === 'paid' ? 'paid' : o.pay_status === 'claimed' ? `ref ${esc(o.upi_ref)}` : 'not paid yet'}</span>${o.fulfil === 'delivery' ? `<span class="cn-b del">${I('pin', 12)} ${esc(o.deliver_to)}</span>` : '<span class="cn-b">Pickup</span>'}</div>
       <ul class="cn-lines">${o.items.map(i => `<li><b>${i.qty}×</b> ${esc(i.name)}</li>`).join('')}</ul>${o.note ? `<div class="cn-note">${I('pencil', 13)} ${esc(o.note)}</div>` : ''}
       ${o.status === 'rejected' ? `<div class="muted small">Rejected: ${esc(o.reject_reason)}</div>` : ''}
-      <div class="fact">${o.status === 'placed' ? `<button class="btn primary" data-a="accepted" data-id="${o.id}">${I('check', 16)} Accept</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
-        : o.status === 'accepted' ? `<button class="btn primary" data-a="ready" data-id="${o.id}">${I('bell', 16)} Mark ready</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
-        : o.status === 'ready' ? `<button class="btn primary" data-a="collected" data-id="${o.id}">${I('ccheck', 16)} Collected &amp; paid</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Not collected</button>` : ''}</div></div>`;
+      <div class="fact">${o.status === 'placed' ? `<button class="btn ${o.pay_mode === 'cash' || o.pay_status === 'claimed' ? 'primary' : ''}" data-a="accepted" data-id="${o.id}" data-pay="${o.pay_mode}" data-ref="${esc(o.upi_ref || '')}" data-amt="${o.total}">${I('check', 16)} ${o.pay_mode === 'cash' ? 'Cash received' : 'UPI verified'} · to kitchen</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
+        : o.status === 'accepted' ? `<button class="btn primary" data-a="ready" data-id="${o.id}">${I('bell', 16)} ${o.fulfil === 'delivery' ? 'Packed' : 'Mark ready'}</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Reject</button>`
+        : o.status === 'ready' ? (o.fulfil === 'delivery' ? `<button class="btn primary" data-a="out" data-id="${o.id}">${I('send', 16)} Out for delivery</button>` : `<button class="btn primary" data-a="collected" data-id="${o.id}">${I('ccheck', 16)} Collected</button>`) + `<button class="btn danger" data-a="rejected" data-id="${o.id}">Not collected</button>`
+        : o.status === 'out' ? `<button class="btn primary" data-a="collected" data-id="${o.id}">${I('ccheck', 16)} Delivered</button><button class="btn danger" data-a="rejected" data-id="${o.id}">Not delivered</button>` : ''}</div></div>`;
     const col = (t, list, empty) => `<section class="cn-col"><h3>${t} <span class="cnt">${list.length}</span></h3>${list.map(card).join('') || `<p class="muted small">${empty}</p>`}</section>`;
-    const done = by(['collected', 'rejected', 'cancelled']), pend = by(['placed', 'accepted', 'ready']).length;
+    const done = by(['collected', 'rejected', 'cancelled']), pend = by(['placed', 'accepted', 'ready', 'out']).length;
     main.innerHTML = `${head()}<div class="card cn-openbar ${d.open ? 'on' : ''}"><div>${I(d.open ? 'ccheck' : 'clock', 18)} <b>${esc(d.name)}: ${d.open ? 'open for orders today' : 'closed'}</b><div class="muted small">${d.open && d.state && !d.state.accepting ? 'Opened, but outside the canteen timings: students can order once the timings allow. ' : ''}${d.state?.hours ? hoursText(d.state.hours) + ' · ' : ''}${d.open ? 'Students can order now. Use the Menu tab to mark items sold out.' : 'Open the canteen to start taking orders. Sold-out marks reset each new day.'}</div></div>
       <input id="cnfind" class="cn-find" inputmode="numeric" placeholder="Find token, e.g. 47" aria-label="Find token"><button class="btn ${d.open ? '' : 'primary'}" id="cnopen">${d.open ? 'Close for today' : 'Open canteen for the day'}</button></div>
-      <div class="cn-board">${col('New', by(['placed']).reverse(), 'No new orders')}${col('Preparing', by(['accepted']).reverse(), 'Nothing being prepared')}${col('Ready', by(['ready']).reverse(), 'Nothing waiting at the counter')}</div>
-      <details class="card"><summary><b>Done today</b> · ${done.length} (${by(['collected']).length} collected)</summary>${done.map(o => `<div class="cn-item"><span><span class="cn-tk sm s-${o.status}">${o.token}</span> ${esc(o.name)} · ${o.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span><span class="muted small">${o.status === 'rejected' ? 'Rejected' : o.status === 'cancelled' ? 'Cancelled by student' : o.total}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>`;
+      <div class="cn-board">${col('Waiting for payment', by(['placed']).reverse(), 'Nobody waiting to pay')}${col('In the kitchen', by(['accepted']).reverse(), 'Nothing being prepared')}${col('Ready', by(['ready']).reverse(), 'Nothing waiting')}${col('Out for delivery', by(['out']).reverse(), 'No deliveries on the way')}</div>
+      <details class="card"><summary><b>Done today</b> · ${done.length} (${by(['collected']).length} collected)</summary>${done.map(o => `<div class="cn-item"><span><span class="cn-tk sm s-${o.status}">${o.token}</span> ${esc(o.name)} · ${o.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span><span class="muted small">${o.status === 'rejected' ? (['paid', 'claimed'].includes(o.pay_status) ? 'Rejected · refund ' + o.total : 'Rejected') : o.status === 'cancelled' ? esc(o.reject_reason || 'Cancelled by student') : o.total + (o.fulfil === 'delivery' ? ' · delivered' : '')}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>`;
     wire();
     document.getElementById('cnopen').onclick = async () => { if (d.open && !confirm(`Close the canteen? Students can no longer place orders.${pend ? ` ${pend} order${pend === 1 ? ' is' : 's are'} still in progress: you can still finish ${pend === 1 ? 'it' : 'them'}.` : ''}`)) return; await api(d.open ? '/canteen/close' : '/canteen/open', { method: 'POST' }); toast(d.open ? 'Canteen closed' : 'Canteen open for today'); draw(); };
     const fi = document.getElementById('cnfind'); fi.value = S_find; fi.oninput = () => { S_find = fi.value.replace(/\D/g, ''); filt(); }; const filt = () => main.querySelectorAll('.cn-oc').forEach(c => { c.hidden = !!S_find && +c.dataset.tk !== +S_find; }); filt();
     main.querySelectorAll('[data-a]').forEach(b => b.onclick = async () => {
       const go = async body => { await api(`/canteen/orders/${b.dataset.id}/${b.dataset.a}`, { method: 'POST', body }); draw(); };
+      if (b.dataset.a === 'accepted' && !confirm(b.dataset.pay === 'cash' ? `Did you receive ${b.dataset.amt} in cash? The order goes to the kitchen.` : b.dataset.ref ? `Check your UPI app: is there a payment of ${b.dataset.amt} with reference ${b.dataset.ref}? The order goes to the kitchen.` : `The student has not sent a UPI reference yet. Only continue if you can see ${b.dataset.amt} received in your UPI app.`)) return;
       if (b.dataset.a !== 'rejected') { b.disabled = true; try { await go({}); } catch (e) { toast(e.message); draw(); } return; }
-      const reasons = ['Item sold out', 'Canteen closing', 'Too many orders right now', 'Kitchen problem'];
+      const reasons = ['Payment not received', 'Item sold out', 'Canteen closing', 'Too many orders right now', 'Not collected', 'Could not deliver'];
       const dd = dlg(`<h3>Reject order</h3><p class="muted small">The student sees this reason and gets an email.</p><div class="cn-chips">${reasons.map(r => `<button type="button" class="tab" data-r="${esc(r)}">${esc(r)}</button>`).join('')}</div>
         <label>Reason</label><textarea name="reason" required minlength="3" maxlength="200"></textarea>`, async f => { await go({ reason: f.reason.value }); toast('Order rejected'); });
       dd.querySelectorAll('[data-r]').forEach(x => x.onclick = () => { dd.querySelector('[name=reason]').value = x.dataset.r; });
@@ -209,18 +250,26 @@ export async function canteenPage(main, { sa }) {
     main.innerHTML = `${head()}<div class="card cn-openbar ${m.open ? 'on' : ''}"><img class="cn-qr" src="/api/canteen-qr/${esc(m.slug)}.svg" alt="QR code for the canteen menu" width="112" height="112"><div><b>Student link &amp; QR code</b><div class="muted small">Students scan the QR at the counter or open the link. No login needed to see the menu.</div><code class="cn-link">${esc(m.link)}</code>
       <p class="row" style="margin:8px 0 0"><button type="button" class="btn primary" id="cnposter">${I('download', 16)} Print QR poster</button><a class="btn" href="/api/canteen-qr/${esc(m.slug)}.svg" download="${esc(m.slug)}-cafeteria-qr.svg">Download QR</a></p></div>
       <button class="btn soft" id="cncopy">${I('copy', 16)} Copy</button></div>
-      ${acc.rename ? `<details class="cn-set" ${m.hours ? '' : 'open'}><summary>${I('settings', 16)} Canteen name &amp; timings <span class="muted small">${esc(m.name)}${m.hours ? ' · ' + hoursText(m.hours) : ' · no timings yet'}</span></summary>` : ''}${acc.rename ? `<form class="card cn-openbar" id="cnname"><div><b>Canteen name</b><div class="muted small">Students see it on the menu, the order page and emails.</div><input name="name" maxlength="60" value="${esc(m.name)}" required></div><button class="btn soft">Save name</button></form>` : ''}
+      ${acc.rename ? `<details class="cn-set" ${m.hours ? '' : 'open'}><summary>${I('settings', 16)} Name, timings, payments &amp; delivery <span class="muted small">${esc(m.name)}${m.hours ? ' · ' + hoursText(m.hours) : ' · no timings yet'}</span></summary>` : ''}${acc.rename ? `<form class="card cn-openbar" id="cnname"><div><b>Canteen name</b><div class="muted small">Students see it on the menu, the order page and emails.</div><input name="name" maxlength="60" value="${esc(m.name)}" required></div><button class="btn soft">Save name</button></form>` : ''}
       ${acc.rename ? `<form class="card" id="cnhrs"><b>Canteen timings</b><div class="muted small">Students see these and can only order inside them. You still open the canteen each day.${m.hours ? '' : ' No timings yet: orders are taken whenever the canteen is open.'}</div>
         <div class="cn-hgrid"><label>Opens<input type="time" name="open" value="${m.hours?.open || '08:00'}" required></label><label>Closes<input type="time" name="close" value="${m.hours?.close || '20:00'}" required></label>
         <label>Last orders (min before closing)<input type="number" name="last" min="0" max="120" value="${m.hours?.last_order_min ?? 15}"></label></div>
         <div class="cn-days">${DAYS.map((d, i) => `<label class="chk"><input type="checkbox" name="d" value="${i}" ${(m.hours?.days || [1, 2, 3, 4, 5, 6]).includes(i) ? 'checked' : ''}> ${d}</label>`).join('')}</div>
-        <p class="row"><button class="btn soft">Save timings</button>${m.hours ? '<button type="button" class="btn" id="cnhclr">No time limit</button>' : ''}</p></form></details>` : ''}
+        <p class="row"><button class="btn soft">Save timings</button>${m.hours ? '<button type="button" class="btn" id="cnhclr">No time limit</button>' : ''}</p></form>
+        <form class="card" id="cnpay"><b>Payments &amp; delivery</b><div class="muted small">No payment gateway: an order reaches the kitchen only after your staff confirm the payment (cash at the counter, or the UPI payment seen in the canteen's UPI app).</div>
+          <label class="chk" style="margin-top:10px"><input type="checkbox" name="cash" ${m.pay.cash ? 'checked' : ''}> Cash at the counter</label>
+          <div class="cn-hgrid"><label>Canteen UPI ID<input name="upi_id" value="${esc(m.pay.upi_id)}" placeholder="canteen@okhdfcbank" maxlength="100"></label><label>Name shown in UPI apps<input name="upi_name" value="${esc(m.pay.upi_name)}" placeholder="${esc(m.name)}" maxlength="60"></label>
+          <label>Minutes to pay before an order is cancelled<input type="number" name="pay_window_min" min="5" max="120" value="${m.pay.pay_window_min}"></label></div>
+          <label class="chk" style="margin-top:10px"><input type="checkbox" name="delivery" ${m.pay.delivery ? 'checked' : ''}> Door delivery on campus</label>
+          <div class="cn-hgrid"><label>Delivery charge (₹)<input type="number" name="delivery_fee" min="0" max="500" step="0.5" value="${m.pay.delivery_fee}"></label><label style="grid-column:span 2">Note for students<input name="delivery_note" maxlength="120" value="${esc(m.pay.delivery_note)}" placeholder="e.g. Hostels and academic blocks only"></label></div>
+          <p class="row"><button class="btn soft">Save payments &amp; delivery</button></p></form></details>` : ''}
       <p class="row"><button class="btn primary" id="additem">${I('plus', 16)} Add item</button><button class="btn soft" id="addcat">${I('plus', 16)} Add category</button></p>
       ${groups.map(g => `<section class="cn-cat"><div class="cn-ch"><h2>${esc(g.name)}</h2>${g.id ? `<span><button class="iconbtn" data-up="${g.id}" aria-label="Move ${esc(g.name)} up" ${cats[0]?.id === g.id ? 'disabled' : ''}>▲</button><button class="iconbtn" data-ren="${g.id}" aria-label="Rename">${I('pencil', 15)}</button><button class="iconbtn" data-cdel="${g.id}" aria-label="Remove category">${I('x', 15)}</button></span>` : ''}</div>
         <div class="card cn-list">${g.items.map(itemRow).join('') || '<p class="muted small">No items yet.</p>'}</div></section>`).join('') || '<div class="card empty"><span class="et">Start your menu</span><span>Add a category (Snacks, Meals, Drinks…) and then its items with prices.</span></div>'}`;
     wire();
     const hf = document.getElementById('cnhrs'); if (hf) { hf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/hours', { method: 'PUT', body: { open: hf.open.value, close: hf.close.value, last_order_min: +hf.last.value, days: [...hf.querySelectorAll('[name=d]:checked')].map(x => +x.value) } }); toast('Timings saved'); draw(); } catch (er) { toast(er.message); } };
       const hc = document.getElementById('cnhclr'); if (hc) hc.onclick = async () => { await api('/canteen/hours', { method: 'PUT', body: { clear: true } }); toast('Time limit removed'); draw(); }; }
+    const pf = document.getElementById('cnpay'); if (pf) pf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/payments', { method: 'PUT', body: { cash: pf.cash.checked, upi_id: pf.upi_id.value.trim(), upi_name: pf.upi_name.value.trim(), pay_window_min: +pf.pay_window_min.value, delivery: pf.delivery.checked, delivery_fee: +pf.delivery_fee.value, delivery_note: pf.delivery_note.value } }); toast('Payments & delivery saved'); } catch (er) { toast(er.message); } };
     const nf = document.getElementById('cnname'); if (nf) nf.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/name', { method: 'PUT', body: { name: nf.name.value } }); toast('Name saved'); } catch (er) { toast(er.message); } };
     // an A4 poster for the counter or notice board: name, timings, big QR, the short link
     document.getElementById('cnposter').onclick = () => { const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print the poster');
@@ -255,9 +304,10 @@ export async function canteenPage(main, { sa }) {
     const from = rr === 'day' ? today : rr === 'month' ? back(29) : back(6), r = await api(`/canteen/report?from=${from}&to=${today}`);
     const max = Math.max(1, ...r.days.map(x => x.paise));
     main.innerHTML = `${head()}<div class="tabs">${[['day', 'Today'], ['week', '7 days'], ['month', '30 days']].map(([k, l]) => `<button class="tab ${rr === k ? 'on' : ''}" data-rr="${k}">${l}</button>`).join('')}</div>
-      <div class="cn-kpis">${[['Collected orders', r.collected], ['Sales', rupees(r.revenue_paise)], ['Avg. prep time', r.avg_prep_min == null ? '—' : r.avg_prep_min + ' min'], ['Rejected', r.rejected], ['Cancelled', r.cancelled]].map(([l, v]) => `<div class="card"><span class="muted small">${l}</span><b>${v}</b></div>`).join('')}</div>
+      <div class="cn-kpis">${[['Collected orders', r.collected], ['Sales', rupees(r.revenue_paise)], ['Cash', rupees(r.cash_paise)], ['UPI', rupees(r.upi_paise)], ['Deliveries', r.deliveries], ['Not paid in time', r.not_paid], ['Avg. prep time', r.avg_prep_min == null ? '—' : r.avg_prep_min + ' min'], ['Rejected', r.rejected], ['Cancelled', r.cancelled]].map(([l, v]) => `<div class="card"><span class="muted small">${l}</span><b>${v}</b></div>`).join('')}</div>
       <div class="card"><b>Sales by day</b><div class="cn-bars">${r.days.map(x => `<div title="${x.day}: ${x.orders} orders, ${rupees(x.paise)}"><i style="height:${Math.round(x.paise / max * 100)}%"></i><span>${x.day.slice(8)}</span></div>`).join('')}</div></div>
       <div class="cn-two"><div class="card"><b>Top items</b>${r.top.map(t => `<div class="cn-item"><span>${esc(t.name)}</span><span><b>${t.qty}</b> <span class="muted small">· ${rupees(t.paise)}</span></span></div>`).join('') || '<p class="muted small">No collected orders yet.</p>'}</div>
+        ${r.refunds.length ? `<div class="card" style="grid-column:1/-1"><b>Refunds to give</b><div class="muted small">Paid orders that were then rejected: hand the money back at the counter.</div>${r.refunds.map(x => `<div class="cn-item"><span><span class="cn-tk sm">${x.token}</span> ${esc(x.name)} · ${esc(x.day)} · ${x.mode === 'upi' ? 'UPI ' + esc(x.ref || '') : 'Cash'}</span><b>${rupees(x.paise)}</b></div>`).join('')}</div>` : ''}
         <div class="card"><b>Why orders were rejected</b>${r.reasons.map(t => `<div class="cn-item"><span>${esc(t.reason)}</span><b>${t.count}</b></div>`).join('') || '<p class="muted small">None.</p>'}</div></div>`;
     wire(); main.querySelectorAll('[data-rr]').forEach(b => b.onclick = () => { ls.set('canteen-range', b.dataset.rr); draw(); });
   }
