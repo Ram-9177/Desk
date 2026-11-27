@@ -102,7 +102,7 @@ CREATE INDEX IF NOT EXISTS mau_e ON mail.audit_log (entity, entity_id);
 ALTER TABLE mail.threads ADD COLUMN IF NOT EXISTS sla_started_at TEXT;
 -- the mail number both sides quote, per campus: SMRU-0001 (the first version showed MAIL-1001)
 ALTER TABLE mail.threads ADD COLUMN IF NOT EXISTS ref TEXT;
-UPDATE mail.threads SET ref='MAIL-' || ref_no WHERE ref IS NULL;
+UPDATE mail.threads SET ref='MAIL-L' || ref_no WHERE ref IS NULL; -- the first version's mail: the L keeps them apart from any campus's numbers
 CREATE UNIQUE INDEX IF NOT EXISTS mth_ref ON mail.threads (upper(ref));
 CREATE TABLE IF NOT EXISTS mail.ref_counters (tenant_id TEXT PRIMARY KEY REFERENCES public.tenants(id) ON DELETE CASCADE, last INT NOT NULL);
 -- a reply's effects wait until it has really gone (Undo leaves the thread as it was)
@@ -169,8 +169,9 @@ export async function mail(d) {
     tok = { v: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 }; return tok.v;
   }
   async function graph(method, path, body, headers = {}) {
+    let auth; try { auth = await token(); } catch (e) { e.notSent = true; throw e; } // failed before anything went to Microsoft
     const r = await fetch(GRAPH + path, { method, signal: AbortSignal.timeout(30000),
-      headers: { authorization: 'Bearer ' + await token(), ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+      headers: { authorization: 'Bearer ' + auth, ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
     if (r.status === 401) tok = null;
     const text = await r.text(), j = text ? json(text, {}) : {};
     if (!r.ok) { const e = new Error(`Microsoft 365: ${j.error?.message || r.status}`); e.status = r.status; throw e; }
@@ -196,7 +197,8 @@ export async function mail(d) {
   // a thread the person may open; anyone else gets 404 (not 403), so mailboxes are not revealed
   async function threadFor(req, ref, { work = false } = {}) {
     const a = await access(req), r = String(ref || '').trim().slice(0, 40);
-    const t = r ? await one('SELECT * FROM mail.threads WHERE upper(ref)=upper(?)', r) : null; // SMRU-0001
+    const t = !r ? null : /^\d+$/.test(r) ? await one('SELECT * FROM mail.threads WHERE ref_no=?', Number(r)) // links in alerts sent before mail numbers
+      : await one('SELECT * FROM mail.threads WHERE upper(ref)=upper(?)', r); // SMRU-0001
     const ch = t && a.chans.find(c => c.id === t.channel_id);
     if (!ch) throw notFound();
     if (work && !canWork(a, ch)) throw forbid('You can read this mailbox but not reply from it');
@@ -209,10 +211,10 @@ export async function mail(d) {
   /* ================= officers, leave, alerts ================= */
   async function officersOf(ch) {
     const rows = await all('SELECT role, user_id, backup_user_id FROM mail.mailbox_officers WHERE channel_id=? ORDER BY created_at', ch.id);
-    const o = { nodal: [], escalation: [], backups: {} }; for (const r of rows) { o[r.role].push(r.user_id); if (r.backup_user_id) o.backups[r.user_id] = r.backup_user_id; }
-    const ids = rows.map(r => r.user_id), day = today((await tenantRow(ch.tenant_id))?.timezone);
+    const o = { nodal: [], escalation: [], backups: {} }; for (const r of rows) { o[r.role].push(r.user_id); if (r.backup_user_id) o.backups[`${r.role}:${r.user_id}`] = r.backup_user_id; }
+    const ids = [...new Set(rows.flatMap(r => [r.user_id, r.backup_user_id]).filter(Boolean))], day = today((await tenantRow(ch.tenant_id))?.timezone);
     o.onLeave = new Set(ids.length ? (await all('SELECT user_id FROM mail.officer_leave WHERE user_id = ANY(?::text[]) AND from_day<=? AND to_day>=?', ids, day, day)).map(r => r.user_id) : []);
-    // a deactivated officer is treated as away: the backup gets the mail and the alerts
+    // a deactivated officer (or backup) is treated as away
     if (ids.length) for (const r of await all('SELECT id FROM users WHERE id = ANY(?::text[]) AND is_active<>1', ids)) o.onLeave.add(r.id);
     return o;
   }
@@ -320,20 +322,24 @@ export async function mail(d) {
     const rules = L.applyRules(await all('SELECT * FROM mail.rules WHERE tenant_id=? AND (channel_id=? OR channel_id IS NULL)', ch.tenant_id, ch.id), { from_email: fromEmail, subject, headers });
     const ai = rules.skipAi ? null : await readMail(subject, text);
     const lane = rules.lane || L.laneFrom(ai?.reading);
-    const refM = L.REF_RE.exec(subject); // the sender quoted the mail number
+    const refs = L.refsIn(subject, (await tenantRow(ch.tenant_id))?.code); // mail numbers of this campus quoted by the sender
     const res = await tx(async () => {
       await one('SELECT pg_advisory_xact_lock(hashtext(?)) x', `mail|${ch.id}|${m.conversationId || messageId}`); // two mails of one conversation at once still make one thread
       if (await one('SELECT 1 x FROM mail.inbound_emails WHERE provider_message_id=?', messageId)) return { dup: true };
       let t = (m.conversationId && await one('SELECT * FROM mail.threads WHERE channel_id=? AND conversation_id=? ORDER BY created_at DESC LIMIT 1', ch.id, m.conversationId))
         // a quoted number joins that mail only for someone already in it (anyone else quoting it starts their own)
-        || (refM && await one(`SELECT t.* FROM mail.threads t WHERE t.channel_id=? AND upper(t.ref)=upper(?) AND (lower(t.requester_email)=?
-             OR EXISTS (SELECT 1 FROM mail.inbound_emails i WHERE i.thread_id=t.id AND lower(i.from_email)=?))`, ch.id, refM[1], fromEmail, fromEmail));
+        || (refs.length ? await one(`SELECT t.* FROM mail.threads t WHERE t.channel_id=? AND upper(t.ref) = ANY(?::text[]) AND (lower(t.requester_email)=?
+             OR EXISTS (SELECT 1 FROM mail.inbound_emails i WHERE i.thread_id=t.id AND lower(i.from_email)=?)) ORDER BY t.created_at DESC LIMIT 1`, ch.id, refs, fromEmail, fromEmail) : null);
       let fresh = false;
       if (!t) {
         fresh = true;
-        const tn = await tenantRow(ch.tenant_id), n = await one(`INSERT INTO mail.ref_counters (tenant_id, last) VALUES (?, 1)
-          ON CONFLICT (tenant_id) DO UPDATE SET last=mail.ref_counters.last+1 RETURNING last`, ch.tenant_id);
-        t = await insert('mail.threads', { id: uid(), ref: L.refOf(tn.code, n.last), channel_id: ch.id, conversation_id: m.conversationId || null, subject, requester_email: fromEmail, requester_name: str(from.name, 255) || null,
+        // the next number of the campus; one already taken (two campus codes that read the same, e.g. "SM-RU" and "SMRU") is skipped
+        const tn = await tenantRow(ch.tenant_id); let ref = null;
+        for (let i = 0; i < 50 && !ref; i++) { const n = await one(`INSERT INTO mail.ref_counters (tenant_id, last) VALUES (?, 1)
+            ON CONFLICT (tenant_id) DO UPDATE SET last=mail.ref_counters.last+1 RETURNING last`, ch.tenant_id);
+          const cand = L.refOf(tn.code, n.last); if (!(await one('SELECT 1 x FROM mail.threads WHERE upper(ref)=?', cand))) ref = cand; }
+        if (!ref) throw new Error('No free mail number');
+        t = await insert('mail.threads', { id: uid(), ref, channel_id: ch.id, conversation_id: m.conversationId || null, subject, requester_email: fromEmail, requester_name: str(from.name, 255) || null,
           lane, category: ai?.reading.category || null, summary: ai?.reading.summary || null, status: 'open', ...(await slaFor(ch, lane, ts)), created_at: ts, updated_at: ts });
         if (t.sla_policy_id) await slaEvent(t.id, 'started');
       } else if (['closed', 'rejected'].includes(t.status)) { // the sender wrote back: the thread opens again
@@ -407,17 +413,23 @@ export async function mail(d) {
           const t = await one('SELECT ref, subject FROM mail.threads WHERE id=?', o.thread_id);
           // the mail number in front of the subject, so the sender and the officers quote the same number: "RE: [SMRU-0001] Fees"
           const subject = o.subject ? L.subjectWith(t.ref, o.subject) : L.subjectWith(t.ref, t.subject, true);
-          const fresh = () => graph('POST', `${mbox(ch.address)}/sendMail`, { message: { subject, toRecipients: to, ccRecipients: cc, body: { contentType: 'HTML', content: o.body_html }, ...auto }, saveToSentItems: true });
+          // the last step (send, or sendMail) is the one that delivers: if it fails without a clear "refused", the mail may have gone.
+          // Earlier steps (making and filling the draft) never send anything, so they are simply tried again.
+          const finalStep = fn => fn().catch(e => { if (!e.notSent && !(e.status >= 400 && e.status < 500)) e.unsure = true; throw e; });
+          const fresh = () => finalStep(() => graph('POST', `${mbox(ch.address)}/sendMail`, { message: { subject, toRecipients: to, ccRecipients: cc, body: { contentType: 'HTML', content: o.body_html }, ...auto }, saveToSentItems: true }));
           if (inb) {
             // a reply in the same conversation (Outlook keeps it threaded), with our subject: draft → our text above the quoted mail → send
             let draft = null;
+            const mk = msg => graph('POST', `${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/createReply`, { message: msg });
             try {
-              draft = await graph('POST', `${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/createReply`, { message: { toRecipients: to, ccRecipients: cc, ...auto } });
+              try { draft = await mk({ toRecipients: to, ccRecipients: cc, ...auto }); }
+              catch (e) { if (e.status !== 400 || !auto.internetMessageHeaders) throw e; draft = await mk({ toRecipients: to, ccRecipients: cc }); } // headers refused here: send without them
               const quoted = String(draft.body?.content || ''), content = /<body[^>]*>/i.test(quoted) ? quoted.replace(/<body[^>]*>/i, m => m + o.body_html + '<br>') : o.body_html + (quoted ? '<br>' + quoted : '');
               await graph('PATCH', `${mbox(ch.address)}/messages/${encodeURIComponent(draft.id)}`, { subject, toRecipients: to, ccRecipients: cc, body: { contentType: 'HTML', content } });
-              await graph('POST', `${mbox(ch.address)}/messages/${encodeURIComponent(draft.id)}/send`);
+              await finalStep(() => graph('POST', `${mbox(ch.address)}/messages/${encodeURIComponent(draft.id)}/send`));
             } catch (e) {
-              if (draft?.id && e.name !== 'TimeoutError' && e.name !== 'AbortError') await graph('DELETE', `${mbox(ch.address)}/messages/${encodeURIComponent(draft.id)}`).catch(() => {}); // no stray draft left in Outlook
+              // never leave a draft quoting their mail in Outlook (if it was sent after all, it is in Sent Items and this finds nothing)
+              if (draft?.id) await graph('DELETE', `${mbox(ch.address)}/messages/${encodeURIComponent(draft.id)}`).catch(() => {});
               if (e.status !== 404 || draft) throw e;
               await fresh(); // the mail was moved or deleted in Outlook: send it as a new mail instead
             }
@@ -426,9 +438,9 @@ export async function mail(d) {
           await afterSent(o);
         } catch (e) {
           // a timeout may have been delivered all the same: never retried (no duplicate mail); the officer checks Outlook's Sent Items
-          const unsure = e.name === 'TimeoutError' || e.name === 'AbortError';
+          const unsure = !!e.unsure; // only the delivering step, failing without a clear refusal (timeout, cut connection, 5xx)
           const final = unsure || o.attempts + 1 >= 4 || (e.status >= 400 && e.status < 500 && ![401, 408, 429].includes(e.status));
-          const msg = unsure ? 'No answer from Microsoft 365 in time: it may or may not have gone. Check Sent Items in Outlook before sending again.' : String(e.message);
+          const msg = unsure ? 'Microsoft 365 did not confirm it: it may or may not have gone. Check Sent Items in Outlook before sending again.' : String(e.message);
           await run(`UPDATE mail.outbound_emails SET state=?, attempts=attempts+1, error=?, send_after=? WHERE id=?`, final ? 'failed' : 'queued', msg.slice(0, 500),
             new Date(Date.now() + 60e3 * 2 ** o.attempts).toISOString(), o.id);
           if (final) await note(o.thread_id, `A ${o.origin === 'auto_ack' ? 'received-reply' : 'reply'} was not sent: ${msg.slice(0, 300)}`);
@@ -490,8 +502,12 @@ export async function mail(d) {
     } catch (e) { console.error('mail worker', e.message); } finally { busy = false; }
   }
   // Graph subscription per mailbox in shadow or live mode: made when switched on, renewed a day before it runs out
+  const subbing = new Set(); // one subscription change per mailbox at a time (switching on and the background round could both make one)
   async function subscribe(ch) {
-    if (!graphReady()) return;
+    if (!graphReady() || subbing.has(ch.id)) return;
+    subbing.add(ch.id); try { await subscribeNow(await one('SELECT * FROM mail.channels WHERE id=?', ch.id) || ch); } finally { subbing.delete(ch.id); }
+  }
+  async function subscribeNow(ch) {
     const exp = new Date(Date.now() + 2.5 * 864e5).toISOString();
     try {
       if (ch.graph_sub_id) { try { await graph('PATCH', `/subscriptions/${encodeURIComponent(ch.graph_sub_id)}`, { expirationDateTime: exp });
@@ -551,7 +567,9 @@ export async function mail(d) {
     FROM mail.threads t JOIN mail.channels c ON c.id=t.channel_id`;
   // one dashboard: the mail work of a nodal or escalation officer, in the desk's row shape (the desk dashboard merges it)
   S.get('/maildesk/my-work', wrap(async req => {
-    const a = await access(req), mine = a.chans.filter(c => c.my_roles && c.mode === 'live').map(c => c.id);
+    const a = await access(req), mine = [];
+    // on my Home: mailboxes where I am an available officer, or where I am covering for one on leave (a backup who is not covering only reads)
+    for (const c of a.chans.filter(c => c.my_roles && c.mode === 'live')) { const o = await officersOf(c); if ([...L.queueFor(o), ...L.escalationFor(o)].includes(req.user.id)) mine.push(c.id); }
     if (!mine.length) return [];
     const rows = await all(`${LIST} WHERE t.channel_id = ANY(?::text[]) AND t.status IN ('open','in_progress','hold') AND t.lane NOT IN ('noise','auto') ORDER BY t.updated_at DESC LIMIT 300`, req.user.id, req.user.id, mine);
     return rows.map(L.toWorkItem).filter(Boolean);
@@ -767,7 +785,9 @@ export async function mail(d) {
   }));
   S.put('/maildesk/channels/:id/officers', wrap(async req => {
     await needSetup(req); const c = await channelIn(req, req.params.id), b = req.body || {};
-    const people = new Set((await all('SELECT id FROM users WHERE tenant_id=? AND is_active=1', req.tenantId)).map(r => r.id));
+    // active staff of the campus, plus anyone already on this mailbox (a deactivated officer stays until removed: their backup covers)
+    const people = new Set([...(await all('SELECT id FROM users WHERE tenant_id=? AND is_active=1', req.tenantId)).map(r => r.id),
+      ...(await all('SELECT o.user_id id FROM mail.mailbox_officers o JOIN users u ON u.id=o.user_id WHERE o.channel_id=? AND u.tenant_id=? UNION SELECT o.backup_user_id FROM mail.mailbox_officers o JOIN users u ON u.id=o.backup_user_id WHERE o.channel_id=? AND u.tenant_id=?', c.id, req.tenantId, c.id, req.tenantId)).map(r => r.id)]);
     // { officers: [{ user_id, role: 'nodal' | 'escalation', backup_user_id }] }: any number of each; at least one nodal officer
     const list = (Array.isArray(b.officers) ? b.officers : []).filter(o => o && o.user_id).map(o => ({ user_id: String(o.user_id), role: o.role, backup_user_id: o.backup_user_id ? String(o.backup_user_id) : null }));
     if (list.length > 50) throw bad('At most 50 officers on one mailbox');
@@ -777,7 +797,12 @@ export async function mail(d) {
     if (new Set(list.map(o => `${o.role}|${o.user_id}`)).size !== list.length) throw bad('The same person is listed twice in one role');
     if (!list.some(o => o.role === 'nodal')) throw bad('Add at least one nodal officer');
     await tx(async () => { await run('DELETE FROM mail.mailbox_officers WHERE channel_id=?', c.id);
-      for (const o of list) await insert('mail.mailbox_officers', { channel_id: c.id, ...o, created_at: now() }); });
+      for (const o of list) await insert('mail.mailbox_officers', { channel_id: c.id, ...o, created_at: now() });
+      // mail taken by someone no longer on this mailbox goes back to the officers (they could not open it any more)
+      await run(`UPDATE mail.threads t SET owner_user_id=NULL, updated_at=? WHERE t.channel_id=? AND t.owner_user_id IS NOT NULL AND t.status IN ('open','in_progress','hold')
+        AND NOT EXISTS (SELECT 1 FROM mail.mailbox_officers o WHERE o.channel_id=t.channel_id AND (o.user_id=t.owner_user_id OR o.backup_user_id=t.owner_user_id))
+        AND NOT EXISTS (SELECT 1 FROM mail.channel_members m WHERE m.channel_id=t.channel_id AND m.user_id=t.owner_user_id)
+        AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=t.owner_user_id AND u.role IN ('super_admin','tenant_admin'))`, now(), c.id); });
     audit(req, 'setting_change', 'channel_officers', c.id, b); return pubChannel(c);
   }));
   S.put('/maildesk/channels/:id/members', wrap(async req => {
@@ -809,9 +834,13 @@ export async function mail(d) {
   S.post('/maildesk/channels/:id/sync', wrap(async req => { await needSetup(req); const c = await channelIn(req, req.params.id); if (c.mode === 'off') throw bad('Switch the mailbox to shadow or live first');
     await enqueue('catchup', { channel_id: c.id }, `catchup:${c.id}`); setImmediate(work); return { ok: true }; }));
   S.delete('/maildesk/channels/:id', wrap(async req => {
-    await needSetup(req); const c = await channelIn(req, req.params.id);
-    if (await one('SELECT 1 x FROM mail.threads WHERE channel_id=? LIMIT 1', c.id)) throw new HttpErr(409, 'IN_USE', 'This mailbox has mail threads; switch it off instead');
-    await unsubscribe(c); await run('DELETE FROM mail.channels WHERE id=?', c.id); audit(req, 'setting_change', 'channel', c.id, { deleted: c.address }); return { ok: true };
+    await needSetup(req); if (!(await access(req)).admin) throw forbid('Only a super admin can delete a mailbox');
+    const c = await channelIn(req, req.params.id);
+    if (c.mode !== 'off') throw bad('Switch the mailbox off before deleting it');
+    // only while it has no mail at all, checked in the same statement (mail arriving meanwhile is never deleted with it)
+    const r = await run('DELETE FROM mail.channels c WHERE c.id=? AND NOT EXISTS (SELECT 1 FROM mail.threads t WHERE t.channel_id=c.id) AND NOT EXISTS (SELECT 1 FROM mail.inbound_emails i WHERE i.channel_id=c.id)', c.id);
+    if (!r.changes) throw new HttpErr(409, 'IN_USE', 'This mailbox has mail, so it stays (switched off) to keep that history');
+    await unsubscribe(c).catch(() => {}); audit(req, 'setting_change', 'channel', c.id, { deleted: c.address }); return { ok: true };
   }));
   S.post('/maildesk/leave', wrap(async req => {
     await needSetup(req); const b = req.body, d = /^\d{4}-\d{2}-\d{2}$/;

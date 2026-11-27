@@ -12,13 +12,17 @@ export const MODES = ['off', 'shadow', 'live'];
 export const OFFICER_ROLES = ['nodal', 'escalation']; // a mailbox has any number of each
 export const SLA_ORDER = ['on_track', 'warning', 'escalated', 'escalated_2'];
 // The mail number both sides quote: the campus code and a running number per campus, e.g. SMRU-0001
-export const refOf = (code, n) => `${String(code || 'MAIL').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MAIL'}-${String(n).padStart(4, '0')}`;
-export const REF_RE = /\b([A-Z0-9]{2,12}-\d{4,})\b/i;
+export const refOf = (code, n) => `${codeOf(code)}-${String(n).padStart(4, '0')}`;
+export const codeOf = code => String(code || 'MAIL').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MAIL';
+// every mail number of this campus quoted in a subject ("2024-2025" or a phone number are not taken for one)
+export const refsIn = (subject, code) => [...String(subject || '').matchAll(new RegExp(`\\b(${codeOf(code)}-\\d{4,}|MAIL-L\\d+)\\b`, 'gi'))].map(m => m[1].toUpperCase());
 // "[SMRU-0001] Fees for B.Tech": the number goes in front of every subject the sender gets (once), "RE:" kept for replies
 export function subjectWith(ref, subject, reply = false) {
   let s = String(subject || '').replace(/\s+/g, ' ').trim(); const tag = `[${ref}]`;
-  s = s.split(tag).join('').replace(/\s+/g, ' ').trim();
-  const re = /^((re|fw|fwd)\s*:\s*)+/i; s = s.replace(re, '').trim();
+  const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  s = s.replace(new RegExp(`\\[\\s*${esc}\\s*\\]`, 'gi'), ' ').replace(/\s+/g, ' ').trim(); // the tag once, whatever its case
+  const re = /^((re|fw|fwd|aw|wg|sv|vs|antw|tr|rif|r)\s*:\s*)+/i; s = s.replace(re, '').trim(); // reply/forward prefixes in several languages
+  s = s.replace(/\s+([:,.;])/g, '$1').replace(/^[:,.;\s-]+/, '').trim();
   return `${reply ? 'RE: ' : ''}${tag} ${s || '(no subject)'}`.slice(0, 255);
 }
 export const isEmail = v => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(String(v || '').trim());
@@ -45,12 +49,14 @@ export const elapsedMins = (createdIso, nowIso, p, cal) => p.business_hours_only
   : Math.max(0, Math.round((Date.parse(nowIso) - Date.parse(createdIso)) / 6e4));
 
 // officers: { nodal_1, nodal_2, escalation } user ids; backups: { role: user id }; onLeave: Set of user ids
-// officers: { nodal: [user ids], escalation: [user ids], backups: { user id: backup id }, onLeave: Set of user ids (away or deactivated) }
-const resolve = (o, id) => o.onLeave?.has(id) ? (o.backups?.[id] || null) : id; // away with no backup: they are skipped (the others still get it)
+// officers: { nodal: [user ids], escalation: [user ids], backups: { 'nodal:<id>' | 'escalation:<id>': backup id }, onLeave: Set of user ids
+// (on leave or deactivated, officers and backups alike). A person in both roles can have a different backup in each.
+const resolve = (o, role, id) => { if (!o.onLeave?.has(id)) return id; const b = o.backups?.[`${role}:${id}`];
+  return b && !o.onLeave.has(b) ? b : null; }; // away, and the backup is away too (or none): skipped, the others still get it
 const uniq = a => [...new Set(a.filter(Boolean))];
-// every nodal officer of the mailbox gets the mail; if all are away with no backup, the escalation officers do
-export const queueFor = o => { const q = uniq((o.nodal || []).map(id => resolve(o, id))); return q.length ? q : uniq((o.escalation || []).map(id => resolve(o, id))); };
-export const escalationFor = o => uniq((o.escalation || []).map(id => resolve(o, id)));
+// every available nodal officer of the mailbox gets the mail; if none is available, the escalation officers do
+export const queueFor = o => { const q = uniq((o.nodal || []).map(id => resolve(o, 'nodal', id))); return q.length ? q : escalationFor(o); };
+export function escalationFor(o) { return uniq((o.escalation || []).map(id => resolve(o, 'escalation', id))); }
 
 // The next step for one thread. Each step fires once: the state only moves forward.
 export function tick(t, p, cal, o, nowIso, managers = []) {

@@ -24,7 +24,7 @@ function check(name, cond, detail = '') { if (cond) { passed++; console.log(`  �
 sec('SLA steps');
 const tn = { timezone: 'Asia/Kolkata', work_start: '09:30', work_end: '17:00', work_days: '1,2,3,4,5,6' }, cal = calendar(tn);
 const pol = { id: 'p', channel_id: 'c', lane: null, first_response_mins: 100, warn_at_pct: 75, escalate_at_pct: 100, second_escalate_at_pct: 200, business_hours_only: 0, pause_on_hold: 1, active: 1 };
-const off = { nodal: ['n1', 'n2'], escalation: ['esc'], backups: { n1: 'b1' }, onLeave: new Set() };
+const off = { nodal: ['n1', 'n2'], escalation: ['esc'], backups: { 'nodal:n1': 'b1' }, onLeave: new Set() };
 const at = mins => new Date(Date.parse('2026-11-23T05:00:00Z') + mins * 6e4).toISOString(); // Monday 10:30 IST
 const th = s => ({ created_at: at(0), status: 'open', first_responded_at: null, paused_mins: 0, paused_since: null, sla_state: s });
 check('before 75 %: nothing', L.tick(th('on_track'), pol, cal, off, at(70)).kind === 'none');
@@ -42,9 +42,13 @@ check('officer on leave: the backup gets the alert', L.queueFor({ ...off, onLeav
 check('any number of nodal officers all get it; away with no backup is skipped', L.queueFor({ nodal: ['a', 'b', 'c', 'd'], escalation: [], backups: {}, onLeave: new Set(['c']) }).join() === 'a,b,d');
 check('all nodal officers away with no backup: the escalation officers get it', L.queueFor({ nodal: ['a'], escalation: ['e1', 'e2'], backups: {}, onLeave: new Set(['a']) }).join() === 'e1,e2');
 check('several escalation officers are all told', (x => x.kind === 'escalate' && ['e1', 'e2', 'a'].every(id => x.notify.includes(id)))(L.tick(th('warning'), pol, cal, { nodal: ['a'], escalation: ['e1', 'e2'], backups: {}, onLeave: new Set() }, at(101))));
+check('a backup who is away too: the escalation officers get it', L.queueFor({ nodal: ['a'], escalation: ['e'], backups: { 'nodal:a': 'b' }, onLeave: new Set(['a', 'b']) }).join() === 'e');
+check('one person in two roles keeps a backup per role', (o => L.queueFor(o).join() === 'b1' && L.escalationFor(o).join() === 'c1')({ nodal: ['a'], escalation: ['a'], backups: { 'nodal:a': 'b1', 'escalation:a': 'c1' }, onLeave: new Set(['a']) }));
+check('only this campus\'s numbers are taken from a subject, all of them', L.refsIn('Fees 2024-2025, call 98765-43210, ref smru-0001 / SMRU-0002, ISO-9001', 'SMRU').join() === 'SMRU-0001,SMRU-0002');
+check('subject: the tag in any case once, other languages\' prefixes dropped', L.subjectWith('SMRU-0001', 'RE: [smru-0001] Fees') === '[SMRU-0001] Fees' && L.subjectWith('SMRU-0001', 'AW: Antw: Fees', true) === 'RE: [SMRU-0001] Fees' && L.subjectWith('SMRU-0001', 'Ref [SMRU-0001]: received') === '[SMRU-0001] Ref: received');
 check('mail number: campus code and four digits', L.refOf('smru', 1) === 'SMRU-0001' && L.refOf('SMRU', 12345) === 'SMRU-12345');
 check('the number goes in front of the subject once, RE: kept', L.subjectWith('SMRU-0001', 'RE: [SMRU-0001] Fees') === '[SMRU-0001] Fees' && L.subjectWith('SMRU-0001', 'Re: Fees', true) === 'RE: [SMRU-0001] Fees' && L.subjectWith('SMRU-0001', '', true) === 'RE: [SMRU-0001] (no subject)');
-check('the number is found in a subject the sender writes', L.REF_RE.exec('Re: about smru-0042 please')?.[1].toUpperCase() === 'SMRU-0042');
+check('the number is found in a subject the sender writes', L.refsIn('Re: about smru-0042 please', 'SMRU')[0] === 'SMRU-0042');
 check('a late first reply is "replied late"', L.onFirstResponse({ sla_state: 'escalated' }, at(0)).sla_state === 'breached_met' && L.onFirstResponse({ sla_state: 'warning' }, at(0)).sla_state === 'met');
 const bh = { ...pol, business_hours_only: 1, first_response_mins: 450 };
 check('office hours: a mail at 16:00 Saturday (1 h left that day) is due 16:00 Monday', L.dueAt('2026-11-28T10:30:00Z', bh, cal) === '2026-11-30T10:30:00.000Z', L.dueAt('2026-11-28T10:30:00Z', bh, cal));
@@ -127,6 +131,7 @@ const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b
   }
   let m = /^\/g\/users\/([^/]+)\/messages\/([^/]+)(\/reply)?$/.exec(u.pathname);
   const cr = /^\/g\/users\/([^/]+)\/messages\/([^/]+)\/(createReply|send)$/.exec(u.pathname); G.drafts ||= {};
+  if (cr && G.failNext?.step === cr[3]) { const st = G.failNext.status; G.failNext = null; return send(st, { error: { message: `stand-in ${st} at ${cr[3]}` } }); }
   if (cr && cr[3] === 'createReply') { const id = decodeURIComponent(cr[2]); if (!G.messages[id]) return send(404, { error: { message: 'The specified object was not found in the store.' } }); // moved in Outlook
     const d = { id: 'draft' + Object.keys(G.drafts).length, replyTo: id, box: decodeURIComponent(cr[1]), ...JSON.parse(b).message, subject: 'RE: ' + G.messages[id].subject, body: { content: '<html><body><p>quoted original</p></body></html>' } };
     G.drafts[d.id] = d; return send(201, d); }
@@ -429,13 +434,49 @@ try {
   check('…a deactivated officer\'s reminder goes to the backup', await waitFor(async () => (await q("SELECT recipient FROM notifications WHERE template_key='mail_sla_warn' AND subject LIKE ?", `%${t7.ref}%`)).map(r => r.recipient).sort().join() === 'esha@example.com,naveen@example.com'));
   await q('UPDATE users SET is_active=1 WHERE id=?', n1.id);
 
+  // sending fails part-way
+  await ok('Nita back on reach@', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal' }, { user_id: n2.id, role: 'nodal' }, { user_id: esc.id, role: 'escalation' }] } });
+  const m8 = mkMsg({ from: 'gita@gmail.com', subject: 'Bonafide certificate', conv: 'conv-G' }); await notifyGraph('sub-1', m8);
+  const t8 = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-G'"))[0]);
+  G.failNext = { step: 'createReply', status: 503 };
+  const r8 = await ok('a reply while Microsoft is busy at the first step', `/maildesk/threads/${t8.ref}/reply`, { token: n1.token, method: 'POST', body: { body: 'Ready on Monday.' } });
+  await run_("UPDATE mail.outbound_emails SET send_after=? WHERE id=?", new Date(Date.now() - 1000).toISOString(), r8.id);
+  check('…nothing went, so it is simply tried again (not "may have gone")', await waitFor(async () => (await q('SELECT state, attempts FROM mail.outbound_emails WHERE id=?', r8.id))[0].attempts === 1) && (await q('SELECT state FROM mail.outbound_emails WHERE id=?', r8.id))[0].state === 'queued');
+  await run_("UPDATE mail.outbound_emails SET send_after=? WHERE id=?", new Date(Date.now() - 1000).toISOString(), r8.id);
+  check('…and goes on the next try', await waitFor(async () => (await q('SELECT state FROM mail.outbound_emails WHERE id=?', r8.id))[0].state === 'sent'));
+  G.failNext = { step: 'send', status: 502 };
+  const r9 = await ok('a reply whose last step gets no clear answer', `/maildesk/threads/${t8.ref}/reply`, { token: n1.token, method: 'POST', body: { body: 'One more thing.' } });
+  await run_("UPDATE mail.outbound_emails SET send_after=? WHERE id=?", new Date(Date.now() - 1000).toISOString(), r9.id);
+  check('…is reported as "may have gone", never sent twice, and no draft is left in Outlook', await waitFor(async () => (await q('SELECT state, error FROM mail.outbound_emails WHERE id=?', r9.id))[0].state === 'failed')
+    && /may or may not have gone/.test((await q('SELECT error FROM mail.outbound_emails WHERE id=?', r9.id))[0].error) && !Object.keys(G.drafts).length);
+  check('an old link with the internal number still opens the mail', (await api(`/maildesk/threads/${t8.ref_no}`, { token: n1.token })).data?.thread?.ref === t8.ref);
+  // officers: a deactivated one stays until removed; one who leaves the mailbox gives back their mail; a backup not covering has no Home rows
+  await ok('Nita takes Gita\'s mail', `/maildesk/threads/${t8.ref}/claim`, { token: n1.token, method: 'POST', body: { take: true } });
+  await run_('UPDATE users SET is_active=0 WHERE id=?', n2.id);
+  await ok('saving officers keeps the deactivated Naveen', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal' }, { user_id: n2.id, role: 'nodal' }, { user_id: esc.id, role: 'escalation' }] } });
+  await run_('UPDATE users SET is_active=0 WHERE id=?', other.id);
+  await fails('…but a deactivated person cannot be newly added', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal' }, { user_id: other.id, role: 'nodal' }] } }, 400);
+  await run_('UPDATE users SET is_active=1 WHERE id=?', other.id);
+  await run_('UPDATE users SET is_active=1 WHERE id=?', n2.id);
+  await ok('Nita leaves reach@; Omar is backup for Naveen', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n2.id, role: 'nodal', backup_user_id: other.id }, { user_id: esc.id, role: 'escalation' }] } });
+  check('…the mail Nita had taken goes back to the officers', !(await q('SELECT owner_user_id FROM mail.threads WHERE id=?', t8.id))[0].owner_user_id);
+  check('…a backup who is not covering has no rows on the Home', (await api('/maildesk/my-work', { token: other.token })).data?.length === 0);
+  await run_("INSERT INTO mail.officer_leave (id, user_id, from_day, to_day) VALUES ('lv1', ?, '2000-01-01', '2999-12-31')", n2.id);
+  check('…while Naveen is on leave, Omar covers and sees the work', (await api('/maildesk/my-work', { token: other.token })).data?.some(w => w.id === t8.id));
+  await run_("DELETE FROM mail.officer_leave WHERE id='lv1'");
+  await ok('officers back as before', `/maildesk/channels/${ch.id}/officers`, { token: cadmin.token, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal' }, { user_id: n2.id, role: 'nodal' }, { user_id: esc.id, role: 'escalation' }] } });
+
   // mailboxes: add, change and delete (super admin), per campus
   const ch2 = await ok('add exams@', '/maildesk/channels', { ...A, method: 'POST', body: { address: 'exams@smru.test', display_name: 'Examinations' } });
   await ok('change its address while off', `/maildesk/channels/${ch2.id}`, { ...A, method: 'PATCH', body: { address: 'exam-cell@smru.test' } });
   await ok('officers for exams@: four nodal officers', `/maildesk/channels/${ch2.id}/officers`, { ...A, method: 'PUT', body: { officers: [n1, n2, esc, other].map(u => ({ user_id: u.id, role: 'nodal' })) } });
   check('…all four listed', (await api('/maildesk/settings', A)).data.channels.find(c => c.id === ch2.id)?.officers.filter(o => o.role === 'nodal').length === 4);
-  await ok('delete exams@ (no mail yet)', `/maildesk/channels/${ch2.id}`, { ...A, method: 'DELETE' });
-  await fails('reach@ has mail, so it cannot be deleted (switch it off instead)', `/maildesk/channels/${ch.id}`, { ...A, method: 'DELETE' }, 409);
+  await fails('a campus admin cannot delete a mailbox', `/maildesk/channels/${ch2.id}`, { token: cadmin.token, method: 'DELETE' }, 403);
+  await ok('delete exams@ (off, no mail yet)', `/maildesk/channels/${ch2.id}`, { ...A, method: 'DELETE' });
+  await fails('a live mailbox cannot be deleted', `/maildesk/channels/${ch.id}`, { ...A, method: 'DELETE' }, 400);
+  await ok('reach@ off', `/maildesk/channels/${ch.id}`, { ...A, method: 'PATCH', body: { mode: 'off' } });
+  await fails('reach@ has mail, so it stays (off) to keep its history', `/maildesk/channels/${ch.id}`, { ...A, method: 'DELETE' }, 409);
+  await ok('reach@ live again', `/maildesk/channels/${ch.id}`, { ...A, method: 'PATCH', body: { mode: 'live' } });
   check('numbers run per campus and never repeat', new Set((await q('SELECT ref FROM mail.threads')).map(r => r.ref)).size === (await q('SELECT count(*)::int n FROM mail.threads'))[0].n);
 
   // a campus switched off: its mailboxes rest (no reading, no reminders)

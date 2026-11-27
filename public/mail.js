@@ -197,8 +197,11 @@ async function confirmPage(main, me) {
 async function settings(main, me) {
   const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
   const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
-  const offRow = (o = {}) => `<div class="row" data-o><div><label>Person</label>${sel('u', pOpts, o.user_id)}</div><div><label>Role</label>${sel('r', Object.entries(ROLE), o.role || 'nodal')}</div>
-    <div><label>Backup while on leave</label>${sel('b', pOpts, o.backup_user_id)}</div><div style="flex:none;align-self:flex-end"><button type="button" class="btn" data-rmo aria-label="Remove officer">Remove</button></div></div>${o.is_active === 0 ? '<div class="err small">This person is deactivated: their backup gets the mail.</div>' : ''}`;
+  // a deactivated officer or backup is no longer in the staff list: kept in their own row (marked) so a save does not drop them
+  const withPerson = (id, name) => id && !people.some(p => p.id === id) ? [...pOpts, [id, `${name || 'Someone'} (deactivated)`]] : pOpts;
+  const offRow = (o = {}) => `<div data-o><div class="row"><div><label>Person</label>${sel('u', withPerson(o.user_id, o.name), o.user_id)}</div><div><label>Role</label>${sel('r', Object.entries(ROLE), o.role || 'nodal')}</div>
+    <div><label>Backup while on leave</label>${sel('b', withPerson(o.backup_user_id, o.backup_name), o.backup_user_id)}</div><div style="flex:none;align-self:flex-end"><button type="button" class="btn" data-rmo aria-label="Remove officer">Remove</button></div></div>
+    ${o.is_active === 0 ? '<div class="err small">This person is deactivated: their backup covers for them. Remove them, or pick someone else.</div>' : ''}</div>`;
   const chCard = c => {
     const def = c.sla.find(p => !p.lane), imp = c.sla.find(p => p.lane === 'important');
     return `<section class="card mset" data-ch="${c.id}"><div class="mt-h"><div><h2 style="margin:0">${e(c.address)}</h2><div class="muted small">${e(c.display_name || '')} · ${e(MODE[c.mode])}${c.subscribed ? ' · receiving mail' : c.mode !== 'off' ? ' · not subscribed yet' : ''}${c.last_synced_at ? ` · last sync ${H.shortDate(c.last_synced_at)}` : ''}</div>
