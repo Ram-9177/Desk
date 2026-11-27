@@ -71,7 +71,7 @@ export const STATUS = { placed: 'Waiting for payment', accepted: 'Being prepared
 const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected', 'out', 'rejected'], out: ['collected', 'rejected'] }; // ready/out → rejected: never collected
 const LIVE = "('placed','accepted','ready','out')";
 // Payments and delivery, per campus. Defaults: cash only, pickup only, 20 minutes to pay.
-const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20, delivery_blocks: [], paper: '80', auto_kot: false, auto_bill: true, bill_footer: 'Thanks for choosing us', tagline: '' };
+const PAY_DEFAULT = { cash: true, upi_id: '', upi_name: '', delivery: false, delivery_fee: 0, delivery_note: '', pay_window_min: 20, delivery_blocks: [], paper: '80', auto_kot: false, auto_bill: true, bill_footer: 'Thanks for choosing us', tagline: '', delivery_cash: false }; // delivery is paid by UPI unless the manager allows cash (the student pays at the counter first)
 const FLOORS = ['Ground floor', '1st floor', '2nd floor', '3rd floor', '4th floor', '5th floor', '6th floor'];
 export const payOf = tn => { try { return { ...PAY_DEFAULT, ...JSON.parse(tn.canteen_pay || '{}') }; } catch { return { ...PAY_DEFAULT }; } };
 const UPI_ID = /^[\w.\-]{2,60}@[A-Za-z][\w.\-]{1,40}$/, UTR = /^[A-Za-z0-9]{6,30}$/;
@@ -197,7 +197,7 @@ export function canteen(d) {
     const fastQ = {}; for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day=? AND status NOT IN ('cancelled','rejected')`, tn.id, dayOf(tn.timezone))) for (const it of JSON.parse(o.items)) fastQ[it.id] = (fastQ[it.id] || 0) + it.qty;
     const fast = Object.entries(fastQ).filter(x => x[1] >= 5).sort((a, b) => b[1] - a[1]).slice(0, 5).map(x => x[0]);
     const busy = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND day=? AND status IN ('placed','accepted')`, tn.id, dayOf(tn.timezone))).n;
-    return { on: true, open: st.accepting, state: st, busy, pay: { cash: pay.cash, upi: !!pay.upi_id, delivery: pay.delivery, blocks: pay.delivery ? await blocksOf(tn) : [], floors: FLOORS, delivery_fee_paise: Math.round(pay.delivery_fee * 100), delivery_note: pay.delivery_note, pay_window_min: pay.pay_window_min }, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
+    return { on: true, open: st.accepting, state: st, busy, pay: { cash: pay.cash, upi: !!pay.upi_id, delivery: pay.delivery && (!!pay.upi_id || (pay.delivery_cash && pay.cash)), delivery_cash: !!pay.delivery_cash, blocks: pay.delivery ? await blocksOf(tn) : [], floors: FLOORS, delivery_fee_paise: Math.round(pay.delivery_fee * 100), delivery_note: pay.delivery_note, pay_window_min: pay.pay_window_min }, wait_min: await prepMin(tn.id), popular: Object.entries(pop).sort((a, b) => b[1] - a[1]).slice(0, 3).filter(x => x[1] >= 2).map(x => x[0]),
       fast, campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
   }));
   // step 1 of the first order on a device: email a six-digit code
@@ -237,7 +237,7 @@ export function canteen(d) {
     const st = stateOf(tn);
     if (!st.accepting) throw bad(st.why === 'later' ? `The canteen opens at ${st.opens_at}.` : st.why === 'last_orders_done' ? `Last orders are over for today (closes at ${st.closes_at}).` : 'The canteen is not taking orders right now.');
     const dv = await deviceOf(tn.id, b.device); if (!dv) throw new HttpErr(401, 'VERIFY', 'Please verify your email first');
-    limit('cord:' + dv.token_hash, 20);
+    limit('cord:' + dv.token_hash, 40); // orders per phone per hour
     const name = str(b.name, 80); if (!name) throw bad('Please enter your name');
     const lines = Array.isArray(b.items) ? b.items.slice(0, MAX_LINES + 1) : [];
     if (!lines.length) throw bad('Your cart is empty'); if (lines.length > MAX_LINES) throw bad('Too many different items in one order');
@@ -258,6 +258,7 @@ export function canteen(d) {
       } else { deliverTo = str(b.deliver_to, 120); if (deliverTo.length < 3) throw bad('Please say where to deliver (block, floor, room)'); }
     }
     if (fulfil === 'delivery' && !str(b.phone, 20)) throw bad('Please give a phone number so the delivery person can reach you');
+    if (fulfil === 'delivery' && mode === 'cash' && !pay.delivery_cash) throw bad('Delivery orders are paid by UPI. Please choose UPI, or pick up at the counter to pay cash.');
     await expire(tn);
     const open = await one(`SELECT count(*) n FROM canteen_orders WHERE device_hash=? AND status IN ${LIVE}`, dv.token_hash);
     if (open.n >= MAX_OPEN_PER_DEVICE) throw bad(`You already have ${open.n} orders in progress. Please collect them first.`);
@@ -377,7 +378,7 @@ export function canteen(d) {
     const b = req.body, p = { cash: !!b.cash, upi_id: str(b.upi_id, 100), upi_name: str(b.upi_name, 60), delivery: !!b.delivery,
       delivery_fee: Number(b.delivery_fee) || 0, delivery_note: str(b.delivery_note, 120), pay_window_min: Math.floor(Number(b.pay_window_min) || 20),
       delivery_blocks: [...new Set((Array.isArray(b.delivery_blocks) ? b.delivery_blocks : String(b.delivery_blocks || '').split('\n')).map(x => str(x, 60)).filter(Boolean))].slice(0, 100),
-      tagline: str(b.tagline, 80), paper: b.paper === '58' ? '58' : '80', auto_kot: !!b.auto_kot, auto_bill: b.auto_bill === undefined ? true : !!b.auto_bill, bill_footer: b.bill_footer === undefined ? PAY_DEFAULT.bill_footer : str(b.bill_footer, 120) };
+      tagline: str(b.tagline, 80), delivery_cash: !!b.delivery_cash, paper: b.paper === '58' ? '58' : '80', auto_kot: !!b.auto_kot, auto_bill: b.auto_bill === undefined ? true : !!b.auto_bill, bill_footer: b.bill_footer === undefined ? PAY_DEFAULT.bill_footer : str(b.bill_footer, 120) };
     if (p.upi_id && !UPI_ID.test(p.upi_id)) throw bad('Enter a UPI ID like canteen@okhdfcbank');
     if (!p.cash && !p.upi_id) throw bad('Turn on cash or add a UPI ID: students need a way to pay');
     if (p.delivery_fee < 0 || p.delivery_fee > 500) throw bad('Delivery charge must be ₹0 to ₹500');
