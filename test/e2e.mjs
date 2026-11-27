@@ -1195,6 +1195,25 @@ try {
   await run("UPDATE tenants SET canteen_stock_day='2000-01-01' WHERE id=?", A2); await api('/canteen/open', { token: T.pavan, method: 'POST' });
   check('…on the next day everything is back in stock', (await q("SELECT sold_out FROM canteen_items WHERE id=?", tea.id))[0].sold_out === 0);
 
+  sec('Canteen: name, privileges, leftover orders');
+  check('default name is the campus name + Canteen', (await api('/public/alpha/canteen')).data.name === 'Alpha Campus Canteen');
+  await ok('the manager renames the canteen', '/canteen/name', { token: T.pavan, method: 'PUT', body: { name: 'Hilltop Café' } });
+  check('students see the new name', (await api('/public/alpha/canteen')).data.name === 'Hilltop Café');
+  await fails('another provider cannot rename it', '/canteen/name', { token: T.lata, method: 'PUT', body: { name: 'X Café' } }, 403);
+  await ok('the campus admin can rename it', '/canteen/name', { token: T.asha, method: 'PUT', body: { name: 'Hilltop Café' } });
+  await ok('the super admin sets the name in Set up', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], name: 'Hilltop Café' } });
+  const lo = await ok('an order…', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Late', items: [{ id: dosa.id, qty: 1 }] } });
+  await run("UPDATE canteen_orders SET day='2000-01-02' WHERE id=?", lo.id);
+  const b2 = await ok('…left unfinished yesterday', '/canteen/orders', { token: T.pavan });
+  check('stays on the board, marked as from an earlier day', b2.orders.some(o => o.id === lo.id && o.earlier));
+  const cl = await ok('closing reports orders still in progress', '/canteen/close', { token: T.pavan, method: 'POST' });
+  check('…pending count', cl.pending >= 1);
+  await api(`/canteen/orders/${lo.id}/accepted`, { token: T.pavan, method: 'POST' }); await api(`/canteen/orders/${lo.id}/ready`, { token: T.pavan, method: 'POST' });
+  await ok('a ready order the student never collected can be closed as not collected', `/canteen/orders/${lo.id}/rejected`, { token: T.pavan, method: 'POST', body: { reason: 'Not collected' } });
+  await ok('switching the canteen off…', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: false, managers: [pid] } });
+  check('…hides the menu and order pages from students', (await api('/public/alpha/canteen')).data.on === false && (await api(`/public/alpha/canteen/orders/${o1.id}?k=${o1.key}`)).status === 404);
+  await ok('(back on and open for the screens)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], name: 'Hilltop Café' } }); await api('/canteen/open', { token: T.pavan, method: 'POST' });
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa }, { t1: ids.t1 });
 } catch (e) {

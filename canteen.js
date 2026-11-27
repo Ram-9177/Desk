@@ -11,6 +11,7 @@ await pool.query(`
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_on INT DEFAULT 0;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_open_day TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_stock_day TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_name TEXT;
 CREATE TABLE IF NOT EXISTS canteen_managers (tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id), created_at TEXT, PRIMARY KEY (tenant_id, user_id));
 CREATE TABLE IF NOT EXISTS canteen_categories (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL, sort_order INT DEFAULT 0, created_at TEXT);
 CREATE TABLE IF NOT EXISTS canteen_items (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), category_id TEXT REFERENCES canteen_categories(id),
@@ -30,7 +31,7 @@ CREATE INDEX IF NOT EXISTS cord_dev ON canteen_orders(device_hash, created_at);
 `);
 
 export const STATUS = { placed: 'Waiting for the canteen', accepted: 'Being prepared', rejected: 'Rejected', ready: 'Ready to collect', collected: 'Collected', cancelled: 'Cancelled' };
-const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected'] };
+const NEXT = { placed: ['accepted', 'rejected'], accepted: ['ready', 'rejected'], ready: ['collected', 'rejected'] }; // ready → rejected: the student never came
 const MAX_MANAGERS = 2, MAX_LINES = 30, MAX_QTY = 20, MAX_OPEN_PER_DEVICE = 3, OTP_MIN = 10, DEVICE_DAYS = 180;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -39,6 +40,7 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 export const rupees = p => '₹' + (p / 100).toFixed(p % 100 ? 2 : 0);
 export const tokenLabel = n => '#' + String(n).padStart(3, '0');
 const dayOf = (tz, d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Asia/Kolkata' }).format(d);
+export const canteenName = tn => tn.canteen_name || `${tn.name} Canteen`;
 const isOpen = tn => !!tn.canteen_on && tn.canteen_open_day === dayOf(tn.timezone);
 const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
@@ -52,7 +54,7 @@ export function canteen(d) {
   async function access(req) {
     const u = req.user, tid = req.tenantId; if (!tid) return { tenant: null, setup: u.role === 'super_admin', manage: false };
     const tn = await tenantRow(tid), mgr = !!(await one('SELECT 1 FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id));
-    return { tenant: tn, setup: u.role === 'super_admin', manage: !!tn?.canteen_on && (mgr || u.role !== 'provider'), manager: mgr };
+    return { tenant: tn, setup: u.role === 'super_admin', manage: !!tn?.canteen_on && (mgr || u.role !== 'provider'), manager: mgr, req_admin: u.role === 'tenant_admin' && !!tn?.canteen_on };
   }
   const need = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.manage) throw forbid(); return a; };
 
@@ -72,7 +74,7 @@ export function canteen(d) {
     return r;
   };
   const mail = async (tn, to, key, subject, lines, link) => {
-    const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#1f2937;max-width:520px">${lines.map(l => `<p>${l}</p>`).join('')}${link ? `<p><a href="${esc(link)}" style="display:inline-block;background:#1E4B8F;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Open my order</a></p>` : ''}<p style="color:#6b7280;font-size:13px">${esc(tn.name)} canteen · ONE Desk</p></div>`;
+    const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#1f2937;max-width:520px">${lines.map(l => `<p>${l}</p>`).join('')}${link ? `<p><a href="${esc(link)}" style="display:inline-block;background:#1E4B8F;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Open my order</a></p>` : ''}<p style="color:#6b7280;font-size:13px">${esc(canteenName(tn))} · ONE Desk</p></div>`;
     const text = lines.map(l => l.replace(/<[^>]+>/g, '')).join('\n\n') + (link ? `\n\n${link}` : '');
     try { await sendMail(tn.id, [to], key, subject, html, text); } catch (e) { console.error('canteen mail', e.message); }
   };
@@ -81,8 +83,8 @@ export function canteen(d) {
   // ================= student (public, no login to browse) =================
   P.get('/:slug/canteen', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug);
-    if (!tn.canteen_on) return { on: false, campus: tn.name };
-    return { on: true, open: isOpen(tn), campus: tn.name, day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
+    if (!tn.canteen_on) return { on: false, campus: tn.name, name: canteenName(tn) };
+    return { on: true, open: isOpen(tn), campus: tn.name, name: canteenName(tn), day: dayOf(tn.timezone), ...(await menuOf(tn.id)) };
   }));
   // step 1 of the first order on a device: email a six-digit code
   P.post('/:slug/canteen/otp', wrap(async req => {
@@ -92,7 +94,7 @@ export function canteen(d) {
     const code = String(crypto.randomInt(0, 1e6)).padStart(6, '0');
     await run('UPDATE canteen_otps SET used_at=? WHERE tenant_id=? AND email=? AND used_at IS NULL', now(), tn.id, email);
     await run('INSERT INTO canteen_otps (id, tenant_id, email, code_hash, expires_at, created_at) VALUES (?,?,?,?,?,?)', uid(), tn.id, email, otpHash(tn.id, email, code), new Date(Date.now() + OTP_MIN * 6e4).toISOString(), now());
-    await mail(tn, email, 'canteen_otp', `Your canteen code: ${code}`, [`Your code to order from the ${esc(tn.name)} canteen is <b style="font-size:22px;letter-spacing:4px">${code}</b>`, `It works for ${OTP_MIN} minutes. If you did not ask for it, ignore this email.`]);
+    await mail(tn, email, 'canteen_otp', `Your canteen code: ${code}`, [`Your code to order from ${esc(canteenName(tn))} is <b style="font-size:22px;letter-spacing:4px">${code}</b>`, `It works for ${OTP_MIN} minutes. If you did not ask for it, ignore this email.`]);
     return { sent: true, minutes: OTP_MIN };
   }));
   // step 2: check the code; this device is remembered (a device key kept in the browser), so later orders need no code
@@ -151,12 +153,12 @@ export function canteen(d) {
     throw new HttpErr(503, 'BUSY', 'The canteen is busy, please try again');
   }));
   const orderByKey = async req => {
-    const tn = await tenantBySlug(req.params.slug), o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, tn.id);
+    const tn = await tenantBySlug(req.params.slug); if (!tn.canteen_on) throw notFound(); const o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, tn.id);
     const k = String(req.query.k || req.body?.k || '');
     if (!o || k.length !== o.view_key.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(o.view_key))) throw notFound();
     return { tn, o };
   };
-  P.get('/:slug/canteen/orders/:id', wrap(async req => { const { o } = await orderByKey(req); return pub(o); }));
+  P.get('/:slug/canteen/orders/:id', wrap(async req => { const { tn, o } = await orderByKey(req); return { ...pub(o), canteen: canteenName(tn) }; }));
   P.post('/:slug/canteen/orders/:id/cancel', wrap(async req => {
     const { o } = await orderByKey(req);
     const r = await run(`UPDATE canteen_orders SET status='cancelled', closed_at=? WHERE id=? AND status='placed'`, now(), o.id);
@@ -172,12 +174,12 @@ export function canteen(d) {
 
   // ================= canteen desk (signed in) =================
   S.get('/canteen/access', wrap(async req => { const a = await access(req);
-    return { setup: a.setup, manage: a.manage, manager: !!a.manager, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false }; }));
+    return { setup: a.setup, manage: a.manage, manager: !!a.manager, rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
   // super admin: switch on for the campus, pick 1–2 desk providers as managers
   S.get('/canteen/setup', wrap(async req => {
     if (req.user.role !== 'super_admin') throw forbid(); if (!req.tenantId) throw bad('Pick a campus first');
     const tn = await tenantRow(req.tenantId);
-    return { on: !!tn.canteen_on, slug: tn.slug, managers: (await all('SELECT user_id FROM canteen_managers WHERE tenant_id=?', req.tenantId)).map(r => r.user_id),
+    return { on: !!tn.canteen_on, slug: tn.slug, name: tn.canteen_name || '', default_name: `${tn.name} Canteen`, managers: (await all('SELECT user_id FROM canteen_managers WHERE tenant_id=?', req.tenantId)).map(r => r.user_id),
       providers: await all(`SELECT id, name, email FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 ORDER BY name`, req.tenantId), max: MAX_MANAGERS };
   }));
   S.put('/canteen/setup', wrap(async req => {
@@ -187,14 +189,19 @@ export function canteen(d) {
     if (on && !ids.length) throw bad('Pick at least one desk provider as canteen manager');
     const ok = await all(`SELECT id FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 AND id = ANY(?::text[])`, req.tenantId, ids);
     if (ok.length !== ids.length) throw bad('Canteen managers must be active service providers on this campus');
-    await run('UPDATE tenants SET canteen_on=? WHERE id=?', on ? 1 : 0, req.tenantId);
+    await run('UPDATE tenants SET canteen_on=?, canteen_name=? WHERE id=?', on ? 1 : 0, str(req.body.name, 60) || null, req.tenantId);
+    if (!on) await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId); // switched off: closed too
     await run('DELETE FROM canteen_managers WHERE tenant_id=?', req.tenantId);
     for (const id of ids) await run('INSERT INTO canteen_managers (tenant_id, user_id, created_at) VALUES (?,?,?)', req.tenantId, id, now());
     return { on, managers: ids };
   }));
 
+  // rename: the super admin, the canteen managers and the campus admin (not other providers)
+  S.put('/canteen/name', wrap(async req => { const a = await need(req); if (!(a.setup || a.manager || req.user.role === 'tenant_admin')) throw forbid();
+    const name = str(req.body.name, 60); if (name && name.length < 2) throw bad('The name is too short');
+    await run('UPDATE tenants SET canteen_name=? WHERE id=?', name || null, req.tenantId); return { name: canteenName({ ...a.tenant, canteen_name: name || null }) }; }));
   // ---- menu ----
-  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
+  S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
   S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
     const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
     const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
@@ -234,12 +241,13 @@ export function canteen(d) {
   S.post('/canteen/open', wrap(async req => { const a = await need(req), day = dayOf(a.tenant.timezone);
     if (a.tenant.canteen_stock_day !== day) await run('UPDATE canteen_items SET sold_out=0 WHERE tenant_id=?', req.tenantId); // a fresh day: everything back in stock (reopening the same day keeps the marks)
     await run('UPDATE tenants SET canteen_open_day=?, canteen_stock_day=? WHERE id=?', day, day, req.tenantId); return { open: true, day }; }));
-  S.post('/canteen/close', wrap(async req => { await need(req); await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId); return { open: false }; }));
+  S.post('/canteen/close', wrap(async req => { await need(req); await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId);
+    const p = await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND status IN ('placed','accepted','ready')`, req.tenantId); return { open: false, pending: p.n }; }));
 
   // ---- orders ----
   S.get('/canteen/orders', wrap(async req => { const a = await need(req), day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : dayOf(a.tenant.timezone);
-    const rows = await all('SELECT * FROM canteen_orders WHERE tenant_id=? AND day=? ORDER BY token_no DESC', req.tenantId, day);
-    return { day, open: isOpen(a.tenant), orders: rows.map(o => ({ ...pub(o), email: o.email, phone: o.phone })) }; }));
+    const rows = await all(`SELECT * FROM canteen_orders WHERE tenant_id=? AND (day=? OR (day<? AND status IN ('placed','accepted','ready'))) ORDER BY day DESC, token_no DESC`, req.tenantId, day, day);
+    return { day, open: isOpen(a.tenant), name: canteenName(a.tenant), orders: rows.map(o => ({ ...pub(o), email: o.email, phone: o.phone, earlier: o.day !== day })) }; }));
   S.post('/canteen/orders/:id/:to(accepted|rejected|ready|collected)', wrap(async req => {
     const a = await need(req), to = req.params.to, o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, req.tenantId);
     if (!o) throw notFound();
