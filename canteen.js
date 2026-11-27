@@ -5,7 +5,11 @@
 // Students browse without logging in; the first order on a device verifies their email with a one-time code.
 // Self-contained: own tables, own routes; wired from server.js with one call.
 import crypto from 'node:crypto';
-import QRCode from 'qrcode';
+// qrcode is loaded only when a QR code is asked for: if the package is missing (npm ci not run after a deploy),
+// only the QR image fails, with a clear message, and the rest of ONE Desk keeps running
+let qrLib = null;
+const qrSvg = async text => { if (!qrLib) { try { qrLib = (await import('qrcode')).default; } catch { console.error('QR code: the "qrcode" package is not installed. Run: npm ci --omit=dev'); const e = new Error('QR codes need the qrcode package. Run npm ci on the server.'); e.status = 503; e.code = 'QR_MISSING'; throw e; } }
+  return qrLib.toString(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } }); };
 import { pool, one, all, run, uid, now } from './db.js';
 
 await pool.query(`
@@ -184,7 +188,7 @@ export function canteen(d) {
     });
     app.get('/api/canteen-qr/:slug.svg', async (req, res, next) => { try {
       const tn = await one('SELECT slug FROM tenants WHERE slug=? AND is_active=1', String(req.params.slug).toLowerCase()); if (!tn) throw notFound();
-      const svg = await QRCode.toString(shortLink(tn), { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } });
+      const svg = await qrSvg(shortLink(tn));
       res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=3600' }).send(svg); } catch (e) { next(e); } });
   }
   // ================= student (public, no login to browse) =================
@@ -311,7 +315,7 @@ export function canteen(d) {
   // the same UPI payment as a QR code (for paying from another phone or a laptop screen)
   P.get('/:slug/canteen/orders/:id/upi.svg', async (req, res, next) => { try { const { tn, o } = await orderByKey(req), pay = payOf(tn);
     if (!pay.upi_id || o.pay_mode !== 'upi') throw notFound();
-    res.set('Content-Type', 'image/svg+xml').send(await QRCode.toString(upiLink(pay, o), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' })); } catch (e) { next(e); } });
+    res.set('Content-Type', 'image/svg+xml').send(await qrSvg(upiLink(pay, o))); } catch (e) { next(e); } });
   P.post('/:slug/canteen/orders/:id/cancel', wrap(async req => {
     const { o } = await orderByKey(req);
     if (o.pay_status === 'claimed') throw bad('You sent a UPI payment for this order. Please ask at the counter.');
