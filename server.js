@@ -11,7 +11,7 @@ import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
-import { ADMIN_FEATURES, ADMIN_FEATURE_KEYS, featuresOff, canUse, assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
+import { CAMPUS_FEATURES, isFood, campusOn, ADMIN_FEATURES, ADMIN_FEATURE_KEYS, featuresOff, canUse, assertTransition, PRIORITIES, DEFAULT_HOURS, REQUESTOR_TYPES, DAILY_LIMITS, MAX_FILES, isOtherAnswer, CHANNELS, FIELD_TYPES, STATUS_WORDS, ACTIVE, FORM_TYPES, fieldsOf, hasLocation, hasStudent, isGeneral, MEALS, MEAL_NAMES } from './public/shared.js';
 
 const PORT = process.env.PORT || 4300;
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -455,7 +455,7 @@ async function checkDailyLimit(tn, b) {
 }
 async function createTicket(tenant, b, opts) {
   const svc = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', b.service_id, tenant.id);
-  if (!svc) throw notFound();
+  if (!svc || (isFood(JSON.parse(svc.form_schema || '{}')) && !campusOn(await tenantRow(tenant.id), 'canteen'))) throw notFound(); // Canteen switched off
   req_(b.name, 'Please fill in your name'); req_(b.subject, 'Please fill in the subject');
   if (!/^\S+@\S+\.\S+$/.test(String(b.email || '').trim())) throw bad('Please enter a valid email address, so we can send you updates');
   if (b.requestor_type && !REQUESTOR_TYPES.includes(b.requestor_type)) throw bad('Bad requestor type');
@@ -621,9 +621,9 @@ const P = express.Router();
 P.get('/', wrap(async () => await all('SELECT name, code, slug FROM tenants WHERE is_active=1 ORDER BY name')));
 P.get('/:slug', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug);
-  return { tenant: { name: tn.name, code: tn.code, slug: tn.slug },
-    services: await Promise.all((await all('SELECT id,code,name,description,form_schema,parent_id FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order,name', tn.id))
-      .map(async s => ({ ...s, form_schema: JSON.parse(s.form_schema) }))) }; // provider names show only after a ticket is raised
+  return { tenant: { name: tn.name, code: tn.code, slug: tn.slug, features_off: tn.features_off || null },
+    services: (await all('SELECT id,code,name,description,form_schema,parent_id FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order,name', tn.id))
+      .map(s => ({ ...s, form_schema: JSON.parse(s.form_schema) })).filter(s => campusOn(tn, 'canteen') || !isFood(s.form_schema)) }; // Canteen off: no food service. Provider names show only after a ticket is raised
 }));
 P.post('/:slug/tickets', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), b = req.body;
@@ -740,13 +740,15 @@ const noticeOut = async n => (await noticesOut([n]))[0];
 // the board: every live notice of the campus (optionally only those for one group of people), important first
 P.get('/:slug/notices', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now(), aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null;
+  if (!campusOn(tn, 'notices')) return []; // Notice board switched off for this campus
   const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND ${isNotice('x')} AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
     ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 100`, tn.id, n, n, ...(aud ? [aud] : []));
   return noticesOut(rows);
 }));
 // before raising a ticket for a team: its live notices (a sub-team also shows its main team's)
 P.get('/:slug/notices/for/:serviceId', wrap(async req => {
-  const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
+  const tn = await tenantBySlug(req.params.slug), n = now(); if (!campusOn(tn, 'notices')) return [];
+  const sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
   const aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null; // "I'm a student": notices for everyone and for students
   const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND x.service_id IN (?, ?) AND ${isNotice('x')} AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
     ORDER BY x.important DESC, coalesce(x.starts_at, x.created_at) DESC LIMIT 10`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
@@ -754,7 +756,8 @@ P.get('/:slug/notices/for/:serviceId', wrap(async req => {
 }));
 // a team's policies (its own, its main team's and the campus's), shown on the raise form; ?for=student narrows by group
 P.get('/:slug/policies/for/:serviceId', wrap(async req => {
-  const tn = await tenantBySlug(req.params.slug), n = now(), sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
+  const tn = await tenantBySlug(req.params.slug), n = now(); if (!campusOn(tn, 'policies')) return [];
+  const sv = await one('SELECT id, parent_id FROM services WHERE id=? AND tenant_id=?', req.params.serviceId, tn.id); if (!sv) return [];
   const aud = NOTICE_AUD.includes(req.query.for) && req.query.for !== 'all' ? req.query.for : null;
   const rows = await all(`SELECT x.*, s.name team FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND (x.service_id IN (?, ?) OR x.service_id IS NULL) AND ${isPolicy('x')} AND ${liveNotice('x')}${aud ? " AND x.audience IN ('all', ?)" : ''}
     ORDER BY (x.service_id IS NULL), x.title LIMIT 30`, tn.id, sv.id, sv.parent_id || sv.id, n, n, ...(aud ? [aud] : []));
@@ -763,7 +766,7 @@ P.get('/:slug/policies/for/:serviceId', wrap(async req => {
 P.get('/:slug/notices/:id', wrap(async req => {
   const tn = await tenantBySlug(req.params.slug), n = now();
   const r = await one(`SELECT x.*, s.name team, s.code team_code FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.id=? AND x.tenant_id=? AND ${liveNotice('x')}`, req.params.id, tn.id, n, n);
-  if (!r) throw notFound(); return noticeOut(r);
+  if (!r || !campusOn(tn, r.kind === 'policy' ? 'policies' : 'notices')) throw notFound(); return noticeOut(r);
 }));
 // counts for the team: shown (views), "This answers my question" (answered); "raised" is counted when the ticket is made
 P.post('/:slug/notices/seen', wrap(async req => {
@@ -876,6 +879,11 @@ S.patch('/tenants/:id', role('super_admin'), wrap(async req => {
   const b = req.body, t = await one('SELECT * FROM tenants WHERE id=?', req.params.id); if (!t) throw notFound();
   await run('UPDATE tenants SET name=?, timezone=?, show_provider_contact=?, reopen_window_days=?, is_active=? WHERE id=?',
     b.name ?? t.name, b.timezone ?? t.timezone, b.show_provider_contact ?? t.show_provider_contact, b.reopen_window_days ?? t.reopen_window_days, b.is_active ?? t.is_active, t.id);
+  if (b.features_off !== undefined) { // switch parts of the app off for this whole campus
+    const off = [...new Set((Array.isArray(b.features_off) ? b.features_off : []).map(String))];
+    if (off.some(k => !CAMPUS_FEATURES.some(f => f[0] === k))) throw bad('Unknown feature');
+    await run('UPDATE tenants SET features_off=? WHERE id=?', off.length ? JSON.stringify(off) : null, t.id);
+  }
   await audit(req, 'tenant.update', 'tenant', t.id, b); return await one('SELECT * FROM tenants WHERE id=?', t.id);
 }));
 
@@ -1430,7 +1438,8 @@ async function shareable(t) {
   const [a, b2] = await shareScope(t), n = now();
   return all(`SELECT x.id, coalesce(x.kind,'notice') kind, x.title, x.audience, x.important, coalesce(s.name, 'Whole campus') team, (SELECT count(*)::int FROM notice_files f WHERE f.notice_id=x.id) files
     FROM notices x LEFT JOIN services s ON s.id=x.service_id WHERE x.tenant_id=? AND (x.service_id IN (?, ?) OR x.service_id IS NULL) AND ${liveNotice('x')}
-    ORDER BY (x.service_id IS NULL), coalesce(x.kind,'notice') DESC, x.important DESC, x.title LIMIT 50`, t.tenant_id, a, b2, n, n);
+    ORDER BY (x.service_id IS NULL), coalesce(x.kind,'notice') DESC, x.important DESC, x.title LIMIT 50`, t.tenant_id, a, b2, n, n)
+    .then(async l => { const tn = await tenantRow(t.tenant_id); return l.filter(x => campusOn(tn, x.kind === 'policy' ? 'policies' : 'notices')); });
 }
 async function sharedItems(t, ids) {
   ids = [...new Set((Array.isArray(ids) ? ids : []).map(String))]; if (!ids.length) return [];
@@ -1608,6 +1617,7 @@ const noticeBody = async (req, b, cur = {}) => {
   const starts_at = b.starts_at === undefined ? cur.starts_at ?? null : iso(b.starts_at, 'Show from'), ends_at = b.ends_at === undefined ? cur.ends_at ?? null : iso(b.ends_at, 'Until');
   if (starts_at && ends_at && ends_at <= starts_at) throw bad('Until must be after Show from');
   const status = ['draft', 'published'].includes(b.status) ? b.status : cur.status || 'draft', kind = (b.kind ?? cur.kind) === 'policy' ? 'policy' : 'notice';
+  if (!campusOn(await tenantRow(req.tenantId), kind === 'policy' ? 'policies' : 'notices')) throw new HttpErr(403, 'FORBIDDEN', `${kind === 'policy' ? 'Policies are' : 'The notice board is'} switched off for this campus`);
   if (kind === 'policy') return { kind, title, body: polish(body).text, service_id, audience, important: 0, starts_at: null, ends_at: b.end_now ? ends_at : null, status }; // a policy stands until removed
   return { kind, title, body: polish(body).text, service_id, audience, important: (b.important ?? cur.important) ? 1 : 0, starts_at, ends_at, status };
 };
@@ -1617,7 +1627,8 @@ S.get('/notices', wrap(async req => { adminMay(req, 'notices');
     WHERE x.tenant_id=? AND x.deleted_at IS NULL AND (${admin ? 'TRUE' : 'FALSE'} OR x.service_id = ANY(?::text[])) ORDER BY coalesce(x.updated_at, x.created_at) DESC LIMIT 300`, req.tenantId, teams);
   const stateOf = x => x.status === 'draft' ? 'draft' : x.ends_at && x.ends_at <= n ? 'ended' : x.starts_at && x.starts_at > n ? 'scheduled' : 'live';
   const svcs = await all(`SELECT id, name, parent_id FROM services WHERE tenant_id=? AND is_active=1 ${admin ? '' : 'AND id = ANY(?::text[])'} ORDER BY sort_order, name`, req.tenantId, ...(admin ? [] : [teams]));
-  return { can_campus: admin, teams: svcs, notices: rows.map(x => ({ ...x, team: x.team || 'Whole campus', important: !!x.important, state: stateOf(x) })) };
+  const tnr = await tenantRow(req.tenantId), kinds = [campusOn(tnr, 'notices') && 'notice', campusOn(tnr, 'policies') && 'policy'].filter(Boolean);
+  return { kinds, can_campus: admin, teams: svcs, notices: rows.filter(x => kinds.includes(x.kind || 'notice')).map(x => ({ ...x, team: x.team || 'Whole campus', important: !!x.important, state: stateOf(x) })) };
 }));
 S.get('/notices/:id', wrap(async req => { const x = await loadNotice(req); return { ...await noticeOut({ ...x, team: (await one('SELECT name FROM services WHERE id=?', x.service_id))?.name }), status: x.status, views: x.views, answered: x.answered, raised: x.raised }; }));
 S.post('/notices', wrap(async req => {

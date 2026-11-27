@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL
 ALTER TABLE notices ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'notice';
 -- a campus admin's features turned off by the super admin (JSON list of keys; NULL / [] = all features)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS perm_off TEXT;
+-- parts of the app switched off for a whole campus (JSON list: canteen, notices, policies; NULL = all on)
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS features_off TEXT;
 -- how many provider replies shared this notice / policy with a requester
 ALTER TABLE notices ADD COLUMN IF NOT EXISTS shared INT DEFAULT 0;
 CREATE INDEX IF NOT EXISTS notices_live ON notices (tenant_id, status, starts_at) WHERE deleted_at IS NULL;

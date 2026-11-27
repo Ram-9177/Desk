@@ -1123,6 +1123,33 @@ try {
   ids.foodTicket = c1.ticket_no;
   }
 
+  sec('Campus features: Canteen, Notice board, Policies switched on/off per campus');
+  { const aid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, A = { token: T.sa, tenant: aid };
+    const elecId = (await q("SELECT id FROM services WHERE code='ELEC' AND tenant_id=?", aid))[0].id, foodId = (await q("SELECT id FROM services WHERE code='FOODX' AND tenant_id=?", aid))[0].id;
+    await fails('a campus admin cannot switch campus features', `/tenants/${aid}`, { token: T.asha, method: 'PATCH', body: { features_off: ['canteen'] } }, 403);
+    await fails('unknown campus features are refused', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['rockets'] } }, 400);
+    check('before: the campus page lists the food service', (await api('/public/alpha')).data.services.some(x => x.id === foodId));
+    await ok('super admin switches the Canteen off for Alpha', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['canteen'] } });
+    check('Canteen off: no food service on the campus page', !(await api('/public/alpha')).data.services.some(x => x.id === foodId));
+    check('…the food screens have no service', (await api('/public/alpha/food')).data.service === null);
+    await fails('…a food complaint is refused', '/public/alpha/food/complaint', { method: 'POST', body: { category: 'hygiene', description: 'x' } }, 404);
+    await fails('…a ticket to the food service is refused', '/public/alpha/tickets', { method: 'POST', body: { service_id: foodId, name: 'N', email: 'n@example.com', phone: '9000077711', subject: 's', description: 'd' } }, 404);
+    check('…Food scores closed for the kitchen team and admins', (await api('/food/access', { token: T.pavan })).data.ok === false && (await api('/food/access', { token: T.asha })).data.ok === false);
+    check('…other campuses keep theirs (Beta untouched)', !((await api('/me', { token: T.sa })).data.tenants.find(t => t.slug === 'beta').features_off));
+    await ok('Notice board off too (Policies stay)', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['canteen', 'notices'] } });
+    check('Notice board off: no notices on the campus page or before raising', (await api('/public/alpha/notices')).data.length === 0 && (await api(`/public/alpha/notices/for/${elecId}`)).data.length === 0);
+    await fails('…staff cannot post a notice', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elecId, title: 'x', status: 'published' } }, 403, 'switched off');
+    const sp = await ok('…but a policy still can be posted', '/notices', { token: T.pavan, method: 'POST', body: { kind: 'policy', service_id: elecId, title: 'Still a policy', status: 'published' } });
+    check('…the staff page offers only Policies', JSON.stringify((await api('/notices', { token: T.pavan })).data.kinds) === '["policy"]');
+    check('…policies still show on the form', (await api(`/public/alpha/policies/for/${elecId}`)).data.some(x => x.id === sp.id));
+    await ok('Policies off as well', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['canteen', 'notices', 'policies'] } });
+    check('Policies off: none on the form, none to share, the page is closed', (await api(`/public/alpha/policies/for/${elecId}`)).data.length === 0 && (await api(`/public/alpha/notices/${sp.id}`)).status === 404);
+    const anyT = (await q("SELECT id FROM tickets WHERE service_id=? LIMIT 1", elecId))[0].id;
+    check('…nothing to share in a reply', (await api(`/tickets/${anyT}/shareable`, { token: T.pavan })).data.length === 0);
+    await ok('everything switched back on', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: [] } });
+    check('all back: food service, notices and the policy return', (await api('/public/alpha')).data.services.some(x => x.id === foodId) && (await api(`/public/alpha/policies/for/${elecId}`)).data.some(x => x.id === sp.id) && (await api('/food/access', { token: T.asha })).data.ok === true);
+    await api(`/notices/${sp.id}`, { token: T.pavan, method: 'DELETE' }); }
+
   sec('Super admin from .env on a live database');
   const mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
   // email only (no password in .env): created with a generated temporary password, emailed; once

@@ -31,7 +31,9 @@ export async function mealsFor(tid, rows) { const list = await mealsOf(tid, true
 export const windowsOf = meals => Object.fromEntries(meals.map(m => [m.key, [m.start, m.end]]));
 // "What stood out?" tags on the rating form, set by the admin
 export const chipsOf = tn => { try { const c = JSON.parse(tn.food_chips || 'null'); if (Array.isArray(c) && c.length) return c; } catch { /* default */ } return FOOD_CHIPS; };
-export const foodService = tid => one(`SELECT * FROM services WHERE tenant_id=? AND is_active=1 AND form_schema::jsonb->>'form_type'='food' ORDER BY sort_order, name LIMIT 1`, tid);
+// the campus's food service; none when the campus has the Canteen switched off (Tenants → Features), so every food screen goes quiet
+export const foodService = tid => one(`SELECT * FROM services WHERE tenant_id=? AND is_active=1 AND form_schema::jsonb->>'form_type'='food'
+  AND NOT coalesce((SELECT t.features_off FROM tenants t WHERE t.id=services.tenant_id), '[]')::jsonb @> '["canteen"]'::jsonb ORDER BY sort_order, name LIMIT 1`, tid);
 
 // ---------- aggregation (dashboard and reports share it) ----------
 export async function feedbackIn(tid, from, to, location) {

@@ -1,4 +1,4 @@
-import { canUse, ADMIN_FEATURES, featuresOff, allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
+import { CAMPUS_FEATURES, campusOff, campusOn, canUse, ADMIN_FEATURES, featuresOff, allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
 import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
@@ -561,7 +561,7 @@ async function shell(active, render, title) {
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
   // a campus admin sees only the features the super admin left on for them (People → Edit → Features); providers keep their screens
   const f = k => admin && canUse(u, k), mine = k => !admin || canUse(u, k);
-  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], f('attention') && ['c/attention', 'Attention', 'bell'], mine('reports') && ['c/reports', 'Reports', 'chart'], mine('notices') && ['c/notices', 'Notices', 'notice'], f('services') && ['c/services', 'Services', 'grid'],
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], f('attention') && ['c/attention', 'Attention', 'bell'], mine('reports') && ['c/reports', 'Reports', 'chart'], mine('notices') && (campusOn(tenantObj(), 'notices') || campusOn(tenantObj(), 'policies')) && ['c/notices', campusOn(tenantObj(), 'notices') ? 'Notices' : 'Policies', 'notice'], f('services') && ['c/services', 'Services', 'grid'],
     f('sla') && ['c/sla', 'SLA & points', 'clock'], f('email') && ['c/email', 'Email', 'mail'], f('people') && ['c/users', 'People', 'users'], f('audit') && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
@@ -850,7 +850,7 @@ async function workspace(main, id, { admin }) {
       <div class="helper" id="tohint"></div>
       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(x => `<option value="${x.key}">${esc(x.label)} — ${x.hours}h limit</option>`).join('')}</select></div>
       <label for="unote">Note</label><div class="phr" id="phr" aria-label="Ready-made sentences"></div><textarea name="note" id="unote" required rows="4" placeholder="What did you do, or why this change? Tap a sentence above, or type your own."></textarea>
-      <div id="shrow"><div id="shsel"></div><button type="button" class="btn soft" id="shadd">${I('file', 16)} Add notice / policy</button></div>
+      <div id="shrow" ${campusOn(tenantObj(), 'notices') || campusOn(tenantObj(), 'policies') ? '' : 'data-off'}><div id="shsel"></div><button type="button" class="btn soft" id="shadd">${I('file', 16)} Add ${[campusOn(tenantObj(), 'notices') && 'notice', campusOn(tenantObj(), 'policies') && 'policy'].filter(Boolean).join(' / ')}</button></div>
       ${t.location_key && t.problem_key ? `<label id="earlyrow" class="chk" hidden><input type="checkbox" name="close_earlier"> Also close earlier open tickets for the same problem and location</label>` : ''}
       <div class="upd-row"><label class="iconbtn" aria-label="Attach a photo from camera">${I('camera', 18)}<input hidden type="file" accept="image/*" capture="environment" multiple data-source="camera" class="f-act"></label>
         <label class="iconbtn" aria-label="Attach from gallery">${I('image', 18)}<input hidden type="file" accept="image/*,application/pdf" multiple data-source="gallery" class="f-act"></label>
@@ -891,7 +891,7 @@ async function workspace(main, id, { admin }) {
   $('#updX').onclick = () => sheet(false); main.querySelector('.upd-back').onclick = () => sheet(false);
   const sel = $('#to'), sync = () => { const to = sel.value, same = to === t.status;
     $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to]; if ($('#earlyrow')) $('#earlyrow').hidden = to !== 'closed';
-    $('#shrow').hidden = $('#act').is_internal.checked;
+    $('#shrow').hidden = $('#act').is_internal.checked || $('#shrow').hasAttribute('data-off');
     $('#mailhint').textContent = $('#act').is_internal.checked ? 'Saved as an internal note. The requester will not be emailed.' : "Before it goes out you'll see it corrected, inside the email the requester gets.";
     // ready-made sentences for this step (tap to add)
     const step = same ? 'note' : to === 'in_progress' && t.status === 'hold' ? 'open' : to, list = (phr.phrases || {})[step] || [];
@@ -1269,9 +1269,10 @@ async function auditPage(main) {
 
 async function tenants(main) {
   const list = (await api('/me')).tenants; S.me.tenants = list;
-  main.innerHTML = `<p><button class="btn primary" id="add">+ New tenant</button></p><table><tr><th>Code</th><th>Name</th><th>Portal</th><th>Reopen days</th><th></th></tr>
+  const featCell = t => { const off = campusOff(t); return off.length ? `<span class="pill p-medium" title="Switched off: ${esc(CAMPUS_FEATURES.filter(f => off.includes(f[0])).map(f => f[1]).join(', '))}">${CAMPUS_FEATURES.length - off.length} of ${CAMPUS_FEATURES.length} on</span>` : '<span class="pill p-low">All on</span>'; };
+  main.innerHTML = `<p><button class="btn primary" id="add">+ New tenant</button></p><div class="tblbox"><table><tr><th>Code</th><th>Name</th><th>Portal</th><th>Reopen days</th><th>Features</th><th></th></tr>
     ${list.map(t => `<tr class="${t.is_active ? '' : 'dim'}"><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td><td><a href="#/d/${t.slug}" target="_blank">/d/${esc(t.slug)}</a></td><td>${t.reopen_window_days}</td>
-    <td><button class="btn" data-t="${t.id}" data-a="${t.is_active ? 0 : 1}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('')}</table>
+    <td>${featCell(t)}</td><td style="white-space:nowrap"><button class="btn soft" data-feat="${t.id}">${I('settings', 15)} Features</button> <button class="btn" data-t="${t.id}" data-a="${t.is_active ? 0 : 1}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('')}</table></div>
     <p class="muted">To add a tenant admin, switch to the tenant (top right), then People → Add person → Tenant admin.</p>
     <div class="card"><b>Same-day duplicate reports</b><div class="muted small">When people report the same problem at the same place on the same day, later reports join the first ticket.</div>
       <label>When a report matches today's ticket</label><select id="mm"><option value="silent">Add it to that ticket automatically</option><option value="confirm">Ask the person "Same issue?" first</option></select></div>`;
@@ -1281,6 +1282,12 @@ async function tenants(main) {
     <label>Slug (URL)</label><input name="slug" required placeholder="smru"><label>Reopen window days</label><input name="reopen_window_days" type="number" value="7">`,
     async f => { const t = await api('/tenants', { method: 'POST', body: formVals(f) }); S.tenant = t.id; S.me = null; route(); });
   main.querySelectorAll('[data-t]').forEach(b => b.onclick = async () => { await api('/tenants/' + b.dataset.t, { method: 'PATCH', body: { is_active: Number(b.dataset.a) } }); tenants(main); });
+  // switch whole parts of the app on or off for one campus (Canteen, Notice board, Policies)
+  main.querySelectorAll('[data-feat]').forEach(b => b.onclick = () => { const t = list.find(x => x.id === b.dataset.feat), off = campusOff(t);
+    dlg(`<h2>Features · ${esc(t.name)}</h2><p class="muted small" style="margin-top:0">Switch off what this campus doesn't use. It disappears for requesters, staff and admins of this campus; nothing is deleted, and switching it back on brings everything back.</p>
+      ${CAMPUS_FEATURES.map(([k, l, d]) => `<label class="cfrow"><span><b>${esc(l)}</b><small>${esc(d)}</small></span><input type="checkbox" class="tgl" name="cf" value="${k}" ${off.includes(k) ? '' : 'checked'} role="switch"></label>`).join('')}`,
+      async f => { await api('/tenants/' + t.id, { method: 'PATCH', body: { features_off: [...f.querySelectorAll('[name=cf]')].filter(x => !x.checked).map(x => x.value) } });
+        toast('Saved for ' + t.name); S.me = null; S.foodFor = null; await route(); }); });
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1700,10 +1707,11 @@ async function noticesAdmin(main) {
   const draw = async () => {
     const pol = st.kind === 'policy', STATES = pol ? [['live', 'Published'], ['draft', 'Drafts'], ['ended', 'Withdrawn']] : NT_STATES;
     if (!STATES.some(([k]) => k === st.tab)) st.tab = 'live';
-    const d0 = await api('/notices'), d = { ...d0, notices: d0.notices.filter(n => (n.kind || 'notice') === st.kind) };
+    const d0 = await api('/notices'); if (!d0.kinds.includes(st.kind)) st.kind = d0.kinds[0] || 'notice'; // a kind switched off for the campus
+    const d = { ...d0, notices: d0.notices.filter(n => (n.kind || 'notice') === st.kind) };
     const by = Object.fromEntries(STATES.map(([k]) => [k, d.notices.filter(n => n.state === k).sort((x, y) => y.important - x.important)])); // important first, then the latest change
     const kc = k => d0.notices.filter(n => (n.kind || 'notice') === k && n.state === 'live').length;
-    main.innerHTML = `<div class="nkind" role="tablist" aria-label="Notices or policies">${[['notice', 'Notices', 'notice'], ['policy', 'Policies', 'file']].map(([k, l, ic]) => `<button type="button" role="tab" aria-selected="${st.kind === k}" class="${st.kind === k ? 'on' : ''}" data-k="${k}">${I(ic, 17)} ${l}${kc(k) ? ` <span class="cnt">${kc(k)}</span>` : ''}</button>`).join('')}</div>
+    main.innerHTML = `<div class="nkind" role="tablist" aria-label="Notices or policies" ${d0.kinds.length < 2 ? 'hidden' : ''}>${[['notice', 'Notices', 'notice'], ['policy', 'Policies', 'file']].filter(([k]) => d0.kinds.includes(k)).map(([k, l, ic]) => `<button type="button" role="tab" aria-selected="${st.kind === k}" class="${st.kind === k ? 'on' : ''}" data-k="${k}">${I(ic, 17)} ${l}${kc(k) ? ` <span class="cnt">${kc(k)}</span>` : ''}</button>`).join('')}</div>
       <div class="sechead" style="margin-top:0"><span class="muted small">${d.can_campus ? `You can post ${pol ? 'policies' : 'notices'} for any team or the whole campus.` : `You can post ${pol ? 'policies' : 'notices'} for: <b>${esc(d.teams.map(t => t.name).join(', ') || 'no team yet')}</b>.`} ${pol
         ? 'A policy is your team\'s standing rules: fees, timings, eligibility, procedures. Write it as text and attach photos, PDF, Word or Excel. Requestors see it on your team\'s form, before they raise a ticket.'
         : 'Students see them on the campus page, and a team\'s notice pops up before they raise a ticket for that team.'}</span>

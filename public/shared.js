@@ -108,3 +108,12 @@ export const ADMIN_FEATURE_KEYS = ADMIN_FEATURES.map(f => f[0]);
 // features turned off for this user (only ever for campus admins)
 export const featuresOff = u => { if (u?.role !== 'tenant_admin') return []; try { const x = JSON.parse(u.perm_off || '[]'); return Array.isArray(x) ? x : []; } catch { return []; } };
 export const canUse = (u, key) => u?.role === 'super_admin' || (u?.role === 'tenant_admin' && !featuresOff(u).includes(key));
+
+// Parts of the app a campus can switch off entirely (super admin → Tenants → Features). None off = all on.
+export const CAMPUS_FEATURES = [
+  ['canteen', 'Canteen (food)', 'Rate a meal, report a food problem, and Food scores for the kitchen team'],
+  ['notices', 'Notice board', 'Team and campus notices on the campus page, and the pop-up before raising a ticket'],
+  ['policies', 'Policies', "Each team's policies on its form, and sharing them in replies"],
+];
+export const campusOff = tn => { try { const x = JSON.parse(tn?.features_off || '[]'); return Array.isArray(x) ? x : []; } catch { return []; } };
+export const campusOn = (tn, key) => !campusOff(tn).includes(key);
