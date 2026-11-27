@@ -271,7 +271,12 @@ export async function canteenPage(main, { sa }) {
   if (!tab) { main.innerHTML = '<div class="card empty"><span class="et">Canteen is not set up for you</span><span>The super admin switches the canteen on and picks the canteen managers.</span></div>'; return; }
   const head = () => `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
   const wire = () => main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; ls.set(tabKey, tab); clearInterval(timer); draw(); });
-  const draw = async () => { try { await ({ counter, orders, kitchen, menu, report, setup })[tab](); } catch (e) { main.innerHTML = head() + `<p class="err">${esc(e.message)}</p>`; wire(); } };
+  // a screen that fails: say why in plain words; after an update the usual cause is a server that was not restarted
+  const draw = async () => { try { await ({ counter, orders, kitchen, menu, report, setup })[tab](); } catch (e) {
+    const v = await fetch('/api/version', { cache: 'no-store' }).then(r => r.json()).catch(() => null), stale = v?.restart_needed || e instanceof TypeError;
+    main.innerHTML = head() + (stale ? `<div class="card cn-warn" style="display:block"><b>This screen could not load.</b> ${v?.restart_needed ? `The server has new code (${esc(v.on_disk)}) but is still running the old version (${esc(v.commit)}).` : 'The server may be running an older version than this page.'}
+      <div style="margin-top:6px">On the server, in the app folder, run <code>npm ci --omit=dev</code> and then <code>pm2 restart one-desk</code>, then reload this page.</div><div class="muted small" style="margin-top:4px">Details: ${esc(e.message)}</div></div>`
+      : `<p class="err">${esc(e.message)}</p>`); wire(); } };
   await draw();
 
   async function orders() {
@@ -488,7 +493,7 @@ export async function canteenPage(main, { sa }) {
   }
 
   async function setup() {
-    const s = await api('/canteen/setup');
+    const s0 = await api('/canteen/setup'), arr = v => Array.isArray(v) ? v : [], s = { ...s0, managers: arr(s0.managers), kitchen: arr(s0.kitchen), counter: arr(s0.counter), providers: arr(s0.providers), max: s0.max || 2, max_kitchen: s0.max_kitchen || 10 };
     main.innerHTML = `${head()}<form id="cnset" class="card" style="max-width:640px"><b>Canteen for this campus</b>
       <label>Canteen name</label><input name="name" maxlength="60" value="${esc(s.name)}" placeholder="${esc(s.default_name)}">
       <label class="chk" style="margin:12px 0"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Canteen ordering is on</label>

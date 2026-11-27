@@ -1693,6 +1693,10 @@ async function uiSmoke(tok, id) {
       f.requestSubmit(); for (let i = 0; i < 30 && !/token/.test(document.querySelector('#toast').textContent); i++) await new Promise(r => setTimeout(r, 200));
       return change && /sent to the kitchen/.test(document.querySelector('#toast').textContent)`));
     check('…the bill and the KOT both print at the counter', !!(await waitFor(async () => (await q('SELECT coalesce(sum(kot_prints),0)::int n FROM canteen_orders'))[0].n > kotBefore, 6000)));
+    await visit('super admin: canteen Set up', '/c/canteen', tok.sa, '[data-t]');
+    check('…the Set up tab lists staff with one job each, no error', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#cnset'); i++) await new Promise(r => setTimeout(r, 200));
+      return !!document.querySelector('#cnset select[name=job]') && !document.querySelector('#main .err:not(:empty), #main .cn-warn')`), await js(`return document.querySelector('#main').innerHTML.slice(0, 700)`));
+    for (const t of ['orders', 'counter', 'kitchen', 'menu', 'report']) check(`…super admin's ${t} tab opens without an error`, await js(`document.querySelector('[data-t=${t}]').click(); await new Promise(r => setTimeout(r, 1500)); return !document.querySelector('#main p.err, #main .cn-warn')`));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
