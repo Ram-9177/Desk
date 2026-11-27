@@ -1812,6 +1812,10 @@ food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicke
 canteen({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, SECRET,
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
+// Mail desk: the shared mailboxes (reach@, hr@ …) beside the ticket desk (mail.js). Only loaded when MAIL_ENABLED=true; off, nothing of it runs.
+if (/^(1|true|yes|on)$/i.test(process.env.MAIL_ENABLED || '')) await (await import('./mail.js')).mail({ app, S, wrap, bad, notFound, HttpErr, limit, tenantRow, base, SECRET, createTicket,
+  sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
+    await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 app.use('/api', S);
 
 app.use('/api', (_q, _r, next) => next(notFound()));

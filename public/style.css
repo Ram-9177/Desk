@@ -946,3 +946,21 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .bnav[hidden]{display:none!important}
 .cn-stock{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto;margin:8px 0}
 .cn-posbar{display:none}@media(max-width:860px){.cn-posbar:not([hidden]){display:block;position:fixed;left:16px;right:16px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:30;background:var(--brand);color:#fff;text-align:center;font-weight:700;padding:14px;border-radius:14px;box-shadow:0 10px 24px rgba(30,75,143,.35);text-decoration:none}}
+
+/* ---------- Mail desk (mail.js): chips, thread, Confirm queue ---------- */
+.mchip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:var(--radius-pill);border:1px solid var(--border);background:var(--surface);color:var(--text-2);font-size:11.5px;font-weight:600;white-space:nowrap}
+.mchip.mail{color:#175CD3;background:#EFF8FF;border-color:#B2DDFF}
+.mchip.sla-open{color:#175CD3}.mchip.sla-hold{color:#B54708;background:#FFFAEB;border-color:#FEDF89}.mchip.sla-overdue{color:#B42318;background:#FEF3F2;border-color:#FECDCA}
+.mchip.sla-closed{color:#067647;background:#ECFDF3;border-color:#ABEFC6}.mchip.sla-rejected{color:#B54708}
+.mchip.lane-important{color:#B42318;border-color:#FECDCA}.mchip.lane-review{color:#6938EF;border-color:#D9D6FE}.mchip.lane-noise,.mchip.lane-auto{color:var(--text-3,#667085)}
+.mthread{display:grid;gap:12px}.mthread .card{margin:0}
+.mmsg .mm-h{display:flex;gap:10px;align-items:flex-start}.mmsg .mm-h>div{flex:1;min-width:0;overflow-wrap:anywhere}
+.mm-b{margin-top:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+.mmsg.out{border-left:3px solid var(--accent)}.mmsg.out.cancelled{opacity:.55}.mmsg.out.failed{border-left-color:var(--st-overdue)}.mmsg.out.pending_approval{border-left-color:var(--st-hold)}
+.mnote{padding:8px 0;border-bottom:1px solid var(--border)}.mnote:last-of-type{border-bottom:0}
+.mconf{margin:10px 0}.mconf.stale{border-color:var(--st-overdue)}.mconf textarea{width:100%;margin-top:8px}
+.mset form{border-top:1px solid var(--border);padding-top:10px;margin-top:10px}
+.mundo{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:60;display:flex;gap:12px;align-items:center;background:#101828;color:#fff;padding:10px 14px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+.mundo .btn{background:#fff;color:#101828}
+.mbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.mbar>*{flex:none}.mbar>input:not([type=checkbox]),.mbar>select{flex:1 1 160px;min-width:0;width:auto}
+.mbar .sp{flex:1 1 auto}.mbar label.small{margin:0;white-space:nowrap}

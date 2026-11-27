@@ -1,0 +1,773 @@
+// Mail desk (#/c/mail): the shared mailboxes (reach@, apply@, hr@ …) handled inside ONE Desk, beside the ticket desk.
+// Loaded only when MAIL_ENABLED=true (server.js imports this file then, and never otherwise).
+//
+// Kept apart from the desk, so the desk never notices:
+//  • Every mail table lives in its own Postgres schema "mail". No desk table is altered; desk tables are only referenced.
+//    Rollback: MAIL_ENABLED=false (this file is not even loaded), then if wanted: DROP SCHEMA mail CASCADE.
+//  • A mail is its own work item, a mail thread (MAIL-1001), handled by the mailbox's nodal officers. A desk ticket is made
+//    only when an officer presses Forward to service, through the desk's own createTicket (channel "mail"), so the desk
+//    flow, its status mails and its reports stay exactly as they are.
+//  • Same app, login, campuses, roles and email queue. Same single process: the jobs (reading new mail, sending replies,
+//    the SLA minute tick, renewing the Graph subscription, catch-up) run on timers here, from a job table in Postgres.
+//  • Microsoft Graph and the AI providers are called with fetch: no new packages.
+import { pool, one, all, run, uid, now, tx, insert } from './db.js';
+import * as L from './mail-logic.js';
+
+const SCHEMA = `
+CREATE SCHEMA IF NOT EXISTS mail;
+CREATE SEQUENCE IF NOT EXISTS mail.thread_ref_seq START 1001;
+CREATE TABLE IF NOT EXISTS mail.settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS mail.integrations (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('ai','storage','notify','lead_sink')),
+  provider TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', secret_enc TEXT, priority INT NOT NULL DEFAULT 1, active INT NOT NULL DEFAULT 0,
+  last_test_at TEXT, last_test_result TEXT, created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS mail.channels (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  address TEXT NOT NULL, display_name TEXT, signature TEXT, office_hours TEXT,
+  mode TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off','shadow','live')), ack_mode TEXT NOT NULL DEFAULT 'approve' CHECK (ack_mode IN ('approve','auto')),
+  default_service_id TEXT REFERENCES public.services(id) ON DELETE SET NULL, graph_sub_id TEXT, sub_expires_at TEXT, last_synced_at TEXT, last_error TEXT,
+  created_at TEXT, updated_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS mch_addr ON mail.channels (lower(address));
+CREATE TABLE IF NOT EXISTS mail.user_roles (user_id TEXT PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('admin','manager')), created_at TEXT);
+CREATE TABLE IF NOT EXISTS mail.channel_officers (channel_id TEXT NOT NULL REFERENCES mail.channels(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('nodal_1','nodal_2','escalation')), user_id TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  backup_user_id TEXT REFERENCES public.users(id) ON DELETE SET NULL, created_at TEXT, PRIMARY KEY (channel_id, role));
+CREATE INDEX IF NOT EXISTS mco_u ON mail.channel_officers (user_id);
+CREATE TABLE IF NOT EXISTS mail.channel_members (channel_id TEXT NOT NULL REFERENCES mail.channels(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'replier' CHECK (role IN ('viewer','replier','hr')),
+  PRIMARY KEY (channel_id, user_id));
+CREATE TABLE IF NOT EXISTS mail.officer_leave (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  from_day TEXT NOT NULL, to_day TEXT NOT NULL, created_at TEXT);
+CREATE TABLE IF NOT EXISTS mail.routes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE, category TEXT NOT NULL,
+  service_id TEXT NOT NULL REFERENCES public.services(id) ON DELETE CASCADE, auto_forward INT NOT NULL DEFAULT 0, created_at TEXT, UNIQUE (tenant_id, category));
+CREATE TABLE IF NOT EXISTS mail.rules (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  channel_id TEXT REFERENCES mail.channels(id) ON DELETE CASCADE, match TEXT NOT NULL CHECK (match IN ('sender','domain','subject_contains','header')),
+  value TEXT NOT NULL, action TEXT NOT NULL CHECK (action IN ('noise','important','auto','skip_ai')), active INT NOT NULL DEFAULT 1, created_at TEXT);
+CREATE TABLE IF NOT EXISTS mail.reply_templates (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('auto_ack','status','manual')),
+  tenant_id TEXT REFERENCES public.tenants(id) ON DELETE CASCADE, channel_id TEXT REFERENCES mail.channels(id) ON DELETE CASCADE,
+  category TEXT, thread_status TEXT, name TEXT NOT NULL, subject TEXT, body TEXT NOT NULL, active INT NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS mail.sla_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, channel_id TEXT REFERENCES mail.channels(id) ON DELETE CASCADE, lane TEXT,
+  first_response_mins INT NOT NULL CHECK (first_response_mins > 0), warn_at_pct INT NOT NULL DEFAULT 75, escalate_at_pct INT NOT NULL DEFAULT 100,
+  second_escalate_at_pct INT, business_hours_only INT NOT NULL DEFAULT 1, pause_on_hold INT NOT NULL DEFAULT 1, active INT NOT NULL DEFAULT 1, created_at TEXT);
+CREATE TABLE IF NOT EXISTS mail.threads (id TEXT PRIMARY KEY, ref_no INT NOT NULL UNIQUE DEFAULT nextval('mail.thread_ref_seq'),
+  channel_id TEXT NOT NULL REFERENCES mail.channels(id) ON DELETE CASCADE, conversation_id TEXT, subject TEXT, requester_email TEXT NOT NULL, requester_name TEXT,
+  lane TEXT NOT NULL DEFAULT 'review' CHECK (lane IN ('important','needs_reply','auto','noise','review')), category TEXT, summary TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','in_progress','hold','closed','rejected','forwarded')), owner_user_id TEXT,
+  sla_policy_id TEXT REFERENCES mail.sla_policies(id) ON DELETE SET NULL, first_response_due_at TEXT, first_responded_at TEXT,
+  paused_mins INT NOT NULL DEFAULT 0, paused_since TEXT,
+  sla_state TEXT CHECK (sla_state IN ('on_track','warning','escalated','escalated_2','met','breached_met')), warned_at TEXT, escalated_at TEXT, escalated_2_at TEXT,
+  desk_ticket_id TEXT UNIQUE REFERENCES public.tickets(id) ON DELETE SET NULL, forwarded_service_id TEXT REFERENCES public.services(id) ON DELETE SET NULL,
+  forwarded_at TEXT, forwarded_by_user_id TEXT, closed_at TEXT, created_at TEXT, updated_at TEXT);
+CREATE INDEX IF NOT EXISTS mth_c ON mail.threads (channel_id, lane, status);
+CREATE INDEX IF NOT EXISTS mth_sla ON mail.threads (sla_state, first_response_due_at);
+CREATE INDEX IF NOT EXISTS mth_conv ON mail.threads (channel_id, conversation_id);
+CREATE INDEX IF NOT EXISTS mth_req ON mail.threads (lower(requester_email));
+CREATE TABLE IF NOT EXISTS mail.inbound_emails (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES mail.channels(id) ON DELETE CASCADE,
+  thread_id TEXT REFERENCES mail.threads(id) ON DELETE CASCADE, provider_message_id TEXT NOT NULL UNIQUE, internet_message_id TEXT, conversation_id TEXT,
+  from_email TEXT NOT NULL, from_name TEXT, to_list TEXT NOT NULL DEFAULT '[]', cc_list TEXT NOT NULL DEFAULT '[]', subject TEXT, body_text TEXT,
+  has_attachments INT NOT NULL DEFAULT 0, headers TEXT NOT NULL DEFAULT '{}', received_at TEXT NOT NULL, ai_json TEXT, ai_provider TEXT, rule_ids TEXT,
+  state TEXT NOT NULL DEFAULT 'received' CHECK (state IN ('received','filtered','classified','threaded','failed')), error TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS min_t ON mail.inbound_emails (thread_id, received_at);
+CREATE TABLE IF NOT EXISTS mail.outbound_emails (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES mail.channels(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL REFERENCES mail.threads(id) ON DELETE CASCADE, reply_to_email_id TEXT REFERENCES mail.inbound_emails(id) ON DELETE SET NULL,
+  origin TEXT NOT NULL CHECK (origin IN ('ui','auto_ack','status')), template_id TEXT REFERENCES mail.reply_templates(id) ON DELETE SET NULL,
+  sent_by_user_id TEXT, to_list TEXT NOT NULL, cc_list TEXT NOT NULL DEFAULT '[]', subject TEXT, body_text TEXT NOT NULL, body_html TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending_approval' CHECK (state IN ('pending_approval','queued','sending','cancelled','sent','failed')),
+  send_after TEXT, approved_by_user_id TEXT, approved_at TEXT, attempts INT NOT NULL DEFAULT 0, provider_message_id TEXT, error TEXT, sent_at TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS mout_s ON mail.outbound_emails (state, send_after);
+CREATE INDEX IF NOT EXISTS mout_t ON mail.outbound_emails (thread_id);
+CREATE TABLE IF NOT EXISTS mail.sla_events (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES mail.threads(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('started','warned','escalated','escalated_2','paused','resumed','met','reassigned','forwarded')),
+  notified_user_ids TEXT NOT NULL DEFAULT '[]', detail TEXT NOT NULL DEFAULT '{}', at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS mse_t ON mail.sla_events (thread_id, at);
+CREATE TABLE IF NOT EXISTS mail.thread_notes (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES mail.threads(id) ON DELETE CASCADE,
+  author_user_id TEXT, author_name TEXT, body TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mail.jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT UNIQUE,
+  state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','done','failed')), run_after TEXT NOT NULL, attempts INT NOT NULL DEFAULT 0,
+  last_error TEXT, created_at TEXT, finished_at TEXT);
+CREATE INDEX IF NOT EXISTS mjob_q ON mail.jobs (state, run_after);
+CREATE TABLE IF NOT EXISTS mail.ai_usage (day TEXT NOT NULL, provider TEXT NOT NULL, calls INT NOT NULL DEFAULT 0, tokens_in BIGINT NOT NULL DEFAULT 0,
+  tokens_out BIGINT NOT NULL DEFAULT 0, failures INT NOT NULL DEFAULT 0, PRIMARY KEY (day, provider));
+CREATE TABLE IF NOT EXISTS mail.audit_log (id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, tenant_id TEXT, user_id TEXT, action TEXT NOT NULL,
+  entity TEXT NOT NULL, entity_id TEXT, detail TEXT NOT NULL DEFAULT '{}', at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS mau_e ON mail.audit_log (entity, entity_id);
+`;
+
+const DEFAULT_ACK = `Dear {{first_name}},
+
+Thank you for writing to {{mailbox_name}}, {{campus}}. We have received your message (Ref: {{ref}}).
+Our team will get back to you {{eta}}.
+
+To add details, simply reply to this mail.
+This is an automated message.
+
+Regards,
+{{mailbox_name}}`;
+// Default response targets for a new mailbox (the admin changes them on the mailbox's settings)
+const DEFAULT_SLA = [{ lane: null, name: 'Needs reply', first_response_mins: 450 }, { lane: 'important', name: 'Important', first_response_mins: 240 }];
+const NO_SLA_LANES = ['auto', 'noise']; // auto-handled and noise mail have no human response target
+
+export async function mail(d) {
+  const { app, S, wrap, bad, notFound, HttpErr, limit, tenantRow, base, sendMail, SECRET, createTicket } = d;
+  await pool.query(SCHEMA);
+  if (!(await one("SELECT 1 x FROM mail.reply_templates WHERE kind='auto_ack' AND tenant_id IS NULL AND channel_id IS NULL")))
+    await insert('mail.reply_templates', { id: uid(), kind: 'auto_ack', name: 'Received (default)', subject: null, body: DEFAULT_ACK, active: 1, created_at: now(), updated_at: now() });
+
+  const env = process.env, FAST = env.MAIL_TEST_FAST === '1';
+  const KEY = L.keyFrom(env.INTEGRATIONS_KEY, SECRET);
+  const GRAPH = (env.GRAPH_BASE || 'https://graph.microsoft.com/v1.0').replace(/\/$/, ''), LOGIN = (env.MS_LOGIN_BASE || 'https://login.microsoftonline.com').replace(/\/$/, '');
+  const notifyUrl = () => env.MAIL_NOTIFY_URL || `${base()}/api/inbound/graph`;
+  const str = (v, n) => String(v ?? '').trim().slice(0, n);
+  const forbid = m => new HttpErr(403, 'FORBIDDEN', m || 'Only the mailbox admins can do this');
+  const getSet = async k => (await one('SELECT value FROM mail.settings WHERE key=?', k))?.value ?? null;
+  const putSet = (k, v) => run('INSERT INTO mail.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value', k, v);
+  const audit = (req, action, entity, entity_id, detail = {}) => insert('mail.audit_log', { tenant_id: req?.tenantId || null, user_id: req?.user?.id || null, action, entity, entity_id, detail: JSON.stringify(detail), at: now() }).catch(e => console.error('mail audit', e.message));
+  const json = (s, d_) => { try { return JSON.parse(s); } catch { return d_; } };
+  const today = tz => new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Asia/Kolkata' }).format(new Date());
+
+  /* ================= Microsoft Graph (fetch, app-only token) ================= */
+  const graphReady = () => !!(env.MS_TENANT_ID && env.MS_CLIENT_ID && env.MS_CLIENT_SECRET);
+  let tok = null;
+  async function token() {
+    if (tok && tok.exp > Date.now() + 60e3) return tok.v;
+    if (!graphReady()) throw new HttpErr(503, 'GRAPH_NOT_SET', 'Microsoft 365 is not connected: set MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET in .env and restart');
+    const r = await fetch(`${LOGIN}/${encodeURIComponent(env.MS_TENANT_ID)}/oauth2/v2.0/token`, { method: 'POST', signal: AbortSignal.timeout(20000),
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET, scope: 'https://graph.microsoft.com/.default', grant_type: 'client_credentials' }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.access_token) throw new Error(`Microsoft sign-in failed: ${j.error_description || j.error || r.status}`);
+    tok = { v: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 }; return tok.v;
+  }
+  async function graph(method, path, body, headers = {}) {
+    const r = await fetch(GRAPH + path, { method, signal: AbortSignal.timeout(30000),
+      headers: { authorization: 'Bearer ' + await token(), ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 401) tok = null;
+    const text = await r.text(), j = text ? json(text, {}) : {};
+    if (!r.ok) { const e = new Error(`Microsoft 365: ${j.error?.message || r.status}`); e.status = r.status; throw e; }
+    return j;
+  }
+  const mbox = addr => `/users/${encodeURIComponent(addr)}`;
+
+  /* ================= who may do what ================= */
+  async function access(req) {
+    const u = req.user, tid = req.tenantId, extra = await one('SELECT role FROM mail.user_roles WHERE user_id=?', u.id);
+    const admin = u.role === 'super_admin' || extra?.role === 'admin';
+    const manager = admin || u.role === 'tenant_admin' || extra?.role === 'manager';
+    const chans = tid ? await all(`SELECT c.*,
+        (SELECT string_agg(o.role, ',' ORDER BY o.role) FROM mail.channel_officers o WHERE o.channel_id=c.id AND (o.user_id=? OR o.backup_user_id=?)) my_roles,
+        (SELECT m.role FROM mail.channel_members m WHERE m.channel_id=c.id AND m.user_id=?) member
+      FROM mail.channels c WHERE c.tenant_id=? ORDER BY c.address`, u.id, u.id, u.id, tid) : [];
+    // officers and members see only their own mailboxes, and only once they are live (shadow = sorting is being checked)
+    const visible = manager ? chans : chans.filter(c => (c.my_roles || c.member) && c.mode === 'live');
+    const setup = admin || u.role === 'tenant_admin'; // mailbox settings for the campus (Microsoft and AI keys: admins only)
+    return { admin, manager, setup, chans: visible, ids: visible.map(c => c.id), role: admin ? 'admin' : manager ? 'manager' : visible.length ? 'officer' : null };
+  }
+  const canWork = (a, ch) => a.manager || !!ch.my_roles || ['replier', 'hr'].includes(ch.member);
+  // a thread the person may open; anyone else gets 404 (not 403), so mailboxes are not revealed
+  async function threadFor(req, ref, { work = false } = {}) {
+    const a = await access(req), n = Number(ref);
+    const t = Number.isInteger(n) ? await one('SELECT * FROM mail.threads WHERE ref_no=?', n) : null;
+    const ch = t && a.chans.find(c => c.id === t.channel_id);
+    if (!ch) throw notFound();
+    if (work && !canWork(a, ch)) throw forbid('You can read this mailbox but not reply from it');
+    return { a, t, ch };
+  }
+  const needSetup = async req => { const a = await access(req); if (!req.tenantId) throw bad('Pick a campus first'); if (!a.setup) throw forbid(); return a; };
+  const needAdmin = async req => { const a = await access(req); if (!a.admin) throw forbid('Only a super admin can manage the AI and Microsoft keys'); return a; };
+  const channelIn = async (req, id) => { const c = await one('SELECT * FROM mail.channels WHERE id=? AND tenant_id=?', id, req.tenantId); if (!c) throw notFound(); return c; };
+
+  /* ================= officers, leave, alerts ================= */
+  async function officersOf(ch) {
+    const rows = await all('SELECT role, user_id, backup_user_id FROM mail.channel_officers WHERE channel_id=?', ch.id);
+    const o = { backups: {} }; for (const r of rows) { o[r.role] = r.user_id; if (r.backup_user_id) o.backups[r.role] = r.backup_user_id; }
+    const ids = rows.map(r => r.user_id), day = today((await tenantRow(ch.tenant_id))?.timezone);
+    o.onLeave = new Set(ids.length ? (await all('SELECT user_id FROM mail.officer_leave WHERE user_id = ANY(?::text[]) AND from_day<=? AND to_day>=?', ids, day, day)).map(r => r.user_id) : []);
+    return o;
+  }
+  const managersOf = async tid => { const m = await all("SELECT u.id FROM mail.user_roles r JOIN users u ON u.id=r.user_id WHERE r.role='manager' AND u.tenant_id=? AND u.is_active=1", tid);
+    return (m.length ? m : await all("SELECT id FROM users WHERE tenant_id=? AND role='tenant_admin' AND is_active=1", tid)).map(r => r.id); };
+  async function alert(tenantId, userIds, key, subject, lines, link) {
+    const to = userIds.length ? (await all('SELECT email FROM users WHERE id = ANY(?::text[]) AND is_active=1', userIds)).map(r => r.email) : [];
+    if (!to.length) return;
+    const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#1f2937;max-width:560px">${lines.map(l => `<p>${L.escHtml(l)}</p>`).join('')}`
+      + `${link ? `<p><a href="${L.escHtml(link)}" style="display:inline-block;background:#1E4B8F;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Open the mail</a></p>` : ''}<p style="color:#6b7280;font-size:13px">ONE Desk · Mail</p></div>`;
+    try { await sendMail(tenantId, to, key, subject, html, lines.join('\n\n') + (link ? `\n\n${link}` : '')); } catch (e) { console.error('mail alert', e.message); }
+  }
+  const threadLink = t => `${base()}/#/c/mail/t/${t.ref_no}`;
+
+  /* ================= SLA ================= */
+  const hoursOf = ch => json(ch.office_hours || 'null', null);
+  const calFor = async ch => L.calOf(await tenantRow(ch.tenant_id), hoursOf(ch));
+  const policiesOf = chId => all('SELECT * FROM mail.sla_policies WHERE active=1 AND (channel_id=? OR channel_id IS NULL)', chId);
+  async function slaFor(ch, lane, createdIso) {
+    if (NO_SLA_LANES.includes(lane)) return { sla_policy_id: null, first_response_due_at: null, sla_state: null };
+    const p = L.pickPolicy(await policiesOf(ch.id), ch.id, lane); if (!p) return { sla_policy_id: null, first_response_due_at: null, sla_state: null };
+    return { sla_policy_id: p.id, first_response_due_at: L.dueAt(createdIso, p, await calFor(ch)), sla_state: 'on_track' };
+  }
+  const slaEvent = (thread_id, kind, notified = [], detail = {}) => insert('mail.sla_events', { id: uid(), thread_id, kind, notified_user_ids: JSON.stringify(notified), detail: JSON.stringify(detail), at: now() });
+  async function slaTick() {
+    const rows = await all(`SELECT t.*, c.tenant_id, c.address, c.office_hours, c.display_name FROM mail.threads t JOIN mail.channels c ON c.id=t.channel_id
+      WHERE c.mode='live' AND t.status IN ('open','in_progress','hold') AND t.first_responded_at IS NULL AND t.sla_policy_id IS NOT NULL
+        AND coalesce(t.sla_state,'on_track') IN ('on_track','warning','escalated') LIMIT 500`);
+    const pol = new Map(), ts = now();
+    for (const t of rows) { try {
+      if (!pol.has(t.sla_policy_id)) pol.set(t.sla_policy_id, await one('SELECT * FROM mail.sla_policies WHERE id=?', t.sla_policy_id));
+      const ch = { id: t.channel_id, tenant_id: t.tenant_id, office_hours: t.office_hours }, p = pol.get(t.sla_policy_id);
+      const act = L.tick(t, p, await calFor(ch), await officersOf(ch), ts, await managersOf(t.tenant_id));
+      if (act.kind === 'none') continue;
+      const col = { warn: 'warned_at', escalate: 'escalated_at', escalate_2: 'escalated_2_at' }[act.kind];
+      const r = await run(`UPDATE mail.threads SET sla_state=?, ${col}=?, updated_at=? WHERE id=? AND coalesce(sla_state,'on_track')=? AND first_responded_at IS NULL`, act.state, ts, ts, t.id, t.sla_state || 'on_track');
+      if (!r.changes) continue; // someone replied meanwhile
+      await slaEvent(t.id, { warn: 'warned', escalate: 'escalated', escalate_2: 'escalated_2' }[act.kind], act.notify, { pct: Math.round(act.pct) });
+      const word = { warn: 'Reply soon', escalate: 'Escalated: no reply yet', escalate_2: 'Escalated again: still no reply' }[act.kind];
+      await alert(t.tenant_id, act.notify, `mail_sla_${act.kind}`, `[${L.refOf(t.ref_no)}] ${word}: ${t.subject || '(no subject)'}`,
+        [`${word}. ${L.refOf(t.ref_no)} in ${t.address}, from ${t.requester_name || t.requester_email}, has had no reply.`,
+          `It was due by ${new Date(t.first_response_due_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })}.`, `Subject: ${t.subject || '(no subject)'}`], threadLink(t));
+    } catch (e) { console.error('mail sla', t.id, e.message); } }
+  }
+  // hold pauses the clock: the minutes on hold are added up when the thread leaves hold
+  async function setStatus(t, status, ts) {
+    const ch = await one('SELECT * FROM mail.channels WHERE id=?', t.channel_id), p = t.sla_policy_id && await one('SELECT * FROM mail.sla_policies WHERE id=?', t.sla_policy_id);
+    const extra = {};
+    if (status === 'hold' && t.status !== 'hold') { extra.paused_since = ts; if (p) await slaEvent(t.id, 'paused'); }
+    if (status !== 'hold' && t.status === 'hold' && t.paused_since) {
+      extra.paused_mins = (t.paused_mins || 0) + (p ? L.elapsedMins(t.paused_since, ts, p, await calFor(ch)) : 0); extra.paused_since = null; if (p) await slaEvent(t.id, 'resumed');
+    }
+    if (['closed', 'rejected'].includes(status)) extra.closed_at = ts;
+    if (ACTIVE.includes(status)) extra.closed_at = null;
+    const sets = Object.keys(extra).map(k => `${k}=?`).join(', ');
+    await run(`UPDATE mail.threads SET status=?, updated_at=?${sets ? ', ' + sets : ''} WHERE id=?`, status, ts, ...Object.values(extra), t.id);
+  }
+  const ACTIVE = L.ACTIVE_THREAD;
+
+  /* ================= AI with fallback (any OpenAI-compatible API) ================= */
+  async function usage(provider, { tin = 0, tout = 0, fail = 0 } = {}) {
+    await run(`INSERT INTO mail.ai_usage (day, provider, calls, tokens_in, tokens_out, failures) VALUES (?, ?, 1, ?, ?, ?)
+      ON CONFLICT (day, provider) DO UPDATE SET calls=mail.ai_usage.calls+1, tokens_in=mail.ai_usage.tokens_in+excluded.tokens_in, tokens_out=mail.ai_usage.tokens_out+excluded.tokens_out, failures=mail.ai_usage.failures+excluded.failures`,
+      now().slice(0, 10), provider, tin, tout, fail);
+  }
+  async function askAi(row, subject, text) {
+    const cfg = json(row.config, {}), sec = L.unseal(KEY, row.secret_enc);
+    if (!cfg.baseURL || !cfg.model || !sec.apiKey) throw new Error('Not set up: address, model and key are needed');
+    const r = await fetch(String(cfg.baseURL).replace(/\/$/, '') + '/chat/completions', { method: 'POST', signal: AbortSignal.timeout(20000),
+      headers: { authorization: 'Bearer ' + sec.apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: cfg.model, ...(cfg.reasoningEffort ? { reasoning_effort: cfg.reasoningEffort } : {}), ...(cfg.noTemperature ? {} : { temperature: 0 }),
+        max_completion_tokens: 300, response_format: { type: 'json_object' },
+        messages: [{ role: 'system', content: L.MAIL_SYSTEM }, { role: 'user', content: `<mail>\nSubject: ${L.maskPII(subject)}\n${L.maskPII(text).slice(0, 1500)}\n</mail>` }] }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error?.message || `HTTP ${r.status}`);
+    const reading = L.parseReading(j.choices?.[0]?.message?.content);
+    if (!reading) throw new Error('The answer was not in the expected shape');
+    return { reading, tin: j.usage?.prompt_tokens || 0, tout: j.usage?.completion_tokens || 0 };
+  }
+  async function readMail(subject, text) {
+    for (const row of await all("SELECT * FROM mail.integrations WHERE kind='ai' AND active=1 ORDER BY priority, created_at")) {
+      try { const o = await askAi(row, subject, text); await usage(row.name, o); return { reading: o.reading, provider: row.name }; }
+      catch (e) { console.warn(`mail ai: ${row.name} failed, trying the next one:`, e.message); await usage(row.name, { fail: 1 }).catch(() => {}); }
+    }
+    return null; // every provider failed or none is set up: the rules decide, else Review
+  }
+
+  /* ================= reading new mail ================= */
+  const SELECT = '$select=id,internetMessageId,conversationId,from,sender,toRecipients,ccRecipients,subject,body,receivedDateTime,hasAttachments,internetMessageHeaders';
+  async function ingest(ch, messageId) {
+    if (await one('SELECT 1 x FROM mail.inbound_emails WHERE provider_message_id=?', messageId)) return 'duplicate';
+    const m = await graph('GET', `${mbox(ch.address)}/messages/${encodeURIComponent(messageId)}?${SELECT}`, null, { Prefer: 'outlook.body-content-type="text"' });
+    const from = m.from?.emailAddress || m.sender?.emailAddress || {}, fromEmail = String(from.address || '').toLowerCase();
+    if (!L.isEmail(fromEmail) || fromEmail === ch.address.toLowerCase()) return 'skipped'; // our own copy, or no sender
+    const headers = Object.fromEntries((m.internetMessageHeaders || []).map(h => [h.name, h.value]));
+    const text = L.cleanText(m.body?.content), subject = str(m.subject, 998), ts = now();
+    const rules = L.applyRules(await all('SELECT * FROM mail.rules WHERE tenant_id=? AND (channel_id=? OR channel_id IS NULL)', ch.tenant_id, ch.id), { from_email: fromEmail, subject, headers });
+    const ai = rules.skipAi ? null : await readMail(subject, text);
+    const lane = rules.lane || L.laneFrom(ai?.reading);
+    const refM = /\bMAIL-(\d{4,})\b/.exec(subject);
+    const res = await tx(async () => {
+      await one('SELECT pg_advisory_xact_lock(hashtext(?)) x', `mail|${ch.id}|${m.conversationId || messageId}`); // two mails of one conversation at once still make one thread
+      if (await one('SELECT 1 x FROM mail.inbound_emails WHERE provider_message_id=?', messageId)) return { dup: true };
+      let t = (m.conversationId && await one('SELECT * FROM mail.threads WHERE channel_id=? AND conversation_id=? ORDER BY created_at DESC LIMIT 1', ch.id, m.conversationId))
+        || (refM && await one('SELECT * FROM mail.threads WHERE channel_id=? AND ref_no=? AND lower(requester_email)=?', ch.id, Number(refM[1]), fromEmail));
+      let fresh = false;
+      if (!t) {
+        fresh = true;
+        t = await insert('mail.threads', { id: uid(), channel_id: ch.id, conversation_id: m.conversationId || null, subject, requester_email: fromEmail, requester_name: str(from.name, 255) || null,
+          lane, category: ai?.reading.category || null, summary: ai?.reading.summary || null, status: 'open', ...(await slaFor(ch, lane, ts)), created_at: ts, updated_at: ts });
+        if (t.sla_policy_id) await slaEvent(t.id, 'started');
+      } else if (['closed', 'rejected'].includes(t.status)) { // the sender wrote back: the thread opens again
+        await setStatus(t, 'open', ts);
+      } else await run('UPDATE mail.threads SET updated_at=? WHERE id=?', ts, t.id);
+      const inb = await insert('mail.inbound_emails', { id: uid(), channel_id: ch.id, thread_id: t.id, provider_message_id: messageId, internet_message_id: m.internetMessageId || null,
+        conversation_id: m.conversationId || null, from_email: fromEmail, from_name: str(from.name, 255) || null,
+        to_list: JSON.stringify((m.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean)), cc_list: JSON.stringify((m.ccRecipients || []).map(r => r.emailAddress?.address).filter(Boolean)),
+        subject, body_text: text, has_attachments: m.hasAttachments ? 1 : 0, headers: JSON.stringify(headers), received_at: m.receivedDateTime || ts,
+        ai_json: ai ? JSON.stringify(ai.reading) : null, ai_provider: ai?.provider || null, rule_ids: JSON.stringify(rules.matched), state: 'threaded', created_at: ts });
+      if (t.status === 'forwarded') await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_name: 'ONE Desk', body: 'The sender wrote again after this mail was forwarded. Their new message is below; the desk ticket is not changed.', created_at: ts });
+      return { t: await one('SELECT * FROM mail.threads WHERE id=?', t.id), inb, fresh };
+    });
+    if (res.dup) return 'duplicate';
+    if (ch.mode === 'live') {
+      if (res.fresh) await draftAck(ch, res.t, res.inb, ai?.reading).catch(e => console.error('mail ack', e.message));
+      graph('PATCH', `${mbox(ch.address)}/messages/${encodeURIComponent(messageId)}`, { categories: ['ONE ✓'] }).catch(e => console.warn('mail tag', e.message)); // seen in Outlook as handled by ONE Desk
+      if (res.fresh && lane === 'important') await alert(ch.tenant_id, L.queueFor(await officersOf(ch)), 'mail_important', `[${L.refOf(res.t.ref_no)}] Important mail: ${subject || '(no subject)'}`,
+        [`An important mail reached ${ch.address} from ${res.t.requester_name || fromEmail}.`, ai?.reading.summary || subject].filter(Boolean), threadLink(res.t));
+    }
+    return res.fresh ? 'new' : 'appended';
+  }
+  async function draftAck(ch, t, inb, reading) {
+    const tn = await tenantRow(ch.tenant_id), headers = json(inb.headers, {});
+    const acks = await one(`SELECT count(*)::int n FROM mail.outbound_emails o JOIN mail.threads x ON x.id=o.thread_id WHERE o.origin='auto_ack' AND o.state<>'cancelled'
+      AND lower(x.requester_email)=? AND o.created_at>?`, t.requester_email, new Date(Date.now() - 864e5).toISOString());
+    const why = L.blockReason({ from_email: t.requester_email, headers, lane: t.lane, mode: ch.mode, killSwitch: (await getSet('auto_reply_paused')) === '1',
+      ackedThisThread: !!(await one("SELECT 1 x FROM mail.outbound_emails WHERE thread_id=? AND origin='auto_ack'", t.id)), acksToSenderLast24h: acks.n });
+    if (why) return null;
+    const tpl = L.pickTemplate(await all("SELECT * FROM mail.reply_templates WHERE kind='auto_ack' AND active=1 AND (tenant_id=? OR tenant_id IS NULL) AND (channel_id=? OR channel_id IS NULL)", tn.id, ch.id),
+      { kind: 'auto_ack', tenantId: tn.id, channelId: ch.id, category: t.category });
+    if (!tpl) return null;
+    const p = t.sla_policy_id && await one('SELECT first_response_mins m FROM mail.sla_policies WHERE id=?', t.sla_policy_id);
+    const name = t.requester_name || reading?.name || '', vars = { first_name: (name.split(/\s+/)[0] || 'Sir/Madam'), name: name || 'Sir/Madam', ref: L.refOf(t.ref_no), campus: tn.name,
+      team: ch.display_name || ch.address, mailbox_name: ch.display_name || ch.address, eta: L.eta(now(), await calFor(ch), p?.m || 450), post: reading?.post || '', subject: t.subject || '', status: 'received' };
+    const body = L.render(tpl.body, vars);
+    return insert('mail.outbound_emails', { id: uid(), channel_id: ch.id, thread_id: t.id, reply_to_email_id: inb.id, origin: 'auto_ack', template_id: tpl.id, to_list: JSON.stringify([t.requester_email]),
+      subject: tpl.subject ? L.render(tpl.subject, vars) : null, body_text: body, body_html: L.textToHtml(body), ...L.initialOutbound(ch.ack_mode, now()), created_at: now() });
+  }
+
+  /* ================= sending replies (after the undo window) ================= */
+  async function sendDue() {
+    const due = await tx(async () => {
+      const rows = await all("SELECT * FROM mail.outbound_emails WHERE state='queued' AND send_after<=? ORDER BY send_after LIMIT 10 FOR UPDATE SKIP LOCKED", now());
+      if (rows.length) await run("UPDATE mail.outbound_emails SET state='sending' WHERE id = ANY(?::text[])", rows.map(r => r.id));
+      return rows;
+    });
+    for (const o of due) {
+      const ch = await one('SELECT * FROM mail.channels WHERE id=?', o.channel_id);
+      try {
+        if (ch.mode !== 'live') throw Object.assign(new Error('The mailbox is not live, so nothing is sent from it'), { final: true });
+        const to = json(o.to_list, []).map(a => ({ emailAddress: { address: a } })), cc = json(o.cc_list, []).map(a => ({ emailAddress: { address: a } }));
+        const inb = o.reply_to_email_id && await one('SELECT provider_message_id FROM mail.inbound_emails WHERE id=?', o.reply_to_email_id);
+        if (inb) await graph('POST', `${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/reply`, { message: { toRecipients: to, ccRecipients: cc, body: { contentType: 'HTML', content: o.body_html } } });
+        else { const t = await one('SELECT subject FROM mail.threads WHERE id=?', o.thread_id);
+          await graph('POST', `${mbox(ch.address)}/sendMail`, { message: { subject: o.subject || `Re: ${t?.subject || ''}`, toRecipients: to, ccRecipients: cc, body: { contentType: 'HTML', content: o.body_html } }, saveToSentItems: true }); }
+        await run("UPDATE mail.outbound_emails SET state='sent', sent_at=?, attempts=attempts+1, error=NULL WHERE id=?", now(), o.id);
+      } catch (e) {
+        const final = e.final || o.attempts + 1 >= 4 || (e.status >= 400 && e.status < 500 && e.status !== 429);
+        await run(`UPDATE mail.outbound_emails SET state=?, attempts=attempts+1, error=?, send_after=? WHERE id=?`, final ? 'failed' : 'queued', String(e.message).slice(0, 500),
+          new Date(Date.now() + 60e3 * 2 ** o.attempts).toISOString(), o.id);
+        console.error('mail send', o.id, e.message);
+      }
+    }
+  }
+
+  /* ================= jobs (in this process, from Postgres) ================= */
+  const enqueue = (kind, payload, dedupe_key = null, delayMs = 0) => run(`INSERT INTO mail.jobs (id, kind, payload, dedupe_key, run_after, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (dedupe_key) DO NOTHING`,
+    uid(), kind, JSON.stringify(payload), dedupe_key, new Date(Date.now() + delayMs).toISOString(), now());
+  async function catchup(ch) { // anything a missed notification left behind (a restart, a network blip): read the inbox since the last sync
+    const since = ch.last_synced_at || new Date(Date.now() - 864e5).toISOString(), started = now();
+    let url = `${mbox(ch.address)}/mailFolders/inbox/messages?$select=id,receivedDateTime&$orderby=receivedDateTime asc&$top=50&$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}`;
+    for (let page = 0; url && page < 10; page++) {
+      const r = await graph('GET', url);
+      for (const m of r.value || []) if (!(await one('SELECT 1 x FROM mail.inbound_emails WHERE provider_message_id=?', m.id))) await enqueue('ingest', { channel_id: ch.id, message_id: m.id }, `ingest:${m.id}`);
+      url = r['@odata.nextLink'] ? r['@odata.nextLink'].replace(GRAPH, '') : null;
+    }
+    await run('UPDATE mail.channels SET last_synced_at=?, last_error=NULL WHERE id=?', new Date(Date.parse(started) - 5 * 60e3).toISOString(), ch.id); // a little overlap: dedupe drops repeats
+  }
+  async function runJob(j) {
+    const p = json(j.payload, {}), ch = p.channel_id && await one('SELECT * FROM mail.channels WHERE id=?', p.channel_id);
+    if (!ch || ch.mode === 'off') return;
+    if (j.kind === 'ingest') return ingest(ch, p.message_id);
+    if (j.kind === 'catchup') return catchup(ch);
+  }
+  let busy = false;
+  async function work() {
+    if (busy) return; busy = true;
+    try {
+      for (let i = 0; i < 20; i++) {
+        const j = await tx(async () => { const r = await one("SELECT * FROM mail.jobs WHERE state='queued' AND run_after<=? ORDER BY run_after LIMIT 1 FOR UPDATE SKIP LOCKED", now());
+          if (r) await run("UPDATE mail.jobs SET state='running', attempts=attempts+1 WHERE id=?", r.id); return r; });
+        if (!j) break;
+        try { await runJob(j); await run("UPDATE mail.jobs SET state='done', finished_at=?, dedupe_key=NULL WHERE id=?", now(), j.id); }
+        catch (e) { const final = j.attempts + 1 >= 5;
+          await run('UPDATE mail.jobs SET state=?, last_error=?, run_after=?, finished_at=?, dedupe_key=? WHERE id=?', final ? 'failed' : 'queued', String(e.message).slice(0, 500),
+            new Date(Date.now() + 30e3 * 2 ** j.attempts).toISOString(), final ? now() : null, final ? null : j.dedupe_key, j.id);
+          if (j.kind === 'catchup' || final) await run('UPDATE mail.channels SET last_error=? WHERE id=?', String(e.message).slice(0, 300), json(j.payload, {}).channel_id);
+          console.error('mail job', j.kind, e.message); }
+      }
+      await sendDue();
+    } catch (e) { console.error('mail worker', e.message); } finally { busy = false; }
+  }
+  // Graph subscription per mailbox in shadow or live mode: made when switched on, renewed a day before it runs out
+  async function subscribe(ch) {
+    if (!graphReady()) return;
+    const exp = new Date(Date.now() + 2.5 * 864e5).toISOString();
+    try {
+      if (ch.graph_sub_id) { try { await graph('PATCH', `/subscriptions/${encodeURIComponent(ch.graph_sub_id)}`, { expirationDateTime: exp });
+        return run('UPDATE mail.channels SET sub_expires_at=?, last_error=NULL WHERE id=?', exp, ch.id); } catch (e) { if (e.status !== 404) throw e; } }
+      const s = await graph('POST', '/subscriptions', { changeType: 'created', notificationUrl: notifyUrl(), resource: `users/${ch.address}/mailFolders('inbox')/messages`,
+        expirationDateTime: exp, clientState: env.GRAPH_CLIENT_STATE || '' });
+      await run('UPDATE mail.channels SET graph_sub_id=?, sub_expires_at=?, last_error=NULL WHERE id=?', s.id, s.expirationDateTime || exp, ch.id);
+    } catch (e) { await run('UPDATE mail.channels SET last_error=? WHERE id=?', String(e.message).slice(0, 300), ch.id); console.error('mail subscribe', ch.address, e.message); }
+  }
+  async function unsubscribe(ch) {
+    if (ch.graph_sub_id && graphReady()) await graph('DELETE', `/subscriptions/${encodeURIComponent(ch.graph_sub_id)}`).catch(e => console.warn('mail unsubscribe', e.message));
+    await run('UPDATE mail.channels SET graph_sub_id=NULL, sub_expires_at=NULL WHERE id=?', ch.id);
+  }
+  async function housekeeping() {
+    try {
+      for (const ch of await all("SELECT * FROM mail.channels WHERE mode IN ('shadow','live')")) {
+        if (!ch.sub_expires_at || Date.parse(ch.sub_expires_at) < Date.now() + 864e5) await subscribe(ch);
+        if (graphReady()) await enqueue('catchup', { channel_id: ch.id }, `catchup:${ch.id}`);
+      }
+      await run("DELETE FROM mail.jobs WHERE state='done' AND finished_at<?", new Date(Date.now() - 7 * 864e5).toISOString());
+    } catch (e) { console.error('mail housekeeping', e.message); }
+  }
+  const T = FAST ? { work: 300, sla: 1000, house: 3000 } : { work: 2000, sla: 60e3, house: 5 * 60e3 };
+  setInterval(work, T.work).unref();
+  setInterval(() => slaTick().catch(e => console.error('mail sla tick', e.message)), T.sla).unref();
+  setInterval(housekeeping, T.house).unref(); setTimeout(housekeeping, FAST ? 500 : 15e3).unref();
+
+  /* ================= Graph notifications (no sign-in: checked by clientState) ================= */
+  app.post('/api/inbound/graph', async (req, res) => {
+    if (req.query.validationToken) return res.type('text/plain').send(String(req.query.validationToken)); // Graph checks the address when subscribing
+    res.status(202).end(); // answer at once; the work happens in the job loop
+    try {
+      for (const n of Array.isArray(req.body?.value) ? req.body.value.slice(0, 200) : []) {
+        if ((env.GRAPH_CLIENT_STATE || '') !== (n.clientState || '')) { console.warn('mail webhook: clientState does not match, ignored'); continue; }
+        const ch = await one("SELECT id FROM mail.channels WHERE graph_sub_id=? AND mode IN ('shadow','live')", String(n.subscriptionId || ''));
+        const mid = n.resourceData?.id || /messages\/([^/]+)$/i.exec(n.resource || '')?.[1];
+        if (ch && mid) await enqueue('ingest', { channel_id: ch.id, message_id: mid }, `ingest:${mid}`);
+      }
+      setImmediate(work);
+    } catch (e) { console.error('mail webhook', e.message); }
+  });
+
+  /* ================= API: what I see ================= */
+  S.get('/maildesk/me', wrap(async req => {
+    const a = await access(req); if (!a.role) return { role: null };
+    const ids = a.ids, mine = ids.length ? await one(`SELECT count(*)::int n FROM mail.threads WHERE channel_id = ANY(?::text[]) AND status IN ('open','in_progress','hold') AND lane<>'noise'`, ids) : { n: 0 };
+    const confirm = ids.length ? await one("SELECT count(*)::int n FROM mail.outbound_emails WHERE channel_id = ANY(?::text[]) AND state='pending_approval'", ids) : { n: 0 };
+    return { role: a.role, setup: a.setup, admin: a.admin, open: mine.n, confirm: confirm.n,
+      channels: a.chans.map(c => ({ id: c.id, address: c.address, display_name: c.display_name, mode: c.mode, my_roles: c.my_roles ? c.my_roles.split(',') : [], member: c.member || null })) };
+  }));
+  const LIST = `SELECT t.*, c.address, c.display_name, c.mode,
+      (SELECT o.role FROM mail.channel_officers o WHERE o.channel_id=t.channel_id AND (o.user_id=? OR o.backup_user_id=?) ORDER BY o.role LIMIT 1) my_role,
+      (SELECT body_text FROM mail.inbound_emails i WHERE i.thread_id=t.id ORDER BY received_at DESC LIMIT 1) last_text,
+      (SELECT count(*)::int FROM mail.inbound_emails i WHERE i.thread_id=t.id) n_in
+    FROM mail.threads t JOIN mail.channels c ON c.id=t.channel_id`;
+  // one dashboard: the mail work of a nodal or escalation officer, in the desk's row shape (the desk dashboard merges it)
+  S.get('/maildesk/my-work', wrap(async req => {
+    const a = await access(req), mine = a.chans.filter(c => c.my_roles && c.mode === 'live').map(c => c.id);
+    if (!mine.length) return [];
+    const rows = await all(`${LIST} WHERE t.channel_id = ANY(?::text[]) AND t.status IN ('open','in_progress','hold') AND t.lane NOT IN ('noise','auto') ORDER BY t.updated_at DESC LIMIT 300`, req.user.id, req.user.id, mine);
+    return rows.map(L.toWorkItem).filter(Boolean);
+  }));
+  S.get('/maildesk/threads', wrap(async req => {
+    const a = await access(req), q = req.query, where = ['t.channel_id = ANY(?::text[])'], args = [req.user.id, req.user.id];
+    let ids = a.ids; if (q.channel) ids = ids.filter(x => x === q.channel);
+    if (!ids.length) return { threads: [], counts: {} };
+    args.push(ids);
+    const status = String(q.status || 'active');
+    if (status === 'active') where.push("t.status IN ('open','in_progress','hold')"); else if (L.THREAD_STATUSES.includes(status)) { where.push('t.status=?'); args.push(status); }
+    if (L.LANES.includes(q.lane)) { where.push('t.lane=?'); args.push(q.lane); }
+    if (q.mine === '1') { where.push('t.owner_user_id=?'); args.push(req.user.id); }
+    if (q.q) { const s = `%${String(q.q).toLowerCase().slice(0, 100)}%`; where.push("(lower(coalesce(t.subject,'')) LIKE ? OR lower(t.requester_email) LIKE ? OR lower(coalesce(t.requester_name,'')) LIKE ? OR ('mail-' || t.ref_no) LIKE ?)"); args.push(s, s, s, s); }
+    const rows = await all(`${LIST} WHERE ${where.join(' AND ')} ORDER BY CASE t.sla_state WHEN 'escalated_2' THEN 0 WHEN 'escalated' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
+      coalesce(t.first_response_due_at, '9'), t.updated_at DESC LIMIT 200`, ...args);
+    const counts = Object.fromEntries((await all("SELECT lane, count(*)::int n FROM mail.threads WHERE channel_id = ANY(?::text[]) AND status IN ('open','in_progress','hold') GROUP BY lane", ids)).map(r => [r.lane, r.n]));
+    return { threads: rows.map(({ last_text, ...t }) => ({ ...t, ref: L.refOf(t.ref_no), preview: String(last_text || '').slice(0, 160) })), counts };
+  }));
+  S.get('/maildesk/threads/:ref', wrap(async req => {
+    const { a, t, ch } = await threadFor(req, req.params.ref);
+    const inbound = await all('SELECT id, from_email, from_name, to_list, cc_list, subject, body_text, has_attachments, received_at, ai_json, ai_provider FROM mail.inbound_emails WHERE thread_id=? ORDER BY received_at', t.id);
+    const outbound = await all(`SELECT o.id, o.origin, o.state, o.to_list, o.cc_list, o.subject, o.body_text, o.send_after, o.sent_at, o.created_at, o.error, u.name sent_by
+      FROM mail.outbound_emails o LEFT JOIN users u ON u.id=coalesce(o.sent_by_user_id, o.approved_by_user_id) WHERE o.thread_id=? ORDER BY o.created_at`, t.id);
+    const notes = await all('SELECT n.id, n.body, n.created_at, coalesce(u.name, n.author_name) author FROM mail.thread_notes n LEFT JOIN users u ON u.id=n.author_user_id WHERE n.thread_id=? ORDER BY n.created_at', t.id);
+    const events = await all('SELECT kind, at, detail FROM mail.sla_events WHERE thread_id=? ORDER BY at', t.id);
+    const owner = t.owner_user_id && await one('SELECT name FROM users WHERE id=?', t.owner_user_id);
+    const desk = t.desk_ticket_id ? await one(`SELECT t.id, t.ticket_no, t.status, t.updated_at, s.name service FROM tickets t JOIN services s ON s.id=t.service_id WHERE t.id=?`, t.desk_ticket_id) : null;
+    const route = t.category && await one('SELECT r.service_id, s.name FROM mail.routes r JOIN services s ON s.id=r.service_id WHERE r.tenant_id=? AND lower(r.category)=lower(?)', ch.tenant_id, t.category);
+    const templates = await all("SELECT id, name, body FROM mail.reply_templates WHERE kind='manual' AND active=1 AND (tenant_id=? OR tenant_id IS NULL) AND (channel_id=? OR channel_id IS NULL) ORDER BY name", ch.tenant_id, ch.id);
+    const others = await all(`SELECT ref_no, subject, status, created_at FROM mail.threads WHERE lower(requester_email)=lower(?) AND id<>? AND channel_id = ANY(?::text[]) ORDER BY created_at DESC LIMIT 5`, t.requester_email, t.id, a.ids);
+    audit(req, 'view', 'thread', t.id);
+    return { thread: { ...t, ref: L.refOf(t.ref_no), owner: owner?.name || null }, channel: { id: ch.id, address: ch.address, display_name: ch.display_name, mode: ch.mode, signature: ch.signature, default_service_id: ch.default_service_id },
+      messages: [...inbound.map(m => ({ dir: 'in', ...m, to_list: json(m.to_list, []), cc_list: json(m.cc_list, []), ai: json(m.ai_json || 'null', null), ai_json: undefined, at: m.received_at })),
+        ...outbound.map(m => ({ dir: 'out', ...m, to_list: json(m.to_list, []), cc_list: json(m.cc_list, []), at: m.sent_at || m.send_after || m.created_at }))].sort((x, y) => String(x.at).localeCompare(String(y.at))),
+      notes, events, desk, suggested_service: route ? { id: route.service_id, name: route.name } : null, templates, others: others.map(o => ({ ...o, ref: L.refOf(o.ref_no) })),
+      can: { work: canWork(a, ch), forward: canWork(a, ch) && ACTIVE.includes(t.status), reply: canWork(a, ch) && ch.mode === 'live' && t.status !== 'forwarded' } };
+  }));
+
+  /* ================= API: working a thread ================= */
+  S.post('/maildesk/threads/:ref/claim', wrap(async req => {
+    const { t } = await threadFor(req, req.params.ref, { work: true });
+    if (!ACTIVE.includes(t.status)) throw bad('This mail is no longer open');
+    if (t.owner_user_id && t.owner_user_id !== req.user.id && req.body.take !== true) { const o = await one('SELECT name FROM users WHERE id=?', t.owner_user_id); throw new HttpErr(409, 'CLAIMED', `${o?.name || 'Someone'} is already on this mail`); }
+    await run(`UPDATE mail.threads SET owner_user_id=?, status=CASE WHEN status='open' THEN 'in_progress' ELSE status END, updated_at=? WHERE id=?`, req.user.id, now(), t.id);
+    if (t.owner_user_id && t.owner_user_id !== req.user.id) await slaEvent(t.id, 'reassigned', [req.user.id]);
+    audit(req, 'claim', 'thread', t.id); return { ok: true };
+  }));
+  S.post('/maildesk/threads/:ref/reply', wrap(async req => {
+    const { t, ch } = await threadFor(req, req.params.ref, { work: true });
+    if (ch.mode !== 'live') throw bad('This mailbox is in shadow mode: nothing is sent from it yet');
+    if (t.status === 'forwarded') throw bad('This mail was forwarded to a service; reply from the desk ticket');
+    const text = str(req.body.body, 20000); if (!text) throw bad('Write the reply first');
+    const cc = (Array.isArray(req.body.cc) ? req.body.cc : []).map(x => String(x).trim().toLowerCase()).filter(Boolean);
+    if (cc.length > 10 || cc.some(x => !L.isEmail(x))) throw bad('Copy (cc): up to 10 valid email addresses');
+    limit('mail-reply:' + req.user.id, 120, 3600e3);
+    const last = await one('SELECT id FROM mail.inbound_emails WHERE thread_id=? ORDER BY received_at DESC LIMIT 1', t.id), ts = now();
+    const o = await tx(async () => {
+      const o = await insert('mail.outbound_emails', { id: uid(), channel_id: ch.id, thread_id: t.id, reply_to_email_id: last?.id || null, origin: 'ui', sent_by_user_id: req.user.id,
+        to_list: JSON.stringify([t.requester_email]), cc_list: JSON.stringify(cc), body_text: text, body_html: L.textToHtml(text, ch.signature), // To is always the thread's sender
+        state: 'queued', send_after: new Date(Date.now() + L.UNDO_SECONDS * 1000).toISOString(), created_at: ts });
+      const first = !t.first_responded_at ? L.onFirstResponse(t, ts) : {};
+      await run(`UPDATE mail.threads SET owner_user_id=coalesce(owner_user_id, ?), status=CASE WHEN status='open' THEN 'in_progress' ELSE status END, updated_at=?,
+        first_responded_at=coalesce(first_responded_at, ?), sla_state=CASE WHEN first_responded_at IS NULL AND sla_state IS NOT NULL THEN ? ELSE sla_state END WHERE id=?`,
+        req.user.id, ts, first.first_responded_at || null, first.sla_state || null, t.id);
+      if (first.first_responded_at && t.sla_policy_id) await slaEvent(t.id, 'met', [], { late: first.sla_state === 'breached_met' });
+      return o;
+    });
+    if (req.body.close === true) await setStatus({ ...t, status: t.status }, 'closed', now());
+    audit(req, 'reply', 'thread', t.id, { outbound_id: o.id }); return { id: o.id, send_after: o.send_after, undo_seconds: L.UNDO_SECONDS };
+  }));
+  S.post('/maildesk/outbound/:id/cancel', wrap(async req => {
+    const o = await one('SELECT * FROM mail.outbound_emails WHERE id=?', req.params.id); if (!o) throw notFound();
+    const t = await one('SELECT ref_no FROM mail.threads WHERE id=?', o.thread_id); await threadFor(req, t.ref_no, { work: true });
+    const r = await run("UPDATE mail.outbound_emails SET state='cancelled' WHERE id=? AND (state='pending_approval' OR (state='queued' AND send_after>?))", o.id, now());
+    if (!r.changes) throw new HttpErr(409, 'ALREADY_SENT', 'Too late: this mail has already gone');
+    audit(req, 'cancel', 'outbound', o.id); return { ok: true };
+  }));
+  S.post('/maildesk/threads/:ref/status', wrap(async req => {
+    const { t } = await threadFor(req, req.params.ref, { work: true }), s = req.body.status;
+    if (!['open', 'in_progress', 'hold', 'closed', 'rejected'].includes(s)) throw bad('Pick a status');
+    if (t.status === 'forwarded') throw bad('This mail is a desk ticket now; change it there');
+    await setStatus(t, s, now());
+    const note = str(req.body.note, 2000); if (note) await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_user_id: req.user.id, body: `${{ open: 'Opened', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Rejected' }[s]}: ${note}`, created_at: now() });
+    audit(req, 'status', 'thread', t.id, { from: t.status, to: s }); return { ok: true };
+  }));
+  S.post('/maildesk/threads/:ref/lane', wrap(async req => {
+    const { t, ch } = await threadFor(req, req.params.ref, { work: true }), lane = req.body.lane;
+    if (!L.LANES.includes(lane) || lane === 'review') throw bad('Pick a lane');
+    const sla = t.first_responded_at ? {} : await slaFor(ch, lane, t.created_at); // the clock still runs from when the mail arrived
+    await run(`UPDATE mail.threads SET lane=?, updated_at=?${t.first_responded_at ? '' : ', sla_policy_id=?, first_response_due_at=?, sla_state=?'} WHERE id=?`, lane, now(),
+      ...(t.first_responded_at ? [] : [sla.sla_policy_id, sla.first_response_due_at, sla.sla_state && t.sla_state && t.sla_state !== 'on_track' ? t.sla_state : sla.sla_state]), t.id);
+    audit(req, 'lane', 'thread', t.id, { from: t.lane, to: lane }); return { ok: true };
+  }));
+  S.post('/maildesk/threads/:ref/notes', wrap(async req => {
+    const { t } = await threadFor(req, req.params.ref, { work: true }), body = str(req.body.body, 4000); if (!body) throw bad('Write the note first');
+    await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_user_id: req.user.id, body, created_at: now() });
+    await run('UPDATE mail.threads SET updated_at=? WHERE id=?', now(), t.id); return { ok: true };
+  }));
+  // Forward to service: a normal desk ticket, made by the desk's own createTicket (the only link to desk code)
+  S.post('/maildesk/threads/:ref/forward', wrap(async req => {
+    const { t, ch } = await threadFor(req, req.params.ref, { work: true });
+    if (t.status === 'forwarded' && t.desk_ticket_id) { const ex = await one('SELECT id, ticket_no FROM tickets WHERE id=?', t.desk_ticket_id); if (ex) return { ticket_id: ex.id, ticket_no: ex.ticket_no, again: true }; }
+    if (!ACTIVE.includes(t.status)) throw bad('Only an open mail can be forwarded');
+    const b = req.body || {}, tn = await tenantRow(ch.tenant_id), first = await one('SELECT body_text FROM mail.inbound_emails WHERE thread_id=? ORDER BY received_at LIMIT 1', t.id);
+    const desc = `${str(b.description, 8000) || first?.body_text || ''}\n\n— Forwarded from ${ch.address}, ${L.refOf(t.ref_no)}`;
+    const tk = await createTicket(tn, { ...b, service_id: b.service_id, name: str(b.name, 120) || t.requester_name || t.requester_email, email: t.requester_email,
+      subject: str(b.subject, 200) || t.subject || '(no subject)', description: desc, idempotency_key: `mail:${t.id}`, merge: 'no' }, { channel: 'mail', actor: { type: 'user', id: req.user.id, name: req.user.name } });
+    const ts = now();
+    const r = await run(`UPDATE mail.threads SET status='forwarded', desk_ticket_id=?, forwarded_service_id=?, forwarded_at=?, forwarded_by_user_id=?, updated_at=? WHERE id=? AND desk_ticket_id IS NULL`,
+      tk.id, tk.service_id, ts, req.user.id, ts, t.id);
+    if (r.changes) { await slaEvent(t.id, 'forwarded', [], { ticket_no: tk.ticket_no }); await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_user_id: req.user.id, body: `Forwarded to the desk as ticket #${tk.ticket_no}.`, created_at: ts }); }
+    audit(req, 'forward', 'thread', t.id, { ticket_id: tk.id, ticket_no: tk.ticket_no }); return { ticket_id: tk.id, ticket_no: tk.ticket_no };
+  }));
+
+  /* ================= API: Confirm queue (auto-replies waiting for a click) ================= */
+  S.get('/maildesk/confirm', wrap(async req => {
+    const a = await access(req), ids = a.chans.filter(c => canWork(a, c)).map(c => c.id); if (!ids.length) return [];
+    return all(`SELECT o.id, o.body_text, o.created_at, o.to_list, t.ref_no, t.subject, t.requester_name, t.requester_email, t.lane, c.address,
+        (SELECT body_text FROM mail.inbound_emails i WHERE i.id=o.reply_to_email_id) their_text
+      FROM mail.outbound_emails o JOIN mail.threads t ON t.id=o.thread_id JOIN mail.channels c ON c.id=o.channel_id
+      WHERE o.channel_id = ANY(?::text[]) AND o.state='pending_approval' ORDER BY o.created_at LIMIT 200`, ids)
+      .then(r => r.map(x => ({ ...x, ref: L.refOf(x.ref_no), to_list: json(x.to_list, []), stale: Date.parse(x.created_at) < Date.now() - 864e5 })));
+  }));
+  async function confirmOne(req, id, body) {
+    const o = await one('SELECT * FROM mail.outbound_emails WHERE id=?', id); if (!o) throw notFound();
+    const t = await one('SELECT ref_no FROM mail.threads WHERE id=?', o.thread_id), { ch } = await threadFor(req, t.ref_no, { work: true });
+    if (ch.mode !== 'live') throw bad('This mailbox is not live');
+    const text = body != null ? str(body, 20000) : null; if (body != null && !text) throw bad('The reply is empty');
+    const r = await run(`UPDATE mail.outbound_emails SET state='queued', approved_by_user_id=?, approved_at=?, send_after=?${text ? ', body_text=?, body_html=?' : ''} WHERE id=? AND state='pending_approval'`,
+      req.user.id, now(), new Date(Date.now() + L.UNDO_SECONDS * 1000).toISOString(), ...(text ? [text, L.textToHtml(text)] : []), o.id);
+    if (r.changes) audit(req, 'confirm', 'outbound', o.id, { edited: !!text }); return !!r.changes;
+  }
+  S.post('/maildesk/outbound/:id/confirm', wrap(async req => { if (!(await confirmOne(req, req.params.id, req.body.body))) throw new HttpErr(409, 'GONE', 'Already confirmed or cancelled'); return { ok: true }; }));
+  S.post('/maildesk/confirm-bulk', wrap(async req => {
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).slice(0, 200).map(String); let n = 0;
+    for (const id of ids) { try { if (await confirmOne(req, id)) n++; } catch (e) { if (e.status !== 404) throw e; } }
+    return { confirmed: n };
+  }));
+
+  /* ================= API: settings ================= */
+  const pubChannel = async c => ({ ...c, office_hours: hoursOf(c), graph_sub_id: undefined,
+    officers: await all('SELECT o.role, o.user_id, u.name, o.backup_user_id, b.name backup_name FROM mail.channel_officers o JOIN users u ON u.id=o.user_id LEFT JOIN users b ON b.id=o.backup_user_id WHERE o.channel_id=?', c.id),
+    members: await all('SELECT m.user_id, m.role, u.name FROM mail.channel_members m JOIN users u ON u.id=m.user_id WHERE m.channel_id=?', c.id),
+    sla: await all('SELECT id, name, lane, first_response_mins, warn_at_pct, escalate_at_pct, second_escalate_at_pct, business_hours_only, pause_on_hold FROM mail.sla_policies WHERE channel_id=? ORDER BY lane NULLS FIRST', c.id),
+    subscribed: !!c.graph_sub_id });
+  S.get('/maildesk/settings', wrap(async req => {
+    const a = await needSetup(req), tid = req.tenantId;
+    const chans = await all('SELECT * FROM mail.channels WHERE tenant_id=? ORDER BY address', tid);
+    return { admin: a.admin, graph: { ready: graphReady(), notify_url: notifyUrl(), client_state: !!env.GRAPH_CLIENT_STATE }, auto_reply_paused: (await getSet('auto_reply_paused')) === '1',
+      channels: await Promise.all(chans.map(pubChannel)),
+      people: await all("SELECT id, name, email, role FROM users WHERE tenant_id=? AND is_active=1 ORDER BY name", tid),
+      services: await all('SELECT id, name FROM services WHERE tenant_id=? AND is_active=1 ORDER BY sort_order, name', tid),
+      leave: await all('SELECT l.id, l.user_id, u.name, l.from_day, l.to_day FROM mail.officer_leave l JOIN users u ON u.id=l.user_id WHERE u.tenant_id=? AND l.to_day>=? ORDER BY l.from_day', tid, today((await tenantRow(tid))?.timezone)),
+      templates: await all('SELECT id, kind, channel_id, category, thread_status, name, subject, body, active, tenant_id FROM mail.reply_templates WHERE tenant_id=? OR tenant_id IS NULL ORDER BY kind, name', tid),
+      rules: await all('SELECT id, channel_id, match, value, action, active FROM mail.rules WHERE tenant_id=? ORDER BY created_at', tid),
+      routes: await all('SELECT r.id, r.category, r.service_id, s.name service, r.auto_forward FROM mail.routes r JOIN services s ON s.id=r.service_id WHERE r.tenant_id=? ORDER BY r.category', tid),
+      roles: await all("SELECT r.user_id, r.role, u.name FROM mail.user_roles r JOIN users u ON u.id=r.user_id WHERE u.tenant_id=?", tid),
+      integrations: a.admin ? (await all('SELECT id, kind, provider, name, config, priority, active, last_test_at, last_test_result, secret_enc IS NOT NULL has_key FROM mail.integrations ORDER BY kind, priority')).map(i => ({ ...i, config: json(i.config, {}) })) : [],
+      jobs: await one("SELECT count(*) FILTER (WHERE state='queued')::int queued, count(*) FILTER (WHERE state='failed')::int failed FROM mail.jobs"),
+      ai_today: await all('SELECT provider, calls, failures, tokens_in, tokens_out FROM mail.ai_usage WHERE day=?', now().slice(0, 10)) };
+  }));
+  const chFields = (b, partial) => {
+    const f = {};
+    if (!partial || 'address' in b) { const a = str(b.address, 320).toLowerCase(); if (!L.isEmail(a)) throw bad('Mailbox address: a valid email, e.g. reach@smru.edu.in'); f.address = a; }
+    if ('display_name' in b) f.display_name = str(b.display_name, 120) || null;
+    if ('signature' in b) f.signature = str(b.signature, 1000) || null;
+    if ('office_hours' in b) { const h = b.office_hours; if (h && !L.validHours(h)) throw bad('Office hours: pick the days, and a start before the end'); f.office_hours = h ? JSON.stringify({ days: h.days, from: h.from, to: h.to }) : null; }
+    if ('mode' in b) { if (!L.MODES.includes(b.mode)) throw bad('Mode: off, shadow or live'); f.mode = b.mode; }
+    if ('ack_mode' in b) { if (!['approve', 'auto'].includes(b.ack_mode)) throw bad('Auto-reply: approve or auto'); f.ack_mode = b.ack_mode; }
+    if ('default_service_id' in b) f.default_service_id = b.default_service_id || null;
+    return f;
+  };
+  S.post('/maildesk/channels', wrap(async req => {
+    await needSetup(req); const f = chFields(req.body, false), ts = now();
+    if (f.default_service_id && !(await one('SELECT 1 x FROM services WHERE id=? AND tenant_id=?', f.default_service_id, req.tenantId))) throw bad('Pick a service of this campus');
+    if (await one('SELECT 1 x FROM mail.channels WHERE lower(address)=?', f.address)) throw new HttpErr(409, 'EXISTS', 'This mailbox is already set up');
+    f.mode = 'off'; // a new mailbox starts off; switch to shadow for a week, then live
+    const c = await tx(async () => { const c = await insert('mail.channels', { id: uid(), tenant_id: req.tenantId, ...f, created_at: ts, updated_at: ts });
+      for (const p of DEFAULT_SLA) await insert('mail.sla_policies', { id: uid(), channel_id: c.id, name: p.name, lane: p.lane, first_response_mins: p.first_response_mins, warn_at_pct: 75, escalate_at_pct: 100, second_escalate_at_pct: 200, business_hours_only: 1, pause_on_hold: 1, active: 1, created_at: ts });
+      return c; });
+    audit(req, 'setting_change', 'channel', c.id, { created: f.address }); return pubChannel(c);
+  }));
+  S.patch('/maildesk/channels/:id', wrap(async req => {
+    await needSetup(req); const c = await channelIn(req, req.params.id), f = chFields(req.body, true);
+    if (!Object.keys(f).length) throw bad('Nothing to change');
+    if (f.address && f.address !== c.address && await one('SELECT 1 x FROM mail.channels WHERE lower(address)=? AND id<>?', f.address, c.id)) throw new HttpErr(409, 'EXISTS', 'This mailbox is already set up');
+    if (f.default_service_id && !(await one('SELECT 1 x FROM services WHERE id=? AND tenant_id=?', f.default_service_id, req.tenantId))) throw bad('Pick a service of this campus');
+    if (f.mode === 'live' && !(await one("SELECT 1 x FROM mail.channel_officers WHERE channel_id=? AND role='nodal_1'", c.id))) throw bad('Pick Nodal officer 1 before going live');
+    await run(`UPDATE mail.channels SET ${Object.keys(f).map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), c.id);
+    const n = await one('SELECT * FROM mail.channels WHERE id=?', c.id);
+    if (f.mode && f.mode !== c.mode) { if (f.mode === 'off') await unsubscribe(n); else if (c.mode === 'off') { if (!n.last_synced_at) await run('UPDATE mail.channels SET last_synced_at=? WHERE id=?', now(), n.id); await subscribe(n); } }
+    // going live: mail read during the shadow week was answered in Outlook, so it is kept but closed, not dropped on the officers' Home
+    // (a later message in such a conversation opens its thread again)
+    if (f.mode === 'live' && c.mode !== 'live') await run(`UPDATE mail.threads SET status='closed', closed_at=?, updated_at=?, sla_state=CASE WHEN sla_state IS NULL THEN NULL ELSE 'met' END
+      WHERE channel_id=? AND status IN ('open','in_progress','hold')`, now(), now(), c.id);
+    audit(req, 'setting_change', 'channel', c.id, f); return pubChannel(await one('SELECT * FROM mail.channels WHERE id=?', c.id));
+  }));
+  S.put('/maildesk/channels/:id/officers', wrap(async req => {
+    await needSetup(req); const c = await channelIn(req, req.params.id), b = req.body || {};
+    const people = new Set((await all('SELECT id FROM users WHERE tenant_id=? AND is_active=1', req.tenantId)).map(r => r.id));
+    for (const r of L.OFFICER_ROLES) for (const k of [b[r], b.backups?.[r]]) if (k && !people.has(k)) throw bad('Officers must be active staff of this campus');
+    if (!b.nodal_1) throw bad('Nodal officer 1 is required');
+    if (b.nodal_2 && b.nodal_2 === b.nodal_1) throw bad('Nodal officers 1 and 2 must be different people');
+    await tx(async () => { await run('DELETE FROM mail.channel_officers WHERE channel_id=?', c.id);
+      for (const r of L.OFFICER_ROLES) if (b[r]) await insert('mail.channel_officers', { channel_id: c.id, role: r, user_id: b[r], backup_user_id: b.backups?.[r] || null, created_at: now() }); });
+    audit(req, 'setting_change', 'channel_officers', c.id, b); return pubChannel(c);
+  }));
+  S.put('/maildesk/channels/:id/members', wrap(async req => {
+    await needSetup(req); const c = await channelIn(req, req.params.id), list = Array.isArray(req.body.members) ? req.body.members.slice(0, 50) : [];
+    const people = new Set((await all('SELECT id FROM users WHERE tenant_id=? AND is_active=1', req.tenantId)).map(r => r.id));
+    if (list.some(m => !people.has(m.user_id) || !['viewer', 'replier', 'hr'].includes(m.role))) throw bad('Members must be staff of this campus, as viewer, replier or hr');
+    await tx(async () => { await run('DELETE FROM mail.channel_members WHERE channel_id=?', c.id); for (const m of list) await insert('mail.channel_members', { channel_id: c.id, user_id: m.user_id, role: m.role }); });
+    audit(req, 'setting_change', 'channel_members', c.id, { n: list.length }); return pubChannel(c);
+  }));
+  S.put('/maildesk/channels/:id/sla', wrap(async req => {
+    await needSetup(req); const c = await channelIn(req, req.params.id), list = Array.isArray(req.body.policies) ? req.body.policies : [];
+    const n = (v, lo, hi, m) => { const x = Number(v); if (!Number.isInteger(x) || x < lo || x > hi) throw bad(m); return x; };
+    const rows = list.map(p => ({ lane: p.lane || null, name: str(p.name, 120) || (p.lane ? L.LANE_NAMES[p.lane] : 'Default'), first_response_mins: n(p.first_response_mins, 5, 20000, 'Reply within: 5 minutes to 20000'),
+      warn_at_pct: n(p.warn_at_pct ?? 75, 10, 99, 'Reminder at: 10 to 99 %'), escalate_at_pct: n(p.escalate_at_pct ?? 100, 50, 500, 'Escalate at: 50 to 500 %'),
+      second_escalate_at_pct: p.second_escalate_at_pct ? n(p.second_escalate_at_pct, 101, 1000, 'Second escalation: 101 to 1000 %') : null,
+      business_hours_only: p.business_hours_only === false ? 0 : 1, pause_on_hold: p.pause_on_hold === false ? 0 : 1 }));
+    if (rows.some(p => p.lane && !L.LANES.includes(p.lane))) throw bad('Unknown lane');
+    if (new Set(rows.map(p => p.lane)).size !== rows.length) throw bad('One target per lane');
+    await tx(async () => { await run('UPDATE mail.sla_policies SET active=0 WHERE channel_id=?', c.id);
+      for (const p of rows) await insert('mail.sla_policies', { id: uid(), channel_id: c.id, ...p, active: 1, created_at: now() }); }); // old ones stay for the threads that use them
+    audit(req, 'setting_change', 'sla', c.id, { n: rows.length }); return pubChannel(c);
+  }));
+  S.post('/maildesk/channels/:id/test', wrap(async req => {
+    await needSetup(req); const c = await channelIn(req, req.params.id);
+    try { const r = await graph('GET', `${mbox(c.address)}/mailFolders/inbox?$select=displayName,totalItemCount,unreadItemCount`);
+      return { ok: true, message: `Connected: Inbox has ${r.totalItemCount ?? '?'} mails (${r.unreadItemCount ?? '?'} unread)` }; }
+    catch (e) { return { ok: false, message: e.message }; }
+  }));
+  S.post('/maildesk/channels/:id/sync', wrap(async req => { await needSetup(req); const c = await channelIn(req, req.params.id); if (c.mode === 'off') throw bad('Switch the mailbox to shadow or live first');
+    await enqueue('catchup', { channel_id: c.id }, `catchup:${c.id}`); setImmediate(work); return { ok: true }; }));
+  S.delete('/maildesk/channels/:id', wrap(async req => {
+    await needSetup(req); const c = await channelIn(req, req.params.id);
+    if (await one('SELECT 1 x FROM mail.threads WHERE channel_id=? LIMIT 1', c.id)) throw new HttpErr(409, 'IN_USE', 'This mailbox has mail threads; switch it off instead');
+    await unsubscribe(c); await run('DELETE FROM mail.channels WHERE id=?', c.id); audit(req, 'setting_change', 'channel', c.id, { deleted: c.address }); return { ok: true };
+  }));
+  S.post('/maildesk/leave', wrap(async req => {
+    await needSetup(req); const b = req.body, d = /^\d{4}-\d{2}-\d{2}$/;
+    if (!(await one('SELECT 1 x FROM users WHERE id=? AND tenant_id=?', b.user_id, req.tenantId))) throw bad('Pick a person of this campus');
+    if (!d.test(b.from_day || '') || !d.test(b.to_day || '') || b.from_day > b.to_day) throw bad('Leave: a start date on or before the end date');
+    return insert('mail.officer_leave', { id: uid(), user_id: b.user_id, from_day: b.from_day, to_day: b.to_day, created_at: now() });
+  }));
+  S.delete('/maildesk/leave/:id', wrap(async req => { await needSetup(req);
+    await run('DELETE FROM mail.officer_leave l USING users u WHERE l.id=? AND u.id=l.user_id AND u.tenant_id=?', req.params.id, req.tenantId); return { ok: true }; }));
+  // templates: auto_ack (the "we received it" reply), status, manual (quick answers in the reply box)
+  const tplFields = async (req, b, partial) => {
+    const f = {};
+    if (!partial || 'kind' in b) { if (!['auto_ack', 'status', 'manual'].includes(b.kind)) throw bad('Kind: auto_ack, status or manual'); f.kind = b.kind; }
+    if (!partial || 'name' in b) { f.name = str(b.name, 120); if (!f.name) throw bad('Template name required'); }
+    if (!partial || 'body' in b) { f.body = str(b.body, 8000); if (!f.body) throw bad('Template text required');
+      const unknown = [...f.body.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map(m => m[1]).filter(k => !L.TEMPLATE_VARS.includes(k));
+      if (unknown.length) throw bad(`Unknown fill-in: {{${unknown[0]}}}. Use: ${L.TEMPLATE_VARS.map(v => `{{${v}}}`).join(', ')}`); }
+    if ('subject' in b) f.subject = str(b.subject, 255) || null;
+    if ('category' in b) f.category = str(b.category, 80) || null;
+    if ('thread_status' in b) f.thread_status = b.thread_status || null;
+    if ('channel_id' in b) { f.channel_id = b.channel_id || null; if (f.channel_id) await channelIn(req, f.channel_id); }
+    if ('active' in b) f.active = b.active ? 1 : 0;
+    return f;
+  };
+  S.post('/maildesk/templates', wrap(async req => { await needSetup(req); const f = await tplFields(req, req.body, false);
+    const t = await insert('mail.reply_templates', { id: uid(), tenant_id: req.tenantId, active: 1, ...f, created_at: now(), updated_at: now() }); audit(req, 'setting_change', 'template', t.id); return t; }));
+  const tplIn = async (req, id, a) => { const t = await one('SELECT * FROM mail.reply_templates WHERE id=?', id);
+    if (!t || (t.tenant_id && t.tenant_id !== req.tenantId) || (!t.tenant_id && !a.admin)) throw notFound(); return t; }; // the default template: super admin only
+  S.patch('/maildesk/templates/:id', wrap(async req => { const a = await needSetup(req), t = await tplIn(req, req.params.id, a), f = await tplFields(req, req.body, true);
+    if (!Object.keys(f).length) throw bad('Nothing to change');
+    await run(`UPDATE mail.reply_templates SET ${Object.keys(f).map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), t.id); audit(req, 'setting_change', 'template', t.id); return { ok: true }; }));
+  S.delete('/maildesk/templates/:id', wrap(async req => { const a = await needSetup(req), t = await tplIn(req, req.params.id, a);
+    await run('UPDATE mail.outbound_emails SET template_id=NULL WHERE template_id=?', t.id); await run('DELETE FROM mail.reply_templates WHERE id=?', t.id); audit(req, 'setting_change', 'template', t.id, { deleted: true }); return { ok: true }; }));
+  S.post('/maildesk/rules', wrap(async req => { await needSetup(req); const b = req.body;
+    if (!['sender', 'domain', 'subject_contains', 'header'].includes(b.match) || !['noise', 'important', 'auto', 'skip_ai'].includes(b.action)) throw bad('Pick what to match and what to do');
+    const value = str(b.value, 255); if (!value) throw bad('What to match is required'); if (b.channel_id) await channelIn(req, b.channel_id);
+    const r = await insert('mail.rules', { id: uid(), tenant_id: req.tenantId, channel_id: b.channel_id || null, match: b.match, value, action: b.action, active: 1, created_at: now() }); audit(req, 'setting_change', 'rule', r.id); return r; }));
+  S.delete('/maildesk/rules/:id', wrap(async req => { await needSetup(req); await run('DELETE FROM mail.rules WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); audit(req, 'setting_change', 'rule', req.params.id, { deleted: true }); return { ok: true }; }));
+  S.post('/maildesk/routes', wrap(async req => { await needSetup(req); const b = req.body, category = str(b.category, 80);
+    if (!category) throw bad('Category required'); if (!(await one('SELECT 1 x FROM services WHERE id=? AND tenant_id=?', b.service_id, req.tenantId))) throw bad('Pick a service of this campus');
+    await run(`INSERT INTO mail.routes (id, tenant_id, category, service_id, auto_forward, created_at) VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT (tenant_id, category) DO UPDATE SET service_id=excluded.service_id`, uid(), req.tenantId, category, b.service_id, now());
+    audit(req, 'setting_change', 'route', category); return { ok: true }; })); // auto_forward stays off: the AI only suggests, an officer forwards
+  S.delete('/maildesk/routes/:id', wrap(async req => { await needSetup(req); await run('DELETE FROM mail.routes WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); return { ok: true }; }));
+  S.put('/maildesk/roles', wrap(async req => { await needSetup(req); const b = req.body;
+    const u = await one('SELECT id, role FROM users WHERE id=? AND tenant_id=?', b.user_id, req.tenantId); if (!u) throw bad('Pick a person of this campus');
+    if (b.role === null || b.role === '') await run('DELETE FROM mail.user_roles WHERE user_id=?', u.id);
+    else { if (b.role !== 'manager') throw bad('A campus can add mail managers only'); await run('INSERT INTO mail.user_roles (user_id, role, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET role=excluded.role', u.id, b.role, now()); }
+    audit(req, 'setting_change', 'user_role', u.id, { role: b.role || null }); return { ok: true }; }));
+  S.put('/maildesk/switches', wrap(async req => { await needAdmin(req); await putSet('auto_reply_paused', req.body.auto_reply_paused ? '1' : '0');
+    audit(req, 'setting_change', 'switch', 'auto_reply_paused', { on: !!req.body.auto_reply_paused }); return { ok: true }; }));
+  // AI providers (keys sealed with AES-256-GCM; a key is never sent back)
+  const aiFields = (b, partial) => {
+    const f = {};
+    if (!partial || 'name' in b) { f.name = str(b.name, 120); if (!f.name) throw bad('Name required'); }
+    if (!partial || 'baseURL' in b || 'model' in b || 'reasoningEffort' in b || 'noTemperature' in b) {
+      const u = str(b.baseURL, 300); if (!/^https?:\/\/\S+$/.test(u)) throw bad('API address, e.g. https://api.openai.com/v1'); const m = str(b.model, 120); if (!m) throw bad('Model required');
+      f.config = JSON.stringify({ baseURL: u, model: m, reasoningEffort: str(b.reasoningEffort, 20) || undefined, noTemperature: !!b.noTemperature }); }
+    if ('priority' in b) { f.priority = Number(b.priority); if (!Number.isInteger(f.priority) || f.priority < 1 || f.priority > 99) throw bad('Order: 1 to 99'); }
+    if ('active' in b) f.active = b.active ? 1 : 0;
+    if (b.apiKey) f.secret_enc = L.seal(KEY, { apiKey: String(b.apiKey).trim() });
+    return f;
+  };
+  S.post('/maildesk/integrations', wrap(async req => { await needAdmin(req); const f = aiFields(req.body, false);
+    const r = await insert('mail.integrations', { id: uid(), kind: 'ai', provider: 'openai-compatible', priority: 1, active: 0, ...f, created_at: now(), updated_at: now() });
+    audit(req, 'key_replace', 'integration', r.id, { name: r.name }); return { id: r.id }; }));
+  S.patch('/maildesk/integrations/:id', wrap(async req => { await needAdmin(req); const i = await one('SELECT * FROM mail.integrations WHERE id=?', req.params.id); if (!i) throw notFound();
+    const f = aiFields({ ...json(i.config, {}), ...req.body }, true); if (!('baseURL' in req.body || 'model' in req.body || 'reasoningEffort' in req.body || 'noTemperature' in req.body)) delete f.config;
+    if (!Object.keys(f).length) throw bad('Nothing to change');
+    await run(`UPDATE mail.integrations SET ${Object.keys(f).map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), i.id);
+    audit(req, f.secret_enc ? 'key_replace' : 'setting_change', 'integration', i.id); return { ok: true }; }));
+  S.delete('/maildesk/integrations/:id', wrap(async req => { await needAdmin(req); await run('DELETE FROM mail.integrations WHERE id=?', req.params.id); audit(req, 'setting_change', 'integration', req.params.id, { deleted: true }); return { ok: true }; }));
+  S.post('/maildesk/integrations/:id/test', wrap(async req => { await needAdmin(req); const i = await one('SELECT * FROM mail.integrations WHERE id=?', req.params.id); if (!i) throw notFound();
+    let msg; try { const o = await askAi(i, 'Test', 'Hello, what are the B.Tech fees for 2027?'); msg = `Works: sorted the test mail as ${L.LANE_NAMES[o.reading.lane]} (${o.reading.category})`; }
+    catch (e) { msg = `Failed: ${e.message}`; }
+    await run('UPDATE mail.integrations SET last_test_at=?, last_test_result=? WHERE id=?', now(), msg.slice(0, 255), i.id); return { ok: msg.startsWith('Works'), message: msg }; }));
+
+  console.log('Mail desk on (MAIL_ENABLED=true)' + (graphReady() ? '' : ': Microsoft 365 not connected yet (MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET)'));
+}
