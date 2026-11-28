@@ -718,6 +718,12 @@ try {
   check("the joiner's email carries their own number and link", (await q("SELECT subject, body FROM notifications WHERE template_key='created' AND recipient='ownb@own.example.com'"))[0]?.subject.includes(`[${a2.ticket_no}]`) && (await q("SELECT body FROM notifications WHERE template_key='created' AND recipient='ownb@own.example.com'"))[0].body.includes(`/t/${a2.ticket_no}?k=${a2.tracking_token}`));
   const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => own(`Many${i}`, { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '150', issue: 'Light' } })));
   check('50 at once: one ticket, 50 different numbers', new Set(burst.map(x => x.ticket_no)).size === 50 && (await q("SELECT count(*)::int n FROM tickets WHERE tenant_id=? AND location_key='science block:150'", alpha.id))[0].n === 1);
+  const tk = async no => (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', alpha.id, no))[0];
+  const shared = await tk(a1.ticket_no);
+  r = await act(shared.id, { to: 'in_progress', note: 'Electrician on the way' });
+  const mails = await q("SELECT recipient, subject, body FROM notifications WHERE template_key='status_in_progress' AND ticket_id=? ORDER BY recipient", shared.id);
+  check('one status change: three emails, each under its own number', r.status === 200 && mails.length === 3 && mails.find(m => m.recipient === 'ownb@own.example.com')?.subject.includes(`[${a2.ticket_no}]`) && mails.find(m => m.recipient === 'ownc@own.example.com')?.subject.includes(`[${a3.ticket_no}]`));
+  check("a joiner's email never carries the first student's name", !mails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Owna'));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');

@@ -253,14 +253,16 @@ async function ticketVars(t, extra = {}) {
   const first = await one("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='created' ORDER BY id LIMIT 1", t.id);
   if (first && pics(first.id).length) ticket_details.push(['Photos', pics(first.id)]);
   const SW = { hold: 'Put on hold', in_progress: 'Work started', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
-  const timeline = (await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)).map(e => {
+  const events = (await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)).map(e => {
     const m = JSON.parse(e.meta || '{}'), who = e.actor_name || '';
     const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', landed: `Reached the ${e.to_value} team`, note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
       status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
-    return { at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), label, body: e.body || '',
+    return { id: e.id, event_type: e.event_type, actor_type: e.actor_type, requestor_row: m.requestor_row || null, label,
+      at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), body: e.body || '',
       photos: e.event_type === 'created' ? [] : pics(e.id) };
   });
-  return { progress, ticket_details, timeline, escalated_to_name: escName,
+  const timeline = events.map(({ at, label, body, photos }) => ({ at, label, body, photos })); // staff emails: every public update
+  return { progress, ticket_details, timeline, _events: events, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
     requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), kind: sug ? 'Suggestion' : 'Ticket', due: sug ? 'No target (suggestion)' : fmtIST(t.due_at),
     providers: (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', '), ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
@@ -275,7 +277,9 @@ const staffVars = async (u, pw) => {
     guide: { kind: 'provider', url: PROVIDER_GUIDE }, // the welcome email links the provider guide
     services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
 };
-const trackUrl = async (t) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id); return `${base()}/#/d/${tn.slug}/t/${t.ticket_no}?k=${t.tracking_token}`; };
+// A ticket's public page; given a person's row on it, that person's own number and link (a joiner from before own numbers keeps the shared one).
+const trackUrl = async (t, row = null) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id), k = row?.ticket_no ? row : t;
+  return `${base()}/#/d/${tn.slug}/t/${k.ticket_no}?k=${k.tracking_token}`; };
 // Statuses: queued → sent | failed (after 4 tries); 'logged' = no flow connected or sending paused (printed to the server log only).
 async function sendOne(id) {
   const n = await one('SELECT * FROM notifications WHERE id=?', id); if (!n || n.status !== 'queued') return;
@@ -526,8 +530,8 @@ async function createTicket(tenant, b, opts) {
   }
   if (merged) { // the person gets their own acknowledgement, under their own number and link; the providers already have it
     const others = merged.count - 1, guide = first ? { guide: guideLink('requestor') } : {}, row = merged.row;
-    const own = row.ticket_no ? { ticket_no: row.ticket_no, ticket_link: `${base()}/#/d/${tenant.slug}/t/${row.ticket_no}?k=${row.tracking_token}` } : {}; // a joiner from before own numbers keeps the shared one
-    if (!merged.again) await notify(t, [b.email || null], 'created', { ...await ticketVars(t, { affected_note: `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. You will get updates by email.` }), requestor_name: b.name, ...guide, ...own });
+    const note = `Known issue: ${others} other${others === 1 ? '' : 's'} reported this too. The team is fixing it as one job. You will get every update by email, under your own number.`;
+    if (!merged.again) await notify(t, [b.email || null], 'created', { ...await requestorVars(t, await ticketVars(t, { affected_note: note }), row), ...guide });
     return Object.assign(t, { merged: true, affected_count: merged.count, own_no: row.ticket_no, own_token: row.tracking_token });
   }
   const prov = await providersFor(tenant.id, svc.id);
@@ -573,10 +577,29 @@ async function recount(t, ts, { allowDown = false } = {}) {
   if (p !== t.priority) await addEvent(t, { type: 'system', name: 'ONE Desk' }, 'priority_changed', { from: t.priority, to: p, internal: true, meta: { reason: `${n} people affected` } });
   return { n, priority: p, due_at: due };
 }
-// One email per person who reported the ticket, each greeted by name. A long list goes out after the reply (the outbox sends it).
+// An update seen by one person on a shared ticket: everything the team does, but of the students' own notes and reopen requests
+// only theirs (a requestor event from before notes carried their row is the first requestor's).
+const visibleTo = row => e => (e.event_type !== 'note' && e.event_type !== 'reopen_requested') || e.actor_type !== 'requestor' || (e.requestor_row ? e.requestor_row === row.id : !!row.is_first);
+// One person's email on a shared ticket: the ticket's shared values, with their own number, link, name, complaint, photos and notes.
+async function requestorVars(t, vars, row) {
+  const { _events = [], ...v } = vars;
+  const ticket_no = row.ticket_no || v.ticket_no, subject = row.subject || v.subject, description = row.description ?? (row.is_first ? v.description : '') ?? '';
+  const files = row.is_first ? null : await all('SELECT file_name, mime_type, storage_key FROM attachments WHERE event_id=? ORDER BY created_at', row.event_id);
+  const photos = files && files.filter(f => Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
+  let details = v.ticket_details;
+  if (Array.isArray(details)) {
+    details = details.filter(([k]) => !['Subject', 'Description', ...(photos ? ['Photos'] : [])].includes(k)).map(([k, x]) => [k, k === 'Ticket' ? String(ticket_no) : x]);
+    const at = Math.max(details.findIndex(([k]) => k === 'Ticket'), details.findIndex(([k]) => k === 'Service')) + 1;
+    details.splice(at, 0, ...[['Subject', subject], ['Description', description]].filter(([, x]) => x && String(x).trim()).map(([k, x]) => [k, String(x)]));
+    if (photos?.length) details.push(['Photos', photos]);
+  }
+  return { ...v, ticket_no, ticket_link: await trackUrl(t, row), requestor_name: row.name || v.requestor_name, subject, description: description || '', ticket_details: details,
+    timeline: _events.filter(visibleTo(row)).map(({ at, label, body, photos }) => ({ at, label, body, photos })) };
+}
+// One email per person who reported the ticket (and is still on it), each under their own number and link. A long list goes out after the reply (the outbox sends it).
 async function notifyRequestors(t, key, vars) {
-  const list = await all("SELECT name, contact FROM ticket_requestors WHERE ticket_id=? AND contact LIKE '%@%' ORDER BY raised_at", t.id);
-  const send = async () => { for (const r of list) await notify(t, [r.contact], key, { ...vars, requestor_name: r.name }); };
+  const list = await all("SELECT * FROM ticket_requestors WHERE ticket_id=? AND detached_at IS NULL AND contact LIKE '%@%' ORDER BY raised_at", t.id);
+  const send = async () => { for (const r of list) await notify(t, [r.contact], key, await requestorVars(t, vars, r)); };
   if (list.length <= 25) return send();
   send().catch(e => console.error('requestor emails', e.message));
 }
