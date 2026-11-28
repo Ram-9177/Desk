@@ -834,8 +834,10 @@ async function workspace(main, id, { admin }) {
       <div class="person">${avatar(r.name, 40, 'accent')}<div><b>${esc(r.name)}</b> ${rtBadge(r.requestor_type || 'student')}<div class="psub">${esc([r.department, r.identifier].filter(Boolean).join(' · '))}</div></div></div>
       ${r.email ? `<a class="crow" href="mailto:${esc(r.email)}">${I('mail', 15)}<span>${esc(r.email)}</span></a>` : ''}${r.phone ? `<a class="crow" href="tel:${esc(r.phone)}">${I('phone', 15)}<span>${esc(r.phone)}</span></a>` : ''}
       ${prev.length ? `<div class="sdiv"></div><div class="slabel">Previous tickets</div>${prev.map(h => `<a class="prow" href="#/c/t/${h.id}"><span class="mono">#${h.ticket_no}</span>${pill(h.status)}</a>`).join('')}` : ''}</div>
-    ${t.requestors?.length > 1 ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}
-      <div class="psub">${esc(q.contact)} · ${shortDate(q.raised_at)}</div>${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}</div>`).join('')}</div>` : ''}
+    ${t.requestors?.length ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.filter(q => !q.detached_at).length})`)}${t.requestors.map(q => { const no = q.ticket_no || (q.is_first ? t.ticket_no : ''), said = q.description || (q.is_first ? t.description : '');
+      return `<div class="rqrow">${no ? `<span class="mono">#${esc(no)}</span> ` : ''}<b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}${[q.department, q.identifier].filter(Boolean).map(v => ' · ' + esc(v)).join('')}
+      <div class="psub">${esc(q.contact)} · ${shortDate(q.raised_at)}</div>${said ? `<div class="rqsaid">${esc(said)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}
+      ${q.detached_at ? (q.detached_to ? `<a class="small" href="#/c/t/${esc(q.detached_to)}">Split out → #${esc(no)}</a>` : '') : !q.is_first && live ? `<button class="btn sm" data-split="${esc(q.id)}">Split out</button>` : ''}</div>`; }).join('')}</div>` : ''}
     <div class="card side">${cardHeading('users', 'Assigned to')}${t.providers.map(p => `<div class="person">${avatar(p.name, 40, 'dark')}<div><b>${esc(p.name)}</b><div class="psub">Provider${p.phone ? ' · ' + esc(p.phone) : ''}</div></div></div>`).join('') || '<div class="psub">No provider is mapped to this service.</div>'}</div>
     ${live ? `<div class="card side">${cardHeading('flag', 'Priority')}<select id="pri" aria-label="Priority">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <div class="helper">${I('eyeoff', 14)}<span>Set by your team. The requester never sees it.</span></div></div>` : ''}`;
@@ -932,6 +934,7 @@ async function workspace(main, id, { admin }) {
   const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
   main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
+  main.querySelectorAll('[data-split]').forEach(b => b.onclick = () => toast('Coming in the next step')); // Task 8: the split dialog
   const remind = () => remindDlg(id, reload);
   main.querySelectorAll('[data-remadd]').forEach(b => b.onclick = remind);
   main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); } catch (er) { toast(er.message); } });

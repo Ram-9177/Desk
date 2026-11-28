@@ -1468,7 +1468,8 @@ S.get('/tickets/:id', wrap(async req => {
     service: await one('SELECT id,name,code,form_schema FROM services WHERE id=?', t.service_id),
     providers: await providersFor(req.tenantId, t.service_id),
     requestor: await one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
-    requestors: await all('SELECT id, name, contact, raised_at, is_first, event_id, photo_url FROM ticket_requestors WHERE ticket_id=? ORDER BY raised_at', t.id),
+    requestors: await all(`SELECT tr.id, tr.name, tr.contact, tr.raised_at, tr.is_first, tr.event_id, tr.photo_url, tr.ticket_no, tr.description, tr.detached_at, tr.detached_to, r.identifier, r.department
+      FROM ticket_requestors tr LEFT JOIN requestors r ON r.id = tr.requestor_id WHERE tr.ticket_id=? ORDER BY tr.raised_at`, t.id),
     requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),

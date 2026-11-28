@@ -748,7 +748,7 @@ try {
   const closedMails = await q("SELECT recipient, text_body body FROM notifications WHERE template_key='status_closed' AND ticket_id=? ORDER BY created_at DESC", shared.id); // newest first (it was closed once before); the text as sent, not the template
   check("the closed email to the first student does not carry the joiner's note", !closedMails.find(m => m.recipient === 'owna@own.example.com').body.includes('Still not working') && closedMails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Still not working'));
   check('the bot answers a joiner number with that number', (await api('/public/alpha/bot', { method: 'POST', body: { q: a2.ticket_no } })).data.text.startsWith(`Ticket ${a2.ticket_no}`));
-  ids.joinerNo = a2.ticket_no; ids.sharedId = shared.id; // for the Chrome screens
+  ids.joinerNo = a2.ticket_no; ids.closedId = shared.id; // for the Chrome screens (the shared ticket ends closed: no Split out there)
   // a joiner's page never carries the first student's name, complaint or photos
   const hopForm = { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '170', issue: 'Fan' };
   const h1 = await own('Hopa', { form_data: hopForm, description: 'Sparks from the socket', files: [{ name: 'spark.png', type: 'image/png', source: 'camera', data: PNG }] });
@@ -772,6 +772,7 @@ try {
     && !others.test(JSON.stringify(p.events)) && !/Ownc/.test(JSON.stringify(p)) && p.events.some(e => e.body?.startsWith('Electrician on the way'))), JSON.stringify([viaH1, viaH2]).slice(0, 800));
   await fails('someone not on the ticket it went into cannot add a note there', `/public/alpha/tickets/${h2.ticket_no}/notes`, { method: 'POST', body: { body: 'Anyone?' } }, 409);
   await run('UPDATE tickets SET joined_into=NULL WHERE id IN (?, ?)', hT.id, gT.id); // the rest of the suite sees ordinary tickets
+  ids.sharedId = hT.id; // the Chrome screens' live shared ticket (Hopa first, Hopb joined): the Fan one above is closed, so it shows no Split out
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1530,7 +1531,7 @@ try {
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1, joinerNo: ids.joinerNo });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1, joinerNo: ids.joinerNo, sharedId: ids.sharedId, closedId: ids.closedId });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1596,6 +1597,9 @@ async function uiSmoke(tok, id) {
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
     check('staff screens offer no guide card (the guide is for requestors)', !(await js("return !!document.querySelector('.guidecard')")));
     await visit('provider ticket workspace', '/c/t/' + id.t1, tok.pavan, '#act #to');
+    await visit('workspace: requesters with their own numbers', '/c/t/' + id.sharedId, tok.pavan, '.rqrow [data-split]');
+    await visit('workspace: a closed shared ticket lists the numbers', '/c/t/' + id.closedId, tok.pavan, '.rqrow .mono');
+    check('…and offers no Split out on a closed ticket', await js("return !document.querySelector('[data-split]')"));
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');

@@ -540,7 +540,7 @@ body.on-ticket .cwrap>.head{display:none}
 .crow{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-2);min-width:0}.crow span{overflow:hidden;text-overflow:ellipsis}.crow svg{color:var(--icon-muted)}.crow:hover{color:var(--accent)}
 .sdiv{height:1px;background:var(--divider)}.slabel{font-size:12px;color:var(--text-meta)}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;color:var(--text-2);font-size:13px}.prow:hover{background:var(--row-hover)}
-.rqrow{padding:10px 0;border-top:1px solid #F2F4F7}.rqrow:first-of-type{border-top:0;padding-top:0}
+.rqrow{padding:10px 0;border-top:1px solid #F2F4F7}.rqrow:first-of-type{border-top:0;padding-top:0}.rqrow .rqsaid{margin:6px 0;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}.rqrow [data-split]{margin-top:6px}
 .tk-bar,.tk-appbar,.segs{display:none}
 @media (max-width:767px){
   body.on-ticket .top,body.on-ticket .bnav{display:none}
