@@ -974,3 +974,4 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .mprevbody{border:1px solid var(--border);border-radius:10px;padding:10px 14px;background:#fff;max-height:240px;overflow:auto;font-family:Calibri,Arial,sans-serif;line-height:1.5}
 .mbudget{display:inline-block;vertical-align:middle;width:90px;height:7px;border-radius:9px;background:#EEF0F3;overflow:hidden;margin-left:6px}.mbudget i{display:block;height:100%;background:var(--accent)}
 .mbudget i.warn{background:var(--st-hold)}.mbudget i.full{background:var(--st-overdue)}
+.mfiles{margin-top:10px}.mfile{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:10px;padding:4px 6px 4px 10px;font-size:13px}.mfile .btn{padding:4px 10px;min-height:0}

@@ -13,6 +13,11 @@
 import crypto from 'node:crypto';
 import { pool, one, all, run, uid, now, tx, insert } from './db.js';
 import { polish } from './polish.js'; // the desk's own spelling check (on this server, no AI, no cost)
+import { kindOf } from './images.js'; // the desk's own file check (photos and PDFs), used when attachments go with a forwarded mail
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import * as L from './mail-logic.js';
 
 const SCHEMA = `
@@ -131,6 +136,11 @@ CREATE TABLE IF NOT EXISTS mail.candidate_notes (id TEXT PRIMARY KEY, applicatio
 CREATE TABLE IF NOT EXISTS mail.ai_spend (month TEXT NOT NULL, channel_id TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL, purpose TEXT NOT NULL,
   calls INT NOT NULL DEFAULT 0, tokens_in BIGINT NOT NULL DEFAULT 0, tokens_out BIGINT NOT NULL DEFAULT 0, cost_usd NUMERIC(12,6) NOT NULL DEFAULT 0,
   PRIMARY KEY (month, channel_id, provider, purpose));
+-- mail attachments kept in OneDrive (per mailbox), and the backups of the desk sent to OneDrive
+ALTER TABLE mail.channels ADD COLUMN IF NOT EXISTS is_files INT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS mail.message_files (inbound_id TEXT NOT NULL REFERENCES mail.inbound_emails(id) ON DELETE CASCADE,
+  file_id TEXT NOT NULL REFERENCES mail.stored_files(id) ON DELETE CASCADE, PRIMARY KEY (inbound_id, file_id));
+CREATE TABLE IF NOT EXISTS mail.backup_files (key TEXT PRIMARY KEY, size_bytes BIGINT NOT NULL, uploaded_at TEXT NOT NULL);
 -- a reply's effects wait until it has really gone (Undo leaves the thread as it was)
 ALTER TABLE mail.outbound_emails ADD COLUMN IF NOT EXISTS close_after INT NOT NULL DEFAULT 0;
 ALTER TABLE mail.outbound_emails ADD COLUMN IF NOT EXISTS started_at TEXT;
@@ -434,6 +444,7 @@ export async function mail(d) {
     if (ch.mode === 'live') {
       if (res.fresh) await draftAck(ch, res.t, res.inb, ai?.reading).catch(e => console.error('mail ack', e.message));
       if (res.fresh) emit('mail.received', res.t.id);
+      if (ch.is_files && res.inb.has_attachments) await enqueue('files', { channel_id: ch.id, inbound_id: res.inb.id }, `files:${res.inb.id}`); // attachments to OneDrive, own job
       if (ch.is_hr) await enqueue('hr', { channel_id: ch.id, inbound_id: res.inb.id, post: ai?.reading?.post || null, name: ai?.reading?.name || null }, `hr:${res.inb.id}`); // candidate + resume, in its own job
       graph('PATCH', `${mbox(ch.address)}/messages/${encodeURIComponent(messageId)}`, { categories: ['ONE ✓'] }).catch(e => console.warn('mail tag', e.message)); // seen in Outlook as handled by ONE Desk
       if (res.fresh && lane === 'important') await alert(ch.tenant_id, L.queueFor(await officersOf(ch)), 'mail_important', `[${res.t.ref}] Important mail: ${subject || '(no subject)'}`,
@@ -565,6 +576,7 @@ export async function mail(d) {
     if (j.kind === 'ingest') return ingest(ch, p.message_id);
     if (j.kind === 'catchup') return catchup(ch);
     if (j.kind === 'hr') return applicant(ch, p);
+    if (j.kind === 'files') return keepAttachments(ch, p);
   }
   let busy = false;
   async function work() {
@@ -607,6 +619,7 @@ export async function mail(d) {
   async function housekeeping() {
     try {
       await recover(15 * 60e3);
+      await backupDue().catch(e => console.error('mail backup check', e.message));
       for (const ch of await all("SELECT c.* FROM mail.channels c JOIN tenants n ON n.id=c.tenant_id AND n.is_active=1 WHERE c.mode IN ('shadow','live')")) {
         if (!ch.sub_expires_at || Date.parse(ch.sub_expires_at) < Date.now() + 864e5) await subscribe(ch);
         if (graphReady()) await enqueue('catchup', { channel_id: ch.id }, `catchup:${ch.id}`);
@@ -676,6 +689,8 @@ export async function mail(d) {
   S.get('/maildesk/threads/:ref', wrap(async req => {
     const { a, t, ch } = await threadFor(req, req.params.ref);
     const inbound = await all('SELECT id, from_email, from_name, to_list, cc_list, subject, body_text, has_attachments, received_at, ai_json, ai_provider FROM mail.inbound_emails WHERE thread_id=? ORDER BY received_at', t.id);
+    const kept = await all('SELECT mf.inbound_id, f.id, f.file_name, f.mime, f.size_bytes FROM mail.message_files mf JOIN mail.inbound_emails i ON i.id=mf.inbound_id JOIN mail.stored_files f ON f.id=mf.file_id WHERE i.thread_id=? ORDER BY f.file_name', t.id);
+    for (const m of inbound) m.files = kept.filter(f => f.inbound_id === m.id).map(({ inbound_id, ...f }) => f);
     const outbound = await all(`SELECT o.id, o.origin, o.state, o.to_list, o.cc_list, o.subject, o.body_text, o.send_after, o.sent_at, o.created_at, o.error, u.name sent_by
       FROM mail.outbound_emails o LEFT JOIN users u ON u.id=coalesce(o.sent_by_user_id, o.approved_by_user_id) WHERE o.thread_id=? ORDER BY o.created_at`, t.id);
     const notes = await all('SELECT n.id, n.body, n.created_at, coalesce(u.name, n.author_name) author FROM mail.thread_notes n LEFT JOIN users u ON u.id=n.author_user_id WHERE n.thread_id=? ORDER BY n.created_at', t.id);
@@ -819,13 +834,15 @@ export async function mail(d) {
     const b = req.body || {}, tn = await tenantRow(ch.tenant_id), first = await one('SELECT body_text FROM mail.inbound_emails WHERE thread_id=? ORDER BY received_at LIMIT 1', t.id);
     const desc = `${str(b.description, 8000) || first?.body_text || ''}\n\n— Forwarded from ${ch.address}, ${t.ref}`;
     const fd = b.form_data && typeof b.form_data === 'object' && !Array.isArray(b.form_data) ? b.form_data : {};
+    const withFiles = b.attach_files === true ? await filesForDesk(t.id) : { files: [], skipped: [] };
     const tk = await createTicket(tn, { service_id: str(b.service_id, 64), location: str(b.location, 200) || undefined, form_data: fd, requestor_type: str(b.requestor_type, 20) || undefined /* the desk checks it */, name: str(b.name, 120) || t.requester_name || t.requester_email, email: t.requester_email,
-      subject: str(b.subject, 200) || t.subject || '(no subject)', description: desc, idempotency_key: `mail:${t.id}`, merge: 'no' }, { channel: 'mail', actor: { type: 'user', id: req.user.id, name: req.user.name } });
+      subject: str(b.subject, 200) || t.subject || '(no subject)', description: desc, idempotency_key: `mail:${t.id}`, merge: 'no', files: withFiles.files }, { channel: 'mail', actor: { type: 'user', id: req.user.id, name: req.user.name } });
     const ts = now();
     const r = await run(`UPDATE mail.threads SET status='forwarded', desk_ticket_id=?, forwarded_service_id=?, forwarded_at=?, forwarded_by_user_id=?, updated_at=? WHERE id=? AND desk_ticket_id IS NULL`,
       tk.id, tk.service_id, ts, req.user.id, ts, t.id);
     if (r.changes) { emit('mail.forwarded', t.id, { ticket_no: tk.ticket_no }); await slaEvent(t.id, 'forwarded', [], { ticket_no: tk.ticket_no }); await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_user_id: req.user.id, body: `Forwarded to the desk as ticket #${tk.ticket_no}.`, created_at: ts }); }
-    audit(req, 'forward', 'thread', t.id, { ticket_id: tk.id, ticket_no: tk.ticket_no }); return { ticket_id: tk.id, ticket_no: tk.ticket_no };
+    audit(req, 'forward', 'thread', t.id, { ticket_id: tk.id, ticket_no: tk.ticket_no, files: withFiles.files.length });
+    return { ticket_id: tk.id, ticket_no: tk.ticket_no, files: withFiles.files.length, files_skipped: withFiles.skipped };
   }));
 
   /* ================= API: Confirm queue (auto-replies waiting for a click) ================= */
@@ -886,6 +903,7 @@ export async function mail(d) {
     if ('ack_mode' in b) { if (!['approve', 'auto'].includes(b.ack_mode)) throw bad('Auto-reply: approve or auto'); f.ack_mode = b.ack_mode; }
     if ('default_service_id' in b) f.default_service_id = b.default_service_id || null;
     if ('is_hr' in b) f.is_hr = b.is_hr ? 1 : 0;
+    if ('is_files' in b) f.is_files = b.is_files ? 1 : 0;
     return f;
   };
   S.post('/maildesk/channels', wrap(async req => {
@@ -1188,6 +1206,119 @@ export async function mail(d) {
     audit(req, 'delete', 'candidate', ap.candidate_id, { files: files.length }); return { ok: true, files_removed: files.length };
   }));
 
+  /* ================= Mail attachments kept in OneDrive (a tick per mailbox) ================= */
+  // Each attachment (not inline pictures; up to 25 MB; no programs or scripts) goes to <files folder>/<mailbox>/<year>/<mail number>/<file>.
+  // The same file is stored once per campus. They open from the mail page, through ONE Desk only (no share links).
+  async function keepAttachments(ch, p) {
+    const inb = await one('SELECT * FROM mail.inbound_emails WHERE id=?', p.inbound_id); if (!inb) return;
+    const t = await one('SELECT ref FROM mail.threads WHERE id=?', inb.thread_id), d = await drive();
+    if (!d?.account) { await note(inb.thread_id, 'This mail has attachments, but OneDrive is not connected, so they stay in Outlook only. Connect it on Mail → Settings.'); return; }
+    const list = (await graph('GET', `${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/attachments?$select=id,name,contentType,size,isInline`)).value || [];
+    const refused = [];
+    for (const a of list.filter(a => (a['@odata.type'] || '#microsoft.graph.fileAttachment') === '#microsoft.graph.fileAttachment' && !a.isInline)) {
+      const why = L.attachmentRefusal(a.name, a.size); if (why) { refused.push(`${a.name} (${why})`); continue; }
+      const { buf } = await graphBytes(`${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/attachments/${encodeURIComponent(a.id)}/$value`);
+      if (buf.length > L.ATTACH_MAX || L.isProgram(buf)) { refused.push(`${a.name} (${buf.length > L.ATTACH_MAX ? 'over 25 MB' : 'a program'})`); continue; }
+      const sha = crypto.createHash('sha256').update(buf).digest('hex'), mime = L.mimeOf(a.name, a.contentType);
+      let f = await one('SELECT * FROM mail.stored_files WHERE tenant_id=? AND sha256=?', ch.tenant_id, sha);
+      if (!f) {
+        const full = `${d.files_folder || 'Mail files'}/${L.safeName(ch.address)}/${now().slice(0, 4)}/${t.ref}/${L.safeName(a.name)}`, r = await drivePutAt(d.account, full, buf, mime, 'rename');
+        try { f = await insert('mail.stored_files', { id: uid(), tenant_id: ch.tenant_id, account: d.account, external_id: r.id, path: full, file_name: L.safeName(a.name), mime, size_bytes: buf.length, sha256: sha, source_email_id: inb.id, created_at: now() }); }
+        catch (e) { if (e.code !== '23505') throw e; await graph('DELETE', `${mbox(d.account)}/drive/items/${encodeURIComponent(r.id)}`).catch(() => {}); f = await one('SELECT * FROM mail.stored_files WHERE tenant_id=? AND sha256=?', ch.tenant_id, sha); }
+      }
+      await run('INSERT INTO mail.message_files (inbound_id, file_id) VALUES (?, ?) ON CONFLICT DO NOTHING', inb.id, f.id);
+    }
+    if (refused.length) await note(inb.thread_id, `Not kept in OneDrive (open them in Outlook if needed): ${refused.join(', ')}.`);
+  }
+  // an attachment of a mail, streamed from OneDrive through ONE Desk (pictures and PDFs can open in the page; anything else downloads)
+  S.get('/maildesk/threads/:ref/files/:file', async (req, res, next) => { try {
+    const { t } = await threadFor(req, req.params.ref);
+    const f = await one('SELECT f.* FROM mail.message_files mf JOIN mail.inbound_emails i ON i.id=mf.inbound_id JOIN mail.stored_files f ON f.id=mf.file_id WHERE i.thread_id=? AND f.id=?', t.id, req.params.file);
+    if (!f) throw notFound();
+    const { buf } = await graphBytes(`${mbox(f.account)}/drive/items/${encodeURIComponent(f.external_id)}/content`).catch(e => { throw e.status === 404 ? new HttpErr(404, 'GONE', 'This file is no longer in OneDrive') : e; });
+    audit(req, 'view', 'mail_file', f.id, { thread: t.id });
+    const inline = /^(application\/pdf|image\/(png|jpeg|gif|webp))$/.test(f.mime) && req.query.download !== '1';
+    res.set({ 'Content-Type': inline ? f.mime : 'application/octet-stream', 'Content-Length': buf.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${f.file_name.replace(/[^\w .()-]/g, '_')}"`, 'Content-Security-Policy': "default-src 'none'; sandbox" }).send(buf);
+  } catch (e) { next(e); } });
+  // with Forward to service: the mail's photos and PDFs go with the desk ticket, by the desk's own rules (at most 4, photos and PDFs, 5 MB each)
+  async function filesForDesk(threadId) {
+    const rows = await all(`SELECT DISTINCT f.* FROM mail.message_files mf JOIN mail.inbound_emails i ON i.id=mf.inbound_id JOIN mail.stored_files f ON f.id=mf.file_id
+      WHERE i.thread_id=? AND f.size_bytes <= ? ORDER BY f.created_at LIMIT 12`, threadId, 5 * 1024 * 1024);
+    const out = [], skipped = [];
+    for (const f of rows) {
+      if (out.length >= 4) { skipped.push(f.file_name); continue; }
+      try { const { buf } = await graphBytes(`${mbox(f.account)}/drive/items/${encodeURIComponent(f.external_id)}/content`);
+        if (!kindOf(buf)) { skipped.push(f.file_name); continue; }
+        out.push({ name: f.file_name, source: 'file', data: `data:${f.mime};base64,${buf.toString('base64')}` }); } catch { skipped.push(f.file_name); }
+    }
+    return { files: out, skipped };
+  }
+
+  /* ================= Backups to OneDrive (Settings, super admin): the database and the desk's photos, every night ================= */
+  // The desk's own backup (README) keeps copies on the same server; this sends them off it. A database copy (pg_dump) a night,
+  // kept N days; the photos folder mirrored (each photo sent once). It runs beside the mail work, never in its way.
+  const UPLOAD_DIR = process.env.UPLOAD_DIR || 'data/uploads';
+  const backupCfg = async () => ({ on: false, at: '02:00', keep_days: 30, photos: true, folder: 'ONE Desk backups', ...json(await getSet('backup') || '{}', {}) });
+  const istNow = () => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map(x => [x.type, x.value]));
+    return { day: `${p.year}-${p.month}-${p.day}`, hm: `${p.hour}:${p.minute}` }; };
+  let backingUp = false;
+  async function backupNow(reason = 'scheduled') {
+    if (backingUp) return { ok: false, steps: [{ ok: false, text: 'A backup is already running' }] };
+    backingUp = true; const steps = [], cfg = await backupCfg(), d = await drive(), day = istNow().day, started = now();
+    const step = async (text, fn) => { if (steps.some(x => !x.ok)) return; try { const r = await fn(); steps.push({ ok: true, text: typeof text === 'function' ? text(r) : text }); return r; } catch (e) { steps.push({ ok: false, text: e.message }); } };
+    const tmp = path.join(os.tmpdir(), `onedesk-${day}-${process.pid}.dump`);
+    try {
+      await step('OneDrive is connected', async () => { if (!d?.account) throw new Error('OneDrive is not connected: connect it on Mail → Settings first'); await token(); });
+      const size = await step(sz => `Database copied (${(sz / 1048576).toFixed(1)} MB)`, () => new Promise((ok, no) => {
+        const pr = spawn(process.env.PG_DUMP || 'pg_dump', ['-Fc', '--no-owner', '-f', tmp, '--dbname', process.env.DATABASE_URL || 'postgres://localhost/onedesk'], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let err = ''; pr.stderr.on('data', x => err += x);
+        pr.on('error', e => no(new Error(e.code === 'ENOENT' ? 'pg_dump is not installed on the server: sudo apt install postgresql-client' : e.message)));
+        pr.on('close', c => c === 0 ? ok(fs.statSync(tmp).size) : no(new Error(`pg_dump failed: ${err.slice(0, 200)}`)));
+      }));
+      await step(`Database copy saved to OneDrive: ${cfg.folder}/database/onedesk-${day}.dump`, () => drivePutAt(d.account, `${cfg.folder}/database/onedesk-${day}.dump`, { file: tmp, size }, 'application/octet-stream', 'replace'));
+      if (cfg.photos) await step(n => n ? `${n} new photo${n === 1 ? '' : 's'} saved` : 'Photos already up to date', async () => {
+        let n = 0; const done = new Map((await all('SELECT key, size_bytes FROM mail.backup_files')).map(r => [r.key, Number(r.size_bytes)]));
+        for (const key of fs.existsSync(UPLOAD_DIR) ? fs.readdirSync(UPLOAD_DIR) : []) {
+          const st = fs.statSync(path.join(UPLOAD_DIR, key)); if (!st.isFile() || done.get(key) === st.size) continue;
+          await drivePutAt(d.account, `${cfg.folder}/uploads/${key}`, st.size <= 4 * 1024 * 1024 ? fs.readFileSync(path.join(UPLOAD_DIR, key)) : { file: path.join(UPLOAD_DIR, key), size: st.size }, 'application/octet-stream', 'replace');
+          await run('INSERT INTO mail.backup_files (key, size_bytes, uploaded_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET size_bytes=excluded.size_bytes, uploaded_at=excluded.uploaded_at', key, st.size, now()); n++;
+        }
+        return n; });
+      await step(n => n ? `${n} copy older than ${cfg.keep_days} days removed` : `Copies kept for ${cfg.keep_days} days`, async () => {
+        const cut = new Date(Date.now() - cfg.keep_days * 864e5).toISOString().slice(0, 10); let n = 0;
+        const list = await graph('GET', `${rootPath(d.account, `${cfg.folder}/database`)}:/children?$select=id,name&$top=999`).catch(e => { if (e.status === 404) return { value: [] }; throw e; });
+        for (const it of list.value || []) { const m = /^onedesk-(\d{4}-\d{2}-\d{2})\.dump$/.exec(it.name); if (m && m[1] < cut) { await graph('DELETE', `${mbox(d.account)}/drive/items/${encodeURIComponent(it.id)}`); n++; } }
+        return n; });
+    } finally { fs.promises.unlink(tmp).catch(() => {}); backingUp = false; }
+    const res = { ok: steps.every(x => x.ok), steps, at: now(), started, day, reason };
+    await putSet('backup_last', JSON.stringify(res));
+    if (!res.ok) { const admins = (await all("SELECT id FROM users WHERE role='super_admin' AND is_active=1")).map(r => r.id), bad_ = steps.find(x => !x.ok);
+      await alert(null, admins, 'mail_backup_failed', '[ONE Desk] Last night\'s backup to OneDrive failed', [`The backup did not finish: ${bad_?.text}`, 'It is tried again within the hour. "Back up now" on Mail → Settings tries at once.'], `${base()}/#/c/mail/settings`); }
+    return res;
+  }
+  // checked with the other background rounds: due once a day at the set time; a failed one is tried again an hour later (3 tries a day)
+  async function backupDue() {
+    const cfg = await backupCfg(); if (!cfg.on || backingUp) return;
+    const n = istNow(), last = json(await getSet('backup_last') || 'null', null), tries = json(await getSet('backup_tries') || '{}', {});
+    if (n.hm < cfg.at || (last?.day === n.day && last.ok)) return;
+    if (tries.day === n.day && (tries.n >= 3 || Date.now() - Date.parse(tries.at) < 3600e3)) return;
+    await putSet('backup_tries', JSON.stringify({ day: n.day, n: (tries.day === n.day ? tries.n : 0) + 1, at: now() }));
+    backupNow().catch(e => console.error('backup', e.message));
+  }
+  S.get('/maildesk/backup', wrap(async req => { await needAdmin(req); return { ...(await backupCfg()), last: json(await getSet('backup_last') || 'null', null), running: backingUp, drive: !!(await drive())?.account }; }));
+  S.put('/maildesk/backup', wrap(async req => {
+    await needAdmin(req); const b = req.body || {}, cur = await backupCfg();
+    const v = { on: 'on' in b ? !!b.on : cur.on, at: 'at' in b ? String(b.at) : cur.at, keep_days: 'keep_days' in b ? Number(b.keep_days) : cur.keep_days, photos: 'photos' in b ? !!b.photos : cur.photos,
+      folder: 'folder' in b ? L.safeName(b.folder) : cur.folder };
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v.at)) throw bad('Time: HH:MM, e.g. 02:00');
+    if (!(Number.isInteger(v.keep_days) && v.keep_days >= 1 && v.keep_days <= 365)) throw bad('Keep copies: 1 to 365 days');
+    if (v.on && !(await drive())?.account) throw bad('Connect OneDrive first (the card above)');
+    await putSet('backup', JSON.stringify(v)); audit(req, 'setting_change', 'backup', null, v); return v;
+  }));
+  S.post('/maildesk/backup/run', wrap(async req => { await needAdmin(req); if (backingUp) throw new HttpErr(409, 'RUNNING', 'A backup is already running');
+    backupNow('by hand').catch(e => console.error('backup', e.message)); audit(req, 'backup_now', 'backup', null); return { started: true }; }));
+
   /* ================= Connected apps: any API you buy gets the mail events (Settings, super admin) ================= */
   // e.g. a WhatsApp or SMS provider told of escalations, a CRM or lead sheet told of every new admissions mail.
   // Each app: an address, its key (sealed), the events, one campus or all, and the body: ONE Desk's standard JSON or the
@@ -1286,15 +1417,37 @@ export async function mail(d) {
   // put a file in the folder (small files; resumes are well under 4 MB): returns its OneDrive item id
   async function storePut(rel, buf, mime) {
     const d = await drive(); if (!d?.account) throw new HttpErr(503, 'DRIVE_NOT_SET', 'OneDrive is not connected yet: a super admin connects it on Mail → Settings');
-    const r = await fetch(`${GRAPH}${drivePath(d, rel)}:/content?@microsoft.graph.conflictBehavior=rename`, { method: 'PUT', signal: AbortSignal.timeout(60000),
-      headers: { authorization: 'Bearer ' + await token(), 'content-type': mime || 'application/octet-stream' }, body: buf });
-    const j = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(`OneDrive: ${j.error?.message || r.status}`), { status: r.status });
-    return { externalId: j.id, path: `${d.folder}/${rel}`, size: j.size };
+    const r = await drivePutAt(d.account, `${d.folder}/${rel}`, buf, mime, 'rename');
+    return { externalId: r.id, path: `${d.folder}/${rel}`, size: r.size };
+  }
+  // put a file at a path in the account's OneDrive (folders are made as needed): up to 4 MB in one go, larger ones in 10 MB pieces.
+  // src: a Buffer, or { file, size } on this server's disk (a database copy can be large: it is read piece by piece, never held whole)
+  const rootPath = (account, full) => `${mbox(account)}/drive/root:/${String(full).split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
+  async function drivePutAt(account, full, src, mime, conflict = 'replace') {
+    const size = Buffer.isBuffer(src) ? src.length : src.size;
+    if (Buffer.isBuffer(src) && size <= 4 * 1024 * 1024) {
+      const r = await fetch(`${GRAPH}${rootPath(account, full)}:/content?@microsoft.graph.conflictBehavior=${conflict}`, { method: 'PUT', signal: AbortSignal.timeout(120000),
+        headers: { authorization: 'Bearer ' + await token(), 'content-type': mime || 'application/octet-stream' }, body: src });
+      const j = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(`OneDrive: ${j.error?.message || r.status}`), { status: r.status });
+      return j;
+    }
+    const sess = await graph('POST', `${rootPath(account, full)}:/createUploadSession`, { item: { '@microsoft.graph.conflictBehavior': conflict } });
+    const PIECE = 32 * 327680, fh = Buffer.isBuffer(src) ? null : await fs.promises.open(src.file, 'r'); // 10 MB, a multiple of 320 KB as OneDrive asks
+    try {
+      for (let at = 0; at < size; at += PIECE) {
+        const n = Math.min(PIECE, size - at), piece = fh ? Buffer.alloc(n) : src.subarray(at, at + n);
+        if (fh) await fh.read(piece, 0, n, at);
+        const r = await fetch(sess.uploadUrl, { method: 'PUT', signal: AbortSignal.timeout(300000), headers: { 'content-length': String(n), 'content-range': `bytes ${at}-${at + n - 1}/${size}` }, body: piece });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { fetch(sess.uploadUrl, { method: 'DELETE' }).catch(() => {}); throw Object.assign(new Error(`OneDrive: ${j.error?.message || r.status}`), { status: r.status }); }
+        if (at + n >= size) return j;
+      }
+    } finally { await fh?.close(); }
   }
   const storeRemove = id => drive().then(d => graph('DELETE', `${mbox(d.account)}/drive/items/${encodeURIComponent(id)}`));
   const msOut = async () => { const t = json(await getSet('ms365_test') || 'null', null);
     return { connected: !!ms, source: ms?.source || null, tenant_id: ms?.tenantId || '', client_id: ms?.clientId || '', has_secret: !!ms?.clientSecret, notify_url: notifyUrl(), last_test: t }; };
-  const driveOut = async () => { const d = await drive(); return d ? { connected: !!d.account, account: d.account, folder: d.folder, web_url: d.web_url || null, last_test: d.last_test || null } : { connected: false }; };
+  const driveOut = async () => { const d = await drive(); return d ? { connected: !!d.account, account: d.account, folder: d.folder, files_folder: d.files_folder || 'Mail files', web_url: d.web_url || null, last_test: d.last_test || null } : { connected: false }; };
   S.get('/maildesk/connections', wrap(async req => { await needAdmin(req); return { ms365: await msOut(), onedrive: await driveOut(), permissions: {
     mail: ['Mail.ReadWrite', 'Mail.Send'], onedrive: ['Files.ReadWrite.All'] } }; }));
   const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1324,7 +1477,8 @@ export async function mail(d) {
     await needAdmin(req); const b = req.body || {}, account = str(b.account, 320).toLowerCase(), folder = str(b.folder, 200).replace(/^\/+|\/+$/g, '') || 'Resumes';
     if (!L.isEmail(account)) throw bad('OneDrive account: the email of the account whose OneDrive keeps the files, e.g. hr@smru.edu.in');
     if (/[\\:*?"<>|#%]|\.\./.test(folder)) throw bad('Folder: letters, numbers, spaces and / only');
-    await putSet('onedrive', JSON.stringify({ account, folder })); audit(req, 'setting_change', 'connection', 'onedrive', { account, folder }); return driveOut();
+    const files_folder = L.safeName(b.files_folder || 'Mail files');
+    await putSet('onedrive', JSON.stringify({ account, folder, files_folder })); audit(req, 'setting_change', 'connection', 'onedrive', { account, folder, files_folder }); return driveOut();
   }));
   S.delete('/maildesk/connections/onedrive', wrap(async req => { await needAdmin(req); await run("DELETE FROM mail.settings WHERE key='onedrive'"); audit(req, 'setting_change', 'connection', 'onedrive', { disconnected: true }); return driveOut(); }));
   S.post('/maildesk/connections/onedrive/test', wrap(async req => {

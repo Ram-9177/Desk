@@ -270,3 +270,23 @@ export function unshield(text, map) {
   const found = new Set(); const out = String(text || '').replace(/⟦(\d+)⟧/g, (m, n) => { const v = map[Number(n) - 1]; if (v === undefined) return m; found.add(Number(n)); return v; });
   return found.size === map.length && !/⟦\d+⟧/.test(out) ? out : null; // a detail lost or invented: the AI's version is not used
 }
+
+/* ---------- mail attachments kept in OneDrive ---------- */
+export const ATTACH_MAX = 25 * 1024 * 1024;
+const BLOCKED_EXT = /\.(exe|msi|bat|cmd|com|scr|pif|cpl|dll|sys|vbs|vbe|js|jse|ws|wsf|wsh|ps1|psm1|sh|bash|jar|app|apk|lnk|hta|reg|iso|img|msp|gadget)$/i;
+// why an attachment is not kept (null: keep it)
+export function attachmentRefusal(name, size) {
+  if (BLOCKED_EXT.test(String(name || ''))) return 'a program or script';
+  if (!(size > 0)) return 'empty';
+  if (size > ATTACH_MAX) return 'over 25 MB';
+  return null;
+}
+// a program, whatever its name says (Windows, Linux, macOS executables, scripts with #!)
+export const isProgram = b => (b[0] === 0x4d && b[1] === 0x5a) || (b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c && b[3] === 0x46)
+  || (b[0] === 0xcf && b[1] === 0xfa && b[2] === 0xed && b[3] === 0xfe) || (b[0] === 0x23 && b[1] === 0x21);
+const MIMES = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  csv: 'text/csv', txt: 'text/plain', zip: 'application/zip', odt: 'application/vnd.oasis.opendocument.text', rtf: 'application/rtf' };
+// the type by the file's own name (a sender's "content type" is only a hint)
+export const mimeOf = name => MIMES[String(name || '').toLowerCase().match(/\.([a-z0-9]{2,5})$/)?.[1]] || 'application/octet-stream';

@@ -98,8 +98,10 @@ async function thread(main, ref, me) {
   const who = [...new Set([t.requester_email.toLowerCase(), ...d.messages.filter(m => m.dir === 'in').map(m => m.from_email.toLowerCase())])];
   document.title = `${t.ref} · ONE Desk`;
   const msg = m => m.dir === 'in'
-    ? `<article class="card mmsg in"><div class="mm-h">${H.avatar(m.from_name || m.from_email, 32)}<div><b>${e(m.from_name || m.from_email)}</b> <span class="muted small">&lt;${e(m.from_email)}&gt;${m.cc_list.length ? ` · cc ${e(m.cc_list.join(', '))}` : ''}</span><div class="muted small">${H.shortDate(m.received_at)}${m.has_attachments ? ' · has attachments (open in Outlook)' : ''}${m.ai ? ` · read by ${e(m.ai_provider)}: ${e(m.ai.summary)}` : ''}</div></div></div>
-        <div class="mm-b">${e(m.body_text || '').replace(/\n/g, '<br>')}</div></article>`
+    ? `<article class="card mmsg in"><div class="mm-h">${H.avatar(m.from_name || m.from_email, 32)}<div><b>${e(m.from_name || m.from_email)}</b> <span class="muted small">&lt;${e(m.from_email)}&gt;${m.cc_list.length ? ` · cc ${e(m.cc_list.join(', '))}` : ''}</span><div class="muted small">${H.shortDate(m.received_at)}${m.has_attachments && !m.files?.length ? ' · has attachments (in Outlook)' : ''}${m.ai ? ` · read by ${e(m.ai_provider)}: ${e(m.ai.summary)}` : ''}</div></div></div>
+        <div class="mm-b">${e(m.body_text || '').replace(/\n/g, '<br>')}</div>
+        ${m.files?.length ? `<div class="mbar mfiles">${m.files.map(f => `<span class="mfile">${H.I('file', 14)} ${e(f.file_name)} <span class="muted small">${f.size_bytes >= 1048576 ? (f.size_bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size_bytes / 1024)) + ' KB'}</span>
+          ${/^(application\/pdf|image\/)/.test(f.mime) ? `<button type="button" class="btn" data-fopen="${e(f.id)}">Open</button>` : ''}<button type="button" class="btn" data-fget="${e(f.id)}" data-fname="${e(f.file_name)}">Download</button></span>`).join('')}</div>` : ''}</article>`
     : `<article class="card mmsg out ${m.state}"><div class="mm-h"><span class="mchip mail">${m.origin === 'auto_ack' ? 'Auto-reply' : 'Reply'}</span><div><b>${e(m.sent_by || d.channel.display_name || d.channel.address)}</b> <span class="muted small">to ${e(m.to_list.join(', '))}${m.cc_list.length ? ` · cc ${e(m.cc_list.join(', '))}` : ''}</span>
         <div class="muted small">${{ pending_approval: 'Waiting for Confirm', queued: `Sending ${H.shortDate(m.send_after)}`, sending: 'Sending…', sent: `Sent ${H.shortDate(m.sent_at)}`, cancelled: 'Cancelled', failed: `Not sent: ${e(m.error || '')}` }[m.state]}</div></div>
         ${['queued', 'pending_approval'].includes(m.state) && can.work ? `<button type="button" class="btn" data-undo="${m.id}">${m.state === 'queued' ? 'Undo' : 'Cancel'}</button>` : ''}</div>
@@ -151,6 +153,11 @@ async function thread(main, ref, me) {
     catch (er) { H.toast(er.message); } finally { b.disabled = false; b.innerHTML = `${H.I('idea', 16)}Suggest a reply`; } });
   const nf = main.querySelector('#nf'); if (nf) nf.onsubmit = ev => { ev.preventDefault(); act(() => H.api(`/maildesk/threads/${ref}/notes`, { method: 'POST', body: { body: nf.body.value } }), 'Note added'); };
   main.querySelector('#fwd')?.addEventListener('click', () => forwardDlg(d, ref));
+  // a kept attachment: fetched through ONE Desk (signed in), opened in a new tab or saved
+  const fileBlob = async (id, dl) => { const r = await H.api(`/maildesk/threads/${ref}/files/${id}${dl ? '?download=1' : ''}`, { raw: true });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || 'Could not open the file'); return URL.createObjectURL(await r.blob()); };
+  main.querySelectorAll('[data-fopen]').forEach(b => b.onclick = async () => { const w = window.open('', '_blank'); try { const u = await fileBlob(b.dataset.fopen); if (w) w.location = u; else location.href = u; } catch (er) { w?.close(); H.toast(er.message); } });
+  main.querySelectorAll('[data-fget]').forEach(b => b.onclick = async () => { try { const a = document.createElement('a'); a.href = await fileBlob(b.dataset.fget, true); a.download = b.dataset.fname; a.click(); } catch (er) { H.toast(er.message); } });
   if (d.messages.some(m => m.state === 'queued' || m.state === 'sending')) every(4000, redraw, location.hash.split('?')[0]); else clearInterval(pollT);
 }
 function undoToast(id, after0) {
@@ -170,10 +177,11 @@ async function forwardDlg(d, ref) {
     <label>Name</label><input name="name" value="${e(t.requester_name || '')}" required maxlength="120">
     <label>Subject</label><input name="subject" value="${e(t.subject || '')}" required maxlength="200">
     <div id="floc"><label>Location</label><input name="location" maxlength="200"></div><div id="ftf"></div><div id="fcf"></div>
-    <label>Description</label><textarea name="description" rows="5" maxlength="8000">${e(first?.body_text || '')}</textarea>`,
+    <label>Description</label><textarea name="description" rows="5" maxlength="8000">${e(first?.body_text || '')}</textarea>
+    ${d.messages.some(m => m.files?.length) ? '<label class="small"><input type="checkbox" name="attach_files" checked> Send the mail\'s photos and PDFs with the ticket (the desk takes up to 4, 5 MB each)</label>' : ''}`,
     async f => { const svc = services.find(s => s.id === f.service_id.value), fd = H.collectForm(f, svc);
-      const r = await H.api(`/maildesk/threads/${ref}/forward`, { method: 'POST', body: { service_id: svc.id, name: f.name.value, subject: f.subject.value, location: f.location.value || undefined, description: f.description.value, form_data: fd } });
-      H.toast(`Desk ticket #${r.ticket_no} made`); location.hash = '#/c/t/' + r.ticket_id; });
+      const r = await H.api(`/maildesk/threads/${ref}/forward`, { method: 'POST', body: { service_id: svc.id, name: f.name.value, subject: f.subject.value, location: f.location.value || undefined, description: f.description.value, form_data: fd, attach_files: !!f.attach_files?.checked } });
+      H.toast(`Desk ticket #${r.ticket_no} made${r.files ? ` with ${r.files} file${r.files === 1 ? '' : 's'}` : ''}${r.files_skipped?.length ? ` (not sent: ${r.files_skipped.join(', ')})` : ''}`); location.hash = '#/c/t/' + r.ticket_id; });
   dl.querySelector('button[value=ok]').textContent = 'Forward';
   const draw = () => { const svc = services.find(s => s.id === dl.querySelector('#fsvc').value), gen = H.isGeneral(svc.form_schema || {});
     dl.querySelector('#ftf').innerHTML = H.typeFields(svc); dl.querySelector('#fcf').innerHTML = H.customFields(svc);
@@ -203,7 +211,7 @@ async function confirmPage(main, me) {
 
 /* ================= Settings ================= */
 async function settings(main, me) {
-  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, apps = d.admin ? await H.api('/maildesk/apps').catch(() => null) : null, aib = d.admin ? await H.api('/maildesk/ai-budget').catch(() => null) : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
+  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, apps = d.admin ? await H.api('/maildesk/apps').catch(() => null) : null, bk = d.admin ? await H.api('/maildesk/backup').catch(() => null) : null, aib = d.admin ? await H.api('/maildesk/ai-budget').catch(() => null) : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
   const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
   // a deactivated officer or backup is no longer in the staff list: kept in their own row (marked) so a save does not drop them
   const withPerson = (id, name) => id && !people.some(p => p.id === id) ? [...pOpts, [id, `${name || 'Someone'} (deactivated)`]] : pOpts;
@@ -218,6 +226,7 @@ async function settings(main, me) {
       <form data-f="box"><div class="row"><div><label>Mode</label>${sel('mode', Object.entries(MODE), c.mode)}</div><div><label>"We received it" reply</label>${sel('ack_mode', [['approve', 'Wait for Confirm (recommended)'], ['auto', 'Send by itself']], c.ack_mode)}</div></div>
         <div class="row"><div><label>Display name</label><input name="display_name" value="${e(c.display_name || '')}" maxlength="120" placeholder="Admissions, St. Mary's"></div><div><label>Usual service for Forward</label>${sel('default_service_id', [['', '—'], ...d.services.map(s => [s.id, s.name])], c.default_service_id)}</div></div>
         <label>Signature <small>(added under every reply)</small></label><textarea name="signature" rows="3" maxlength="1000">${e(c.signature || '')}</textarea>
+        <label class="small"><input type="checkbox" name="is_files" ${c.is_files ? 'checked' : ''}> Keep this mailbox's attachments in OneDrive (they open from the mail page)</label>
         <label class="small"><input type="checkbox" name="is_hr" ${c.is_hr ? 'checked' : ''}> Job applications mailbox: each sender becomes an HR candidate, and resumes/CVs are saved to OneDrive</label>
         <label>Office hours <small>(the reply clock counts only these)</small></label><div class="muted small">${e(hoursTxt(c.office_hours))}</div>
         <div class="mbar"><label class="small"><input type="checkbox" name="own_hours" ${c.office_hours ? 'checked' : ''}> Own hours:</label>
@@ -262,6 +271,7 @@ async function settings(main, me) {
     <section class="card"><div class="chead">${H.I('users', 16)}<span>Mail managers</span></div><p class="muted small">See every mailbox of the campus and get the second escalation. Campus admins are managers already.</p>
       ${d.roles.map(r => `<div class="mbar"><b>${e(r.name)}</b><span class="sp"></span><button type="button" class="btn" data-delrole="${r.user_id}">Remove</button></div>`).join('')}
       <form id="newrole" class="mbar">${sel('user_id', pOpts, '')}<button class="btn">Add manager</button></form></section>
+    ${bk ? backupCard(bk) : ''}
     ${aib ? budgetCard(aib) : ''}
     ${d.admin ? `<section class="card"><div class="chead">${H.I('bolt', 16)}<span>AI providers</span></div><p class="muted small">Tried in order; if one fails (no credit, too busy, a bad answer) the next one is tried, and with none the rules decide or the mail waits in Review. Names, phone numbers and emails are masked before any text is sent. Keys are stored encrypted and never shown again.</p>
       ${d.integrations.map(i => `<div class="mbar"><b>${i.priority}. ${e(i.name)}</b><span class="muted small">${e(i.config.model || '')} · ${e(i.config.baseURL || '')}${i.config.priceIn != null ? ` · $${e(i.config.priceIn)} / $${e(i.config.priceOut)} per 1M` : ' · no prices'} · ${i.active ? 'on' : 'off'}${i.has_key ? '' : ' · no key'}${i.last_test_result ? ` · ${e(i.last_test_result)}` : ''}</span><span class="sp"></span>
@@ -273,11 +283,12 @@ async function settings(main, me) {
   if (cx) wireConn(main, cx, go, redraw);
   if (apps) wireApps(main, apps, redraw);
   if (aib) wireBudget(main, aib, redraw);
+  if (bk) wireBackup(main, bk, redraw);
   main.querySelectorAll('.mset').forEach(sec => { const id = sec.dataset.ch, c = d.channels.find(x => x.id === id);
     sec.querySelector('[data-test]').onclick = async () => { try { const r = await H.api(`/maildesk/channels/${id}/test`, { method: 'POST' }); H.toast(r.message); } catch (er) { H.toast(er.message); } };
     sec.querySelector('[data-sync]')?.addEventListener('click', () => go(() => H.api(`/maildesk/channels/${id}/sync`, { method: 'POST' }), 'Checking the inbox'));
     sec.querySelector('[data-f=box]').onsubmit = ev => { ev.preventDefault(); const f = ev.target, days = DAYS.map((_, i) => i).filter(i => f['d' + i].checked);
-      go(() => H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { mode: f.mode.value, ack_mode: f.ack_mode.value, display_name: f.display_name.value, signature: f.signature.value, default_service_id: f.default_service_id.value, is_hr: f.is_hr.checked,
+      go(() => H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { mode: f.mode.value, ack_mode: f.ack_mode.value, display_name: f.display_name.value, signature: f.signature.value, default_service_id: f.default_service_id.value, is_hr: f.is_hr.checked, is_files: f.is_files.checked,
         office_hours: f.own_hours.checked ? { days, from: f.from.value, to: f.to.value } : null } }), 'Mailbox saved'); };
     const of = sec.querySelector('[data-f=off]'), wireO = () => of.querySelectorAll('[data-rmo]').forEach(b => b.onclick = () => b.closest('[data-o]').remove());
     of.querySelectorAll('[data-addo]').forEach(b => b.onclick = () => { of.querySelector('[data-olist]').insertAdjacentHTML('beforeend', offRow({ role: b.dataset.addo })); wireO(); });
@@ -353,7 +364,7 @@ function connCards(cx) {
   <section class="card mconn" id="cod"><div class="mt-h"><div class="chead">${H.I('file', 16)}<span>OneDrive (resumes and CVs)</span></div>${stateChip(o.connected, o.last_test)}</div>
     <p class="muted small">Resumes and CVs that arrive by mail are kept in one account's OneDrive, in this folder. Use a shared account such as hr@, not a person's own, so the files stay when people move on. Files open only through ONE Desk; no public link is made.${m.connected ? '' : ' Connect Microsoft 365 first: OneDrive uses the same app.'}</p>
     <form id="fod"><div class="row"><div><label>OneDrive of</label><input name="account" type="email" required value="${e(o.account || '')}" placeholder="hr@smru.edu.in"></div>
-      <div><label>Folder</label><input name="folder" value="${e(o.folder || 'Resumes')}" maxlength="200"></div></div>
+      <div><label>Resumes folder</label><input name="folder" value="${e(o.folder || 'Resumes')}" maxlength="200"></div><div><label>Mail files folder</label><input name="files_folder" value="${e(o.files_folder || 'Mail files')}" maxlength="200"></div></div>
       <p class="mbar"><button class="btn primary" ${m.connected ? '' : 'disabled'}>Save and test</button>${o.connected ? '<button type="button" class="btn" id="tod">Test again</button><button type="button" class="btn" id="dod">Disconnect</button>' : ''}
       ${o.web_url ? `<a class="btn" href="${e(o.web_url)}" target="_blank" rel="noopener">Open the folder</a>` : ''}</p></form>
     <div id="rod">${steps(o.last_test)}</div></section>`;
@@ -369,7 +380,7 @@ function wireConn(main, cx, go, redraw) {
   main.querySelector('#d365')?.addEventListener('click', () => { if (confirm('Disconnect Microsoft 365? Mail stops coming in until it is connected again.')) go(() => H.api('/maildesk/connections/ms365', { method: 'DELETE' }), 'Disconnected'); });
   const fo = main.querySelector('#fod'), testOd = async () => { const r = await H.api('/maildesk/connections/onedrive/test', { method: 'POST' }); H.toast(r.ok ? 'OneDrive works' : 'Test failed: see the steps'); return r; };
   fo.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; sb.disabled = true;
-    try { await H.api('/maildesk/connections/onedrive', { method: 'PUT', body: { account: fo.account.value.trim(), folder: fo.folder.value.trim() } }); await testOd(); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
+    try { await H.api('/maildesk/connections/onedrive', { method: 'PUT', body: { account: fo.account.value.trim(), folder: fo.folder.value.trim(), files_folder: fo.files_folder.value.trim() } }); await testOd(); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
   main.querySelector('#tod')?.addEventListener('click', async ev => { ev.target.disabled = true; try { show('#rod', await testOd()); } catch (er) { H.toast(er.message); } ev.target.disabled = false; });
   main.querySelector('#dod')?.addEventListener('click', () => { if (confirm('Disconnect OneDrive? Files already saved stay in OneDrive.')) go(() => H.api('/maildesk/connections/onedrive', { method: 'DELETE' }), 'Disconnected'); });
 }
@@ -552,4 +563,26 @@ function wireBudget(main, b, redraw) {
     const shares = Object.fromEntries([...f.querySelectorAll('[name^=share_]')].map(i => [i.name.slice(6), i.value]));
     try { await H.api('/maildesk/ai-budget', { method: 'PUT', body: { monthly_usd: f.monthly_usd.value, split: f.split.value, warn_pct: f.warn_pct.value, shares,
       features: { sort: f.f_sort.checked, draft: f.f_draft.checked, check: f.f_check.checked } } }); H.toast('Budget saved'); redraw(); } catch (er) { H.toast(er.message); } };
+}
+
+/* ================= Backups to OneDrive (super admin): the database and the desk's photos, every night ================= */
+function backupCard(b) {
+  const l = b.last;
+  return `<section class="card" id="bkc"><div class="mt-h"><div class="chead">${H.I('download', 16)}<span>Backups to OneDrive</span></div>${!b.on ? '<span class="mchip">Off</span>' : l?.ok ? '<span class="mchip sla-closed">On · last one fine</span>' : l ? '<span class="mchip sla-overdue">On · last one failed</span>' : '<span class="mchip sla-hold">On · none yet</span>'}</div>
+    <p class="muted small">Every night a copy of the whole ONE Desk database (tickets, mail, settings) and the desk's photos go to the connected OneDrive, off this server, so a lost server loses nothing. Database copies are kept for the days set below; each photo is sent once.${b.drive ? '' : ' Connect OneDrive first (the card above).'}</p>
+    <form id="bkf"><div class="row"><div><label>Every night at (India time)</label><input name="at" type="time" value="${e(b.at)}"></div><div><label>Keep copies (days)</label><input name="keep_days" type="number" min="1" max="365" value="${e(b.keep_days)}"></div>
+      <div><label>Folder in OneDrive</label><input name="folder" value="${e(b.folder)}" maxlength="100"></div></div>
+      <div class="mbar"><label class="small"><input type="checkbox" name="on" ${b.on ? 'checked' : ''} ${b.drive ? '' : 'disabled'}> On</label><label class="small"><input type="checkbox" name="photos" ${b.photos ? 'checked' : ''}> Include the photos</label></div>
+      <p class="mbar"><button class="btn primary">Save</button><button type="button" class="btn" id="bknow" ${b.drive && !b.running ? '' : 'disabled'}>${b.running ? 'Backing up…' : 'Back up now'}</button></p></form>
+    ${l ? `<ul class="msteps">${l.steps.map(x => `<li class="${x.ok ? 'ok' : 'bad'}">${H.I(x.ok ? 'check' : 'x', 14)}<span>${e(x.text)}</span></li>`).join('')}</ul><div class="muted small">Last: ${H.shortDate(l.at)} (${e(l.reason)})</div>` : ''}
+    <details><summary class="small">How to bring a copy back</summary><p class="small">Download <span class="mono">onedesk-YYYY-MM-DD.dump</span> from OneDrive to the server, then: <span class="mono">pg_restore --clean -d "$DATABASE_URL" onedesk-YYYY-MM-DD.dump</span>, and copy the <span class="mono">uploads</span> folder back to <span class="mono">data/uploads</span>. Then <span class="mono">pm2 restart one-desk</span>.</p></details></section>`;
+}
+function wireBackup(main, b, redraw) {
+  const f = main.querySelector('#bkf'); if (!f) return;
+  f.onsubmit = async ev => { ev.preventDefault();
+    try { await H.api('/maildesk/backup', { method: 'PUT', body: { on: f.on.checked, at: f.at.value, keep_days: Number(f.keep_days.value), photos: f.photos.checked, folder: f.folder.value } }); H.toast('Backups saved'); redraw(); } catch (er) { H.toast(er.message); } };
+  main.querySelector('#bknow')?.addEventListener('click', async ev => { ev.target.disabled = true; ev.target.textContent = 'Backing up…';
+    try { await H.api('/maildesk/backup/run', { method: 'POST' });
+      for (let i = 0; i < 120; i++) { await new Promise(r => setTimeout(r, 2000)); const x = await H.api('/maildesk/backup'); if (!x.running) { H.toast(x.last?.ok ? 'Backup done' : 'Backup failed: see the steps'); break; } }
+      redraw(); } catch (er) { H.toast(er.message); ev.target.disabled = false; } });
 }

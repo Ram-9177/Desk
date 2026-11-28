@@ -202,6 +202,29 @@ How the calls behave:
 - The signing secret is shown once, when the app is saved. Make a new one in Edit if needed.
 - Only `https://` addresses on the internet are accepted.
 
+### 6b. What OneDrive is used for
+
+| Use | Switched on at | Where in OneDrive |
+|---|---|---|
+| HR resumes and CVs | A mailbox's **Job applications mailbox** tick | `<Resumes folder>/<year>/<post>/<name> - <file>` |
+| Mail attachments | A mailbox's **Keep this mailbox's attachments in OneDrive** tick | `<Mail files folder>/<mailbox>/<year>/<mail number>/<file>` |
+| Backups of the whole desk | **Mail → Settings → Backups to OneDrive** | `<backups folder>/database/onedesk-YYYY-MM-DD.dump` and `<backups folder>/uploads/<photo>` |
+
+The same file sent twice is stored once per campus. Files open only through ONE Desk, never through a share link, and every view is logged.
+
+**Mail attachments:**
+- **What is kept:** everything up to 25 MB, except inline pictures (signature logos) and programs or scripts (by name, and by content, so a renamed program is refused). The mail notes what was not kept.
+- **On the mail page:** a PDF or picture opens in a new tab, and anything else downloads.
+- **With Forward to service:** tick *Send the mail's photos and PDFs with the ticket*. The desk applies its own rules: up to 4 files, photos and PDFs, 5 MB each. The rest are listed as not sent.
+
+**Backups:**
+- **What is copied:** every night at the set time (India time), a full copy of the database (`pg_dump`, so tickets, mail and settings) and the desk's photos, each photo sent once.
+- **How long:** copies older than *Keep copies (days)* are removed.
+- **Back up now** runs one at once, and the steps of the last run show under the card.
+- **If a night fails:** it is tried again an hour later (3 tries a day), and the super admins get an email.
+- **To bring a copy back:** download the `.dump` file, then `pg_restore --clean -d "$DATABASE_URL" onedesk-YYYY-MM-DD.dump`, copy `uploads` back to `data/uploads`, and run `pm2 restart one-desk`.
+- **Needs** `pg_dump` on the server (`sudo apt install postgresql-client`, normally already there with Postgres).
+
 ### 7c. HR candidates and resumes (optional)
 
 1. Connect OneDrive (step 6), e.g. the OneDrive of hr@, folder `Resumes`.
@@ -349,7 +372,7 @@ The mail desk API lives under `https://<site>/api/maildesk/…`. It uses the sam
 | `PUT /maildesk/connections/ms365` | `{ tenant_id, client_id, client_secret? }` | The secret is sealed (AES-256-GCM) and never returned. Leave it out to keep the saved one. |
 | `POST /maildesk/connections/ms365/test` | `{ mailbox? }` | `{ ok, steps: [{ ok, text }], at }` |
 | `DELETE /maildesk/connections/ms365` | | Falls back to `.env` keys, if any. |
-| `PUT /maildesk/connections/onedrive` | `{ account, folder? }` | Folder `Resumes` by default. |
+| `PUT /maildesk/connections/onedrive` | `{ account, folder?, files_folder? }` | Folders `Resumes` and `Mail files` by default. |
 | `POST /maildesk/connections/onedrive/test` | | Opens the drive, makes the folder, saves and removes a test file. |
 | `DELETE /maildesk/connections/onedrive` | | Files already saved stay in OneDrive. |
 | `POST /maildesk/integrations` · `PATCH`/`DELETE /maildesk/integrations/:id` | `{ name, baseURL, model, apiKey?, priority?, active?, reasoningEffort?, noTemperature?, priceIn?, priceOut? }` (prices in US$ per 1 million tokens) | Any OpenAI-compatible API. Tried in `priority` order. |
@@ -368,6 +391,16 @@ The mail desk API lives under `https://<site>/api/maildesk/…`. It uses the sam
 | `POST /maildesk/hr/:id/notes` | `{ body }` | |
 | `GET /maildesk/hr/:id/files/:file` | `?download=1` | The file itself, streamed from OneDrive (`Cache-Control: private, no-store`). |
 | `DELETE /maildesk/hr/:id/candidate` | | Deletes the candidate, their applications, their notes, and their files in OneDrive. |
+
+### Mail attachments and backups
+
+| Method and path | Who | Notes |
+|---|---|---|
+| `GET /maildesk/threads/:ref/files/:file` | members of the mailbox | The kept attachment, streamed from OneDrive. PDFs and pictures inline; anything else (or `?download=1`) as a download. |
+| `POST /maildesk/threads/:ref/forward` with `attach_files: true` | officers, repliers | Also returns `files` (how many went with the ticket) and `files_skipped`. |
+| `GET /maildesk/backup` | super admin | `{ on, at, keep_days, photos, folder, last: { ok, steps, at, reason }, running, drive }` |
+| `PUT /maildesk/backup` | super admin | `{ on?, at?: 'HH:MM', keep_days?: 1–365, photos?, folder? }` |
+| `POST /maildesk/backup/run` | super admin | Starts a backup now. 409 if one is running. |
 
 ### Connected apps (super admin)
 

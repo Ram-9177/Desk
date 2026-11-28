@@ -113,6 +113,12 @@ const AI = { calls: 0, down: true };
 const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => {
   const u = new URL(req.url, 'http://x'), send = (s, o) => { res.writeHead(s, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   G.calls.push(`${req.method} ${u.pathname}`);
+  const up = /^\/upload\/(\d+)$/.exec(u.pathname);
+  if (up) { const ses = G.sessions[up[1]]; if (!ses) return send(404, {}); if (req.method === 'DELETE') { delete G.sessions[up[1]]; res.writeHead(204); return res.end(); }
+    const [, a, z, total] = /bytes (\d+)-(\d+)\/(\d+)/.exec(req.headers['content-range']); ses.body += b; ses.pieces++;
+    if (Number(z) + 1 < Number(total)) return send(202, { nextExpectedRanges: [`${Number(z) + 1}-`] });
+    const id = 'f' + (G.fileSeq = (G.fileSeq || 0) + 1); G.drive.files[id] = { path: ses.path, body: ses.body, type: 'application/octet-stream', size: Number(total), pieces: ses.pieces }; delete G.sessions[up[1]];
+    return send(201, { id, size: Number(total) }); }
   if (u.pathname === '/app' || u.pathname === '/app-down') { (G.app ||= []).push({ path: u.pathname, headers: req.headers, body: b }); return u.pathname === '/app' ? send(200, { ok: true }) : send(503, { error: 'busy' }); }
   if (u.pathname.endsWith('/oauth2/v2.0/token')) return send(200, { access_token: 'tok', expires_in: 3600 });
   if (u.pathname === '/ai-down/chat/completions') { AI.calls++; return send(500, { error: { message: 'no credit' } }); }
@@ -133,7 +139,13 @@ const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b
     if (/\/drive\/root:\/Resumes$/.test(u.pathname) && req.method === 'GET') return G.drive.folder ? send(200, { id: 'fold', name: 'Resumes', webUrl: 'https://onedrive.example/Resumes' }) : send(404, { error: { message: 'itemNotFound' } });
     if (/\/drive\/root\/children$/.test(u.pathname) && req.method === 'POST') { G.drive.folder = true; return send(201, { id: 'fold', name: JSON.parse(b).name, webUrl: 'https://onedrive.example/Resumes' }); }
     const put = /\/drive\/root:\/(.+):\/content$/.exec(u.pathname);
-    if (put && req.method === 'PUT') { const id = 'f' + (G.fileSeq = (G.fileSeq || 0) + 1); G.drive.files[id] = { path: decodeURIComponent(put[1]), body: b, type: req.headers['content-type'] }; return send(201, { id, size: b.length }); }
+    if (put && req.method === 'PUT') { if (u.searchParams.get('@microsoft.graph.conflictBehavior') === 'replace') for (const [k, f] of Object.entries(G.drive.files)) if (f.path === decodeURIComponent(put[1])) delete G.drive.files[k];
+      const id = 'f' + (G.fileSeq = (G.fileSeq || 0) + 1); G.drive.files[id] = { path: decodeURIComponent(put[1]), body: b, type: req.headers['content-type'] }; return send(201, { id, size: b.length }); }
+    const cus = /\/drive\/root:\/(.+):\/createUploadSession$/.exec(u.pathname);
+    if (cus) { const n = String((G.sesSeq = (G.sesSeq || 0) + 1)); (G.sessions ||= {})[n] = { path: decodeURIComponent(cus[1]), body: '', pieces: 0 }; return send(200, { uploadUrl: `${STUB}/upload/${n}` }); }
+    const kids = /\/drive\/root:\/(.+):\/children$/.exec(u.pathname);
+    if (kids) { const dir = decodeURIComponent(kids[1]) + '/'; const v = Object.entries(G.drive.files).filter(([, f]) => f.path.startsWith(dir) && !f.path.slice(dir.length).includes('/')).map(([id, f]) => ({ id, name: f.path.slice(dir.length) }));
+      return v.length ? send(200, { value: v }) : send(404, { error: { message: 'itemNotFound' } }); }
     const get = /\/drive\/items\/([^/]+)\/content$/.exec(u.pathname);
     if (get) { const f = G.drive.files[decodeURIComponent(get[1])]; if (!f) return send(404, { error: { message: 'itemNotFound' } }); res.writeHead(200, { 'content-type': f.type }); return res.end(f.body); }
     const del = /\/drive\/items\/([^/]+)$/.exec(u.pathname); if (del && req.method === 'DELETE') { delete G.drive.files[del[1]]; res.writeHead(204); return res.end(); }
@@ -451,6 +463,53 @@ try {
     && (await q('SELECT count(*)::int n FROM mail.stored_files'))[0].n === 0 && Object.values(G.drive.files).slice(filesBefore).length === 0);
   await ok('jobs@ off', `/maildesk/channels/${jobs.id}`, { ...A, method: 'PATCH', body: { mode: 'off' } });
 
+  sec('Mail attachments kept in OneDrive');
+  await ok('reach@ keeps its attachments in OneDrive', `/maildesk/channels/${ch.id}`, { token: cadmin.token, method: 'PATCH', body: { is_files: true } });
+  const REAL_PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
+  const mf = mkMsg({ from: 'leela@gmail.com', name: 'Leela', subject: 'Fee receipt and form', conv: 'conv-FILES', body: 'Attached my fee receipt and the form.',
+    files: [{ id: 'f1', name: 'fee receipt.pdf', type: 'application/pdf', bytes: REAL_PDF }, { id: 'f2', name: 'form.docx', type: 'application/octet-stream', bytes: Buffer.from('PK\u0003\u0004 docx') },
+      { id: 'f3', name: 'setup.exe', type: 'application/octet-stream', bytes: Buffer.from('MZ program') }, { id: 'f4', name: 'invoice.pdf', type: 'application/pdf', bytes: Buffer.from('MZ disguised') },
+      { id: 'f5', name: 'logo.png', type: 'image/png', bytes: Buffer.from('png'), inline: true }] });
+  await notifyGraph('sub-1', mf);
+  const tf = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-FILES'"))[0]);
+  const kept = await waitFor(async () => { const r = await q('SELECT f.file_name, f.path, f.mime FROM mail.message_files mf JOIN mail.stored_files f ON f.id=mf.file_id JOIN mail.inbound_emails i ON i.id=mf.inbound_id WHERE i.thread_id=? ORDER BY f.file_name', tf.id); return r.length === 2 ? r : null; });
+  check('the PDF and the Word file are kept under Mail files/<mailbox>/<year>/<mail number>/', kept && kept[0].path === `Mail files/reach@smru.test/${new Date().getFullYear()}/${tf.ref}/fee receipt.pdf` && kept[1].file_name === 'form.docx', JSON.stringify(kept));
+  check('a program, a program renamed .pdf and an inline logo are not kept; the mail says which', (await q("SELECT body FROM mail.thread_notes WHERE thread_id=? AND body LIKE 'Not kept in OneDrive%'", tf.id))[0]?.body.includes('setup.exe') && (await q("SELECT body FROM mail.thread_notes WHERE thread_id=? AND body LIKE 'Not kept in OneDrive%'", tf.id))[0]?.body.includes('invoice.pdf'));
+  const tv2 = await ok('open the mail', `/maildesk/threads/${tf.ref}`, { token: n1.token });
+  const files2 = tv2.messages.find(m => m.dir === 'in').files;
+  check('the mail page lists the kept files', files2.length === 2 && files2.some(f => f.file_name === 'fee receipt.pdf'));
+  const pdfR = await api(`/maildesk/threads/${tf.ref}/files/${files2.find(f => f.file_name === 'fee receipt.pdf').id}`, { token: n1.token, raw: true });
+  check('a PDF opens in the page (private, sandboxed)', pdfR.status === 200 && pdfR.headers.get('content-type') === 'application/pdf' && /inline/.test(pdfR.headers.get('content-disposition')) && /sandbox/.test(pdfR.headers.get('content-security-policy')));
+  const docR = await api(`/maildesk/threads/${tf.ref}/files/${files2.find(f => f.file_name === 'form.docx').id}`, { token: n1.token, raw: true });
+  check('a Word file only downloads', docR.status === 200 && /attachment/.test(docR.headers.get('content-disposition')) && docR.headers.get('content-type') === 'application/octet-stream');
+  check('someone not on reach@ gets 404 for the file', (await api(`/maildesk/threads/${tf.ref}/files/${files2[0].id}`, { token: other.token, raw: true })).status === 404);
+  const fwf = await ok('forward with the files', `/maildesk/threads/${tf.ref}/forward`, { token: n1.token, method: 'POST', body: { service_id: hostel.id, location: 'Accounts', attach_files: true } });
+  check('the PDF goes with the desk ticket (the desk takes photos and PDFs); the Word file is listed as not sent', fwf.files === 1 && fwf.files_skipped.includes('form.docx')
+    && (await q("SELECT count(*)::int n FROM attachments WHERE ticket_id=? AND mime_type='application/pdf'", fwf.ticket_id))[0].n === 1);
+
+  sec('Backups to OneDrive');
+  await fails('only a super admin sets backups', '/maildesk/backup', { token: cadmin.token }, 403);
+  await fails('a bad time is refused', '/maildesk/backup', { ...A, method: 'PUT', body: { at: '25:00' } }, 400);
+  G.drive.files.old = { path: 'ONE Desk backups/database/onedesk-2000-01-01.dump', body: 'x', type: 'application/octet-stream' };
+  await ok('backups on, kept 30 days, with photos, at 23:59', '/maildesk/backup', { ...A, method: 'PUT', body: { on: true, at: '23:59', keep_days: 30, photos: true } });
+  await ok('Back up now', '/maildesk/backup/run', { ...A, method: 'POST' });
+  const bk1 = await waitFor(async () => { const r = (await api('/maildesk/backup', A)).data; return r && !r.running && r.last ? r : null; }, 60000);
+  const dump = Object.values(G.drive.files).find(f => /^ONE Desk backups\/database\/onedesk-\d{4}-\d{2}-\d{2}\.dump$/.test(f.path));
+  check('the database copy (pg_dump) is in OneDrive, sent in pieces', bk1?.last?.ok && dump && dump.size > 1000 && dump.body.startsWith('PGDMP'), JSON.stringify(bk1?.last));
+  check('the desk\'s photos are in OneDrive', Object.values(G.drive.files).some(f => f.path.startsWith('ONE Desk backups/uploads/')) && /new photo/.test(bk1.last.steps.map(x => x.text).join(' ')));
+  check('a copy older than 30 days is removed', !G.drive.files.old && /older than 30 days removed/.test(bk1.last.steps.map(x => x.text).join(' ')));
+  await run_("UPDATE mail.settings SET value=? WHERE key='backup_last'", JSON.stringify({ ...bk1.last, day: '2000-01-01' }));
+  await ok('backup time 00:00 (so it is due now)', '/maildesk/backup', { ...A, method: 'PUT', body: { at: '00:00' } });
+  const bk2 = await waitFor(async () => { const r = (await api('/maildesk/backup', A)).data; return r?.last?.day !== '2000-01-01' && !r.running ? r : null; }, 30000);
+  check('the nightly backup runs by itself when due; photos are not sent twice', bk2?.last?.ok && bk2.last.reason === 'scheduled' && /already up to date/.test(bk2.last.steps.map(x => x.text).join(' ')), JSON.stringify(bk2?.last));
+  const keep = (await api('/maildesk/connections', A)).data.onedrive;
+  await ok('OneDrive disconnected', '/maildesk/connections/onedrive', { ...A, method: 'DELETE' });
+  await ok('Back up now without OneDrive', '/maildesk/backup/run', { ...A, method: 'POST' });
+  const bk3 = await waitFor(async () => { const r = (await api('/maildesk/backup', A)).data; return r && !r.running && r.last?.reason === 'by hand' && !r.last.ok ? r : null; }, 20000);
+  check('a failed backup says why, and the super admin is told by email', /OneDrive is not connected/.test(bk3?.last?.steps?.[0]?.text || '') && await waitFor(async () => (await q("SELECT 1 FROM notifications WHERE template_key='mail_backup_failed'")).length));
+  await ok('OneDrive back', '/maildesk/connections/onedrive', { ...A, method: 'PUT', body: { account: keep.account, folder: keep.folder } });
+  await ok('backups off', '/maildesk/backup', { ...A, method: 'PUT', body: { on: false } });
+
   sec('Reply target missed: reminder and escalation');
   const m3 = mkMsg({ from: 'sam@gmail.com', name: 'Sam', subject: 'Hostel room problem', conv: 'conv-S', body: 'My hostel room fan is broken' }); await notifyGraph('sub-1', m3);
   const t3 = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-S'"))[0]);
@@ -474,7 +533,7 @@ try {
   await fails('a general service needs a location (the desk form rules)', `/maildesk/threads/${t3.ref}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id } }, 400);
   const fw = await ok('forward to Hostel', `/maildesk/threads/${t3.ref}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id, location: 'Block B, room 12' } });
   const fw2 = await ok('forward again', `/maildesk/threads/${t3.ref}/forward`, { token: n2.token, method: 'POST', body: { service_id: hostel.id, location: 'x' } });
-  const tk = await q("SELECT t.*, r.email FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.channel='mail'");
+  const tk = await q("SELECT t.*, r.email FROM tickets t JOIN requestors r ON r.id=t.requestor_id WHERE t.channel='mail' AND r.email='sam@gmail.com'");
   check('exactly one desk ticket, channel mail, for the sender', tk.length === 1 && fw2.ticket_id === fw.ticket_id && tk[0].email === 'sam@gmail.com' && tk[0].description.includes(`${t3.ref}`) && tk[0].status === 'open');
   check('the desk sent its usual mails (received → sender, new ticket → provider)', await waitFor(async () => { const r = await q('SELECT template_key k, recipient FROM notifications WHERE ticket_id=?', tk[0].id);
     return r.some(x => x.k === 'created' && x.recipient === 'sam@gmail.com') && r.some(x => x.k === 'new_ticket' && x.recipient === 'hari@example.com'); }));
@@ -615,7 +674,7 @@ try {
   await stop();
   await q('DROP SCHEMA mail CASCADE');
   check('DROP SCHEMA mail CASCADE leaves the desk tables exactly as before', (await deskShape()) === before);
-  check('…and the forwarded desk ticket stays', (await q("SELECT count(*)::int n FROM tickets WHERE channel='mail'"))[0].n === 2);
+  check('…and the forwarded desk ticket stays', (await q("SELECT count(*)::int n FROM tickets WHERE channel='mail'"))[0].n === 3);
   out = await start();
   check('the desk starts after the rollback', (await fetch(API + '/health')).ok);
 } catch (e) { failed++; failures.push('crashed: ' + e.stack); console.error(e); if (out) console.error(out().slice(-3000)); }
