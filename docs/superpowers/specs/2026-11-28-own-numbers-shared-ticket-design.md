@@ -1,6 +1,6 @@
 # Own ticket numbers on a shared ticket, and stricter joining
 
-Date: 28 November 2026. Status: draft for approval (reviewed once by a builder check; their questions are folded in).
+Date: 28 November 2026. Status: approved 28 November 2026 (reviewed once by a builder check; their questions are folded in). Mockups were shown and accepted.
 
 ## Intent
 
