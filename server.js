@@ -411,7 +411,7 @@ async function queueSlot(tn, svc, today) {
   let d = today;
   for (let i = 0; i < 1000; i++) {
     if (d === today || cal.days.has(new Date(d + 'T00:00:00Z').getUTCDay())) {
-      const { n } = await one('SELECT count(*)::int n FROM tickets WHERE service_id=? AND (queue_day=? OR (queue_day IS NULL AND created_date=?))', svc.id, d, d);
+      const { n } = await one('SELECT count(*)::int n FROM tickets WHERE service_id=? AND joined_into IS NULL AND (queue_day=? OR (queue_day IS NULL AND created_date=?))', svc.id, d, d);
       if (n < cap) return d === today ? { day: d } : { day: d, queued: true, lands_at: addWorking(cal, dateStart(cal.tz, d), 0) };
     }
     d = nextDay(d);
@@ -1584,14 +1584,18 @@ S.post('/tickets/:id/join', wrap(async req => {
   if (o.id === t.id) throw bad('That is this ticket');
   if (o.joined_into) throw bad(`That ticket was already joined into #${(await one('SELECT ticket_no FROM tickets WHERE id=?', o.joined_into))?.ticket_no || '?'}`);
   if (o.service_id !== t.service_id) { const sv = async id => (await one('SELECT name FROM services WHERE id=?', id))?.name; throw bad(`Different service: ${await sv(t.service_id)} vs ${await sv(o.service_id)}`); }
+  if (!t.location_key) throw bad('No place on this ticket');
   if (!o.location_key) throw bad('No place on that ticket');
   if (o.location_key !== t.location_key) throw bad(`Different room: ${t.location} vs ${o.location}`);
   if (!MERGEABLE.includes(o.status)) throw bad('That ticket is closed or rejected');
   if (!MERGEABLE.includes(t.status)) throw bad('This ticket is closed or rejected');
   const ts = now(); let moved = [];
   await tx(async () => {
-    if (!(await run(`UPDATE tickets SET status='closed', closed_at=?, closed_by=NULL, joined_into=?, queued=0, updated_at=? WHERE id=? AND joined_into IS NULL AND status IN (${MERGEABLE.map(() => '?').join()})`, ts, t.id, ts, o.id, ...MERGEABLE)).changes)
-      throw bad('That ticket changed just now. Open it again.');
+    // both tickets locked in one order, then checked again: two providers joining A into B and B into A at once cannot both win
+    const live = await all('SELECT id FROM tickets WHERE id IN (?, ?) AND joined_into IS NULL AND status IN (' + MERGEABLE.map(() => '?').join() + ') ORDER BY id FOR UPDATE', t.id, o.id, ...MERGEABLE);
+    if (live.length < 2) throw bad('One of these tickets changed just now. Open it again.');
+    // the joined ticket leaves the team's daily queue too: it takes no slot
+    await run(`UPDATE tickets SET status='closed', closed_at=?, closed_by=NULL, joined_into=?, queued=0, queue_day=NULL, lands_at=NULL, updated_at=? WHERE id=?`, ts, t.id, ts, o.id);
     const rows = await all('SELECT * FROM ticket_requestors WHERE ticket_id=? AND detached_at IS NULL ORDER BY raised_at', o.id);
     const here = new Set((await all('SELECT contact FROM ticket_requestors WHERE ticket_id=? AND detached_at IS NULL', t.id)).map(r => r.contact));
     moved = rows.filter(r => !here.has(r.contact));
@@ -1610,7 +1614,7 @@ S.post('/tickets/:id/join', wrap(async req => {
     await recount(t, ts);
     await audit(req, 'ticket.join', 'ticket', t.id, { joined: o.ticket_no });
   });
-  const vars = await ticketVars(t, { joined_from: o.ticket_no, actor_name: req.user.name });
+  const vars = await ticketVars(t, { joined_from: o.ticket_no, survivor_no: t.ticket_no, actor_name: req.user.name });
   for (const r of moved) if (String(r.contact || '').includes('@')) await notify(t, [r.contact], 'joined_into', await requestorVars(t, vars, r));
   return { ok: true, moved: moved.length, survivor_no: t.ticket_no };
 }));

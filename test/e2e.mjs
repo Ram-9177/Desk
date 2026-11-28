@@ -775,11 +775,13 @@ try {
   ids.sharedId = hT.id; // the Chrome screens' live shared ticket (Hopa first, Hopb joined): the Fan one above is closed, so it shows no Split out
   // a provider joins another ticket for the same room and service into this one: students keep their numbers, the joined ticket counts nowhere
   const j1 = await own('Joina', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); // Fan and Light: two problems in one room, two tickets
-  const j2 = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } });
+  const j2 = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' }, files: [{ name: 'light.png', type: 'image/png', source: 'camera', data: PNG }] }); // Joinb stays on it: their photo goes under the summary
   const j3 = await own('Joinc', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } }); // joins j2
   const other = await own('Joind', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '203', issue: 'Light' } });
   const t1 = await tk(j1.ticket_no), t2 = await tk(j2.ticket_no);
   await fails('join refuses a different room', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'Different room');
+  const help = (await raise('alpha', { ...base('Joinx'), form_data: { [qHelp]: 'Other: join test across teams' } })).data;
+  await fails('join refuses another service', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: help.ticket_no } }, 400, 'Different service');
   await fails('join refuses itself', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j1.ticket_no } }, 400);
   const both = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); check('Joinb reports on both tickets (already on the survivor)', both.merged);
   const closedBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period;
@@ -787,6 +789,11 @@ try {
   const t1b = await tk(j1.ticket_no), t2b = await tk(j2.ticket_no);
   check('people moved, one row per person, count and priority recomputed', jr.moved === 1 && t1b.affected_count === 3 && t1b.priority === 'high' && (await q('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=? AND contact=?', t1.id, 'joinb@own.example.com'))[0].n === 1);
   check('the joined ticket is closed with no closer, pointing at the survivor', t2b.status === 'closed' && t2b.closed_by === null && t2b.joined_into === t1.id);
+  check('…through no close path: no closed email, no points', (await q("SELECT count(*)::int n FROM notifications WHERE ticket_id=? AND template_key='status_closed'", t2.id))[0].n === 0 && (await q('SELECT count(*)::int n FROM provider_points WHERE ticket_id=?', t2.id))[0].n === 0);
+  const jev = (await q("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='joined' ORDER BY id DESC LIMIT 1", t1.id))[0], lp = (await q("SELECT ticket_id, event_id FROM attachments WHERE file_name='light.png' AND ticket_id IN (?, ?)", t1.id, t2.id))[0];
+  check("the joined ticket's other photos move to the survivor, under the summary event", lp?.ticket_id === t1.id && lp?.event_id === jev?.id, JSON.stringify([lp, jev]));
+  const jcMail = (await q("SELECT text_body FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0]?.text_body || '';
+  check("the moved student's email leads with their own number and names no other student", jcMail.includes(`Your ticket ${j3.ticket_no} is being handled together with #${j1.ticket_no}`) && !/Joina|Joinb|Joind/.test(jcMail), jcMail);
   check('the moved student is emailed once, under their own number', (await q("SELECT count(*)::int n FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].n === 1 && (await q("SELECT subject FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].subject.includes(`[${j3.ticket_no}]`));
   const oldPage = (await api(`/public/alpha/tickets/${j2.ticket_no}`)).data;
   check("the joined ticket's number opens the survivor under that number, with that person's own complaint", oldPage.ticket_no === j2.ticket_no && oldPage.affected_count === 3 && oldPage.subject === 'Ticket from Joinb' && !JSON.stringify(oldPage).includes('Joina'), JSON.stringify(oldPage).slice(0, 600));
@@ -794,6 +801,10 @@ try {
   const jr5 = await ok('a ticket whose first student is not on the survivor joins too', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j5.ticket_no } });
   const p5 = (await api(`/public/alpha/tickets/${j5.ticket_no}`)).data;
   check('its first student moves, and their number opens the survivor as them, with their own photo', !j5.merged && jr5.moved === 1 && p5.ticket_no === j5.ticket_no && p5.affected_count === 4 && p5.mine?.description === 'Tube light flickers' && p5.mine?.files.length === 1, JSON.stringify(p5).slice(0, 600));
+  const j6 = await own('Joinf', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } }), t6 = await tk(j6.ticket_no);
+  await run("UPDATE tickets SET created_date=created_date - 1 WHERE id=?", t6.id); // raised yesterday: a provider may join across days
+  const jr6 = await ok('a ticket from another day joins too', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j6.ticket_no } });
+  check('…its student moves', jr6.moved === 1 && (await tk(j6.ticket_no)).joined_into === t1.id);
   await fails('a ticket already joined cannot be joined again', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } }, 400, `already joined into #${j1.ticket_no}`);
   check('the joined ticket is out of the list, the CSV and the reports', !(await api('/tickets?status=closed', { token: T.pavan })).data.some(x => x.id === t2.id) && !(await (await fetch(`${API}/tickets.csv?status=all`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).includes(`"${j2.ticket_no}"`) && (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period === closedBefore);
   check('the provider sees every complaint on the survivor', (await api(`/tickets/${t1.id}`, { token: T.pavan })).data.events.some(e => e.event_type === 'joined' && e.body.includes(`#${j2.ticket_no}`)));
@@ -805,7 +816,7 @@ try {
   const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id }, aid = A.tenant;
   const pavanId = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id;
   await ok('Pavan has a mobile number', `/users/${pavanId}`, { ...A, method: 'PATCH', body: { phone: '9000055555' } });
-  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND (queue_day=(now() AT TIME ZONE 'Asia/Kolkata')::date OR (queue_day IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date))", ids.elec))[0];
+  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND joined_into IS NULL AND (queue_day=(now() AT TIME ZONE 'Asia/Kolkata')::date OR (queue_day IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date))", ids.elec))[0];
   await ok('admin sets Electrical to take today’s tickets + 2 a day', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: today + 2 } });
   await fails('tickets a day must be a whole number', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: -3 } }, 400);
   check('the service shows its daily limit', (await api('/services', A)).data.find(x => x.id === ids.elec)?.daily_cap === today + 2);

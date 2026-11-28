@@ -530,6 +530,7 @@ body.on-ticket .cwrap>.head{display:none}
 .upd-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}.upd-row .sp{flex:1}.upd-row .iconbtn{margin:0}
 .chk{display:flex!important;align-items:center;gap:8px;font-weight:400;font-size:13px;color:var(--text-2);margin:0;cursor:pointer}.chk input{width:16px;height:16px;accent-color:var(--accent)}
 #earlyrow{margin-top:12px}.helper{display:flex;gap:6px;align-items:flex-start;font-size:12px;color:var(--text-meta);margin-top:6px}.helper svg{flex:none;margin-top:1px}
+.joinedto{font-size:13px;margin:0 0 14px}.joinedto a{font-weight:600}
 .side{padding:20px;display:flex;flex-direction:column;gap:14px}.chead .sp{flex:1}
 .sla-row{display:flex;gap:12px;align-items:center}.sla-big{font-size:24px;font-weight:700;letter-spacing:-.01em}.sla-sub{font-size:13px;color:var(--text-3)}
 .pbar{height:6px;border-radius:3px;background:#EEF0F3;overflow:hidden}.pbar i{display:block;height:100%;border-radius:3px;background:var(--accent)}
