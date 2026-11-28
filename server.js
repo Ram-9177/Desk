@@ -1614,7 +1614,7 @@ S.post('/tickets/:id/join', wrap(async req => {
     await recount(t, ts);
     await audit(req, 'ticket.join', 'ticket', t.id, { joined: o.ticket_no });
   });
-  const vars = await ticketVars(t, { joined_from: o.ticket_no, survivor_no: t.ticket_no, actor_name: req.user.name });
+  const vars = await ticketVars(t, { actor_name: req.user.name }); // a requestor's email carries their own number only: any other number opens another student's page
   for (const r of moved) if (String(r.contact || '').includes('@')) await notify(t, [r.contact], 'joined_into', await requestorVars(t, vars, r));
   return { ok: true, moved: moved.length, survivor_no: t.ticket_no };
 }));

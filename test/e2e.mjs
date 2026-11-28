@@ -782,6 +782,10 @@ try {
   await fails('join refuses a different room', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'Different room');
   const help = (await raise('alpha', { ...base('Joinx'), form_data: { [qHelp]: 'Other: join test across teams' } })).data;
   await fails('join refuses another service', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: help.ticket_no } }, 400, 'Different service');
+  const jg = await own('Joing', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '204', issue: 'Light' } }), tg = await tk(jg.ticket_no);
+  await run('UPDATE tickets SET location_key=NULL WHERE id=?', tg.id); // a ticket with no place (as a general form gives)
+  await fails('join refuses when this ticket has no place', `/tickets/${tg.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'No place on this ticket');
+  await fails('join refuses when that ticket has no place', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: jg.ticket_no } }, 400, 'No place on that ticket');
   await fails('join refuses itself', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j1.ticket_no } }, 400);
   const both = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); check('Joinb reports on both tickets (already on the survivor)', both.merged);
   const closedBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period;
@@ -793,7 +797,8 @@ try {
   const jev = (await q("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='joined' ORDER BY id DESC LIMIT 1", t1.id))[0], lp = (await q("SELECT ticket_id, event_id FROM attachments WHERE file_name='light.png' AND ticket_id IN (?, ?)", t1.id, t2.id))[0];
   check("the joined ticket's other photos move to the survivor, under the summary event", lp?.ticket_id === t1.id && lp?.event_id === jev?.id, JSON.stringify([lp, jev]));
   const jcMail = (await q("SELECT text_body FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0]?.text_body || '';
-  check("the moved student's email leads with their own number and names no other student", jcMail.includes(`Your ticket ${j3.ticket_no} is being handled together with #${j1.ticket_no}`) && !/Joina|Joinb|Joind/.test(jcMail), jcMail);
+  const otherNos = [j1, j2, other, both].map(x => x.ticket_no).filter(n => n !== j3.ticket_no); // a number alone opens that ticket's page: a requestor's email carries their own only
+  check("the moved student's email carries their own number only and names no other student", jcMail.includes(`Your ticket ${j3.ticket_no} reports the same problem`) && !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(jcMail)) && !/Joina|Joinb|Joind/.test(jcMail), jcMail);
   check('the moved student is emailed once, under their own number', (await q("SELECT count(*)::int n FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].n === 1 && (await q("SELECT subject FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].subject.includes(`[${j3.ticket_no}]`));
   const oldPage = (await api(`/public/alpha/tickets/${j2.ticket_no}`)).data;
   check("the joined ticket's number opens the survivor under that number, with that person's own complaint", oldPage.ticket_no === j2.ticket_no && oldPage.affected_count === 3 && oldPage.subject === 'Ticket from Joinb' && !JSON.stringify(oldPage).includes('Joina'), JSON.stringify(oldPage).slice(0, 600));
