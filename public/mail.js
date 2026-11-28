@@ -195,7 +195,7 @@ async function confirmPage(main, me) {
 
 /* ================= Settings ================= */
 async function settings(main, me) {
-  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
+  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, apps = d.admin ? await H.api('/maildesk/apps').catch(() => null) : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
   const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
   // a deactivated officer or backup is no longer in the staff list: kept in their own row (marked) so a save does not drop them
   const withPerson = (id, name) => id && !people.some(p => p.id === id) ? [...pOpts, [id, `${name || 'Someone'} (deactivated)`]] : pOpts;
@@ -256,10 +256,12 @@ async function settings(main, me) {
     ${d.admin ? `<section class="card"><div class="chead">${H.I('bolt', 16)}<span>AI providers</span></div><p class="muted small">Tried in order; if one fails (no credit, too busy, a bad answer) the next one is tried, and with none the rules decide or the mail waits in Review. Names, phone numbers and emails are masked before any text is sent. Keys are stored encrypted and never shown again.</p>
       ${d.integrations.map(i => `<div class="mbar"><b>${i.priority}. ${e(i.name)}</b><span class="muted small">${e(i.config.model || '')} · ${e(i.config.baseURL || '')} · ${i.active ? 'on' : 'off'}${i.has_key ? '' : ' · no key'}${i.last_test_result ? ` · ${e(i.last_test_result)}` : ''}</span><span class="sp"></span>
         <button type="button" class="btn" data-ai="${i.id}">Edit</button><button type="button" class="btn" data-aitest="${i.id}">Test</button></div>`).join('') || '<p class="muted small">None yet: every mail goes by the rules, else to Review.</p>'}
-      <p><button type="button" class="btn" data-ai="">Add AI provider</button></p></section>` : ''}`;
+      <p><button type="button" class="btn" data-ai="">Add AI provider</button></p></section>` : ''}
+    ${apps ? appsCard(apps) : ''}`;
 
   const redraw = () => settings(main, me), go = async (fn, m) => { try { await fn(); H.toast(m); redraw(); } catch (er) { H.toast(er.message); } };
   if (cx) wireConn(main, cx, go, redraw);
+  if (apps) wireApps(main, apps, redraw);
   main.querySelectorAll('.mset').forEach(sec => { const id = sec.dataset.ch, c = d.channels.find(x => x.id === id);
     sec.querySelector('[data-test]').onclick = async () => { try { const r = await H.api(`/maildesk/channels/${id}/test`, { method: 'POST' }); H.toast(r.message); } catch (er) { H.toast(er.message); } };
     sec.querySelector('[data-sync]')?.addEventListener('click', () => go(() => H.api(`/maildesk/channels/${id}/sync`, { method: 'POST' }), 'Checking the inbox'));
@@ -356,4 +358,50 @@ function wireConn(main, cx, go, redraw) {
     try { await H.api('/maildesk/connections/onedrive', { method: 'PUT', body: { account: fo.account.value.trim(), folder: fo.folder.value.trim() } }); await testOd(); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
   main.querySelector('#tod')?.addEventListener('click', async ev => { ev.target.disabled = true; try { show('#rod', await testOd()); } catch (er) { H.toast(er.message); } ev.target.disabled = false; });
   main.querySelector('#dod')?.addEventListener('click', () => { if (confirm('Disconnect OneDrive? Files already saved stay in OneDrive.')) go(() => H.api('/maildesk/connections/onedrive', { method: 'DELETE' }), 'Disconnected'); });
+}
+
+/* ================= Connected apps: plug in any API you buy (super admin) ================= */
+const EXAMPLES = {
+  whatsapp: { name: 'WhatsApp: escalations to the manager', events: ['mail.escalated'], content_type: 'json', auth_header: 'Authorization',
+    template: '{\n  "to": "91XXXXXXXXXX",\n  "type": "text",\n  "text": { "body": "{{ref}} escalated ({{mailbox}}): {{subject}} from {{from_name}}. Open: {{link}}" }\n}' },
+  sms: { name: 'SMS: new important mail', events: ['mail.received'], content_type: 'form', auth_header: 'Authorization', template: 'to=91XXXXXXXXXX&message=New mail {{ref}} in {{mailbox}}: {{subject}}' },
+  crm: { name: 'CRM / lead sheet: every new mail', events: ['mail.received'], format: 'standard' } };
+function appsCard(a) {
+  return `<section class="card"><div class="chead">${H.I('swap', 16)}<span>Connected apps</span></div>
+    <p class="muted small">Plug in any API you buy (WhatsApp, SMS, CRM, a lead sheet…): it is told about mail events, with its own key. Nothing to code: set the address, the key and what it should receive. Each call is signed (header X-OneDesk-Signature) and tried again if the app is down.</p>
+    ${a.apps.map(x => `<div class="mbar mapp"><b>${e(x.name)}</b><span class="mchip ${x.active ? 'sla-closed' : ''}">${x.active ? 'On' : 'Off'}</span>
+      <span class="muted small">${e(x.events.map(v => v.replace('mail.', '')).join(', '))} · ${x.tenant_id ? e(a.campuses.find(c => c.id === x.tenant_id)?.code || '') : 'all campuses'}${x.has_key ? ' · key saved' : ''}</span>
+      <span class="sp"></span><button type="button" class="btn" data-apptest="${x.id}">Test</button><button type="button" class="btn" data-app="${x.id}">Edit</button>
+      ${x.last_result ? `<div class="small ${/^Delivered/.test(x.last_result) ? 'muted' : 'err'}" style="flex-basis:100%">${e(x.last_result)} · ${H.shortDate(x.last_at)}</div>` : ''}</div>`).join('') || '<p class="muted small">No app connected yet.</p>'}
+    <p class="mbar"><button type="button" class="btn" data-app="">${H.I('plus', 16)}Connect an app</button>${Object.entries(EXAMPLES).map(([k, x]) => `<button type="button" class="btn" data-app="" data-ex="${k}">${e(x.name.split(':')[0])} example</button>`).join('')}</p></section>`;
+}
+function wireApps(main, a, redraw) {
+  main.querySelectorAll('[data-apptest]').forEach(b => b.onclick = async () => { b.disabled = true; try { const r = await H.api(`/maildesk/apps/${b.dataset.apptest}/test`, { method: 'POST' }); H.toast(r.message); redraw(); } catch (er) { H.toast(er.message); b.disabled = false; } });
+  main.querySelectorAll('[data-app]').forEach(b => b.onclick = () => {
+    const x = a.apps.find(y => y.id === b.dataset.app) || { format: 'template', content_type: 'json', method: 'POST', auth_header: 'Authorization', active: true, events: [], ...(EXAMPLES[b.dataset.ex] || {}) };
+    if (!x.format) x.format = 'template';
+    const dl = H.dlg(`<h2>${x.id ? 'Edit app' : 'Connect an app'}</h2>
+      <label>Name</label><input name="name" required maxlength="120" value="${e(x.name || '')}" placeholder="WhatsApp alerts">
+      <div class="row"><div><label>Address (from the app's API guide)</label><input name="url" required value="${e(x.url || '')}" placeholder="https://api.provider.com/v1/messages"></div><div style="flex:0 0 110px"><label>Method</label>${sel('method', [['POST', 'POST'], ['PUT', 'PUT']], x.method)}</div></div>
+      <div class="row"><div><label>Key header</label><input name="auth_header" value="${e(x.auth_header || 'Authorization')}" placeholder="Authorization or X-Api-Key"></div>
+        <div><label>Key ${x.has_key ? '<small>(saved; empty keeps it)</small>' : '<small>(e.g. Bearer abc123, as the app wants it)</small>'}</label><input name="auth_value" type="password" autocomplete="new-password"></div></div>
+      <label>Send it when</label><div class="mbar">${Object.entries(a.events).map(([k, l]) => `<label class="small"><input type="checkbox" name="ev" value="${k}" ${x.events.includes(k) ? 'checked' : ''}> ${e(l)}</label>`).join('')}</div>
+      <label>For</label>${sel('tenant_id', [['', 'All campuses'], ...a.campuses.map(c => [c.id, `${c.code}: ${c.name}`])], x.tenant_id)}
+      <label>What to send</label>${sel('format', [['template', "The app's own format (write it below)"], ['standard', "ONE Desk's standard JSON (for apps built for it)"]], x.format, 'id="afmt"')}
+      <div id="atpl"><div class="row"><div><label>Body type</label>${sel('content_type', [['json', 'JSON'], ['form', 'Form (a=1&b=2)'], ['text', 'Plain text']], x.content_type)}</div></div>
+        <label>Body <small>(fill-ins: ${a.fill_ins.map(v => `{{${v}}}`).join(' ')})</small></label><textarea name="template" rows="7" class="mono">${e(x.template || '')}</textarea></div>
+      <details id="astd"><summary class="small">What the standard JSON looks like</summary><pre class="small mono" style="white-space:pre-wrap">${e(JSON.stringify(JSON.parse(a.sample), null, 2))}</pre></details>
+      <label class="small"><input type="checkbox" name="active" ${x.active ? 'checked' : ''}> On</label>
+      ${x.id ? '<p class="mbar"><label class="small"><input type="checkbox" name="newsig"> Make a new signing secret</label><button type="button" class="btn" id="appdel">Delete app</button></p>' : ''}`,
+      async f => { const body = { name: f.name.value, url: f.url.value.trim(), method: f.method.value, auth_header: f.auth_header.value.trim(), events: [...f.querySelectorAll('[name=ev]:checked')].map(i => i.value),
+          tenant_id: f.tenant_id.value || null, format: f.format.value, content_type: f.content_type.value, template: f.template.value, active: f.active.checked,
+          ...(f.auth_value.value ? { auth_value: f.auth_value.value } : {}), ...(f.newsig?.checked ? { new_signing_secret: true } : {}) };
+        const r = await H.api(x.id ? '/maildesk/apps/' + x.id : '/maildesk/apps', { method: x.id ? 'PATCH' : 'POST', body });
+        if (r.signing_secret) H.dlg(`<h2>Signing secret</h2><p class="small">Give this to whoever set up the app, if it checks the X-OneDesk-Signature header (HMAC-SHA256 of "timestamp.body"). It is shown only now.</p><input class="mono" readonly value="${e(r.signing_secret)}" onclick="this.select()">`, async () => {});
+        H.toast('App saved: press Test to try it'); redraw(); });
+    dl.querySelector('button[value=ok]').textContent = 'Save';
+    const shown = () => { const t = dl.querySelector('#afmt').value === 'template'; dl.querySelector('#atpl').hidden = !t; dl.querySelector('#astd').open = !t; };
+    shown(); dl.querySelector('#afmt').onchange = shown;
+    dl.querySelector('#appdel')?.addEventListener('click', async () => { if (!confirm('Delete this app? It stops getting events.')) return; try { await H.api('/maildesk/apps/' + x.id, { method: 'DELETE' }); dl.close(); H.toast('App deleted'); redraw(); } catch (er) { H.toast(er.message); } });
+  });
 }

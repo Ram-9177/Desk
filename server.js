@@ -1813,9 +1813,11 @@ canteen({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRo
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
 // Mail desk: the shared mailboxes (reach@, hr@ …) beside the ticket desk (mail.js). Only loaded when MAIL_ENABLED=true; off, nothing of it runs.
-if (/^(1|true|yes|on)$/i.test(process.env.MAIL_ENABLED || '')) await (await import('./mail.js')).mail({ app, S, wrap, bad, notFound, HttpErr, limit, tenantRow, base, SECRET, createTicket,
+// Fenced off: if the mail desk cannot start (a database or file problem), it says why and the desk starts without it.
+if (/^(1|true|yes|on)$/i.test(process.env.MAIL_ENABLED || '')) try { await (await import('./mail.js')).mail({ app, S, wrap, bad, notFound, HttpErr, limit, tenantRow, base, SECRET, createTicket,
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
-    await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
+    await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } }); }
+catch (e) { console.error('Mail desk NOT started (the desk runs without it):', e.message); }
 app.use('/api', S);
 
 app.use('/api', (_q, _r, next) => next(notFound()));

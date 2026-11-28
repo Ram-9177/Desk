@@ -190,3 +190,27 @@ export function unseal(key, s) {
   const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64')); d.setAuthTag(Buffer.from(tag, 'base64'));
   return JSON.parse(Buffer.concat([d.update(Buffer.from(body, 'base64')), d.final()]).toString('utf8'));
 }
+
+/* ---------- connected apps (any API bought later, set up in Settings) ---------- */
+export const PLUGIN_EVENTS = { 'mail.received': 'A new mail arrives (live mailboxes)', 'mail.replied': 'A reply goes out from ONE Desk',
+  'mail.escalated': 'A mail is escalated (no reply in time)', 'mail.forwarded': 'A mail is forwarded to a service (desk ticket made)', 'mail.closed': 'A mail is closed' };
+export const PLUGIN_VARS = ['event', 'at', 'ref', 'subject', 'lane', 'category', 'status', 'mailbox', 'mailbox_name', 'from_name', 'from_email', 'summary',
+  'due_at', 'sla_state', 'link', 'campus', 'campus_code', 'ticket_no', 'level', 'to'];
+export const SAMPLE_THREAD = { ref: 'SMRU-0001', subject: 'B.Tech admission 2027: fees and hostel', lane: 'needs_reply', category: 'Admissions', status: 'open',
+  address: 'admissions@smru.edu.in', display_name: 'Admissions', requester_name: 'Ria Sharma', requester_email: 'ria@example.com', summary: 'Asks about B.Tech fees and hostel',
+  first_response_due_at: '2026-12-01T11:30:00.000Z', sla_state: 'on_track', campus: "St. Mary's Rehabilitation University", campus_code: 'SMRU' };
+export const pluginVars = (event, t, extra = {}, link = '') => ({ event, at: new Date().toISOString(), ref: t.ref || '', subject: t.subject || '', lane: t.lane || '',
+  category: t.category || '', status: t.status || '', mailbox: t.address || '', mailbox_name: t.display_name || t.address || '', from_name: t.requester_name || '',
+  from_email: t.requester_email || '', summary: t.summary || '', due_at: t.first_response_due_at || '', sla_state: t.sla_state || '', link,
+  campus: t.campus || '', campus_code: t.campus_code || '', ticket_no: extra.ticket_no ? String(extra.ticket_no) : '', level: extra.level ? String(extra.level) : '',
+  to: extra.to || '', ...(extra.test ? { test: true } : {}) });
+// The body an app gets: ONE Desk's standard JSON, or the app's own format with {{fill-ins}} (each value made safe for that format)
+export function pluginBody(cfg, v) {
+  if (cfg.format !== 'template') return { type: 'application/json', body: JSON.stringify({ event: v.event, at: v.at, ...(v.test ? { test: true } : {}),
+    campus: { code: v.campus_code, name: v.campus }, mail: { ref: v.ref, subject: v.subject, lane: v.lane, category: v.category, status: v.status, mailbox: v.mailbox,
+      mailbox_name: v.mailbox_name, from: { name: v.from_name, email: v.from_email }, summary: v.summary, reply_due_at: v.due_at || null, sla_state: v.sla_state || null, link: v.link },
+    ...(v.ticket_no ? { ticket_no: v.ticket_no } : {}), ...(v.level ? { level: Number(v.level) } : {}), ...(v.to ? { to: v.to } : {}) }) };
+  const ct = cfg.content_type || 'json', safe = ct === 'json' ? x => JSON.stringify(String(x)).slice(1, -1) : ct === 'form' ? x => encodeURIComponent(String(x)) : x => String(x);
+  return { type: ct === 'json' ? 'application/json' : ct === 'form' ? 'application/x-www-form-urlencoded' : 'text/plain; charset=utf-8',
+    body: String(cfg.template || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => safe(v[k] ?? '')) };
+}

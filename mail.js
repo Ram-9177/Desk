@@ -254,6 +254,7 @@ export async function mail(d) {
       const r = await run(`UPDATE mail.threads SET sla_state=?, ${col}=?, updated_at=? WHERE id=? AND coalesce(sla_state,'on_track')=? AND first_responded_at IS NULL`, act.state, ts, ts, t.id, t.sla_state || 'on_track');
       if (!r.changes) continue; // someone replied meanwhile
       await slaEvent(t.id, { warn: 'warned', escalate: 'escalated', escalate_2: 'escalated_2' }[act.kind], act.notify, { pct: Math.round(act.pct) });
+      if (act.kind !== 'warn') emit('mail.escalated', t.id, { level: act.kind === 'escalate_2' ? 2 : 1 });
       const word = { warn: 'Reply soon', escalate: 'Escalated: no reply yet', escalate_2: 'Escalated again: still no reply' }[act.kind];
       await alert(t.tenant_id, act.notify, `mail_sla_${act.kind}`, `[${t.ref}] ${word}: ${t.subject || '(no subject)'}`,
         [`${word}. ${t.ref} in ${t.address}, from ${t.requester_name || t.requester_email}, has had no reply.`,
@@ -279,6 +280,7 @@ export async function mail(d) {
     }
     const sets = Object.keys(extra).map(k => `${k}=?`).join(', ');
     await run(`UPDATE mail.threads SET status=?, updated_at=?${sets ? ', ' + sets : ''} WHERE id=?`, status, ts, ...Object.values(extra), t.id);
+    if (status === 'closed' && t.status !== 'closed') emit('mail.closed', t.id);
   }
   const ACTIVE = L.ACTIVE_THREAD;
 
@@ -356,6 +358,7 @@ export async function mail(d) {
     if (res.dup) return 'duplicate';
     if (ch.mode === 'live') {
       if (res.fresh) await draftAck(ch, res.t, res.inb, ai?.reading).catch(e => console.error('mail ack', e.message));
+      if (res.fresh) emit('mail.received', res.t.id);
       graph('PATCH', `${mbox(ch.address)}/messages/${encodeURIComponent(messageId)}`, { categories: ['ONE ✓'] }).catch(e => console.warn('mail tag', e.message)); // seen in Outlook as handled by ONE Desk
       if (res.fresh && lane === 'important') await alert(ch.tenant_id, L.queueFor(await officersOf(ch)), 'mail_important', `[${res.t.ref}] Important mail: ${subject || '(no subject)'}`,
         [`An important mail reached ${ch.address} from ${res.t.requester_name || fromEmail}.`, ai?.reading.summary || subject].filter(Boolean), threadLink(res.t));
@@ -390,6 +393,7 @@ export async function mail(d) {
       const r = await run('UPDATE mail.threads SET first_responded_at=?, sla_state=CASE WHEN sla_state IS NULL THEN NULL ELSE ? END, updated_at=? WHERE id=? AND first_responded_at IS NULL', ts, f.sla_state, ts, t.id);
       if (r.changes && t.sla_policy_id) await slaEvent(t.id, 'met', [], { late: f.sla_state === 'breached_met' });
     }
+    if (o.origin === 'ui') emit('mail.replied', t.id, { to: json(o.to_list, [])[0] || '' });
     if (o.close_after && ACTIVE.includes(t.status)) await setStatus(t, 'closed', ts);
   }
   const note = (thread_id, body) => insert('mail.thread_notes', { id: uid(), thread_id, author_name: 'ONE Desk', body, created_at: now() });
@@ -478,6 +482,7 @@ export async function mail(d) {
     if (url && last) await run("UPDATE mail.jobs SET dedupe_key=NULL WHERE dedupe_key=?", `catchup:${ch.id}`).then(() => enqueue('catchup', { channel_id: ch.id }, `catchup:${ch.id}:more`, 1000));
   }
   async function runJob(j) {
+    if (j.kind === 'plugin') return deliver(json(j.payload, {}));
     const p = json(j.payload, {}), ch = p.channel_id && await one('SELECT * FROM mail.channels WHERE id=?', p.channel_id);
     if (!ch || ch.mode === 'off') return;
     if (!(await tenantRow(ch.tenant_id))?.is_active) return; // a campus switched off: its mailboxes rest too
@@ -533,9 +538,10 @@ export async function mail(d) {
     } catch (e) { console.error('mail housekeeping', e.message); }
   }
   const T = FAST ? { work: 300, sla: 1000, house: 3000 } : { work: 2000, sla: 60e3, house: 5 * 60e3 };
-  setInterval(work, T.work).unref(); setInterval(sendDue, FAST ? 300 : 2000).unref(); // replies never wait behind a long batch of new mail
+  const safe = fn => () => Promise.resolve().then(fn).catch(e => console.error('mail timer', e.message)); // a slip here never stops the server
+  setInterval(safe(work), T.work).unref(); setInterval(safe(sendDue), FAST ? 300 : 2000).unref(); // replies never wait behind a long batch of new mail
   setInterval(() => slaTick().catch(e => console.error('mail sla tick', e.message)), T.sla).unref();
-  setInterval(housekeeping, T.house).unref(); setTimeout(housekeeping, FAST ? 500 : 15e3).unref();
+  setInterval(safe(housekeeping), T.house).unref(); setTimeout(safe(housekeeping), FAST ? 500 : 15e3).unref();
 
   /* ================= Graph notifications (no sign-in: checked by clientState) ================= */
   app.post('/api/inbound/graph', async (req, res) => {
@@ -682,7 +688,7 @@ export async function mail(d) {
     const ts = now();
     const r = await run(`UPDATE mail.threads SET status='forwarded', desk_ticket_id=?, forwarded_service_id=?, forwarded_at=?, forwarded_by_user_id=?, updated_at=? WHERE id=? AND desk_ticket_id IS NULL`,
       tk.id, tk.service_id, ts, req.user.id, ts, t.id);
-    if (r.changes) { await slaEvent(t.id, 'forwarded', [], { ticket_no: tk.ticket_no }); await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_user_id: req.user.id, body: `Forwarded to the desk as ticket #${tk.ticket_no}.`, created_at: ts }); }
+    if (r.changes) { emit('mail.forwarded', t.id, { ticket_no: tk.ticket_no }); await slaEvent(t.id, 'forwarded', [], { ticket_no: tk.ticket_no }); await insert('mail.thread_notes', { id: uid(), thread_id: t.id, author_user_id: req.user.id, body: `Forwarded to the desk as ticket #${tk.ticket_no}.`, created_at: ts }); }
     audit(req, 'forward', 'thread', t.id, { ticket_id: tk.id, ticket_no: tk.ticket_no }); return { ticket_id: tk.id, ticket_no: tk.ticket_no };
   }));
 
@@ -730,7 +736,7 @@ export async function mail(d) {
       rules: await all('SELECT id, channel_id, match, value, action, active FROM mail.rules WHERE tenant_id=? ORDER BY created_at', tid),
       routes: await all('SELECT r.id, r.category, r.service_id, s.name service, r.auto_forward FROM mail.routes r JOIN services s ON s.id=r.service_id WHERE r.tenant_id=? ORDER BY r.category', tid),
       roles: await all("SELECT r.user_id, r.role, u.name FROM mail.user_roles r JOIN users u ON u.id=r.user_id WHERE u.tenant_id=?", tid),
-      integrations: a.admin ? (await all('SELECT id, kind, provider, name, config, priority, active, last_test_at, last_test_result, secret_enc IS NOT NULL has_key FROM mail.integrations ORDER BY kind, priority')).map(i => ({ ...i, config: json(i.config, {}) })) : [],
+      integrations: a.admin ? (await all('SELECT id, kind, provider, name, config, priority, active, last_test_at, last_test_result, secret_enc IS NOT NULL has_key FROM mail.integrations WHERE kind=\'ai\' ORDER BY priority')).map(i => ({ ...i, config: json(i.config, {}) })) : [],
       jobs: await one("SELECT count(*) FILTER (WHERE state='queued')::int queued, count(*) FILTER (WHERE state='failed')::int failed FROM mail.jobs"),
       ai_today: await all('SELECT provider, calls, failures, tokens_in, tokens_out FROM mail.ai_usage WHERE day=?', now().slice(0, 10)) };
   }));
@@ -916,6 +922,87 @@ export async function mail(d) {
     let msg; try { const o = await askAi(i, 'Test', 'Hello, what are the B.Tech fees for 2027?'); msg = `Works: sorted the test mail as ${L.LANE_NAMES[o.reading.lane]} (${o.reading.category})`; }
     catch (e) { msg = `Failed: ${e.message}`; }
     await run('UPDATE mail.integrations SET last_test_at=?, last_test_result=? WHERE id=?', now(), msg.slice(0, 255), i.id); return { ok: msg.startsWith('Works'), message: msg }; }));
+
+  /* ================= Connected apps: any API you buy gets the mail events (Settings, super admin) ================= */
+  // e.g. a WhatsApp or SMS provider told of escalations, a CRM or lead sheet told of every new admissions mail.
+  // Each app: an address, its key (sealed), the events, one campus or all, and the body: ONE Desk's standard JSON or the
+  // app's own format with fill-ins. Every call is signed (X-OneDesk-Signature), sent from the job loop and retried.
+  const EVENTS = L.PLUGIN_EVENTS;
+  async function emit(event, threadId, extra = {}) {
+    try {
+      const apps = (await all("SELECT id, config FROM mail.integrations WHERE kind='notify' AND provider='webhook' AND active=1")).map(a => ({ ...a, cfg: json(a.config, {}) }))
+        .filter(a => (a.cfg.events || []).includes(event)); if (!apps.length) return;
+      const t = await one(`SELECT t.*, c.address, c.display_name, c.tenant_id, n.code campus_code, n.name campus FROM mail.threads t
+        JOIN mail.channels c ON c.id=t.channel_id JOIN tenants n ON n.id=c.tenant_id WHERE t.id=?`, threadId); if (!t) return;
+      const vars = L.pluginVars(event, t, extra, threadLink(t));
+      for (const a of apps) if (!a.cfg.tenant_id || a.cfg.tenant_id === t.tenant_id) await enqueue('plugin', { integration_id: a.id, vars });
+      setImmediate(safe(work));
+    } catch (e) { console.error('mail app event', event, e.message); } // an app problem never stops the mail work
+  }
+  const appUrlOk = u => { try { const x = new URL(u); if (env.MAIL_ALLOW_HTTP_APPS === '1') return /^https?:$/.test(x.protocol);
+      return x.protocol === 'https:' && !/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|\[?f[cd])/i.test(x.hostname); } catch { return false; } };
+  async function deliver({ integration_id, vars }, { test = false } = {}) {
+    const a = await one("SELECT * FROM mail.integrations WHERE id=? AND kind='notify'", integration_id); if (!a || (!a.active && !test)) return 'skipped';
+    const cfg = json(a.config, {}), sec = L.unseal(KEY, a.secret_enc), { body, type } = L.pluginBody(cfg, vars), ts = String(Math.floor(Date.now() / 1000));
+    if (!appUrlOk(cfg.url)) throw new Error('The app address must be https:// on the internet');
+    const headers = { 'content-type': type, 'user-agent': 'ONE-Desk-Mail', 'x-onedesk-event': vars.event, 'x-onedesk-timestamp': ts,
+      'x-onedesk-signature': 'sha256=' + crypto.createHmac('sha256', sec.signing || '').update(`${ts}.${body}`).digest('hex') };
+    if (sec.auth_value) headers[(cfg.auth_header || 'Authorization').toLowerCase()] = sec.auth_value;
+    let msg, okk = false;
+    try {
+      const r = await fetch(cfg.url, { method: cfg.method === 'PUT' ? 'PUT' : 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(15000) });
+      const txt = (await r.text().catch(() => '')).slice(0, 200); okk = r.status >= 200 && r.status < 300;
+      msg = `${okk ? 'Delivered' : 'Refused'} ${vars.event}${vars.ref ? ' ' + vars.ref : ''}: HTTP ${r.status}${okk ? '' : ` ${txt}`}`;
+    } catch (e) { msg = `Not delivered ${vars.event}: ${e.name === 'TimeoutError' ? 'no answer in 15 s' : e.message}`; }
+    await run('UPDATE mail.integrations SET last_test_at=?, last_test_result=? WHERE id=?', now(), msg.slice(0, 255), a.id);
+    if (!okk) throw new Error(msg); // the job loop tries again later (5 times in all)
+    return msg;
+  }
+  const appFields = (b, cur = {}) => {
+    const f = { ...cur };
+    if ('name' in b) f.name = str(b.name, 120);
+    if ('url' in b) f.url = str(b.url, 1000);
+    if ('method' in b) f.method = b.method === 'PUT' ? 'PUT' : 'POST';
+    if ('events' in b) f.events = (Array.isArray(b.events) ? b.events : []).filter(x => EVENTS[x]);
+    if ('tenant_id' in b) f.tenant_id = b.tenant_id || null;
+    if ('format' in b) f.format = b.format === 'template' ? 'template' : 'standard';
+    if ('content_type' in b) f.content_type = ['json', 'form', 'text'].includes(b.content_type) ? b.content_type : 'json';
+    if ('template' in b) f.template = String(b.template ?? '').slice(0, 8000);
+    if ('auth_header' in b) f.auth_header = str(b.auth_header, 60) || 'Authorization';
+    if (!f.name) throw bad('Name the app, e.g. "WhatsApp alerts"');
+    if (!appUrlOk(f.url)) throw bad('The app address must start with https:// and be on the internet');
+    if (!f.events?.length) throw bad('Pick at least one event');
+    if (!/^[A-Za-z0-9-]{1,60}$/.test(f.auth_header || 'Authorization')) throw bad('Key header: letters, numbers and - only, e.g. Authorization or X-Api-Key');
+    if (f.format === 'template') { if (!f.template.trim()) throw bad('Write the body the app expects, with fill-ins like {{ref}}');
+      const unknown = [...f.template.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map(m => m[1]).filter(k => !L.PLUGIN_VARS.includes(k));
+      if (unknown.length) throw bad(`Unknown fill-in {{${unknown[0]}}}. Use: ${L.PLUGIN_VARS.map(v => `{{${v}}}`).join(' ')}`);
+      if (f.content_type === 'json') { try { JSON.parse(L.pluginBody(f, L.pluginVars('mail.received', L.SAMPLE_THREAD, {}, 'https://x')).body); } catch { throw bad('The body is not valid JSON once filled in: keep each {{fill-in}} inside quotes'); } } }
+    return f;
+  };
+  const appOut = a => { const c = json(a.config, {}); return { id: a.id, name: a.name, active: !!a.active, ...c, has_key: !!L.unseal(KEY, a.secret_enc).auth_value, last_at: a.last_test_at, last_result: a.last_test_result }; };
+  S.get('/maildesk/apps', wrap(async req => { await needAdmin(req);
+    return { apps: (await all("SELECT * FROM mail.integrations WHERE kind='notify' AND provider='webhook' ORDER BY created_at")).map(appOut), events: EVENTS, fill_ins: L.PLUGIN_VARS,
+      campuses: await all('SELECT id, code, name FROM tenants ORDER BY name'), sample: L.pluginBody({ format: 'standard' }, L.pluginVars('mail.received', L.SAMPLE_THREAD, {}, `${base()}/#/c/mail/t/SMRU-0001`)).body }; }));
+  S.post('/maildesk/apps', wrap(async req => { await needAdmin(req); const f = appFields(req.body || {}), signing = crypto.randomBytes(32).toString('hex');
+    if (f.tenant_id && !(await tenantRow(f.tenant_id))) throw bad('Pick a campus');
+    const { name, ...config } = f;
+    const a = await insert('mail.integrations', { id: uid(), kind: 'notify', provider: 'webhook', name, config: JSON.stringify(config), secret_enc: L.seal(KEY, { signing, auth_value: str(req.body.auth_value, 2000) || null }),
+      priority: 1, active: req.body.active === false ? 0 : 1, created_at: now(), updated_at: now() });
+    audit(req, 'key_replace', 'app', a.id, { name, url: f.url, events: f.events }); return { ...appOut(a), signing_secret: signing }; })); // the signing secret is shown once here
+  S.patch('/maildesk/apps/:id', wrap(async req => { await needAdmin(req); const a = await one("SELECT * FROM mail.integrations WHERE id=? AND kind='notify'", req.params.id); if (!a) throw notFound();
+    const f = appFields(req.body || {}, { name: a.name, ...json(a.config, {}) }), { name, ...config } = f, sec = L.unseal(KEY, a.secret_enc);
+    if (f.tenant_id && !(await tenantRow(f.tenant_id))) throw bad('Pick a campus');
+    if ('auth_value' in req.body && req.body.auth_value !== undefined) sec.auth_value = str(req.body.auth_value, 2000) || null; // "" removes the key
+    let signing = null; if (req.body.new_signing_secret === true) { sec.signing = signing = crypto.randomBytes(32).toString('hex'); }
+    await run('UPDATE mail.integrations SET name=?, config=?, secret_enc=?, active=?, updated_at=? WHERE id=?', name, JSON.stringify(config), L.seal(KEY, sec), 'active' in req.body ? (req.body.active ? 1 : 0) : a.active, now(), a.id);
+    audit(req, 'auth_value' in req.body || signing ? 'key_replace' : 'setting_change', 'app', a.id, { name });
+    return { ...appOut(await one('SELECT * FROM mail.integrations WHERE id=?', a.id)), ...(signing ? { signing_secret: signing } : {}) }; }));
+  S.delete('/maildesk/apps/:id', wrap(async req => { await needAdmin(req);
+    await run("DELETE FROM mail.integrations WHERE id=? AND kind='notify'", req.params.id); await run("UPDATE mail.jobs SET state='failed', last_error='The app was deleted' WHERE kind='plugin' AND state='queued' AND payload LIKE ?", `%${req.params.id}%`);
+    audit(req, 'setting_change', 'app', req.params.id, { deleted: true }); return { ok: true }; }));
+  S.post('/maildesk/apps/:id/test', wrap(async req => { await needAdmin(req); const a = await one("SELECT id FROM mail.integrations WHERE id=? AND kind='notify'", req.params.id); if (!a) throw notFound();
+    try { const m = await deliver({ integration_id: a.id, vars: { ...L.pluginVars(req.body?.event || 'mail.received', L.SAMPLE_THREAD, { test: true }, `${base()}/#/c/mail/t/SMRU-0001`) } }, { test: true }); return { ok: true, message: m + ' (a test with sample values)' }; }
+    catch (e) { return { ok: false, message: e.message }; } }));
 
   /* ================= Connections (super admin, on screen): Microsoft 365 and OneDrive ================= */
   // OneDrive: one account's OneDrive (e.g. hr@) holds the resumes and CVs, in one folder; files are read through ONE Desk, never shared publicly

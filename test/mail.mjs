@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import crypto from 'node:crypto';
 import * as L from '../mail-logic.js';
 import { calendar } from '../sla.js';
 
@@ -111,6 +112,7 @@ const AI = { calls: 0, down: true };
 const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => {
   const u = new URL(req.url, 'http://x'), send = (s, o) => { res.writeHead(s, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   G.calls.push(`${req.method} ${u.pathname}`);
+  if (u.pathname === '/app' || u.pathname === '/app-down') { (G.app ||= []).push({ path: u.pathname, headers: req.headers, body: b }); return u.pathname === '/app' ? send(200, { ok: true }) : send(503, { error: 'busy' }); }
   if (u.pathname.endsWith('/oauth2/v2.0/token')) return send(200, { access_token: 'tok', expires_in: 3600 });
   if (u.pathname === '/ai-down/chat/completions') { AI.calls++; return send(500, { error: { message: 'no credit' } }); }
   if (u.pathname === '/ai/chat/completions') { AI.calls++; const txt = JSON.parse(b).messages[1].content;
@@ -165,7 +167,7 @@ async function start(extra = {}) {
 }
 const stop = () => new Promise(r => { if (!server) return r(); const p = server; server = null; if (p.exitCode !== null) return r(); p.on('exit', () => r()); p.kill(); });
 const MAIL_ENV = { MAIL_ENABLED: 'true', MAIL_TEST_FAST: '1', GRAPH_BASE: STUB + '/g', MS_LOGIN_BASE: STUB, MS_TENANT_ID: 'tid', MS_CLIENT_ID: 'cid', MS_CLIENT_SECRET: 'csecret',
-  GRAPH_CLIENT_STATE: 'cs-test', MAIL_NOTIFY_URL: 'https://desk.example/api/inbound/graph' };
+  GRAPH_CLIENT_STATE: 'cs-test', MAIL_ALLOW_HTTP_APPS: '1', MAIL_NOTIFY_URL: 'https://desk.example/api/inbound/graph' };
 // the desk's own tables: name, columns, types, defaults, constraints and indexes
 const deskShape = async () => JSON.stringify(await q(`SELECT table_name, column_name, data_type, column_default, is_nullable FROM information_schema.columns WHERE table_schema='public' ORDER BY 1, 2`))
   + JSON.stringify(await q(`SELECT conname, pg_get_constraintdef(oid) d FROM pg_constraint WHERE connamespace='public'::regnamespace ORDER BY 1`))
@@ -334,6 +336,31 @@ try {
   const tar = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-AR'"))[0]);
   await sleep(500);
   check('no auto-reply to an auto-responder (no mail loops)', !!tar && (await q('SELECT 1 FROM mail.outbound_emails WHERE thread_id=?', tar.id)).length === 0);
+
+  sec('Connected apps (any API bought later, set up on screen)');
+  await fails('only a super admin connects apps', '/maildesk/apps', { token: cadmin.token }, 403);
+  await fails('an address that is not a web address is refused', '/maildesk/apps', { ...A, method: 'POST', body: { name: 'x', url: 'ftp://x', events: ['mail.received'], format: 'standard' } }, 400);
+  await fails('a body with an unknown fill-in is refused', '/maildesk/apps', { ...A, method: 'POST', body: { name: 'x', url: STUB + '/app', events: ['mail.received'], format: 'template', template: '{"t":"{{nope}}"}' } }, 400);
+  await fails('a JSON body that would not be valid JSON is refused', '/maildesk/apps', { ...A, method: 'POST', body: { name: 'x', url: STUB + '/app', events: ['mail.received'], format: 'template', content_type: 'json', template: '{"t": {{ref}} }' } }, 400);
+  const wa = await ok('connect a WhatsApp-style app (own JSON body, key header)', '/maildesk/apps', { ...A, method: 'POST', body: { name: 'WhatsApp', url: STUB + '/app', events: ['mail.received', 'mail.escalated'], format: 'template', content_type: 'json',
+    template: '{"to":"919999999999","text":"New {{ref}} from {{from_name}}: {{subject}}"}', auth_header: 'X-Api-Key', auth_value: 'wa-key-123' } });
+  check('…its signing secret is shown once; the key never comes back', /^[0-9a-f]{64}$/.test(wa.signing_secret) && !JSON.stringify((await api('/maildesk/apps', A)).data).includes('wa-key-123') && !JSON.stringify((await api('/maildesk/apps', A)).data).includes(wa.signing_secret));
+  const down = await ok('connect an app that is down (standard JSON)', '/maildesk/apps', { ...A, method: 'POST', body: { name: 'CRM', url: STUB + '/app-down', events: ['mail.received'], format: 'standard' } });
+  const tst = await ok('Test sends a sample', `/maildesk/apps/${wa.id}/test`, { ...A, method: 'POST' });
+  const first = G.app?.[0];
+  check('…the app got its own body, its key and a valid signature', tst.ok && first?.headers['x-api-key'] === 'wa-key-123' && JSON.parse(first.body).text.startsWith('New SMRU-0001 from Ria Sharma')
+    && first.headers['x-onedesk-signature'] === 'sha256=' + crypto.createHmac('sha256', wa.signing_secret).update(`${first.headers['x-onedesk-timestamp']}.${first.body}`).digest('hex'));
+  G.app = [];
+  const ma = mkMsg({ from: 'arun@gmail.com', name: 'Arun "AJ" Rao', subject: 'Hostel "AC" room?\nplease', conv: 'conv-APP' }); await notifyGraph('sub-1', ma);
+  const tapp = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-APP'"))[0]);
+  const got = await waitFor(async () => G.app.find(x => x.path === '/app'));
+  check('a new mail reaches the app, quotes and new lines kept as valid JSON', !!got && JSON.parse(got.body).text === `New ${tapp.ref} from Arun "AJ" Rao: Hostel "AC" room?\nplease` && got.headers['x-onedesk-event'] === 'mail.received', got?.body);
+  check('…and the app that is down is tried, then tried again later', await waitFor(async () => G.app.filter(x => x.path === '/app-down').length >= 1) && (await q("SELECT state FROM mail.jobs WHERE kind='plugin' AND payload LIKE ?", `%${down.id}%`)).some(j => j.state === 'queued'));
+  const lst = (await api('/maildesk/apps', A)).data.apps;
+  check('…each app shows its last result on screen', /^Delivered mail.received/.test(lst.find(x => x.id === wa.id).last_result) && /^Refused mail.received/.test(lst.find(x => x.id === down.id).last_result));
+  await ok('delete the app that is down', `/maildesk/apps/${down.id}`, { ...A, method: 'DELETE' });
+  check('…its waiting calls stop', (await q("SELECT state FROM mail.jobs WHERE kind='plugin' AND payload LIKE ? AND state='queued'", `%${down.id}%`)).length === 0);
+  await ok('the WhatsApp app off', `/maildesk/apps/${wa.id}`, { ...A, method: 'PATCH', body: { active: false } });
 
   sec('Reply target missed: reminder and escalation');
   const m3 = mkMsg({ from: 'sam@gmail.com', name: 'Sam', subject: 'Hostel room problem', conv: 'conv-S', body: 'My hostel room fan is broken' }); await notifyGraph('sub-1', m3);

@@ -5,7 +5,7 @@ import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } fr
 const $ = s => document.querySelector(s), app = $('#app');
 // Mail desk screens: loaded only for people with a mail role, and only when the server has the mail desk on (MAIL_ENABLED)
 let mailMod = null;
-const mailJs = () => mailMod ||= import('./mail.js').then(m => { m.initMail({ api, esc, toast, I, dlg, pill, avatar, emptyState, shortDate, cardHeading, customFields, typeFields, collectForm, isGeneral }); return m; });
+const mailJs = () => mailMod ||= import('./mail.js').then(m => { m.initMail({ api, esc, toast, I, dlg, pill, avatar, emptyState, shortDate, cardHeading, customFields, typeFields, collectForm, isGeneral }); return m; }).catch(e => { mailMod = null; throw e; }); // a failed load is tried again next time, never cached
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '—';
 const toast = (m, ms = 3500) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms); };

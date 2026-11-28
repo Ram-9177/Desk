@@ -6,6 +6,19 @@ It is off unless `MAIL_ENABLED=true`.
 - [Part 1: Connection steps](#part-1-connection-steps), once, about 30 minutes
 - [Part 2: API](#part-2-api)
 
+## How it fits in ONE Desk without disturbing it
+
+| Where it touches the desk | What keeps the desk safe |
+|---|---|
+| `server.js`: one fenced block loads `mail.js` | With `MAIL_ENABLED` off, the file is never loaded. If it fails to start, the log says `Mail desk NOT started (the desk runs without it)` and the desk starts normally. |
+| Database | Everything is in its own schema `mail`. No desk table is changed, which the tests check column by column. Desk rows are referenced only with `ON DELETE SET NULL/CASCADE`, so deleting desk data is never blocked. |
+| Forward to service | Calls the desk's own `createTicket` (channel `mail`), the same path as the staff New ticket form. The desk's rules, numbers, mails and reports apply unchanged. Forwarding twice gives the same ticket. |
+| Desk Home | `app.js` asks `/api/maildesk/my-work` and adds the rows to the same table. If the mail desk is off or fails, the Home is exactly as before. |
+| Header **Mail** item | Shown only when `/api/maildesk/me` gives the person a role. |
+| Alerts (reminders, escalations) | Go through the desk's own email queue, like canteen and food mails. |
+| Background work | Runs inside the one desk process, from a Postgres job table, on its own timers. Every timer catches its own errors, so a Microsoft, AI or app failure never stops the server. Jobs left mid-way by a restart are taken up again, and a reply is never sent twice. |
+| Connected apps | Calls go out from the job loop, with a 15 s limit and retries. A slow or broken app cannot hold up mail or the desk. |
+
 ---
 
 ## Part 1: Connection steps
@@ -132,6 +145,34 @@ Go to **Mail → Settings → AI providers → Add AI provider**, once per provi
 
 - Press **Test** on each one.
 - Without any provider, mail is sorted by your rules only, and anything else waits in **Review**.
+
+### 7b. Connected apps: plug in any API you buy (optional)
+
+Go to **Mail → Settings → Connected apps → Connect an app**, or start from the **WhatsApp**, **SMS** or **CRM example** buttons.
+
+1. **Address:** copy the "send message" address from the app's API guide, e.g. `https://api.provider.com/v1/messages`.
+2. **Key header** and **Key:** as the app's guide says, e.g. `Authorization` with `Bearer abc123`, or `X-Api-Key` with `abc123`. The key is stored encrypted and never shown again.
+3. **Send it when:** pick the events.
+
+   | Event | When |
+   |---|---|
+   | new mail | A mail arrives in a live mailbox |
+   | reply | A reply goes out from ONE Desk |
+   | escalated | A mail had no reply in time |
+   | forwarded | A mail became a desk ticket |
+   | closed | A mail is closed |
+
+4. **For:** all campuses, or one.
+5. **What to send:**
+   - **The app's own format:** write the body exactly as the app's guide shows it, with fill-ins where the values go, e.g. `{"to":"9199…","text":"{{ref}} escalated: {{subject}} from {{from_name}}. {{link}}"}`. Every value is made safe for the chosen body type (JSON, form or plain text).
+   - **ONE Desk's standard JSON:** for apps or sheets built to receive it.
+6. Press **Save**, then **Test**. A sample (SMRU-0001, Ria Sharma) is sent, and the result shows under the app.
+
+How the calls behave:
+- If the app is down or refuses, it is tried again later, 5 times in all. An app problem never holds up the mail work or the desk.
+- Every call carries `X-OneDesk-Event`, `X-OneDesk-Timestamp` and `X-OneDesk-Signature: sha256=<HMAC-SHA256 of "timestamp.body" with the app's signing secret>`.
+- The signing secret is shown once, when the app is saved. Make a new one in Edit if needed.
+- Only `https://` addresses on the internet are accepted.
 
 ### 8. Add the mailboxes (super admin)
 
@@ -262,6 +303,29 @@ The mail desk API lives under `https://<site>/api/maildesk/…`. It uses the sam
 | `POST /maildesk/integrations` · `PATCH`/`DELETE /maildesk/integrations/:id` | `{ name, baseURL, model, apiKey?, priority?, active?, reasoningEffort?, noTemperature? }` | Any OpenAI-compatible API. Tried in `priority` order. |
 | `POST /maildesk/integrations/:id/test` | | `{ ok, message }` |
 | `PUT /maildesk/switches` | `{ auto_reply_paused: true\|false }` | Pauses every auto-reply in all mailboxes. |
+
+### Connected apps (super admin)
+
+| Method and path | Body | Notes |
+|---|---|---|
+| `GET /maildesk/apps` | | `{ apps: [{ id, name, active, url, method, events, tenant_id, format, content_type, template, auth_header, has_key, last_at, last_result }], events, fill_ins, campuses, sample }`. Keys and signing secrets are never included. |
+| `POST /maildesk/apps` | `{ name, url, method?: 'POST'\|'PUT', events: ['mail.received'\|'mail.replied'\|'mail.escalated'\|'mail.forwarded'\|'mail.closed'], tenant_id?, format: 'template'\|'standard', content_type?: 'json'\|'form'\|'text', template?, auth_header?, auth_value?, active? }` | Returns the app and its `signing_secret`, once. |
+| `PATCH /maildesk/apps/:id` | Any of the above. `auth_value: ""` removes the key. `new_signing_secret: true` makes a new one, returned once. | |
+| `DELETE /maildesk/apps/:id` | | Its waiting calls stop. |
+| `POST /maildesk/apps/:id/test` | `{ event? }` | Sends a sample. Returns `{ ok, message }`. |
+
+Standard JSON body:
+
+```json
+{ "event": "mail.received", "at": "2026-11-27T09:12:00.000Z",
+  "campus": { "code": "SMRU", "name": "St. Mary's Rehabilitation University" },
+  "mail": { "ref": "SMRU-0001", "subject": "…", "lane": "needs_reply", "category": "Admissions", "status": "open",
+            "mailbox": "admissions@smru.edu.in", "mailbox_name": "Admissions", "from": { "name": "…", "email": "…" },
+            "summary": "…", "reply_due_at": "…", "sla_state": "on_track", "link": "https://<site>/#/c/mail/t/SMRU-0001" },
+  "ticket_no": "0042", "level": 1, "to": "…" }
+```
+
+`ticket_no` is sent only with `mail.forwarded`, `level` only with `mail.escalated`, and `to` only with `mail.replied`.
 
 ### For Microsoft only
 
