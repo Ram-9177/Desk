@@ -450,7 +450,8 @@ const dailyLimits = tn => ({ ...DAILY_LIMITS, ...(tn.daily_limits ? JSON.parse(t
 async function checkDailyLimit(tn, b) {
   const type = b.requestor_type || 'student', max = dailyLimits(tn)[type] ?? DAILY_LIMITS.student, day = localDay(tn.timezone || 'Asia/Kolkata');
   const { n } = await one(`SELECT count(*)::int n FROM tickets t JOIN requestors r ON r.id=t.requestor_id
-    WHERE t.tenant_id=? AND t.channel='portal' AND lower(r.email)=? AND t.created_at>=?`, tn.id, String(b.email).toLowerCase().trim(), day.start);
+    WHERE t.tenant_id=? AND t.channel='portal' AND lower(r.email)=? AND t.created_at>=?
+      AND NOT EXISTS (SELECT 1 FROM ticket_events e WHERE e.ticket_id=t.id AND e.event_type='created' AND e.meta LIKE '%"split_from"%')`, tn.id, String(b.email).toLowerCase().trim(), day.start);
   if (n < max) return;
   const when = new Date(day.next).toLocaleString('en-IN', { timeZone: tn.timezone || 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
   throw new HttpErr(429, 'DAILY_LIMIT', `Daily limit reached: ${{ student: 'students', faculty: 'faculty', staff: 'staff', parent: 'parents', visitor: 'visitors' }[type] || 'each person'} can raise ${max} tickets a day, and ${String(b.email).trim()} has raised ${n} today. `
@@ -714,7 +715,7 @@ const asViewer = viewer => ({ type: 'requestor', id: viewer.requestor_id, name: 
 const notOnIt = viewer => { if (!viewer.id && !viewer.is_first) throw new HttpErr(409, 'NOT_ON_TICKET', 'This ticket was joined into another one. Raise a new ticket if you need to tell the team more.'); };
 P.post('/:slug/tickets/:no/notes', wrap(async req => {
   const { t, viewer: v, shown_no } = await findPublic(req.params.slug, req.params.no), viewer = await viewerOf(t, v);
-  limit('note:' + t.id, 20);
+  limit('note:' + t.id + ':' + (viewer.id || 'first'), 20); // per student: one busy student does not silence the others
   notOnIt(viewer);
   if (t.status === 'rejected') throw new HttpErr(409, 'BAD_TRANSITION', 'This ticket is rejected; raise a new one');
   await tx(async () => { const ev = await addEvent(t, asViewer(viewer), 'note', { body: req_(req.body.body, 'Write a note'), meta: { requestor_row: viewer.id } });
@@ -726,7 +727,10 @@ P.post('/:slug/tickets/:no/reopen', wrap(async req => {
   const { t, viewer: v, shown_no } = await findPublic(req.params.slug, req.params.no), viewer = await viewerOf(t, v), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
   notOnIt(viewer); assertTransition(t.status, 'open', 'requestor');
   if (Date.now() > new Date(addH(t.closed_at, tn.reopen_window_days * 24)).getTime()) throw new HttpErr(409, 'BAD_TRANSITION', 'The reopen window has passed; raise a new ticket');
-  if (t.reopen_requested_at) throw new HttpErr(409, 'ALREADY_REQUESTED', 'You already asked to reopen this ticket. The team will answer soon; you can add a note meanwhile.');
+  if (t.reopen_requested_at) { // one request per ticket: whoever asked, the team answers it for everyone
+    const asked = await one("SELECT meta FROM ticket_events WHERE ticket_id=? AND event_type='reopen_requested' ORDER BY id DESC LIMIT 1", t.id), by = JSON.parse(asked?.meta || '{}').requestor_row || null;
+    throw new HttpErr(409, 'ALREADY_REQUESTED', ownEvent(viewer, { requestor_row: by }) ? 'You already asked to reopen this ticket. The team will answer soon; you can add a note meanwhile.'
+      : 'Someone already asked to reopen this ticket. The team will answer soon. You can add a note meanwhile.'); }
   limit('reopen:' + t.id, 5);
   const reason = req_(req.body.reason, 'Give a reason'), ts = now();
   // a request, not a reopen: the provider who closed it accepts (it reopens) or declines (it stays closed)
@@ -1441,7 +1445,7 @@ S.get('/tickets.csv', async (req, res, next) => { try {
       r.requestor_type, r.identifier, r.department, cu.name closed_by_name, eu.name escalated_name,
       (SELECT count(*)::int FROM attachments a WHERE a.ticket_id=t.id) photos,
       (SELECT e.body FROM ticket_events e WHERE e.ticket_id=t.id AND e.is_internal=0 AND coalesce(e.body,'')<>'' AND e.event_type<>'created' ORDER BY e.id DESC LIMIT 1) last_note,
-      (SELECT string_agg(tr.name, '; ' ORDER BY tr.raised_at) FROM ticket_requestors tr WHERE tr.ticket_id=t.id AND coalesce(tr.is_first,0)=0) also_reported_by
+      (SELECT string_agg(tr.name, '; ' ORDER BY tr.raised_at) FROM ticket_requestors tr WHERE tr.ticket_id=t.id AND coalesce(tr.is_first,0)=0 AND tr.detached_at IS NULL) also_reported_by
     FROM tickets t JOIN services s ON s.id=t.service_id LEFT JOIN services p ON p.id=s.parent_id JOIN requestors r ON r.id=t.requestor_id
     LEFT JOIN users cu ON cu.id=t.closed_by LEFT JOIN users eu ON eu.id=t.escalated_to WHERE ${sql} ORDER BY t.created_at DESC`, ...args);
   const tn = await tenantRow(req.tenantId), holdLabel = k => holdReasons(tn).find(x => x.key === k)?.label || k || '';
@@ -1486,7 +1490,9 @@ S.get('/tickets/:id', wrap(async req => {
     providers: await providersFor(req.tenantId, t.service_id),
     requestor: await one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
     requestors: await all(`SELECT tr.id, tr.name, tr.contact, tr.raised_at, tr.is_first, tr.event_id, tr.photo_url, tr.ticket_no, tr.description, tr.detached_at, tr.detached_to, r.identifier, r.department
-      FROM ticket_requestors tr LEFT JOIN requestors r ON r.id = tr.requestor_id WHERE tr.ticket_id=? ORDER BY tr.raised_at`, t.id),
+      FROM ticket_requestors tr LEFT JOIN requestors r ON r.id = tr.requestor_id WHERE tr.ticket_id=? ORDER BY tr.raised_at`, t.id)
+      // split out and joined back: their live row stands for them (the split-out copy's link would lead to a ticket joined away)
+      .then(rs => rs.filter(q => !q.detached_at || !rs.some(x => !x.detached_at && x.ticket_no && x.ticket_no === q.ticket_no))),
     requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? AND joined_into IS NULL ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),
@@ -1494,7 +1500,9 @@ S.get('/tickets/:id', wrap(async req => {
     tracking_url: await trackUrl(t), queue: t.status === 'open' ? await queueInfo(t) : null,
     joined_into_no: t.joined_into ? (await one('SELECT ticket_no FROM tickets WHERE id=?', t.joined_into))?.ticket_no || null : null,
     reopen_request: t.reopen_requested_at && t.status === 'closed' ? await (async () => { const d = await reopenDeciders(t);
-      return { at: t.reopen_requested_at, note: t.reopen_request_note, deciders: d.map(x => x.name), can_decide: isAdmin(req.user) || d.some(x => x.id === req.user.id) }; })() : null };
+      const ev = await one("SELECT meta FROM ticket_events WHERE ticket_id=? AND event_type='reopen_requested' ORDER BY id DESC LIMIT 1", t.id), row = JSON.parse(ev?.meta || '{}').requestor_row;
+      return { at: t.reopen_requested_at, note: t.reopen_request_note, by: row ? (await one('SELECT name FROM ticket_requestors WHERE id=?', row))?.name || null : null, // the student who asked (none: the first)
+        deciders: d.map(x => x.name), can_decide: isAdmin(req.user) || d.some(x => x.id === req.user.id) }; })() : null };
 }));
 S.post('/tickets', wrap(async req => {
   const b = req.body, channel = CHANNELS.includes(b.channel) && b.channel !== 'portal' ? b.channel : 'walk_in';
@@ -1682,7 +1690,7 @@ S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
         priority: 'medium', status: 'open', channel: t.channel, is_internal: 0, created_by_user_id: null,
         due_at: await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, 'medium') * 60, t.service_id), kind: 'issue', tracking_token: row.tracking_token,
         idempotency_key: null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,
-        location_key: t.location_key, problem_key: t.problem_key, problem_label: t.problem_label, created_date: dayIn(tn.timezone || 'Asia/Kolkata', ts), affected_count: 1, priority_by_staff: 0, not_merged: 0,
+        location_key: t.location_key, problem_key: null, problem_label: t.problem_label, created_date: dayIn(tn.timezone || 'Asia/Kolkata', ts), affected_count: 1, priority_by_staff: 0, not_merged: 0, // a different problem: no report joins it, no close closes it with the shared one
         queued: 0, queue_day: dayIn(tn.timezone || 'Asia/Kolkata', ts), lands_at: null });
       await run('UPDATE ticket_requestors SET detached_at=?, detached_to=? WHERE id=?', ts, nt.id, row.id); // keeps its copy of the number: detached rows are out of the index and lookups
       first = await insert('ticket_requestors', { id: uid(), tenant_id: t.tenant_id, ticket_id: nt.id, ticket_no: row.ticket_no, tracking_token: row.tracking_token, requestor_id: row.requestor_id, name: row.name, contact: row.contact,

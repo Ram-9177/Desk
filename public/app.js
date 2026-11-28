@@ -876,7 +876,7 @@ async function workspace(main, id, { admin }) {
     ${t.joined_into_no ? `<div class="helper joinedto">${I('users', 14)}<span>Joined into <a href="#/c/t/${esc(t.joined_into)}">#${esc(t.joined_into_no)}</a>. Its students and updates are there now.</span></div>` : ''}
     <div class="tk-cols">
       <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
-      ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
+      ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(t.reopen_request.by || r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
         ${t.reopen_request.note ? `<div class="bubble">${esc(t.reopen_request.note)}</div>` : ''}
         ${t.reopen_request.can_decide ? `<div class="psub">Reply with a note below if you need more detail first. Accepting reopens the ticket with a fresh target; the requester is emailed either way.</div>
           <div class="reo-acts"><button type="button" class="btn primary" data-reo="accept">${I('history', 16)}Accept and reopen</button><button type="button" class="btn" data-reo="decline">Decline</button></div>`

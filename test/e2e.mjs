@@ -840,8 +840,11 @@ try {
   check("their join email carries only their number and their own link, not the survivor's", backMail.includes(`k=${j3.tracking_token}`) && !backMail.includes(`k=${t1.tracking_token}`) && new RegExp(`\\b${j3.ticket_no}\\b`).test(backMail) && !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(backMail)), backMail);
   const backPage = (await api(`/public/alpha/tickets/${j3.ticket_no}`)).data;
   check('their number opens the shared ticket as them', backPage.ticket_no === j3.ticket_no && !!backPage.mine && !/Joina|Joinb|Joind|Joine|Joinf/.test(JSON.stringify(backPage)), JSON.stringify(backPage).slice(0, 600));
+  check('M1: the Requesters card lists them once (their split-out copy is hidden while they are back on it)', (await api(`/tickets/${t1.id}`, { token: T.pavan })).data.requestors.filter(x => x.ticket_no === j3.ticket_no).length === 1);
   const sp2 = await ok('…and they can be split out again', `/tickets/${t1.id}/requestors/${backRow.id}/split`, { token: T.pavan, method: 'POST', body: {} });
   check('…back to their own ticket, open', sp2.revived && sp2.ticket_id === nt.id && (await tk(j3.ticket_no)).status === 'open' && (await api(`/public/alpha/tickets/${j3.ticket_no}`)).data.affected_count === 1, JSON.stringify(sp2));
+  const csvT1 = (await (await fetch(`${API}/tickets.csv?status=all&q=${j1.ticket_no}`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).split('\r\n').find(l => l.startsWith(`"${j1.ticket_no}"`)) || '';
+  check('M1: the CSV "Also reported by" leaves out students split out of the ticket', csvT1.includes('Joinb') && !csvT1.includes('Joinc'), csvT1);
   // a wrong join undone: the first student of a ticket that was joined in gets that ticket back, open again under their own number
   const rf = { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '206' };
   const m1 = await own('Revs', { form_data: { ...rf, issue: 'Fan' } }), m2 = await own('Reva', { form_data: { ...rf, issue: 'Light' }, files: [{ name: 'reva.png', type: 'image/png', source: 'camera', data: PNG }] }), m3 = await own('Revb', { form_data: { ...rf, issue: 'Light' } });
@@ -925,6 +928,28 @@ try {
   // I5: the group report counts a joined ticket's close nowhere
   const grp = (await api('/group/report', { token: T.sa })).data.find(g => g.code === 'ALPHA');
   check('I5: the group report leaves joined tickets out of "closed"', grp.closed === (await q("SELECT count(*)::int n FROM tickets WHERE tenant_id=? AND status='closed' AND joined_into IS NULL", alpha.id))[0].n, JSON.stringify(grp));
+  // M2: a split-created ticket keeps the place but not the problem key, so today's reports never join it and "close earlier" never closes it
+  const pa = await fx('Probone', 'F5'), pb2 = await fx('Probtwo', 'F5'), tPa = await tk(pa.ticket_no);
+  const sp = await split(tPa.id, (await rowOf(pb2.ticket_no)).id), nP = await tk(pb2.ticket_no);
+  check('M2: the split ticket keeps the place and problem label, not the problem key', sp.status === 200 && nP.problem_key === null && nP.location_key === tPa.location_key && nP.problem_label === tPa.problem_label, JSON.stringify(nP));
+  const pc = await fx('Probthree', 'F5');
+  check('M2: …a later report joins the shared ticket', pc.merged && (await rowOf(pc.ticket_no)).ticket_id === tPa.id);
+  // M5: a split-created ticket does not count against the student's daily limit
+  await fx('Limhost', 'F6'); const ls = await fx('Limsplit', 'F6');
+  await split((await rowOf(ls.ticket_no)).ticket_id, (await rowOf(ls.ticket_no)).id);
+  const more = []; for (const room of ['G1', 'G2', 'G3', 'G4', 'G5', 'G6']) more.push(await raise('alpha', { ...elecBody('Limsplit', 'limsplit@fix.example.com'), form_data: { loc_block: 'Main block', loc_floor: 'Ground floor', loc_room: room, issue: 'Fan' } }));
+  check('M5: after a split the student can still raise five tickets today, and the sixth is refused', more.slice(0, 5).every(x => x.status === 200) && more[5].status === 429, JSON.stringify(more.map(x => x.status)));
+  // M4: one reopen request per ticket, worded for whoever asks; the note limit is per student
+  const oa = await fx('Reoa', 'F7'), ob = await fx('Reob', 'F7'), tR = await tk(oa.ticket_no);
+  await act(tR.id, { to: 'closed', note: 'Fixed the fan' });
+  const reo = no => api(`/public/alpha/tickets/${no}/reopen`, { method: 'POST', body: { reason: 'Still broken' } });
+  const rB = await reo(ob.ticket_no), rA = await reo(oa.ticket_no), rB2 = await reo(ob.ticket_no);
+  check('M4: a second student is told someone already asked; the same one is told they did', rB.status === 200 && rA.status === 409 && /^Someone already asked to reopen this ticket\. The team will answer soon\./.test(rA.error.message)
+    && rB2.status === 409 && /^You already asked/.test(rB2.error.message), JSON.stringify([rB.status, rA.error?.message, rB2.error?.message]));
+  check('M4: the staff reopen card names the student who asked', (await api(`/tickets/${tR.id}`, { token: T.pavan })).data.reopen_request?.by === 'Reob');
+  for (let i = 0; i < 20; i++) await api(`/public/alpha/tickets/${oa.ticket_no}/notes`, { method: 'POST', body: { body: `Note ${i}` } });
+  const nA = await api(`/public/alpha/tickets/${oa.ticket_no}/notes`, { method: 'POST', body: { body: 'One more' } }), nB = await api(`/public/alpha/tickets/${ob.ticket_no}/notes`, { method: 'POST', body: { body: 'Mine' } });
+  check("M4: one student's notes do not use up another's limit", nA.status === 429 && nB.status === 200, JSON.stringify([nA.status, nB.status]));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
