@@ -501,7 +501,7 @@ async function ticketPage(slug, no, q) {
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
-    note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}`, reopen_requested: 'You asked to reopen', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
+    note: `Note from ${esc(e.actor_name)}`, reopened: e.actor_name ? `Reopened by ${esc(e.actor_name)}` : 'Reopened', reopen_requested: 'You asked to reopen', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && !t.reopen_request && new Date(t.reopen_until) > new Date(), sug = t.kind === 'suggestion';
   const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
@@ -511,6 +511,7 @@ async function ticketPage(slug, no, q) {
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
       <div><b>${sug ? (t.status === 'closed' ? 'Suggestion closed' : 'Suggestion received') : t.queue ? `In the queue · number ${t.queue.queue_no}` : STATUS_WORDS[t.status]}</b><div class="muted small">${sug && t.status !== 'closed' ? `The ${esc(t.service)} team will read it. If they reply, we'll email you.` : ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
+    ${t.mine ? `<div class="card mine"><div class="eyebrow">What you reported</div><p>${esc(t.mine.description || t.mine.subject)}</p>${thumbs(t.mine.files)}</div>` : ''}
     <h2>What happened</h2><div class="card"><ul class="stamps">${t.events.map(e => `<li><b>${label(e)}</b><div class="when">${fmt(e.created_at)}${e.actor_type === 'user' ? ' · ' + esc(e.actor_name) : ''}</div>
       ${e.body ? `<div>${esc(e.body)}</div>` : ''}${(e.shared || []).map(x => `<a class="shrd" href="#/d/${slug}/notices/${x.id}">${I(x.kind === 'policy' ? 'file' : 'notice', 15)}<span><small>${x.kind === 'policy' ? 'Policy' : 'Notice'} · ${esc(x.team)}</small><b>${esc(x.title)}</b></span>${I('chev', 16)}</a>`).join('')}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
     ${t.status === 'rejected' ? `<div class="card">This ticket was rejected. <a href="#/d/${slug}" id="newt">Raise a new ticket</a></div>` : `

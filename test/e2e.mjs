@@ -737,6 +737,18 @@ try {
   const reoA = await reo('owna@own.example.com'), reoB = await reo('ownb@own.example.com');
   check("after the first student reopens, the joiner's timeline says Reopened, without their name or words", r.status === 200 && acc.status === 200 && reoB.includes('Reopened') && !reoB.includes('Owna') && !reoB.includes('Still sparking'), reoB);
   check('the first student still sees their own reopen reason', reoA.includes('Still sparking near the switch'), reoA);
+  r = await act(shared.id, { to: 'in_progress', note: 'Looking again' }); // the reopen above left it open
+  const pageB = (await api(`/public/alpha/tickets/${a2.ticket_no}`)).data, pageA = (await api(`/public/alpha/tickets/${a1.ticket_no}`)).data;
+  check("a joiner's number opens the shared ticket under their own number, with their own complaint", pageB.ticket_no === a2.ticket_no && pageB.status === 'in_progress' && pageB.affected_count === 3 && pageB.mine?.description === 'Something is broken.' && pageA.mine == null);
+  await ok('the joiner adds a note from their page', `/public/alpha/tickets/${a2.ticket_no}/notes`, { method: 'POST', body: { body: 'Still not working at 2 pm' } });
+  const pA = (await api(`/public/alpha/tickets/${a1.ticket_no}`)).data, pB = (await api(`/public/alpha/tickets/${a2.ticket_no}`)).data, pC = (await api(`/public/alpha/tickets/${a3.ticket_no}`)).data;
+  check('the note shows on their page only; staff updates show on all three', pB.events.some(e => e.body === 'Still not working at 2 pm') && !pA.events.some(e => e.body === 'Still not working at 2 pm') && !pC.events.some(e => e.body === 'Still not working at 2 pm') && [pA, pB, pC].every(p => p.events.some(e => e.body?.startsWith('Electrician on the way'))));
+  check('the provider sees the note with the student and their number', (await api(`/tickets/${shared.id}`, { token: T.pavan })).data.events.some(e => e.body === 'Still not working at 2 pm' && e.actor_name === 'Ownb'));
+  r = await act(shared.id, { to: 'closed', note: 'Fixed' });
+  const closedMails = await q("SELECT recipient, text_body body FROM notifications WHERE template_key='status_closed' AND ticket_id=? ORDER BY created_at DESC", shared.id); // newest first (it was closed once before); the text as sent, not the template
+  check("the closed email to the first student does not carry the joiner's note", !closedMails.find(m => m.recipient === 'owna@own.example.com').body.includes('Still not working') && closedMails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Still not working'));
+  check('the bot answers a joiner number with that number', (await api('/public/alpha/bot', { method: 'POST', body: { q: a2.ticket_no } })).data.text.startsWith(`Ticket ${a2.ticket_no}`));
+  ids.joinerNo = a2.ticket_no; ids.sharedId = shared.id; // for the Chrome screens
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1495,7 +1507,7 @@ try {
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1, joinerNo: ids.joinerNo });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1556,6 +1568,7 @@ async function uiSmoke(tok, id) {
     await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
+    await visit('a joiner\'s own ticket page', '/d/alpha/t/' + id.joinerNo, null, '.mine');
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
     check('staff screens offer no guide card (the guide is for requestors)', !(await js("return !!document.querySelector('.guidecard')")));
