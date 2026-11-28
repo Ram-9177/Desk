@@ -449,6 +449,31 @@ try {
   await ok('add Omar to Electrical', `/services/${elec.id}/members`, { token: T.asha, method: 'PUT', body: { user_ids: [pavan.id, omarR.id] } });
   await ok('deactivate Omar', `/users/${omarR.id}`, { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
   check('deactivated: cannot sign in, removed from the service', !(await login('omar@example.com', rs.temp_password)) && (await api('/services', { token: T.asha })).data.find(x => x.code === 'ELEC').members.length === 1);
+
+  // a limited campus admin: the super admin turns features off; the server refuses them, not just the menus
+  const lim = await ok('super admin adds a limited campus admin (no Email, People, Audit)', '/users', { ...A, method: 'POST', body: { name: 'Lina Limited', email: 'lina@example.com', role: 'tenant_admin', features_off: ['email', 'people', 'audit'] } });
+  await api('/me/password', { token: await login('lina@example.com', lim.temp_password), method: 'POST', body: { current: lim.temp_password, password: 'Lina2026okay' } });
+  const TL = await login('lina@example.com', 'Lina2026okay');
+  check('her account carries the features turned off', JSON.stringify((await api('/me', { token: TL })).data.user.perm_off && JSON.parse((await api('/me', { token: TL })).data.user.perm_off).sort()) === JSON.stringify(['audit', 'email', 'people']));
+  for (const [what, path] of [['People', '/users'], ['Audit', '/audit'], ['Email log', '/mail/log?status=all']]) await fails(`limited admin: ${what} refused`, path, { token: TL }, 403, 'turned off');
+  await fails('limited admin: cannot add people either', '/users', { token: TL, method: 'POST', body: { name: 'Y', email: 'y@example.com' } }, 403);
+  await ok('limited admin: Attention still works', '/attention', { token: TL });
+  await ok('limited admin: Reports still works', '/reports?days=30', { token: TL });
+  await fails('a campus admin cannot change features (not even their own)', `/users/${lim.id}`, { token: T.asha, method: 'PATCH', body: { features_off: [] } }, 403);
+  await fails('unknown feature names are refused', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { features_off: ['launch_rockets'] } }, 400);
+  await fails('features are only for campus admins', `/users/${pavan.id}`, { ...A, method: 'PATCH', body: { features_off: ['email'] } }, 400);
+  await ok('super admin also turns off Reports, Notices, SLA and Services', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { features_off: ['email', 'people', 'audit', 'reports', 'notices', 'sla', 'services'] } });
+  await fails('limited admin: Reports page refused', '/reports?days=30', { token: TL }, 403);
+  await ok('…but Home\'s own counts still load', '/reports?days=7&for=home', { token: TL });
+  await fails('limited admin: Notices refused', '/notices', { token: TL }, 403);
+  await fails('limited admin: cannot post a campus notice', '/notices', { token: TL, method: 'POST', body: { title: 'x', status: 'published' } }, 403);
+  await fails('limited admin: SLA settings refused', '/sla', { token: TL, method: 'PUT', body: {} }, 403);
+  await fails('limited admin: cannot add a service', '/services', { token: TL, method: 'POST', body: { code: 'ZZ', name: 'Z' } }, 403);
+  await ok('limited admin: still sees and works the campus tickets', '/tickets?status=all', { token: TL });
+  check('a full admin is untouched', (await api('/users', { token: T.asha })).status === 200 && (await api('/audit', { token: T.asha })).status === 200);
+  await ok('super admin ticks everything back on', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { features_off: [] } });
+  check('all features again: People and Audit open', (await api('/users', { token: TL })).status === 200 && (await api('/audit', { token: TL })).status === 200 && (await api('/me', { token: TL })).data.user.perm_off === null);
+  await ok('deactivate Lina', `/users/${lim.id}`, { ...A, method: 'PATCH', body: { is_active: 0 } });
   await fails('providers cannot manage people', '/users', { token: T.pavan }, 403);
   const users = await ok('people list', '/users', { token: T.asha });
   check('list shows services per person', users.find(u => u.email === 'pavan@example.com')?.services?.includes('Electrical'));
@@ -1366,6 +1391,33 @@ try {
   ids.foodTicket = c1.ticket_no;
   }
 
+  sec('Campus features: Canteen, Notice board, Policies switched on/off per campus');
+  { const aid = (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id, A = { token: T.sa, tenant: aid };
+    const elecId = (await q("SELECT id FROM services WHERE code='ELEC' AND tenant_id=?", aid))[0].id, foodId = (await q("SELECT id FROM services WHERE code='FOODX' AND tenant_id=?", aid))[0].id;
+    await fails('a campus admin cannot switch campus features', `/tenants/${aid}`, { token: T.asha, method: 'PATCH', body: { features_off: ['canteen'] } }, 403);
+    await fails('unknown campus features are refused', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['rockets'] } }, 400);
+    check('before: the campus page lists the food service', (await api('/public/alpha')).data.services.some(x => x.id === foodId));
+    await ok('super admin switches the Canteen off for Alpha', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['canteen'] } });
+    check('Canteen off: no food service on the campus page', !(await api('/public/alpha')).data.services.some(x => x.id === foodId));
+    check('…the food screens have no service', (await api('/public/alpha/food')).data.service === null);
+    await fails('…a food complaint is refused', '/public/alpha/food/complaint', { method: 'POST', body: { category: 'hygiene', description: 'x' } }, 404);
+    await fails('…a ticket to the food service is refused', '/public/alpha/tickets', { method: 'POST', body: { service_id: foodId, name: 'N', email: 'n@example.com', phone: '9000077711', subject: 's', description: 'd' } }, 404);
+    check('…Food scores closed for the kitchen team and admins', (await api('/food/access', { token: T.pavan })).data.ok === false && (await api('/food/access', { token: T.asha })).data.ok === false);
+    check('…other campuses keep theirs (Beta untouched)', !((await api('/me', { token: T.sa })).data.tenants.find(t => t.slug === 'beta').features_off));
+    await ok('Notice board off too (Policies stay)', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['canteen', 'notices'] } });
+    check('Notice board off: no notices on the campus page or before raising', (await api('/public/alpha/notices')).data.length === 0 && (await api(`/public/alpha/notices/for/${elecId}`)).data.length === 0);
+    await fails('…staff cannot post a notice', '/notices', { token: T.pavan, method: 'POST', body: { service_id: elecId, title: 'x', status: 'published' } }, 403, 'switched off');
+    const sp = await ok('…but a policy still can be posted', '/notices', { token: T.pavan, method: 'POST', body: { kind: 'policy', service_id: elecId, title: 'Still a policy', status: 'published' } });
+    check('…the staff page offers only Policies', JSON.stringify((await api('/notices', { token: T.pavan })).data.kinds) === '["policy"]');
+    check('…policies still show on the form', (await api(`/public/alpha/policies/for/${elecId}`)).data.some(x => x.id === sp.id));
+    await ok('Policies off as well', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: ['canteen', 'notices', 'policies'] } });
+    check('Policies off: none on the form, none to share, the page is closed', (await api(`/public/alpha/policies/for/${elecId}`)).data.length === 0 && (await api(`/public/alpha/notices/${sp.id}`)).status === 404);
+    const anyT = (await q("SELECT id FROM tickets WHERE service_id=? LIMIT 1", elecId))[0].id;
+    check('…nothing to share in a reply', (await api(`/tickets/${anyT}/shareable`, { token: T.pavan })).data.length === 0);
+    await ok('everything switched back on', `/tenants/${aid}`, { token: T.sa, method: 'PATCH', body: { features_off: [] } });
+    check('all back: food service, notices and the policy return', (await api('/public/alpha')).data.services.some(x => x.id === foodId) && (await api(`/public/alpha/policies/for/${elecId}`)).data.some(x => x.id === sp.id) && (await api('/food/access', { token: T.asha })).data.ok === true);
+    await api(`/notices/${sp.id}`, { token: T.pavan, method: 'DELETE' }); }
+
   sec('Super admin from .env on a live database');
   const mustChange = async e => (await q('SELECT must_change_pw m FROM users WHERE email=?', e))[0]?.m;
   // email only (no password in .env): created with a generated temporary password, emailed; once
@@ -1813,6 +1865,10 @@ try {
   await ok('remove turmeric', '/canteen/inventory/' + tur.id, { token: T.store, method: 'DELETE' });
   await ok('add a new Turmeric', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Turmeric', unit: 'g' } });
   await fails('putting the old one back would make two with the same name', '/canteen/inventory/' + tur.id, { token: T.store, method: 'PATCH', body: { active: true } }, 400, 'already has that name');
+  await run(`UPDATE tenants SET features_off='["canteen"]' WHERE id=?`, A2);
+  check('Tenants → Features: Canteen switched off for the campus hides the canteen for students and staff', (await api('/public/alpha/canteen')).data.on === false && (await api('/canteen/pos', { token: T.kavya })).status === 403 && (await api('/canteen/access', { token: T.pavan })).data.on === false);
+  await run('UPDATE tenants SET features_off=NULL WHERE id=?', A2);
+  check('…and back on', (await api('/public/alpha/canteen')).data.on === true);
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');

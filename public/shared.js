@@ -90,3 +90,30 @@ export function builtinFields(schema = {}) {
   return out;
 }
 export const fieldsOf = (schema = {}) => [...builtinFields(schema), ...(schema.fields || [])];
+
+// What a campus admin can open. The super admin turns features off per admin (People → Edit → Features); none off = all.
+// [key, name, what it covers]
+export const ADMIN_FEATURES = [
+  ['attention', 'Attention list', 'Overdue, escalated and stuck tickets across the campus'],
+  ['reports', 'Reports', 'Campus reports, rankings and the reports CSV'],
+  ['services', 'Services & teams', 'Add or change services, their forms, team members and ready-made replies'],
+  ['sla', 'SLA & points', 'Working hours, time to close, escalation and Fair Score settings'],
+  ['notices', 'Notices & policies', "Post for the whole campus and manage every team's notices and policies"],
+  ['people', 'People', 'Add providers, change their teams, reset passwords, deactivate'],
+  ['email', 'Email', 'Delivery log, resend emails and the morning brief'],
+  ['food', 'Food scores', 'Food dashboard and food settings'],
+  ['audit', 'Audit log', 'Who changed what, and when'],
+];
+export const ADMIN_FEATURE_KEYS = ADMIN_FEATURES.map(f => f[0]);
+// features turned off for this user (only ever for campus admins)
+export const featuresOff = u => { if (u?.role !== 'tenant_admin') return []; try { const x = JSON.parse(u.perm_off || '[]'); return Array.isArray(x) ? x : []; } catch { return []; } };
+export const canUse = (u, key) => u?.role === 'super_admin' || (u?.role === 'tenant_admin' && !featuresOff(u).includes(key));
+
+// Parts of the app a campus can switch off entirely (super admin → Tenants → Features). None off = all on.
+export const CAMPUS_FEATURES = [
+  ['canteen', 'Canteen (food)', 'Rate a meal, report a food problem, and Food scores for the kitchen team'],
+  ['notices', 'Notice board', 'Team and campus notices on the campus page, and the pop-up before raising a ticket'],
+  ['policies', 'Policies', "Each team's policies on its form, and sharing them in replies"],
+];
+export const campusOff = tn => { try { const x = JSON.parse(tn?.features_off || '[]'); return Array.isArray(x) ? x : []; } catch { return []; } };
+export const campusOn = (tn, key) => !campusOff(tn).includes(key);

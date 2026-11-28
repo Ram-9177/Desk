@@ -1,4 +1,4 @@
-import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
+import { CAMPUS_FEATURES, campusOff, campusOn, canUse, ADMIN_FEATURES, featuresOff, allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
 import { initCanteen, canteenCard, studentCanteen, canteenPage } from './canteen.js';
 import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
@@ -569,8 +569,10 @@ async function shell(active, render, title) {
   if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter || c.owner || c.inventory || c.reports); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
   if (S.mailFor !== S.tenant) { S.mailFor = S.tenant; const m = S.tenant ? await api('/maildesk/me').catch(() => ({})) : {}; S.mailOk = !!m?.role; S.mailOpen = m?.open || 0; } // mail desk: nodal officers, mail managers, admins (only when it is on)
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
-  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], S.mailOk && ['c/mail', 'Mail', 'mail'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
-    admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
+  // a campus admin sees only the features the super admin left on for them (People → Edit → Features); providers keep their screens
+  const f = k => admin && canUse(u, k), mine = k => !admin || canUse(u, k);
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && campusOn(tenantObj(), 'canteen') && ['c/canteen', 'Canteen', 'utensils'], S.mailOk && ['c/mail', 'Mail', 'mail'], f('attention') && ['c/attention', 'Attention', 'bell'], mine('reports') && ['c/reports', 'Reports', 'chart'], mine('notices') && (campusOn(tenantObj(), 'notices') || campusOn(tenantObj(), 'policies')) && ['c/notices', campusOn(tenantObj(), 'notices') ? 'Notices' : 'Policies', 'notice'], f('services') && ['c/services', 'Services', 'grid'],
+    f('sla') && ['c/sla', 'SLA & points', 'clock'], f('email') && ['c/email', 'Email', 'mail'], f('people') && ['c/users', 'People', 'users'], f('audit') && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (!['c/canteen', 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
   // a screen typed into the address bar that this role does not have (Tenants for a campus admin, People for a provider) goes Home instead of showing a half-page
   if (!all.some(n => n[0] === active) && !['c/me', 'c/food', 'c/canteen'].includes(active) && title !== 'Ticket') return location.replace('#/c');
@@ -579,7 +581,7 @@ async function shell(active, render, title) {
   const MAIN = ['c', 'c/canteen', 'c/mail', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
   const cur = h => active === h ? 'class="on" aria-current="page"' : '';
   // the bell: admins open Attention; providers their overdue tickets (they have no Attention page)
-  const bellHref = admin ? '#/c/attention' : '#/c', bellAttr = admin ? '' : 'data-overdue';
+  const bellHref = f('attention') ? '#/c/attention' : '#/c', bellAttr = f('attention') ? '' : 'data-overdue';
   const bn = (h, l, ic, extra = '') => `<a href="#/${h}" ${cur(h)} ${extra}>${I(ic, 22)}<span>${l}</span></a>`;
   app.innerHTML = `<header class="top"><div class="top-in">
     <a class="brandlink" href="#/c" aria-label="ONE Desk home"><span class="logo-tile">${I('ticket', 18)}</span>ONE Desk</a>
@@ -594,14 +596,14 @@ async function shell(active, render, title) {
     <nav class="bnav" aria-label="Primary" ${S.canteenOnly ? 'hidden' : ''}>${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
-      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/mail', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
+      ${mine('reports') ? bn('c/reports', 'Reports', 'chart') : bn('c/me', 'Profile', 'user')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/mail', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
   app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
   if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
     mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
     mm.onkeydown = e => { if (e.key === 'Escape') { shut(); mb.focus(); } }; mm.querySelectorAll('a').forEach(x => x.onclick = shut);
     if (!S.navDoc) { S.navDoc = true; document.addEventListener('click', e => { const m = document.getElementById('navmm'); if (m && !e.target.closest('.navmore')) { m.hidden = true; document.getElementById('navmb')?.setAttribute('aria-expanded', 'false'); } }); } }
   $('#moreb').onclick = () => moreSheet(all.filter(n => !['c', 'c/new', 'c/attention', 'c/reports'].includes(n[0])));
-  bellDot(admin);
+  bellDot(f('attention'));
   if ($('#tsw')) $('#tsw').onchange = e => { S.tenant = e.target.value; localStorage.setItem('tid', S.tenant); route(); };
   const main = $('#main');
   S.nav = all;
@@ -610,11 +612,14 @@ async function shell(active, render, title) {
   try { await render(main, { sa, admin, u }); } catch (e) { main.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 // The red dot on the bell: something needs attention (admins: the Attention lists; providers: overdue tickets). Checked at most once a minute.
+const NEED_FEATURE = { 'c/attention': 'attention', 'c/reports': 'reports', 'c/services': 'services', 'c/sla': 'sla', 'c/notices': 'notices', 'c/users': 'people', 'c/email': 'email', 'c/food': 'food', 'c/audit': 'audit' };
+const noAccess = k => main => { main.innerHTML = `<div class="card empty" style="text-align:center;padding:36px 20px"><div style="display:flex;justify-content:center">${tile('shield', 22)}</div><h2 style="margin:12px 0 6px">${esc(ADMIN_FEATURES.find(x => x[0] === k)[1])} is turned off for you</h2>
+  <p class="muted">The super admin decides which features each campus admin can use. Ask them if you need this one.</p><a class="btn" href="#/c">Back to Home</a></div>`; };
 async function bellDot(admin) {
   const show = () => document.querySelectorAll('.ndot').forEach(d => d.hidden = !S.bell?.on);
   show(); if (!S.tenant || (S.bell && S.bell.for === S.tenant && Date.now() - S.bell.at < 60e3)) return;
   try { const rem = (await api('/reminders').catch(() => ({ due: [] }))).due.length > 0;
-    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7')).counts || {}));
+    const on = rem || (admin ? Object.values(await api('/attention')).some(l => l.length) : (cc => (cc.overdue || 0) + (cc.reopen_requests || 0) > 0)((await api('/reports?days=7&for=home')).counts || {}));
     S.bell = { on, at: Date.now(), for: S.tenant }; show(); } catch { /* the dot is a hint only */ }
 }
 // Phone: the More sheet (the screens that are not on the tab bar, Settings, and Install app when it can be installed)
@@ -677,7 +682,7 @@ async function queue(main) {
   const draw = async () => {
     const keep = document.activeElement?.id === 'fq' ? [$('#fq').selectionStart, true] : null, more = $('.mt-more')?.classList.contains('open');
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
-    const [rows, rep, fair, rem, mw] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] })),
+    const [rows, rep, fair, rem, mw] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7&for=home'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] })),
       S.mailOk ? Promise.all([mailJs(), api('/maildesk/my-work')]).catch(() => null) : null]), fm = fair.me;
     // a nodal officer's mail threads sit in the same table and counts as the tickets (marked Mail); off, the Home is as before
     const M = mw?.[0], mailAll = mw?.[1] || [], mailIn = M ? M.mailFilter(mailAll, st) : [], mc = M ? M.mailCounts(mailAll) : {};
@@ -864,7 +869,7 @@ async function workspace(main, id, { admin }) {
       <div class="helper" id="tohint"></div>
       <div id="holdrow" hidden><label>Why is it on hold?</label><select name="hold_reason">${t.hold_reasons.map(x => `<option value="${x.key}">${esc(x.label)} — ${x.hours}h limit</option>`).join('')}</select></div>
       <label for="unote">Note</label><div class="phr" id="phr" aria-label="Ready-made sentences"></div><textarea name="note" id="unote" required rows="4" placeholder="What did you do, or why this change? Tap a sentence above, or type your own."></textarea>
-      <div id="shrow"><div id="shsel"></div><button type="button" class="btn soft" id="shadd">${I('file', 16)} Add notice / policy</button></div>
+      <div id="shrow" ${campusOn(tenantObj(), 'notices') || campusOn(tenantObj(), 'policies') ? '' : 'data-off'}><div id="shsel"></div><button type="button" class="btn soft" id="shadd">${I('file', 16)} Add ${[campusOn(tenantObj(), 'notices') && 'notice', campusOn(tenantObj(), 'policies') && 'policy'].filter(Boolean).join(' / ')}</button></div>
       ${t.location_key && t.problem_key ? `<label id="earlyrow" class="chk" hidden><input type="checkbox" name="close_earlier"> Also close earlier open tickets for the same problem and location</label>` : ''}
       <div class="upd-row"><label class="iconbtn" aria-label="Attach a photo from camera">${I('camera', 18)}<input hidden type="file" accept="image/*" capture="environment" multiple data-source="camera" class="f-act"></label>
         <label class="iconbtn" aria-label="Attach from gallery">${I('image', 18)}<input hidden type="file" accept="image/*,application/pdf" multiple data-source="gallery" class="f-act"></label>
@@ -906,7 +911,7 @@ async function workspace(main, id, { admin }) {
   $('#updX').onclick = () => sheet(false); main.querySelector('.upd-back').onclick = () => sheet(false);
   const sel = $('#to'), sync = () => { const to = sel.value, same = to === t.status;
     $('#holdrow').hidden = to !== 'hold'; $('#tohint').textContent = HINT[same ? 'same' : to]; if ($('#earlyrow')) $('#earlyrow').hidden = to !== 'closed';
-    $('#shrow').hidden = $('#act').is_internal.checked;
+    $('#shrow').hidden = $('#act').is_internal.checked || $('#shrow').hasAttribute('data-off');
     $('#mailhint').textContent = $('#act').is_internal.checked ? 'Saved as an internal note. The requester will not be emailed.' : "Before it goes out you'll see it corrected, inside the email the requester gets.";
     // ready-made sentences for this step (tap to add)
     const step = same ? 'note' : to === 'in_progress' && t.status === 'hold' ? 'open' : to, list = (phr.phrases || {})[step] || [];
@@ -1164,6 +1169,16 @@ function showTemp(title, u, pw) {
   d.querySelector('#cpw').onclick = () => navigator.clipboard.writeText(`ONE Desk sign-in\nEmail: ${u.email}\nTemporary password: ${pw}\n${location.origin}${location.pathname}#/login`).then(() => toast('Copied'));
 }
 
+// Features of a campus admin (super admin only): ticked = they can use it; all ticked = a full admin
+const featPick = (off = []) => `<div class="featwrap"><label>Features <small>(what this campus admin can see and use)</small></label><div class="featbox"><div class="feat-h"><label class="chk" style="margin:0"><input type="checkbox" id="featAll" ${off.length ? '' : 'checked'}> <b>All features</b></label>
+  <span class="muted small" id="featN"></span></div><div class="muted small" style="margin:2px 0 8px">Untick what this admin should not see. Tickets, Home and their own profile always stay.</div>
+  ${ADMIN_FEATURES.map(([k, l, d]) => `<label class="featrow"><input type="checkbox" name="feat" value="${k}" ${off.includes(k) ? '' : 'checked'}><span><b>${esc(l)}</b><small>${esc(d)}</small></span></label>`).join('')}</div></div>`;
+const wireFeat = (root, roleSel) => { const box = root.querySelector('.featwrap'), boxes = [...root.querySelectorAll('[name=feat]')], all_ = root.querySelector('#featAll');
+  const sync = () => { const on = boxes.filter(b => b.checked).length; all_.checked = on === boxes.length; all_.indeterminate = on > 0 && on < boxes.length;
+    root.querySelector('#featN').textContent = on === boxes.length ? 'Full admin' : `Limited admin · ${on} of ${boxes.length}`; };
+  all_.onchange = () => { boxes.forEach(b => { b.checked = all_.checked; }); sync(); }; boxes.forEach(b => b.onchange = sync); sync();
+  const show = () => { box.hidden = roleSel && roleSel.value !== 'tenant_admin'; }; if (roleSel) roleSel.addEventListener('change', show); show(); };
+const featOffOf = root => [...root.querySelectorAll('[name=feat]')].filter(b => !b.checked).map(b => b.value);
 async function users(main, { sa }) {
   const rows = await api('/users'), me = S.me.user;
   const st = JSON.parse(sessionStorage.getItem('uf') || '{"tab":"all","q":""}');
@@ -1181,6 +1196,7 @@ async function users(main, { sa }) {
         <div class="tm"><b>${esc(u.name)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ''}</b>
           <div class="sub"><span>${esc(u.email)}</span>${u.phone ? `·<span>${esc(u.phone)}</span>` : ''}</div>
           <div class="sub" style="margin-top:4px"><span class="pill ${u.role === 'tenant_admin' ? 'p-int' : 'c4'}">${roleName(u.role)}</span>
+            ${u.role === 'tenant_admin' ? (off => off.length ? `<span class="pill p-medium" title="Turned off: ${esc(ADMIN_FEATURES.filter(x => off.includes(x[0])).map(x => x[1]).join(', '))}">Limited · ${ADMIN_FEATURES.length - off.length} of ${ADMIN_FEATURES.length} features</span>` : '<span class="pill p-low">All features</span>')(featuresOff(u)) : ''}
             ${u.must_change_pw ? '<span class="pill p-medium">Must set password</span>' : ''}${!u.is_active ? '<span class="pill s-closed">Inactive</span>' : ''}
             <span>${u.services ? I('grid', 13) + ' ' + esc(u.services) : u.is_active ? '<span style="color:var(--hold)">No services</span>' : ''}</span>
             <span>· last sign-in ${u.last_login_at ? fmt(u.last_login_at) : 'never'}</span></div></div>
@@ -1194,14 +1210,18 @@ async function users(main, { sa }) {
       <label>Phone</label><input name="phone" type="tel"><label>Role</label><select name="role"><option value="provider">Service provider</option>${sa ? '<option value="tenant_admin">Campus admin</option>' : ''}</select>
       <label>Services <small>(the tickets they handle)</small></label>
       <div class="svcpick">${sv.map(s => `<label><input type="checkbox" name="svc" value="${s.id}"> ${esc(s.name)}</label>`).join('') || '<span class="muted small">No services yet. Add them under Services.</span>'}</div>
+      ${sa ? featPick() : ''}
       <p class="muted small">They are emailed a welcome with their role, services, sign-in link and a temporary password.</p>`,
-      async f => { const r = await api('/users', { method: 'POST', body: { ...formVals(f), svc: undefined, service_ids: [...f.querySelectorAll('[name=svc]:checked')].map(x => x.value) } });
-        showTemp('Account created', formVals(f), r.temp_password); reload(); }); };
+      async f => { const r = await api('/users', { method: 'POST', body: { ...formVals(f), svc: undefined, feat: undefined, service_ids: [...f.querySelectorAll('[name=svc]:checked')].map(x => x.value), ...(sa && f.role.value === 'tenant_admin' ? { features_off: featOffOf(f) } : {}) } });
+        showTemp('Account created', formVals(f), r.temp_password); reload(); });
+      if (sa) { const d = document.querySelector('dialog[open]'); wireFeat(d, d.querySelector('[name=role]')); } };
     main.querySelectorAll('[data-e]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.e);
       dlg(`<h2>Edit ${esc(u.name)}</h2><label>Full name</label><input name="name" required value="${esc(u.name)}"><label>Email <small>(used to sign in)</small></label><input name="email" type="email" required value="${esc(u.email)}">
         <label>Phone</label><input name="phone" type="tel" value="${esc(u.phone || '')}">
-        ${sa && u.id !== me.id ? `<label>Role</label><select name="role"><option value="provider" ${u.role === 'provider' ? 'selected' : ''}>Service provider</option><option value="tenant_admin" ${u.role === 'tenant_admin' ? 'selected' : ''}>Campus admin</option></select>` : ''}`,
-        async f => { await api('/users/' + u.id, { method: 'PATCH', body: formVals(f) }); toast('Saved'); reload(); }); });
+        ${sa && u.id !== me.id ? `<label>Role</label><select name="role"><option value="provider" ${u.role === 'provider' ? 'selected' : ''}>Service provider</option><option value="tenant_admin" ${u.role === 'tenant_admin' ? 'selected' : ''}>Campus admin</option></select>${featPick(featuresOff(u))}` : ''}`,
+        async f => { const body = { ...formVals(f), feat: undefined }; if (sa && u.id !== me.id && f.role.value === 'tenant_admin') body.features_off = featOffOf(f);
+          await api('/users/' + u.id, { method: 'PATCH', body }); toast('Saved'); reload(); });
+      if (sa && u.id !== me.id) { const d = document.querySelector('dialog[open]'); wireFeat(d, d.querySelector('[name=role]')); } });
     main.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { const u = rows.find(x => x.id === b.dataset.r);
       dlg(`<h2>Reset password?</h2><p>${esc(u.name)} gets a new temporary password by email and must set their own at next sign-in. Their old password stops working.</p>`,
         async () => { const r = await api(`/users/${u.id}/reset-password`, { method: 'POST' }); showTemp('Password reset', u, r.temp_password); reload(); }); });
@@ -1282,9 +1302,10 @@ async function auditPage(main) {
 
 async function tenants(main) {
   const list = (await api('/me')).tenants; S.me.tenants = list;
-  main.innerHTML = `<p><button class="btn primary" id="add">+ New tenant</button></p><table><tr><th>Code</th><th>Name</th><th>Portal</th><th>Reopen days</th><th></th></tr>
+  const featCell = t => { const off = campusOff(t); return off.length ? `<span class="pill p-medium" title="Switched off: ${esc(CAMPUS_FEATURES.filter(f => off.includes(f[0])).map(f => f[1]).join(', '))}">${CAMPUS_FEATURES.length - off.length} of ${CAMPUS_FEATURES.length} on</span>` : '<span class="pill p-low">All on</span>'; };
+  main.innerHTML = `<p><button class="btn primary" id="add">+ New tenant</button></p><div class="tblbox"><table><tr><th>Code</th><th>Name</th><th>Portal</th><th>Reopen days</th><th>Features</th><th></th></tr>
     ${list.map(t => `<tr class="${t.is_active ? '' : 'dim'}"><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td><td><a href="#/d/${t.slug}" target="_blank">/d/${esc(t.slug)}</a></td><td>${t.reopen_window_days}</td>
-    <td><button class="btn" data-t="${t.id}" data-a="${t.is_active ? 0 : 1}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('')}</table>
+    <td>${featCell(t)}</td><td style="white-space:nowrap"><button class="btn soft" data-feat="${t.id}">${I('settings', 15)} Features</button> <button class="btn" data-t="${t.id}" data-a="${t.is_active ? 0 : 1}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('')}</table></div>
     <p class="muted">To add a tenant admin, switch to the tenant (top right), then People → Add person → Tenant admin.</p>
     <div class="card"><b>Same-day duplicate reports</b><div class="muted small">When people report the same problem at the same place on the same day, later reports join the first ticket.</div>
       <label>When a report matches today's ticket</label><select id="mm"><option value="silent">Add it to that ticket automatically</option><option value="confirm">Ask the person "Same issue?" first</option></select></div>`;
@@ -1294,6 +1315,12 @@ async function tenants(main) {
     <label>Slug (URL)</label><input name="slug" required placeholder="smru"><label>Reopen window days</label><input name="reopen_window_days" type="number" value="7">`,
     async f => { const t = await api('/tenants', { method: 'POST', body: formVals(f) }); S.tenant = t.id; S.me = null; route(); });
   main.querySelectorAll('[data-t]').forEach(b => b.onclick = async () => { await api('/tenants/' + b.dataset.t, { method: 'PATCH', body: { is_active: Number(b.dataset.a) } }); tenants(main); });
+  // switch whole parts of the app on or off for one campus (Canteen, Notice board, Policies)
+  main.querySelectorAll('[data-feat]').forEach(b => b.onclick = () => { const t = list.find(x => x.id === b.dataset.feat), off = campusOff(t);
+    dlg(`<h2>Features · ${esc(t.name)}</h2><p class="muted small" style="margin-top:0">Switch off what this campus doesn't use. It disappears for requesters, staff and admins of this campus; nothing is deleted, and switching it back on brings everything back.</p>
+      ${CAMPUS_FEATURES.map(([k, l, d]) => `<label class="cfrow"><span><b>${esc(l)}</b><small>${esc(d)}</small></span><input type="checkbox" class="tgl" name="cf" value="${k}" ${off.includes(k) ? '' : 'checked'} role="switch"></label>`).join('')}`,
+      async f => { await api('/tenants/' + t.id, { method: 'PATCH', body: { features_off: [...f.querySelectorAll('[name=cf]')].filter(x => !x.checked).map(x => x.value) } });
+        toast('Saved for ' + t.name); S.me = null; S.foodFor = null; await route(); }); });
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1713,10 +1740,11 @@ async function noticesAdmin(main) {
   const draw = async () => {
     const pol = st.kind === 'policy', STATES = pol ? [['live', 'Published'], ['draft', 'Drafts'], ['ended', 'Withdrawn']] : NT_STATES;
     if (!STATES.some(([k]) => k === st.tab)) st.tab = 'live';
-    const d0 = await api('/notices'), d = { ...d0, notices: d0.notices.filter(n => (n.kind || 'notice') === st.kind) };
+    const d0 = await api('/notices'); if (!d0.kinds.includes(st.kind)) st.kind = d0.kinds[0] || 'notice'; // a kind switched off for the campus
+    const d = { ...d0, notices: d0.notices.filter(n => (n.kind || 'notice') === st.kind) };
     const by = Object.fromEntries(STATES.map(([k]) => [k, d.notices.filter(n => n.state === k).sort((x, y) => y.important - x.important)])); // important first, then the latest change
     const kc = k => d0.notices.filter(n => (n.kind || 'notice') === k && n.state === 'live').length;
-    main.innerHTML = `<div class="nkind" role="tablist" aria-label="Notices or policies">${[['notice', 'Notices', 'notice'], ['policy', 'Policies', 'file']].map(([k, l, ic]) => `<button type="button" role="tab" aria-selected="${st.kind === k}" class="${st.kind === k ? 'on' : ''}" data-k="${k}">${I(ic, 17)} ${l}${kc(k) ? ` <span class="cnt">${kc(k)}</span>` : ''}</button>`).join('')}</div>
+    main.innerHTML = `<div class="nkind" role="tablist" aria-label="Notices or policies" ${d0.kinds.length < 2 ? 'hidden' : ''}>${[['notice', 'Notices', 'notice'], ['policy', 'Policies', 'file']].filter(([k]) => d0.kinds.includes(k)).map(([k, l, ic]) => `<button type="button" role="tab" aria-selected="${st.kind === k}" class="${st.kind === k ? 'on' : ''}" data-k="${k}">${I(ic, 17)} ${l}${kc(k) ? ` <span class="cnt">${kc(k)}</span>` : ''}</button>`).join('')}</div>
       <div class="sechead" style="margin-top:0"><span class="muted small">${d.can_campus ? `You can post ${pol ? 'policies' : 'notices'} for any team or the whole campus.` : `You can post ${pol ? 'policies' : 'notices'} for: <b>${esc(d.teams.map(t => t.name).join(', ') || 'no team yet')}</b>.`} ${pol
         ? 'A policy is your team\'s standing rules: fees, timings, eligibility, procedures. Write it as text and attach photos, PDF, Word or Excel. Requestors see it on your team\'s form, before they raise a ticket.'
         : 'Students see them on the campus page, and a team\'s notice pops up before they raise a ticket for that team.'}</span>
@@ -1777,7 +1805,7 @@ function noticeEditor(d, n, done, kind = 'notice') {
 }
 
 async function profile(main) {
-  const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
+  const u = S.me.user, [r, svcs, pts, fair] = S.tenant ? await Promise.all([api('/reports?days=7&for=home'), api('/services'), api('/points'), api('/fair').catch(() => ({ me: null }))]) : [{ counts: {} }, [], { me: 0, history: [] }, { me: null }], fm = fair.me;
   const mine = u.role === 'provider' ? svcs.filter(s => s.members.some(m => m.id === u.id)) : svcs;
   main.innerHTML = `<div style="max-width:560px;margin:0 auto"><div class="profile"><div class="avatar">${u.name.split(' ').map(w => w[0]).slice(0, 2).join('')}</div>
     <h2 style="margin:0">${esc(u.name)}</h2><div class="muted">${esc(u.email)}</div><div class="muted small" style="text-transform:capitalize">${u.role.replace('_', ' ')}${tenantObj() ? ' · ' + esc(tenantObj().name) : ''}</div>
@@ -1850,6 +1878,8 @@ async function route() {
       const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage, 'c/canteen': canteenPage };
       if (page === 'c/inventory') { sessionStorage.setItem('canteen-go', 'inventory'); return location.replace('#/c/canteen'); } // the canteen's Inventory tab
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
+      const need = NEED_FEATURE[page]; // a campus admin opening a screen that is turned off for them (an old link or bookmark)
+      if (need && S.me?.user.role === 'tenant_admin' && !canUse(S.me.user, need)) return await shell(page, noAccess(need), ADMIN_FEATURES.find(x => x[0] === need)[1]);
       if (seg[1] === 'mail') return await shell('c/mail', async m => (await mailJs()).mailPage(m, seg.slice(2), q), seg[2] === 't' ? 'Mail' : undefined);
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }

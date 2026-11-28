@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { kindOf, heicToJpeg, SHOWN } from './images.js';
+import { campusOn } from './public/shared.js';
 // qrcode is loaded only when a QR code is asked for: if the package is missing (npm ci not run after a deploy),
 // only the QR image fails, with a clear message, and the rest of ONE Desk keeps running
 let qrLib = null;
@@ -124,7 +125,8 @@ export const rupees = p => '₹' + (p / 100).toFixed(p % 100 ? 2 : 0);
 export const tokenLabel = n => '#' + String(n).padStart(3, '0');
 const dayOf = (tz, d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Asia/Kolkata' }).format(d);
 export const canteenName = tn => tn.canteen_name || `${tn.name} Canteen`;
-const isOpen = tn => !!tn.canteen_on && tn.canteen_open_day === dayOf(tn.timezone); // opened by a manager today
+export const canteenLive = tn => !!tn?.canteen_on && campusOn(tn, 'canteen'); // Canteen → Set up on, and the campus has Canteen on (Tenants → Features)
+const isOpen = tn => canteenLive(tn) && tn.canteen_open_day === dayOf(tn.timezone); // opened by a manager today
 // Timings: serving hours, days and last-order cut-off set by the managers. No timings saved = no time limit.
 const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const hoursOf = tn => { try { const h = JSON.parse(tn.canteen_hours || 'null'); if (h && HM.test(h.open) && HM.test(h.close)) return h; } catch { /* none */ } return null; };
@@ -135,7 +137,7 @@ const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60)
 // What students see: can they order now, and why not
 export function stateOf(tn) {
   const h = hoursOf(tn), opened = isOpen(tn), base = { hours: h };
-  if (!tn.canteen_on) return { ...base, accepting: false, why: 'off' };
+  if (!canteenLive(tn)) return { ...base, accepting: false, why: 'off' };
   if (!h) return { ...base, accepting: opened, why: opened ? 'open' : 'closed' };
   const { dow, min } = localNow(tn.timezone), today = h.days.includes(dow), o = toMin(h.open), c = toMin(h.close), last = c - (h.last_order_min || 0);
   if (!today) return { ...base, accepting: false, why: 'not_today' };
@@ -233,7 +235,7 @@ export function canteen(d) {
   // ---------- who may do what ----------
   async function access(req) {
     const u = req.user, tid = req.tenantId; if (!tid) return { tenant: null, setup: u.role === 'super_admin', can: {} };
-    const tn = await tenantRow(tid), on = !!tn?.canteen_on, admin = u.role !== 'provider'; // campus and super admins can do everything
+    const tn = await tenantRow(tid), on = canteenLive(tn), admin = u.role !== 'provider'; // campus and super admins can do everything
     const row = u.role === 'provider' ? await one('SELECT kind, perms FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id) : null, job = row ? row.kind || 'manager' : null;
     const list = admin ? FKEYS : permsOf(row), can = Object.fromEntries(FKEYS.map(f => [f, on && list.includes(f)]));
     return { tenant: tn, setup: u.role === 'super_admin', can, job, admin, manage: can.menu, manager: job === 'manager', kitchen: can.kitchen, counter: can.pos || can.orders,
@@ -241,7 +243,7 @@ export function canteen(d) {
   }
   // the route needs one of these features
   const needCan = async (req, ...feats) => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first');
-    if (!feats.some(f => a.can[f])) throw new HttpErr(403, 'FORBIDDEN', a.tenant.canteen_on ? 'Your canteen job does not include this. Ask the super admin to give you access.' : 'The canteen is switched off for this campus'); return a; };
+    if (!feats.some(f => a.can[f])) throw new HttpErr(403, 'FORBIDDEN', canteenLive(a.tenant) ? 'Your canteen job does not include this. Ask the super admin to give you access.' : 'The canteen is switched off for this campus'); return a; };
   const need = req => needCan(req, 'menu');
   const needReports = req => needCan(req, 'reports');
   const needCounter = req => needCan(req, 'pos', 'orders');
@@ -308,7 +310,7 @@ export function canteen(d) {
   // ================= student (public, no login to browse) =================
   P.get('/:slug/canteen', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug);
-    if (!tn.canteen_on) return { on: false, campus: tn.name, name: canteenName(tn) };
+    if (!canteenLive(tn)) return { on: false, campus: tn.name, name: canteenName(tn) };
     await expire(tn); const st = stateOf(tn), since = addDays(dayOf(tn.timezone), -6), pop = {}, pay = payOf(tn);
     for (const o of await all(`SELECT items FROM canteen_orders WHERE tenant_id=? AND day>=? AND status='collected'`, tn.id, since)) for (const it of JSON.parse(o.items)) pop[it.id] = (pop[it.id] || 0) + it.qty;
     // fast moving: the items ordered most today (at least 5 each), up to 5
@@ -320,7 +322,7 @@ export function canteen(d) {
   }));
   // step 1 of the first order on a device: email a six-digit code
   P.post('/:slug/canteen/otp', wrap(async req => {
-    const tn = await tenantBySlug(req.params.slug); if (!tn.canteen_on) throw notFound();
+    const tn = await tenantBySlug(req.params.slug); if (!canteenLive(tn)) throw notFound();
     const email = str(req.body.email, 120).toLowerCase(); if (!EMAIL.test(email)) throw bad('Please enter a valid email address');
     limit('cotp-ip:' + req.ip, 20); limit('cotp:' + tn.id + email, 5);
     const code = String(crypto.randomInt(0, 1e6)).padStart(6, '0');
@@ -331,7 +333,7 @@ export function canteen(d) {
   }));
   // step 2: check the code; this device is remembered (a device key kept in the browser), so later orders need no code
   P.post('/:slug/canteen/verify', wrap(async req => {
-    const tn = await tenantBySlug(req.params.slug); if (!tn.canteen_on) throw notFound();
+    const tn = await tenantBySlug(req.params.slug); if (!canteenLive(tn)) throw notFound();
     const email = str(req.body.email, 120).toLowerCase(), code = str(req.body.code, 10);
     limit('cver-ip:' + req.ip, 40);
     const o = await one('SELECT * FROM canteen_otps WHERE tenant_id=? AND email=? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1', tn.id, email);
@@ -351,7 +353,7 @@ export function canteen(d) {
   }));
   P.post('/:slug/canteen/orders', wrap(async req => {
     const tn = await tenantBySlug(req.params.slug), b = req.body;
-    if (!tn.canteen_on) throw notFound();
+    if (!canteenLive(tn)) throw notFound();
     const st = stateOf(tn);
     if (!st.accepting) throw bad(st.why === 'later' ? `The canteen opens at ${st.opens_at}.` : st.why === 'last_orders_done' ? `Last orders are over for today (closes at ${st.closes_at}).` : 'The canteen is not taking orders right now.');
     const dv = await deviceOf(tn.id, b.device); if (!dv) throw new HttpErr(401, 'VERIFY', 'Please verify your email first');
@@ -408,7 +410,7 @@ export function canteen(d) {
     throw new HttpErr(503, 'BUSY', 'The canteen is busy, please try again');
   }));
   const orderByKey = async req => {
-    const tn = await tenantBySlug(req.params.slug); if (!tn.canteen_on) throw notFound(); const o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, tn.id);
+    const tn = await tenantBySlug(req.params.slug); if (!canteenLive(tn)) throw notFound(); const o = await one('SELECT * FROM canteen_orders WHERE id=? AND tenant_id=?', req.params.id, tn.id);
     const k = String(req.query.k || req.body?.k || '');
     if (!o || Buffer.byteLength(k) !== Buffer.byteLength(o.view_key) || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(o.view_key))) throw notFound();
     return { tn, o };
@@ -453,7 +455,7 @@ export function canteen(d) {
     // canteen-only staff (a canteen job, no ticket team) open straight on the canteen; anyone in a desk team still sees their team's tickets
     const desk = req.user.role !== 'provider' || !a.job || !!(await one('SELECT 1 FROM service_members WHERE user_id=? LIMIT 1', req.user.id));
     return { desk, can: a.can || {}, job: a.job || null, setup: a.setup, manage: !!a.manage, manager: !!a.manager, kitchen: !!a.kitchen, cook: !!a.cook, counter: !!a.counter, cashier: !!a.cashier, owner: !!a.owner, storekeeper: !!a.storekeeper,
-      reports: !!a.reports, inventory: !!a.can?.inventory, rename: !!a.rename, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
+      reports: !!a.reports, inventory: !!a.can?.inventory, rename: !!a.rename, on: canteenLive(a.tenant), open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
   // super admin: switch on for the campus, pick 1–2 desk providers as managers
   S.get('/canteen/setup', wrap(async req => {
     if (req.user.role !== 'super_admin') throw forbid(); if (!req.tenantId) throw bad('Pick a campus first');
