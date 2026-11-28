@@ -382,7 +382,7 @@ async function foodScreens(slug, tenant, svc, flow) {
         catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; r = await api(`/public/${slug}/food/complaint`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
         const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
         app.innerHTML = `<div class="wrap">${head('Ticket raised', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-          <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+          <div class="muted">Ticket raised! Your number is</div><div class="no">${r.ticket_no}</div>
           ${r.merged ? knownIssue(r.affected_count) : ''}<p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>
           <p class="muted small" style="margin:14px 0 30px">We also emailed these details to you.</p>
           <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Track status</a></div></div></div>`;
@@ -454,7 +454,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
         r = await api(`/public/${slug}/tickets`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
       const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
       app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>${r.kind === 'suggestion' ? 'Suggestion sent' : 'Ticket raised'}</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I(r.kind === 'suggestion' ? 'idea' : 'check', 28)}</span>
-        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
         <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
         ${r.merged ? knownIssue(r.affected_count) : ''}${queueBox(r.queue)}
         <p>${r.kind === 'suggestion' ? `It went to the ${esc(svc.name)} team. If they reply, we'll email you.` : `${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b>`}</p>
@@ -486,7 +486,7 @@ const queueBox = q => q ? `<div class="queuebox">${I('clock', 22)}<div><b>Queue 
   <div>Today's tickets for ${esc(q.service)} are full (the team takes ${q.daily_cap} a day). ${q.ahead ? `${q.ahead} ticket${q.ahead === 1 ? ' is' : 's are'} ahead of you` : 'You are next'}${q.waiting > 1 ? ` · ${q.waiting} waiting in all` : ''}.</div>
   <div>Your ticket reaches the team on <strong>${esc(q.lands_on)}</strong>. We'll email you then; you don't need to raise it again.</div></div></div>` : '';
 // Many people reporting the same problem the same day share one ticket (see merge.js on the server)
-const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. You will get updates by email.</span></div>` : '';
+const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. The team is fixing it as one job. You will get every update by email, under your own number.</span></div>` : '';
 const sameIssue = d => new Promise(res => {
   $('#err').innerHTML = `<div class="limitbox">${I('alert', 22)}<div><b>Ticket #${esc(d.ticket_no)} already exists for this problem.</b><div>${esc(d.subject)} · reported by ${d.affected_count} so far. Same issue?</div>
     <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="sy">Yes, add me</button><button type="button" class="btn" id="sn">No, raise new</button></div></div></div>`;

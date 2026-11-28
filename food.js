@@ -138,7 +138,7 @@ export function food(d) {
       form_data: { food_category: b.category, food_category_label: foodCategory(b.category), meal, meal_label: ml.name, food_location: loc?.name || '' },
       files, idempotency_key: b.idempotency_key, merge: b.merge, seen_notices: b.seen_notices }, { channel: 'portal', actor: { type: 'requestor', name: str(b.name, 80) }, food: true });
     await run('UPDATE tickets SET food_location_id=?, meal=?, food_category=? WHERE id=? AND meal IS NULL', loc?.id || null, meal, b.category, t.id);
-    return { ticket_no: t.ticket_no, tracking_token: t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1 };
+    return { ticket_no: t.own_no || t.ticket_no, tracking_token: t.own_token || t.tracking_token, due_at: t.due_at, merged: !!t.merged, affected_count: t.affected_count || 1 }; // a joiner gets their own number
   }));
 
   // ---------- staff: kitchen dashboard (food providers and admins) ----------

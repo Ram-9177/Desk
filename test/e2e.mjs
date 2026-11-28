@@ -144,7 +144,7 @@ try {
   sec('Services and form types');
   const mkSvc = async (t, body) => ok(`create service ${body.code}`, '/services', { ...t, method: 'POST', body });
   const elec = await mkSvc(A, { code: 'ELEC', name: 'Electrical', description: 'Power, fans, lights', escalation_user_id: lata.id,
-    form_schema: { icon: 'bolt', form_type: 'location', lists: { block: ['Main block', 'Hostel block'] }, fields: [{ key: 'issue', label: 'Issue', type: 'select', required: true, options: ['Fan', 'Light', 'Switch'] }] } });
+    form_schema: { icon: 'bolt', form_type: 'location', lists: { block: ['Main block', 'Hostel block', 'Science block'] }, fields: [{ key: 'issue', label: 'Issue', type: 'select', required: true, options: ['Fan', 'Light', 'Switch'] }] } });
   const exam = await mkSvc(A, { code: 'EXAM', name: 'Examinations', form_schema: { icon: 'book', form_type: 'student', fields: [{ label: 'What do you need?', type: 'select', required: true, options: ['Hall ticket', 'Results'] }] } });
   const hostel = await mkSvc(A, { code: 'HOSTEL', name: 'Hostel', form_schema: { form_type: 'both', fields: [] } });
   const trans = await mkSvc(A, { code: 'TRANS', name: 'Transport', form_schema: { form_type: 'general', fields: [] } });
@@ -631,11 +631,12 @@ try {
   const d1 = (await dup('Dupa')).data;
   check('the first report makes a ticket (1 affected, normal priority)', !d1.merged && d1.affected_count === 1 && (await tk(d1.ticket_no)).priority === 'medium', JSON.stringify(d1));
   const d2 = (await dup('Dupb', 'Room no. 203')).data;
-  check('a second report of the same spot and problem the same day joins it: 2 affected', d2.merged && d2.ticket_no === d1.ticket_no && d2.affected_count === 2, JSON.stringify(d2));
+  const onT = async (x, no) => (await q('SELECT ticket_id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', alpha.id, x.ticket_no))[0]?.ticket_id === (await tk(no)).id; // a joiner's own number points at the shared ticket
+  check('a second report of the same spot and problem the same day joins it under its own number: 2 affected', d2.merged && d2.ticket_no !== d1.ticket_no && await onT(d2, d1.ticket_no) && d2.affected_count === 2 && (await tk(d1.ticket_no)).affected_count === 2, JSON.stringify(d2));
   const d3 = (await dup('Dupc', '#203')).data, d4 = (await dup('Dupd', '203 room')).data;
-  check('"#203" and "203 room" join it too; 3+ affected makes it High', d3.ticket_no === d1.ticket_no && d4.ticket_no === d1.ticket_no && d4.affected_count === 4 && (await tk(d1.ticket_no)).priority === 'high');
+  check('"#203" and "203 room" join it too; 3+ affected makes it High', await onT(d3, d1.ticket_no) && await onT(d4, d1.ticket_no) && d4.affected_count === 4 && (await tk(d1.ticket_no)).priority === 'high');
   const again = (await dup('Dupb', '203')).data;
-  check('the same person reporting twice is not counted twice', again.ticket_no === d1.ticket_no && (await tk(d1.ticket_no)).affected_count === 4, JSON.stringify(again));
+  check('the same person reporting twice is not counted twice (and keeps their number)', again.ticket_no === d2.ticket_no && await onT(again, d1.ticket_no) && (await tk(d1.ticket_no)).affected_count === 4, JSON.stringify(again));
   check("the joiner's email says how many others reported it", (await q("SELECT body FROM notifications WHERE template_key='created' AND recipient='dupb@dup.example.com'"))[0]?.body.includes('Known issue: 1 other reported this too'));
   check('the ticket page shows how many reported it', (await api(`/public/alpha/tickets/${d1.ticket_no}`)).data.affected_count === 4);
   const other = (await dup('Dupe', '203', { form_data: { loc_block: 'Main block' } })).data;
@@ -666,7 +667,8 @@ try {
   const bt = await q("SELECT ticket_no, affected_count, priority FROM tickets WHERE tenant_id=? AND location_key='hostel block:301'", alpha.id);
   check('50 reports at the same moment make exactly one ticket with 50 affected', burst.every(x => x.status === 200) && bt.length === 1 && bt[0].affected_count === 50 && bt[0].priority === 'critical',
     JSON.stringify({ errors: burst.filter(x => x.status !== 200).map(x => x.error?.message).slice(0, 2), tickets: bt }));
-  check('…and every one of them got that ticket number', new Set(burst.map(x => x.data.ticket_no)).size === 1);
+  check('…and 50 different numbers, each on that ticket', new Set(burst.map(x => x.data.ticket_no)).size === 50
+    && (await q('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=(SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?) AND ticket_no IS NOT NULL', alpha.id, bt[0].ticket_no))[0].n === 50);
   // one status change: one email to every requestor, each by name
   const big = await tk(d1.ticket_no); r = await act(big.id, { to: 'in_progress', note: 'Electrician on the way' });
   const sent = await q("SELECT recipient, body FROM notifications WHERE template_key='status_in_progress' AND ticket_id=?", big.id);
@@ -683,7 +685,7 @@ try {
   const ask = await dup('Dupv', '301');
   check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.ticket_no === bt[0].ticket_no, JSON.stringify(ask.error));
   const no = (await dup('Dupv', '301', { merge: 'no' })).data, yes = (await dup('Dupw', '301', { merge: 'yes' })).data;
-  check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no === bt[0].ticket_no);
+  check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no !== bt[0].ticket_no && await onT(yes, bt[0].ticket_no));
   await ok('back to silent mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'silent' } });
   const rep = (await api('/reports?days=1', { token: T.asha })).data, row = rep.by_location.find(x => x.location === 'Hostel block · 2nd floor · 301');
   check('reports: students affected in total and per place', rep.affected >= 70 && row?.affected === 52 && row.tickets === 2, JSON.stringify({ affected: rep.affected, row }));
@@ -704,9 +706,18 @@ try {
   check('nearly identical "Other" text joins; a different problem in the same place does not', s2.merged && !s3.merged, JSON.stringify([s1, s2, s3]));
   const cols = (await q("SELECT column_name c FROM information_schema.columns WHERE table_name='ticket_requestors'")).map(x => x.c);
   check('ticket_requestors carries number, token and complaint', ['tenant_id','ticket_no','tracking_token','subject','description','form_data','detached_at','detached_to'].every(c => cols.includes(c)));
-  await stop(); await start(); // the migration backfills the reports raised above (until the server writes these itself)
-  const firstRows = await q("SELECT count(*)::int n FROM ticket_requestors WHERE is_first=1 AND (ticket_no IS NULL OR tenant_id IS NULL)");
-  check('every first requestor row was backfilled with its ticket number', firstRows[0].n === 0);
+  const firstRows = await q("SELECT count(*)::int n FROM ticket_requestors r JOIN tickets t ON t.id=r.ticket_id WHERE r.is_first=1 AND (r.ticket_no IS DISTINCT FROM t.ticket_no OR r.tenant_id IS NULL)");
+  check('every first requestor row carries its ticket number', firstRows[0].n === 0);
+  const own = async (n, extra = {}) => (await raise('alpha', { ...elecBody(n, `${n.toLowerCase()}@own.example.com`), form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '101', issue: 'Fan' }, ...extra })).data;
+  const a1 = await own('Owna'), a2 = await own('Ownb'), a3 = await own('Ownc');
+  check('the first report keeps its number; each joiner gets the next number, not the shared one', !a1.merged && a2.merged && a3.merged && a2.ticket_no !== a1.ticket_no && a3.ticket_no !== a2.ticket_no && a2.tracking_token && a2.tracking_token !== a1.tracking_token, JSON.stringify([a1, a2, a3]));
+  const rows = await q('SELECT ticket_no, is_first, description FROM ticket_requestors WHERE ticket_id=(SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?) ORDER BY raised_at', alpha.id, a1.ticket_no);
+  check('three rows on one ticket, each with its own number and complaint', rows.length === 3 && rows.map(r => r.ticket_no).join() === [a1, a2, a3].map(x => x.ticket_no).join() && rows.every(r => r.description === 'Something is broken.'));
+  const again = await own('Ownb');
+  check('the same person reporting again gets the number they already have, no new one', again.ticket_no === a2.ticket_no && (await q('SELECT last_number FROM ticket_counters WHERE tenant_id=?', alpha.id))[0].last_number === Number(a3.ticket_no));
+  check("the joiner's email carries their own number and link", (await q("SELECT subject, body FROM notifications WHERE template_key='created' AND recipient='ownb@own.example.com'"))[0]?.subject.includes(`[${a2.ticket_no}]`) && (await q("SELECT body FROM notifications WHERE template_key='created' AND recipient='ownb@own.example.com'"))[0].body.includes(`/t/${a2.ticket_no}?k=${a2.tracking_token}`));
+  const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => own(`Many${i}`, { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '150', issue: 'Light' } })));
+  check('50 at once: one ticket, 50 different numbers', new Set(burst.map(x => x.ticket_no)).size === 50 && (await q("SELECT count(*)::int n FROM tickets WHERE tenant_id=? AND location_key='science block:150'", alpha.id))[0].n === 1);
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1053,7 +1064,8 @@ try {
   const c1 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { files: PNGF }) })).data, c2 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fb', { files: PNGF }) })).data;
   const ct = (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, c1?.ticket_no))[0];
   check('a complaint is a normal ticket for the food service, with location, meal and category', ct?.service_id === fsvc.id && ct.meal === 'lunch' && ct.food_category === 'insect' && ct.food_location_id === L1 && ct.subject.includes('Insect'), JSON.stringify(c1));
-  check('the same problem at the same mess today joins that ticket', c2?.ticket_no === c1.ticket_no && c2.merged && c2.affected_count === 2);
+  check('the same problem at the same mess today joins that ticket, under its own number', c2?.ticket_no !== c1.ticket_no && c2.merged && c2.affected_count === 2
+    && (await q('SELECT ticket_id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', aid, c2.ticket_no))[0]?.ticket_id === ct.id);
   const c3 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fc', { category: 'other', files: PNGF }) })).data, c4 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fd', { category: 'other', files: PNGF }) })).data;
   check('"Something else" complaints never merge', c3.ticket_no !== c4.ticket_no && !c4.merged);
   check('the requestor gets the usual acknowledgement email', (await q("SELECT 1 FROM notifications WHERE template_key='created' AND ticket_id=? AND recipient='fa@food.example.com'", ct.id)).length === 1);
