@@ -657,7 +657,7 @@ try {
   const c1 = (await dup('Dupr', '505')).data; r = await act((await tk(c1.ticket_no)).id, { to: 'closed', note: 'Fixed' });
   const c2 = (await dup('Dups', '505')).data;
   check('a closed ticket does not take a new report', r.status === 200 && !c2.merged && c2.ticket_no !== c1.ticket_no, r.error?.message);
-  // "Other": typed problems match when they are alike (pg_trgm similarity ≥ 0.6)
+  // "Other": typed problems match when nearly identical (filler words dropped, pg_trgm similarity ≥ 0.85)
   const o1 = await raise('alpha', { ...base('Otha'), form_data: { [qHelp]: 'Other: Lost my ID card!!' } });
   const o2 = await raise('alpha', { ...base('Othb'), form_data: { [qHelp]: 'Other: water tap leaking' } });
   check('"Other" problems: alike words join, different ones do not', o1.data?.merged && !o2.data?.merged, JSON.stringify([o1.data || o1.error, o2.data || o2.error]));
