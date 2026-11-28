@@ -790,9 +790,9 @@ async function workspace(main, id, { admin }) {
   document.body.classList.add('on-ticket'); // phones: this page has its own app bar and bottom action bar
   const meta = e => { try { return JSON.parse(e.meta || '{}'); } catch { return {}; } };
   const stName = v => (STATUS_INFO[v] || [v])[0];
-  const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
+  const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}${meta(e).split_from ? ` · split out of #${esc(meta(e).split_from)}` : ''}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
-    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)', joined: 'Joined another ticket into this one', joined_into: `Joined into #${esc(e.to_value)}`,
+    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)', joined: 'Joined another ticket into this one', joined_into: `Joined into #${esc(e.to_value)}`, split_out: 'Split a student out as their own ticket',
     priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
   // timeline dot: a status change takes the new status's colour; reopened = Open; priority = red; created = accent; the rest grey
   const evDot = e => e.event_type === 'status_changed' ? `var(--st-${ST_VAR[e.to_value] || 'neutral'})` : e.event_type === 'reopened' ? 'var(--st-open)'
@@ -837,7 +837,7 @@ async function workspace(main, id, { admin }) {
     ${t.requestors?.length ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.filter(q => !q.detached_at).length})`)}${t.requestors.map(q => { const no = q.ticket_no || (q.is_first ? t.ticket_no : ''), said = q.description || (q.is_first ? t.description : '');
       return `<div class="rqrow">${no ? `<span class="mono">#${esc(no)}</span> ` : ''}<b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}${[q.department, q.identifier].filter(Boolean).map(v => ' · ' + esc(v)).join('')}
       <div class="psub">${esc(q.contact)} · ${shortDate(q.raised_at)}</div>${said ? `<div class="rqsaid">${esc(said)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}
-      ${q.detached_at ? (q.detached_to ? `<a class="small" href="#/c/t/${esc(q.detached_to)}">Split out → #${esc(no)}</a>` : '') : !q.is_first && live ? `<button class="btn sm" data-split="${esc(q.id)}">Split out</button>` : ''}</div>`; }).join('')}</div>` : ''}
+      ${q.detached_at ? (q.detached_to ? `<a class="small" href="#/c/t/${esc(q.detached_to)}">Split out → #${esc(no)}</a>` : '') : !q.is_first && live ? `<button type="button" class="btn sm" data-split="${esc(q.id)}">Split out</button>` : ''}</div>`; }).join('')}</div>` : ''}
     <div class="card side">${cardHeading('users', 'Assigned to')}${t.providers.map(p => `<div class="person">${avatar(p.name, 40, 'dark')}<div><b>${esc(p.name)}</b><div class="psub">Provider${p.phone ? ' · ' + esc(p.phone) : ''}</div></div></div>`).join('') || '<div class="psub">No provider is mapped to this service.</div>'}</div>
     ${live ? `<div class="card side">${cardHeading('flag', 'Priority')}<select id="pri" aria-label="Priority">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <div class="helper">${I('eyeoff', 14)}<span>Set by your team. The requester never sees it.</span></div></div>` : ''}`;
@@ -942,7 +942,12 @@ async function workspace(main, id, { admin }) {
       toast(`Joined #${f.elements.ticket_no.value.trim().replace(/^#/, '')}: ${res.moved} student${res.moved === 1 ? '' : 's'} moved`); reload(); });
     d.querySelector('[value=ok]').textContent = 'Join'; };
   main.querySelectorAll('#joinbtn, #joinbtnm').forEach(b => b.onclick = join);
-  main.querySelectorAll('[data-split]').forEach(b => b.onclick = () => toast('Coming in the next step')); // Task 8: the split dialog
+  // not the same problem after all: the student gets a ticket of their own, keeping their number; this one counts one fewer
+  main.querySelectorAll('[data-split]').forEach(b => b.onclick = () => { const q = t.requestors.find(x => x.id === b.dataset.split); if (!q) return;
+    const d = dlg(`<h2>Split ${esc(q.name)} out of #${esc(t.ticket_no)}?</h2><p class="muted">Their report becomes a ticket of its own under their number #${esc(q.ticket_no || '')}, with a fresh target from now. Their photos go with it and they are emailed.</p>
+      <label>Note to the student (optional)</label><textarea name="note" placeholder="Why it is a different problem"></textarea>`,
+      async f => { const res = await api(`/tickets/${id}/requestors/${encodeURIComponent(q.id)}/split`, { method: 'POST', body: { note: f.elements.note.value } }); toast(`Split out as #${res.ticket_no}`); reload(); });
+    d.querySelector('[value=ok]').textContent = 'Split out'; });
   const remind = () => remindDlg(id, reload);
   main.querySelectorAll('[data-remadd]').forEach(b => b.onclick = remind);
   main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); } catch (er) { toast(er.message); } });

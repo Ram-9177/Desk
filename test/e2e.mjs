@@ -381,7 +381,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('26 email steps listed, none connected yet', cfg0.events.length === 26 && !cfg0.url);
+  check('27 email steps listed, none connected yet', cfg0.events.length === 27 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -813,6 +813,35 @@ try {
   await fails('a ticket already joined cannot be joined again', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } }, 400, `already joined into #${j1.ticket_no}`);
   check('the joined ticket is out of the list, the CSV and the reports', !(await api('/tickets?status=closed', { token: T.pavan })).data.some(x => x.id === t2.id) && !(await (await fetch(`${API}/tickets.csv?status=all`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).includes(`"${j2.ticket_no}"`) && (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period === closedBefore);
   check('the provider sees every complaint on the survivor', (await api(`/tickets/${t1.id}`, { token: T.pavan })).data.events.some(e => e.event_type === 'joined' && e.body.includes(`#${j2.ticket_no}`)));
+  // a provider splits a student out: they keep their number and token and get a ticket of their own, its clock starting now.
+  // t1 holds five people here (Joina first, Joinb and Joinc on numbers of their own, Joine and Joinf whose numbers were the tickets joined in) at High.
+  const rowC = (await q('SELECT id FROM ticket_requestors WHERE ticket_no=?', j3.ticket_no))[0];
+  await fails('the first requester cannot be split out', `/tickets/${t1.id}/requestors/${(await q('SELECT id FROM ticket_requestors WHERE ticket_id=? AND is_first=1', t1.id))[0].id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'first');
+  await fails('a closed ticket cannot split anyone out', `/tickets/${shared.id}/requestors/${rowB.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'closed');
+  const sp = await ok('provider splits Joinc out', `/tickets/${t1.id}/requestors/${rowC.id}/split`, { token: T.pavan, method: 'POST', body: { note: 'Different fixture' } });
+  const nt = await tk(j3.ticket_no), t1c = await tk(j1.ticket_no);
+  check('the new ticket keeps the number and token, starts its clock now, and the old one drops to 4', sp.ticket_no === j3.ticket_no && nt.id === sp.ticket_id && nt.tracking_token === j3.tracking_token && nt.status === 'open' && nt.created_at > t1.created_at && nt.due_at > nt.created_at && nt.affected_count === 1 && t1c.affected_count === 4 && t1c.priority === 'high', JSON.stringify([sp, nt?.tracking_token === j3.tracking_token, t1c.affected_count, t1c.priority]));
+  const spMail = (await q("SELECT text_body FROM notifications WHERE template_key='split_out' AND recipient='joinc@own.example.com'"))[0]?.text_body || '';
+  check('the student is emailed and their page now shows the new ticket', (await q("SELECT 1 FROM notifications WHERE template_key='split_out' AND recipient='joinc@own.example.com'")).length === 1 && (await api(`/public/alpha/tickets/${j3.ticket_no}`)).data.affected_count === 1);
+  check("the split student's email carries their own number only, never the old ticket's", new RegExp(`\\b${j3.ticket_no}\\b`).test(spMail) && !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(spMail)) && spMail.includes('Different fixture') && !/Joina|Joinb|Joind/.test(spMail), spMail);
+  check('both tickets record the split, the photos follow, and no new-ticket email goes to the providers', (await q("SELECT 1 FROM ticket_events WHERE ticket_id=? AND event_type='split_out'", t1.id)).length === 1
+    && (e => JSON.parse(e?.meta || '{}').split_from === j1.ticket_no && e.body.startsWith('Split out of a shared ticket; first reported'))((await q("SELECT body, meta FROM ticket_events WHERE ticket_id=? AND event_type='created'", nt.id))[0]) && (await q("SELECT 1 FROM notifications WHERE ticket_id=? AND template_key='new_ticket'", nt.id)).length === 0
+    && (await q("SELECT 1 FROM audit_logs WHERE action='ticket.split' AND entity_id=?", t1.id)).length === 1);
+  check("the student's page shows no other ticket's number either", (sp3 => !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(sp3)))(JSON.stringify((await api(`/public/alpha/tickets/${j3.ticket_no}`)).data)));
+  await fails('a split-out row cannot be split again', `/tickets/${t1.id}/requestors/${rowC.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'Already');
+  const rowF = (await q('SELECT id FROM ticket_requestors WHERE ticket_id=? AND contact=?', t1.id, 'joinf@own.example.com'))[0]; // their number is the joined ticket's own: it cannot be given to a second ticket
+  await fails('a student whose number is a joined ticket\'s is not split out (that number is taken)', `/tickets/${t1.id}/requestors/${rowF.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'joined here');
+  // the count going down: three in room 205 raise a ticket to High; splitting one takes it back to Medium; a priority set by hand stays
+  const kf = { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '205', issue: 'Fan' } }, k1 = await own('Splita', kf), k2 = await own('Splitb', kf), k3 = await own('Splitc', { ...kf, files: [{ name: 'own.png', type: 'image/png', source: 'camera', data: PNG }] });
+  const tK = await tk(k1.ticket_no), rowK = no => q('SELECT id, event_id FROM ticket_requestors WHERE ticket_no=?', no).then(r => r[0]);
+  check('three reports in one room make one High ticket', k2.merged && k3.merged && tK.affected_count === 3 && tK.priority === 'high');
+  const r3 = await rowK(k3.ticket_no), spK = await ok('provider splits Splitc out', `/tickets/${tK.id}/requestors/${r3.id}/split`, { token: T.pavan, method: 'POST', body: {} });
+  const nK = await tk(k3.ticket_no), cEv = (await q("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='created'", nK.id))[0];
+  check("fewer people bring a priority raised by the count back down; the student's photo goes with them", (await tk(k1.ticket_no)).affected_count === 2 && (await tk(k1.ticket_no)).priority === 'medium'
+    && (ps => ps.length === 1 && ps[0].ticket_id === nK.id && ps[0].event_id === cEv?.id)(await q("SELECT ticket_id, event_id FROM attachments WHERE file_name='own.png' AND ticket_id IN (?, ?)", tK.id, nK.id)) && spK.ticket_id === nK.id);
+  await ok('provider sets the priority by hand', `/tickets/${tK.id}/priority`, { token: T.pavan, method: 'POST', body: { priority: 'critical' } });
+  await ok('…and splits another out', `/tickets/${tK.id}/requestors/${(await rowK(k2.ticket_no)).id}/split`, { token: T.pavan, method: 'POST', body: {} });
+  check('a priority set by hand is left alone by a split', (await tk(k1.ticket_no)).priority === 'critical' && (await tk(k1.ticket_no)).affected_count === 1);
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1641,6 +1670,7 @@ async function uiSmoke(tok, id) {
     await visit('workspace: a closed shared ticket lists the numbers', '/c/t/' + id.closedId, tok.pavan, '.rqrow .mono');
     check('…and offers no Split out on a closed ticket', await js("return !document.querySelector('[data-split]')"));
     await visit('workspace: Join ticket dialog', '/c/t/' + id.sharedId, tok.pavan, '#joinbtn'); await js("document.querySelector('#joinbtn').click()"); check('…opens with a number field', await js("return !!document.querySelector('dialog[open] input[name=ticket_no]')"));
+    await visit('workspace: Split out dialog', '/c/t/' + id.sharedId, tok.pavan, '.rqrow [data-split]'); await js("document.querySelector('.rqrow [data-split]').click()"); check('…asks for confirmation', await js("return !!document.querySelector('dialog[open]')"));
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');
