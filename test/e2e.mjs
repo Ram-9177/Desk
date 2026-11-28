@@ -690,6 +690,20 @@ try {
   check('CSV export has the number affected', (await (await fetch(`${API}/tickets.csv`, { headers: { authorization: 'Bearer ' + T.asha } })).text()).split('\r\n')[0].includes('"People affected"'));
   }
 
+  sec('Own numbers on a shared ticket');
+  { await stop(); await start(); // fresh rate limits
+  const { stripFiller, SIMILARITY_STRICT, similarity } = await import('../merge.js');
+  const oth = (await q("SELECT id FROM services WHERE code='HELP'"))[0], qHelp = (await api('/services', { token: T.asha })).data.find(x => x.code === 'HELP').form_schema.fields[0].key;
+  const base = n => ({ service_id: oth.id, name: n, email: n.toLowerCase() + '@example.com', subject: 'Need help', location: 'Library' });
+  check('filler words go, "not" stays', stripFiller('The fan is not working, please') === 'fan not working' && stripFiller('fan not working') === 'fan not working');
+  check('"fan not working" vs "fan is not working" is identical once stripped', similarity(stripFiller('fan not working'), stripFiller('fan is not working')) === 1);
+  check('"fan not working" vs "fan making noise" is well under the bar', similarity(stripFiller('fan not working'), stripFiller('fan making noise')) < SIMILARITY_STRICT - 0.2);
+  const s1 = (await raise('alpha', { ...base('Stra'), form_data: { [qHelp]: 'Other: Projector is not turning on' } })).data;
+  const s2 = (await raise('alpha', { ...base('Strb'), form_data: { [qHelp]: 'Other: projector not turning on!!' } })).data;
+  const s3 = (await raise('alpha', { ...base('Strc'), form_data: { [qHelp]: 'Other: projector remote missing' } })).data;
+  check('nearly identical "Other" text joins; a different problem in the same place does not', s2.merged && !s3.merged, JSON.stringify([s1, s2, s3]));
+  }
+
   sec('Team daily queue, provider phone and priority for requestors');
   { // its own block, so its names don't clash with the rest
   await stop(); await start(); // fresh rate limits

@@ -3,12 +3,16 @@
 // campus, service, place and problem match, the ticket was raised the same calendar day (campus time) and is not yet closed.
 import { isOtherAnswer, fieldsOf } from './public/shared.js';
 
-export const SIMILARITY = 0.6; // how alike two typed "Other" problems must be to count as the same (pg_trgm similarity, 0–1)
+export const SIMILARITY = 0.6; // the old, looser bar for typed "Other" problems; no longer used for matching
+export const SIMILARITY_STRICT = 0.85; // how alike two typed "Other" problems must be to count as the same (pg_trgm similarity, 0–1): near-identical only, so "fan not working" never joins "fan making noise"
 export const MERGE_MODES = ['silent', 'confirm']; // silent: join automatically · confirm: ask the person first
 export const MERGEABLE = ['open', 'in_progress', 'hold']; // closed and rejected tickets never take new reports
 
 // lower case, punctuation gone, single spaces
 export const normText = s => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
+// Words that carry no meaning in a typed problem ("fan is not working" = "fan not working"). "not" and "no" stay: they flip the meaning.
+export const FILLER = ['is', 'are', 'was', 'the', 'a', 'an', 'my', 'our', 'in', 'at', 'of', 'it', 'its', 'there', 'here', 'please', 'pls'];
+export const stripFiller = s => normText(s).split(' ').filter(w => w && !FILLER.includes(w)).join(' ');
 // "Room no. 203", "203 room", "#203" → "203"
 export const normRoom = s => normText(String(s ?? '').replace(/#/g, ' ')).replace(/\b(room|rm|no)\b/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -29,7 +33,7 @@ export function problemOf(schema, fd) {
   const f = fieldsOf(schema).find(x => x.type === 'select' && !/^(loc|stu)_/.test(x.key));
   const v = f && fd[f.key];
   if (!v) return null;
-  if (isOtherAnswer(f.options, v)) { const typed = normText(String(v).replace(/^[^:]*:?/, '')); return typed ? { key: `other:${typed}`, label: v, fuzzy: true } : null; }
+  if (isOtherAnswer(f.options, v)) { const typed = stripFiller(String(v).replace(/^[^:]*:?/, '')); return typed ? { key: `other:${typed}`, label: v, fuzzy: true } : null; }
   return { key: normText(v), label: v, fuzzy: false };
 }
 // The calendar day in the campus time zone, 'YYYY-MM-DD'

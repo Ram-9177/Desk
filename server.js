@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { pool, uid, now, one, all, run, tx, insert, hashPw, checkPw, trgm } from './db.js';
-import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
+import { SIMILARITY_STRICT, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn, priorityFor, similarity } from './merge.js';
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { canteen } from './canteen.js';
@@ -543,9 +543,9 @@ async function findMatch(tn, svcId, lkey, prob, day) {
   if (!prob.fuzzy) return one(`SELECT * FROM tickets WHERE ${base} AND problem_key=? ORDER BY created_at LIMIT 1`, ...a, prob.key);
   const typed = prob.key.slice(6); // "Other": the typed words, matched by similarity
   if (trgm) return one(`SELECT * FROM tickets WHERE ${base} AND problem_key LIKE 'other:%' AND similarity(substr(problem_key, 7), ?) >= ?
-    ORDER BY similarity(substr(problem_key, 7), ?) DESC, created_at LIMIT 1`, ...a, typed, SIMILARITY, typed);
+    ORDER BY similarity(substr(problem_key, 7), ?) DESC, created_at LIMIT 1`, ...a, typed, SIMILARITY_STRICT, typed);
   return (await all(`SELECT * FROM tickets WHERE ${base} AND problem_key LIKE 'other:%' ORDER BY created_at`, ...a))
-    .map(t => [t, similarity(t.problem_key.slice(6), typed)]).filter(([, x]) => x >= SIMILARITY).sort((x, y) => y[1] - x[1])[0]?.[0];
+    .map(t => [t, similarity(t.problem_key.slice(6), typed)]).filter(([, x]) => x >= SIMILARITY_STRICT).sort((x, y) => y[1] - x[1])[0]?.[0];
 }
 // A later report of the same problem: one more requestor (and their photos) on the ticket. The same person never counts twice.
 async function joinTicket(t, r, b, contact, actor, ts) {
