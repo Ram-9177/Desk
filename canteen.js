@@ -10,7 +10,8 @@ import crypto from 'node:crypto';
 let qrLib = null;
 const qrSvg = async text => { if (!qrLib) { try { qrLib = (await import('qrcode')).default; } catch { console.error('QR code: the "qrcode" package is not installed. Run: npm ci --omit=dev'); const e = new Error('QR codes need the qrcode package. Run npm ci on the server.'); e.status = 503; e.code = 'QR_MISSING'; throw e; } }
   return qrLib.toString(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } }); };
-import { pool, one, all, run, uid, now } from './db.js';
+import { pool, one, all, run, uid, now, tx } from './db.js';
+import fs from 'node:fs/promises';
 
 await pool.query(`
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_on INT DEFAULT 0;
@@ -116,6 +117,55 @@ export function stateOf(tn) {
 }
 const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
+// The rules for an item's own fields, shared by Add / Edit item and the menu upload (no database: the category is checked by the caller).
+// Returns { f } with the columns to save, or { error } with the message a manager sees.
+export function itemRules(b, partial) {
+  const f = {};
+  if (!partial || b.name !== undefined) { f.name = str(b.name, 80); if (!f.name) return { error: 'Item name required' }; }
+  if (!partial || b.price !== undefined) { f.price_paise = parsePrice(b.price); if (f.price_paise == null) return { error: 'Enter a price in rupees, e.g. 40 or 12.50' }; }
+  if (b.description !== undefined) f.description = str(b.description, 200) || null;
+  if (b.is_veg !== undefined) f.is_veg = b.is_veg ? 1 : 0;
+  if (b.sold_out !== undefined) f.sold_out = b.sold_out ? 1 : 0;
+  if (b.active !== undefined) f.active = b.active ? 1 : 0;
+  if (Number.isInteger(b.sort_order)) f.sort_order = b.sort_order;
+  if (b.deal_pct !== undefined) { const pct = Math.floor(Number(b.deal_pct) || 0);
+    if (pct === 0) Object.assign(f, { deal_pct: 0, deal_kind: null, deal_until: null });
+    else { if (pct < 1 || pct > 90) return { error: 'Discount must be 1% to 90%' }; if (!DEAL_KINDS[b.deal_kind]) return { error: 'Pick discount, flash sale or end-of-day sale' };
+      const mins = Math.floor(Number(b.deal_minutes) || 0); if (b.deal_kind !== 'discount' && !(mins >= 5 && mins <= 1440)) return { error: 'A flash or end-of-day sale needs a time: 5 minutes to 24 hours' };
+      Object.assign(f, { deal_pct: pct, deal_kind: b.deal_kind, deal_until: mins ? new Date(Date.now() + mins * 6e4).toISOString() : null }); } }
+  return { f };
+}
+// ---- menu upload: what a file column can map to, and turning one file row (text cells) into what itemRules takes ----
+export const MENU_FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
+const MAX_UPLOAD_ROWS = 500, MAX_UPLOAD_BYTES = 5 * 1024 * 1024, MAX_ITEMS = 500, MAX_CATS = 50;
+const FLAG = { 1: 1, yes: 1, y: 1, true: 1, veg: 1, 0: 0, no: 0, n: 0, false: 0, nonveg: 0 };
+const FLAG_NAME = { is_veg: 'Veg', sold_out: 'Sold out', active: 'Shown on the menu' };
+const KIND_OF = Object.fromEntries(Object.entries(DEAL_KINDS).flatMap(([k, l]) => [[k, k], [l.toLowerCase(), k]])); // 'flash' or the label 'Flash sale'
+export function uploadRow(r) {
+  const t = k => String(r?.[k] ?? '').trim(), b = { name: t('name'), price: t('price') };
+  if (b.name && !b.price) return { error: 'Enter a price in rupees, e.g. 40 or 12.50' }; // an empty cell is not ₹0
+  if (t('description')) b.description = t('description');
+  for (const k of ['is_veg', 'sold_out', 'active']) if (t(k)) { const v = FLAG[t(k).toLowerCase().replace(/[\s_-]/g, '')];
+    if (v === undefined) return { error: `${FLAG_NAME[k]}: use yes or no (not “${t(k).slice(0, 20)}”)` }; b[k] = !!v; }
+  if (t('sort_order')) { if (!/^-?\d{1,6}$/.test(t('sort_order'))) return { error: 'Order must be a whole number' }; b.sort_order = +t('sort_order'); }
+  if (t('deal_pct')) { b.deal_pct = t('deal_pct').replace(/\s*%$/, ''); if (!/^\d+(\.\d+)?$/.test(b.deal_pct)) return { error: 'Deal % must be a number from 1 to 90' };
+    b.deal_kind = KIND_OF[t('deal_kind').toLowerCase()] || t('deal_kind'); b.deal_minutes = t('deal_minutes'); }
+  return itemRules(b, false);
+}
+// a CSV as Excel and Google Sheets save it: comma, semicolon or tab (whichever the header row has most of), "quoted" cells with "" inside
+function parseCsv(text) {
+  const head = text.slice(0, text.search(/\r|\n|$/)).replace(/"[^"]*"/g, ''), delim = [',', ';', '\t'].reduce((a, d) => head.split(d).length > head.split(a).length ? d : a, ',');
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) { const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+    else if (c === '"' && !cell.trim()) { q = true; cell = ''; }
+    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c; }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+const cellText = v => v == null ? '' : v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === 'number' ? String(+v.toPrecision(12)) : String(v).trim(); // 20.499999999 from a formula reads 20.5
 
 export function canteen(d) {
   const { app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, sendMail, SECRET } = d;
@@ -401,7 +451,7 @@ export function canteen(d) {
   // ---- menu ----
   S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { campus_blocks: await blocksOf({ ...a.tenant, canteen_pay: null }), pay: payOf(a.tenant), link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
   S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
-    const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
+    const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= MAX_CATS) throw bad('Up to 50 categories');
     const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
   S.patch('/canteen/categories/:id', wrap(async req => { await need(req); const name = str(req.body.name, 60);
     const sets = [], args = []; if (name) { sets.push('name=?'); args.push(name); } if (Number.isInteger(req.body.sort_order)) { sets.push('sort_order=?'); args.push(req.body.sort_order); }
@@ -412,25 +462,13 @@ export function canteen(d) {
     await run('UPDATE canteen_items SET category_id=NULL WHERE category_id=? AND tenant_id=?', req.params.id, req.tenantId);
     const r = await run('DELETE FROM canteen_categories WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
   const itemFields = async (req, partial) => {
-    const b = req.body, f = {};
-    if (!partial || b.name !== undefined) { f.name = str(b.name, 80); if (!f.name) throw bad('Item name required'); }
-    if (!partial || b.price !== undefined) { f.price_paise = parsePrice(b.price); if (f.price_paise == null) throw bad('Enter a price in rupees, e.g. 40 or 12.50'); }
-    if (b.description !== undefined) f.description = str(b.description, 200) || null;
-    if (b.is_veg !== undefined) f.is_veg = b.is_veg ? 1 : 0;
-    if (b.sold_out !== undefined) f.sold_out = b.sold_out ? 1 : 0;
-    if (b.active !== undefined) f.active = b.active ? 1 : 0;
-    if (Number.isInteger(b.sort_order)) f.sort_order = b.sort_order;
-    if (b.deal_pct !== undefined) { const pct = Math.floor(Number(b.deal_pct) || 0);
-      if (pct === 0) Object.assign(f, { deal_pct: 0, deal_kind: null, deal_until: null });
-      else { if (pct < 1 || pct > 90) throw bad('Discount must be 1% to 90%'); if (!DEAL_KINDS[b.deal_kind]) throw bad('Pick discount, flash sale or end-of-day sale');
-        const mins = Math.floor(Number(b.deal_minutes) || 0); if (b.deal_kind !== 'discount' && !(mins >= 5 && mins <= 1440)) throw bad('A flash or end-of-day sale needs a time: 5 minutes to 24 hours');
-        Object.assign(f, { deal_pct: pct, deal_kind: b.deal_kind, deal_until: mins ? new Date(Date.now() + mins * 6e4).toISOString() : null }); } }
+    const b = req.body, { f, error } = itemRules(b, partial); if (error) throw bad(error);
     if (b.category_id !== undefined) { f.category_id = b.category_id || null;
       if (f.category_id && !(await one('SELECT 1 FROM canteen_categories WHERE id=? AND tenant_id=?', f.category_id, req.tenantId))) throw bad('Pick a category'); }
     return f;
   };
   S.post('/canteen/items', wrap(async req => { await need(req); const f = await itemFields(req, false);
-    if ((await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', req.tenantId)).n >= 500) throw bad('Up to 500 items');
+    if ((await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', req.tenantId)).n >= MAX_ITEMS) throw bad('Up to 500 items');
     const o = { id: uid(), tenant_id: req.tenantId, is_veg: 1, created_at: now(), ...f };
     await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); return { id: o.id }; }));
   S.patch('/canteen/items/:id', wrap(async req => { await need(req); const f = await itemFields(req, true); if (!Object.keys(f).length) throw bad('Nothing to change');
@@ -444,6 +482,63 @@ export function canteen(d) {
   // removing an item hides it (old orders keep their copy of the name and price)
   S.delete('/canteen/items/:id', wrap(async req => { await need(req);
     const r = await run('UPDATE canteen_items SET active=0 WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
+
+  // ---- menu upload (CSV or Excel): read the file, then preview (dry run) and import the mapped rows ----
+  // the template and the sample: UTF-8 with a BOM so Excel shows ₹ and Telugu; the sample is the file the tests import
+  const csvOut = (res, name, body) => res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` }).send(body);
+  S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '﻿' + MENU_FIELDS.join(',') + '\r\n'); } catch (e) { next(e); } });
+  S.get('/canteen/menu-sample.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-sample.csv', await fs.readFile(new URL('./samples/canteen-menu-sample.csv', import.meta.url))); } catch (e) { next(e); } });
+  // read-excel-file is loaded only for an .xlsx (as qrcode is for QR codes): if it is missing, CSV uploads still work
+  let xlsx = null;
+  const readXlsx = async buf => { if (!xlsx) { try { xlsx = (await import('read-excel-file/node')).default; } catch { console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); } }
+    try { return (await xlsx(buf))[0]?.data || []; } catch { throw bad('Could not read this Excel file. Save it as .xlsx or .csv and try again'); } };
+  S.post('/canteen/menu/read', wrap(async req => { await need(req);
+    const name = str(req.body.name, 200), m = /^data:[^,]*;base64,/.exec(typeof req.body.data === 'string' ? req.body.data : '');
+    if (!m) throw bad('Choose a .csv or .xlsx file');
+    const ext = (/\.([a-z0-9]+)$/i.exec(name)?.[1] || '').toLowerCase();
+    if (ext === 'xls') throw bad('This is an old Excel file (.xls). Save it as .xlsx or .csv and upload that');
+    if (ext !== 'csv' && ext !== 'xlsx') throw bad('Choose a .csv or .xlsx file');
+    const buf = Buffer.from(req.body.data.slice(m[0].length), 'base64');
+    if (buf.length > MAX_UPLOAD_BYTES) throw bad('The file is bigger than 5 MB: a menu file is usually a few KB');
+    let grid;
+    if (ext === 'xlsx') grid = await readXlsx(buf);
+    else { if (buf.includes(0) || buf.subarray(0, 2).toString('latin1') === 'PK') throw bad("This doesn't look like a CSV file. Save it as .csv or .xlsx and try again");
+      let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = new TextDecoder('windows-1252').decode(buf); } // older Excel saves "CSV" in the Windows code page
+      grid = parseCsv(text.replace(/^﻿/, '')); }
+    const recs = grid.map((r, i) => ({ cells: r.map(cellText), line: i + 1 })).filter(r => r.cells.some(Boolean)); // blank rows skipped; row numbers stay as in the file
+    if (!recs.length) throw bad('The file is empty');
+    const [head, ...body] = recs; if (!body.length) throw bad('The file has only the header row: add one menu item per row under it');
+    if (body.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file (this one has ${body.length})`);
+    const width = Math.max(head.cells.length, ...body.map(r => r.cells.length)), pad = c => Array.from({ length: width }, (_, i) => c[i] ?? '');
+    return { columns: pad(head.cells).map((c, i) => str(c, 80) || `Column ${i + 1}`), rows: body.map(r => pad(r.cells)), lines: body.map(r => r.line), total: body.length };
+  }));
+  // Same rules as Add item, per row. An active item with the same name (any case) in the same category is updated, otherwise added;
+  // a missing category is created. Rejected rows are skipped and listed; nothing is saved unless dry_run is false, then all in one go.
+  S.post('/canteen/menu/import', wrap(async req => { await need(req); const tid = req.tenantId, list = req.body.rows, dry = req.body.dry_run !== false;
+    if (!Array.isArray(list) || !list.length) throw bad('No rows to import');
+    if (list.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file`);
+    return tx(async () => {
+      const cats = await all('SELECT id, name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid), catId = new Map();
+      for (const c of cats) if (!catId.has(c.name.trim().toLowerCase())) catId.set(c.name.trim().toLowerCase(), c.id);
+      const have = new Map(); for (const i of await all('SELECT id, name, category_id FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at', tid)) { const k = `${i.category_id || ''}\n${i.name.trim().toLowerCase()}`; if (!have.has(k)) have.set(k, i.id); }
+      const newCats = new Map(), seen = new Map(), rejected = [], adds = [], updates = [];
+      list.forEach((r, i) => { const row = Number.isInteger(r?.row) ? r.row : i + 2, v = uploadRow(r); if (v.error) return rejected.push({ row, reason: v.error });
+        const cn = str(r.category, 60), ck = cn.toLowerCase(), cid = cn ? catId.get(ck) : null, key = `${cn ? cid || 'new:' + ck : ''}\n${v.f.name.toLowerCase()}`;
+        if (seen.has(key)) return rejected.push({ row, reason: `Same item as row ${seen.get(key)}` }); seen.set(key, row);
+        if (cn && !cid && !newCats.has(ck)) newCats.set(ck, cn);
+        const id = have.get(key); (id ? updates : adds).push({ id, cid, ck, f: v.f }); });
+      const nItems = (await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', tid)).n;
+      if (nItems + adds.length > MAX_ITEMS) throw bad(`The menu holds up to ${MAX_ITEMS} items: it has ${nItems} and this file adds ${adds.length}. Remove old items or rows and try again`);
+      if (cats.length + newCats.size > MAX_CATS) throw bad(`Up to ${MAX_CATS} categories: there are ${cats.length} and this file adds ${newCats.size}`);
+      if (!dry) {
+        let so = cats.length; for (const [ck, name] of newCats) { const id = uid(); catId.set(ck, id); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, tid, name, so++, now()); }
+        for (const a of adds) { const o = { id: uid(), tenant_id: tid, is_veg: 1, created_at: now(), category_id: a.cid === null ? null : a.cid || catId.get(a.ck), ...a.f };
+          await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); }
+        for (const u of updates) await run(`UPDATE canteen_items SET ${Object.keys(u.f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(u.f), u.id, tid);
+      }
+      return { dry_run: dry, added: adds.length, updated: updates.length, categories_created: newCats.size, rejected };
+    });
+  }));
 
   // end-of-day sale on everything still in stock (or a flash sale on all), and ending every deal at once
   S.post('/canteen/deals/all', wrap(async req => { await need(req); const b = req.body, pct = Math.floor(Number(b.pct) || 0), mins = Math.floor(Number(b.minutes) || 0), kind = b.kind === 'flash' ? 'flash' : 'eod';

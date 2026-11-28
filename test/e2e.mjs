@@ -1711,6 +1711,97 @@ try {
   await ok('a kitchen person is deactivated…', '/users/u-temp', { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
+  sec('Canteen: menu upload');
+  {
+    const B = ids.beta, SB = { token: T.sa, tenant: B }; // imports go to Beta (a clean menu) so Alpha's menu stays as the screens below expect
+    const durl = (buf, type = 'text/csv') => `data:${type};base64,${Buffer.from(buf).toString('base64')}`;
+    const SAMPLE = fs.readFileSync(path.join(ROOT, 'test/fixtures/canteen-menu-sample.csv')), XLSX = fs.readFileSync(path.join(ROOT, 'test/fixtures/menu.xlsx'));
+    const FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
+    // what the dialog does: apply a column mapping { field: column index } to the rows the server read
+    const mapRows = (rd, map) => rd.rows.map((r, i) => ({ ...Object.fromEntries(Object.entries(map).map(([f, c]) => [f, r[c]])), row: rd.lines[i] }));
+    const byName = rd => Object.fromEntries(FIELDS.map(f => [f, rd.columns.indexOf(f)]).filter(([, c]) => c >= 0));
+    await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-plain', tenant_id, 'Paul Plain', 'plain@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+    T.plain = await login('plain@example.com', 'Pavan2026ok');
+    const readBody = { name: 'menu.csv', data: durl(SAMPLE) }, impBody = { rows: [{ name: 'X', price: '10', row: 2 }], dry_run: true };
+    const ends = [['GET', '/canteen/menu-template.csv'], ['GET', '/canteen/menu-sample.csv'], ['POST', '/canteen/menu/read', readBody], ['POST', '/canteen/menu/import', impBody]];
+    for (const [who, tk] of [['counter staff', T.kavya], ['kitchen staff', T.lata], ['a provider who is not a manager', T.plain]])
+      check(`${who} get 403 on all four upload endpoints`, (await Promise.all(ends.map(([m, p, b]) => api(p, { token: tk, method: m, body: b })))).every(r => r.status === 403));
+    check('no sign-in: 401 on all four', (await Promise.all(ends.map(([m, p, b]) => api(p, { method: m, body: b })))).every(r => r.status === 401));
+    check('a campus with the canteen off refuses (super admin on Beta)', (await Promise.all(ends.map(([m, p, b]) => api(p, { ...SB, method: m, body: b })))).every(r => r.status === 403));
+    const tpl = await api('/canteen/menu-template.csv', { token: T.pavan, raw: true }), tplText = Buffer.from(await tpl.arrayBuffer()).toString('utf8');
+    check('the manager downloads the template: UTF-8 with BOM, every field as a column', tpl.status === 200 && /text\/csv/.test(tpl.headers.get('content-type')) && tplText.startsWith('﻿') && tplText.slice(1).split(/\r?\n/)[0] === FIELDS.join(','), tplText.slice(0, 200));
+    const smp = await api('/canteen/menu-sample.csv', { token: T.pavan, raw: true });
+    check('…and the sample menu, byte for byte the shipped fixture', smp.status === 200 && /attachment/.test(smp.headers.get('content-disposition') || '') && Buffer.from(await smp.arrayBuffer()).equals(SAMPLE));
+    const rdA = await ok('the manager reads a file (nothing saved)', '/canteen/menu/read', { token: T.pavan, method: 'POST', body: readBody });
+    check('…the sample: 11 columns, 29 rows, file row numbers', rdA?.columns?.join() === FIELDS.join() && rdA.rows.length === 29 && rdA.total === 29 && rdA.lines[0] === 2 && rdA.lines[28] === 30 && rdA.rows[6][3] === 'Rice, 2 curries, dal, curd, pickle', JSON.stringify(rdA?.columns));
+    const dryP = await ok('…and previews it on Alpha', '/canteen/menu/import', { token: T.pavan, method: 'POST', body: { rows: mapRows(rdA, byName(rdA)), dry_run: true } });
+    check('…a dry run reports without saving', dryP?.added === 29 && dryP.rejected.length === 0 && !(await q("SELECT 1 FROM canteen_items WHERE tenant_id=? AND name='Gulab Jamun (2 pcs)'", A2)).length, JSON.stringify(dryP));
+    await run('UPDATE tenants SET canteen_on=1 WHERE id=?', B); // Beta's canteen on for the imports below (switched off again at the end)
+    const cnt = async () => (await q('SELECT count(*)::int n FROM canteen_items WHERE tenant_id=?', B))[0].n;
+    const rd = await ok('super admin reads the sample on Beta', '/canteen/menu/read', { ...SB, method: 'POST', body: readBody });
+    const rows = mapRows(rd, byName(rd));
+    const dry = await ok('dry run', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows, dry_run: true } });
+    check('…29 to add in 5 new categories, and nothing changed', dry.added === 29 && dry.updated === 0 && dry.categories_created === 5 && (await cnt()) === 0 && !(await q('SELECT 1 FROM canteen_categories WHERE tenant_id=?', B)).length, JSON.stringify(dry));
+    const imp = await ok('import the sample', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows, dry_run: false } });
+    const bm = (await api('/canteen/menu', SB)).data;
+    check('…29 items in 5 categories exactly', imp.added === 29 && imp.updated === 0 && imp.categories_created === 5 && imp.rejected.length === 0 && (await cnt()) === 29 && bm.categories.length === 5 && bm.categories.reduce((s, c) => s + c.items.length, 0) === 29, JSON.stringify(imp));
+    const it = n => bm.categories.flatMap(c => c.items).find(i => i.name === n);
+    check('…prices, veg, order and deals as in the file', it('Chicken Biryani').price_paise === 12000 && it('Chicken Biryani').is_veg === 0 && it('Idli (2 pcs)').is_veg === 1 && it('Plain Dosa').sort_order === 2
+      && it('Mirchi Bajji (4 pcs)').deal?.kind === 'eod' && it('Mirchi Bajji (4 pcs)').deal.pct === 20 && it('Cold Coffee').deal?.kind === 'flash' && bm.categories.map(c => c.name).join() === 'Breakfast,Meals,Snacks,Beverages,Desserts');
+    const imp2 = await ok('importing the same file again', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: rows.map(r => r.name === 'Tea' ? { ...r, price: '14' } : r), dry_run: false } });
+    check('…updates the 29 (same name in the same category), adds none', imp2.added === 0 && imp2.updated === 29 && imp2.categories_created === 0 && (await cnt()) === 29
+      && (await q("SELECT price_paise FROM canteen_items WHERE tenant_id=? AND name='Tea'", B))[0].price_paise === 1400, JSON.stringify(imp2));
+    // a CSV saved by a spreadsheet: BOM, semicolons, quoted commas, ₹ prices, yes/no veg, own column names
+    const semi = '﻿Item Name;Rate;Veg;Section;Description\r\n"Paneer Roll";₹60;yes;Rolls;"Paneer, onion; mint"\r\nChicken Roll;"₹1,200";NO;Rolls;Big\r\n;;;;\r\nEgg Roll;₹45.50;n;;\r\n';
+    const rs = await ok('a semicolon CSV with BOM reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'Rolls.CSV', data: durl(semi) } });
+    check('…headers, quoted commas and ₹ prices as cells, blank rows skipped, row numbers kept', rs.columns.join('|') === 'Item Name|Rate|Veg|Section|Description' && rs.rows.length === 3 && rs.rows[0][4] === 'Paneer, onion; mint'
+      && rs.rows[1][1] === '₹1,200' && rs.lines.join() === '2,3,5', JSON.stringify(rs));
+    const is = await ok('…and imports', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rs, { name: 0, price: 1, is_veg: 2, category: 3, description: 4 }), dry_run: false } });
+    const rolls = await q("SELECT i.name, i.price_paise, i.is_veg, i.description, c.name cat FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND i.name LIKE '%Roll'", B);
+    const rl = n => rolls.find(r => r.name === n && r.cat !== 'Snacks') || {}; // the sample put a Chicken Roll under Snacks
+    check('…veg yes/NO/n, ₹1,200 = 120000 paise, an empty category = Uncategorised', is.added === 3 && is.categories_created === 1 && rl('Paneer Roll').is_veg === 1 && rl('Paneer Roll').description === 'Paneer, onion; mint'
+      && rl('Chicken Roll').price_paise === 120000 && rl('Chicken Roll').is_veg === 0 && rl('Egg Roll').price_paise === 4550 && rl('Egg Roll').is_veg === 0 && rl('Egg Roll').cat === null, JSON.stringify(rolls));
+    const tsv = await ok('a tab-separated file reads too', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name\tprice\nVada\t20\n') } });
+    check('…two columns', tsv.columns.join() === 'name,price' && tsv.rows[0].join() === 'Vada,20');
+    const rx = await ok('an Excel file (.xlsx) reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xlsx', data: durl(XLSX, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') } });
+    check('…first sheet, a price typed as a number or as text', rx.columns.join('|') === 'Section|Item Name|Rate|Veg|Description' && rx.rows.length === 4 && rx.rows[0][2] === '15' && rx.rows[1][2] === '25' && rx.rows[2][2] === '20.5' && rx.rows[3][2] === '₹30' && rx.rows[2][4] === '', JSON.stringify(rx));
+    const ix = await ok('…and imports', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rx, { category: 0, name: 1, price: 2, is_veg: 3, description: 4 }), dry_run: false } });
+    check('…Filter Coffee ₹20.50, Egg Puff (Snacks) updated, Samosa updated', ix.added === 2 && ix.updated === 2 && (await q("SELECT price_paise FROM canteen_items WHERE tenant_id=? AND name='Filter Coffee'", B))[0]?.price_paise === 2050
+      && (await q("SELECT price_paise, is_veg FROM canteen_items WHERE tenant_id=? AND name='Egg Puff'", B))[0].is_veg === 0, JSON.stringify(ix));
+    // bad rows are listed with their row numbers; the good ones still go in
+    const badRows = [{ row: 2, name: '', price: '10' }, { row: 3, name: 'Bad price', price: 'abc' }, { row: 4, name: 'Too much off', price: '10', deal_pct: '95', deal_kind: 'discount' },
+      { row: 5, name: 'Flash no time', price: '10', deal_pct: '10', deal_kind: 'Flash sale' }, { row: 6, name: 'Wow deal', price: '10', deal_pct: '10', deal_kind: 'wow' },
+      { row: 7, name: 'Maybe veg', price: '10', is_veg: 'maybe' }, { row: 8, name: 'No price', price: '' },
+      { row: 9, category: 'Extras', name: 'Good one', price: '₹ 22', deal_pct: '15', deal_kind: 'End-of-day sale', deal_minutes: '30', sort_order: '4', sold_out: 'yes', is_veg: 'Non-Veg' },
+      { row: 10, category: 'extras', name: 'good ONE', price: '25' }];
+    const before = await cnt();
+    const bd = await ok('a file with bad rows: preview', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: badRows, dry_run: true } });
+    const why = n => bd.rejected.find(r => r.row === n)?.reason || '';
+    check('…each bad row rejected with its row number and reason', bd.added === 1 && bd.rejected.map(r => r.row).join() === '2,3,4,5,6,7,8,10' && /name/i.test(why(2)) && /price/i.test(why(3)) && /90%/.test(why(4))
+      && /time/i.test(why(5)) && /discount, flash/i.test(why(6)) && /yes or no/i.test(why(7)) && /price/i.test(why(8)) && /row 9/.test(why(10)) && (await cnt()) === before, JSON.stringify(bd));
+    const bi = await ok('…import: the good row goes in, the rest are skipped', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: badRows, dry_run: false } });
+    const g1 = (await q("SELECT i.*, c.name cat FROM canteen_items i JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND i.name='Good one'", B))[0];
+    check('…with its deal (label accepted), flags and order', bi.added === 1 && bi.rejected.length === 8 && g1?.cat === 'Extras' && g1.price_paise === 2200 && g1.deal_kind === 'eod' && g1.deal_pct === 15 && !!g1.deal_until && g1.sort_order === 4 && g1.sold_out === 1 && g1.is_veg === 0, JSON.stringify(g1));
+    // the 500-item cap counts what is on the menu plus what the file adds
+    const n0 = await cnt();
+    await run(`INSERT INTO canteen_items (id, tenant_id, name, price_paise, created_at) SELECT 'fill-' || g, ?, 'Filler ' || g, 100, now()::text FROM generate_series(1, ?::int) g`, B, 499 - n0);
+    await fails('the menu holds 500 items: a file adding two more to 499 is refused', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'One', price: '1' }, { row: 3, name: 'Two', price: '1' }], dry_run: true } }, 400, '500 items');
+    const one1 = await ok('…one more fits', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'One', price: '1' }], dry_run: false } });
+    check('…500 now', one1.added === 1 && (await cnt()) === 500);
+    await run("DELETE FROM canteen_items WHERE tenant_id=? AND (id LIKE 'fill-%' OR name='One')", B);
+    await fails('more than 500 rows in one import are refused', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: Array.from({ length: 501 }, (_, i) => ({ row: i + 2, name: 'R' + i, price: '1' })), dry_run: true } }, 400, '500');
+    // files that cannot be read
+    await fails('a file with only the header row', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('﻿name,price\r\n') } }, 400, 'only the header');
+    await fails('an empty file', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('') } }, 400, 'empty');
+    await fails('a binary file renamed .csv', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.csv', data: PNG } }, 400, 'CSV');
+    await fails('a broken .xlsx', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xlsx', data: durl('not a workbook') } }, 400, 'Excel');
+    await fails('an old .xls file: save as .xlsx or .csv', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xls', data: durl('x') } }, 400, 'Save it as .xlsx or .csv');
+    await fails('another type (.pdf)', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.pdf', data: durl('%PDF') } }, 400, '.csv or .xlsx');
+    await fails('more than 500 rows in a file', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price\n' + 'a,1\n'.repeat(501)) } }, 400, '500');
+    await fails('a file over 5 MB', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price\n' + 'x'.repeat(5.5e6)) } }, 400, '5 MB');
+    await run('UPDATE tenants SET canteen_on=0 WHERE id=?', B);
+  }
+
   // ======================= H. UI smoke test =======================
   await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1, joinerNo: ids.joinerNo, sharedId: ids.sharedId, closedId: ids.closedId, joinedId: ids.joinedId });
 } catch (e) {
@@ -2031,6 +2122,21 @@ async function uiSmoke(tok, id) {
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
+    // menu upload in the real dialog: choose the sample → columns guessed → preview → Import (last of the canteen screens: it adds 29 items to Alpha). `true ===`: a script that throws comes back as {}
+    await visit('canteen desk for the menu upload', '/c/canteen', tok.pavan, '[data-t=menu]');
+    const sampleCsv = fs.readFileSync(path.join(ROOT, 'test/fixtures/canteen-menu-sample.csv'), 'utf8');
+    check('the Menu tab shows Upload menu for the manager', true === await js(`document.querySelector('[data-t=menu]').click(); for (let i = 0; i < 30 && !document.querySelector('#upmenu'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('#upmenu')`));
+    check('…the dialog opens with a file picker and both downloads', true === await js(`document.querySelector('#upmenu').click(); await new Promise(r => setTimeout(r, 300)); const d = document.querySelector('dialog[open]');
+      return !!d?.querySelector('input[type=file][accept*=".xlsx"]') && !!d.querySelector('[data-dl=template]') && !!d.querySelector('[data-dl=sample]')`));
+    check('…choosing the sample shows the mapping step with name and price guessed', true === await js(`const inp = document.querySelector('dialog[open] input[type=file]'), dt = new DataTransfer();
+      dt.items.add(new File([${JSON.stringify(sampleCsv)}], 'canteen-menu-sample.csv', { type: 'text/csv' })); inp.files = dt.files; inp.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let i = 0; i < 30 && !document.querySelector('dialog[open] select[data-map=name]'); i++) await new Promise(r => setTimeout(r, 200));
+      const s = f => document.querySelector('dialog[open] select[data-map=' + f + ']'); return !!s('name') && s('name').selectedOptions[0].textContent.trim() === 'name' && s('price').selectedOptions[0].textContent.trim() === 'price'`));
+    check('…Preview counts what will happen, nothing saved yet', true === await js(`document.querySelector('dialog[open] #mugo').click(); for (let i = 0; i < 30 && !document.querySelector('dialog[open] .mu-sum'); i++) await new Promise(r => setTimeout(r, 200));
+      return /29\\s*to add/i.test(document.querySelector('dialog[open] .mu-sum')?.textContent || '')`) && !(await q("SELECT 1 FROM canteen_items i JOIN tenants t ON t.id=i.tenant_id WHERE t.slug='alpha' AND i.name='Gulab Jamun (2 pcs)'")).length);
+    check('…Import adds the items to the list', true === await js(`document.querySelector('dialog[open] #mugo').click(); for (let i = 0; i < 40 && !/Gulab Jamun/.test(document.querySelector('#main').textContent); i++) await new Promise(r => setTimeout(r, 200));
+      return !document.querySelector('dialog[open]') && /Gulab Jamun/.test(document.querySelector('#main').textContent) && /Added 29/.test(document.querySelector('#toast').textContent)`)
+      && (await q("SELECT count(*)::int n FROM canteen_items i JOIN tenants t ON t.id=i.tenant_id WHERE t.slug='alpha' AND i.name='Gulab Jamun (2 pcs)'"))[0].n === 1);
     check('the Canteen tab is in the desk header', await js(`return !!document.querySelector('header nav a[href="#/c/canteen"]')`));
     await api('/notices/' + uiN.id, { token: tok.asha, method: 'DELETE' });
     ws.close();
