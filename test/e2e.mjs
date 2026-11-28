@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import jpeg from 'jpeg-js';
-import { zipSync, strToU8 } from 'fflate'; // builds .xlsx files for the menu upload limits
+import { zipSync, strToU8, Zip, ZipDeflate } from 'fflate'; // builds .xlsx files for the menu upload limits
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4397, APP = `http://localhost:${PORT}`, API = APP + '/api';
@@ -1831,7 +1831,43 @@ try {
     t0 = Date.now(); await fails(`a ${(bomb.length / 1024).toFixed(1)} KB .xlsx with one cell at XFD200000 is refused`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb.xlsx', data: durl(bomb, XT) } }, 400, 'too large');
     check('…quickly, and the server stays up', Date.now() - t0 < 3000 && (await fetch(API + '/health').then(r => r.ok, () => false)), `${Date.now() - t0} ms`);
     const bomb2 = mkXlsx('<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="XFD1"><v>1</v></c></row><row r="2"><c r="A2"><v>1</v></c></row></sheetData>');
-    await fails('…the same without a <dimension> (cell addresses are scanned)', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb2.xlsx', data: durl(bomb2, XT) } }, 400, 'too large');
+    await fails('…the same without a <dimension>', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb2.xlsx', data: durl(bomb2, XT) } }, 400, 'too large');
+    // files that lie about themselves (the review's bypasses): each answers 400 quickly, and the server keeps working afterwards
+    const xmlHead = '<?xml version="1.0" encoding="UTF-8"?>', NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const book = (sheets, wbSheets, rels) => ({ // a workbook from its sheets: { 'xl/worksheets/sheet1.xml': xml, … }
+      '[Content_Types].xml': strToU8(`${xmlHead}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${Object.keys(sheets).map(p => `<Override PartName="/${p}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`),
+      '_rels/.rels': strToU8(`${xmlHead}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+      'xl/workbook.xml': strToU8(`${xmlHead}<workbook xmlns="${NS}" xmlns:r="${REL}"><sheets>${wbSheets || '<sheet name="Menu" sheetId="1" r:id="rId1"/>'}</sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(`${xmlHead}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels || `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/>`}</Relationships>`),
+      ...Object.fromEntries(Object.entries(sheets).map(([p, x]) => [p, typeof x === 'string' ? strToU8(x) : x])) });
+    const ws = data => `${xmlHead}<worksheet xmlns="${NS}"><sheetData>${data}</sheetData></worksheet>`;
+    // the central directory says the sheet unpacks to `size` bytes (the reader walks the local headers and unpacks all of it anyway)
+    const understate = (zipBuf, name, size) => { const b = Buffer.from(zipBuf); for (let i = b.indexOf('PK\x01\x02'); i >= 0; i = b.indexOf('PK\x01\x02', i + 4))
+      if (b.toString('utf8', i + 46, i + 46 + b.readUInt16LE(i + 28)) === name) b.writeUInt32LE(size, i + 24); return b; };
+    const S1 = 'xl/worksheets/sheet1.xml', bombRows = '<row r="1"><c r="A1"><v>1</v></c></row><row r="200000"><c r="XFD200000" t="inlineStr"><is><t>x</t></is></c></row>';
+    // 600 MB of one inline string, deflated as it is made (never 600 MB in this process): about 600 KB on disk
+    const bigString = () => { const out = []; const z = new Zip((err, d) => { if (err) throw err; out.push(d); });
+      for (const [p, d] of Object.entries(book({}))) { const f = new ZipDeflate(p, { level: 9 }); z.add(f); f.push(d, true); }
+      const f = new ZipDeflate(S1, { level: 9 }); z.add(f); f.push(strToU8(`${xmlHead}<worksheet xmlns="${NS}"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>`));
+      const mb = strToU8('x'.repeat(1 << 20)); for (let i = 0; i < 600; i++) f.push(mb); f.push(strToU8('</t></is></c></row></sheetData></worksheet>'), true); z.end();
+      return understate(Buffer.concat(out), S1, 100); };
+    const hostile = [
+      ['(a) one cell at XFD200000, the central directory saying the sheet is 60 bytes', () => understate(zipSync(book({ [S1]: ws(bombRows) })), S1, 60)],
+      ['(g) the same cell with single-quoted attributes', () => zipSync(book({ [S1]: ws(bombRows.replaceAll('"', "'")) }))],
+      ['(j) the same cell written as a character reference (&#88;FD200000)', () => zipSync(book({ [S1]: ws(bombRows.replace('r="XFD200000"', 'r="&#88;FD200000"')) }))],
+      ['(n) a commented-out decoy sheet in workbook.xml', () => zipSync(book({ [S1]: ws(bombRows), 'xl/worksheets/sheet2.xml': ws('<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c></row>') },
+        '<!--<sheet name="x" sheetId="9" r:id="rId2"/>--><sheet name="Menu" sheetId="1" r:id="rId1"/>',
+        `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`))],
+      ['(h) 400,000 rows in about 4 MB, the central directory saying 200 bytes', () => understate(zipSync(book({ [S1]: ws(Array.from({ length: 400000 }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}"><v>${i + 1}</v></c><c r="B${i + 1}"><v>1</v></c></row>`).join('')) }), { level: 9 }), S1, 200)],
+      ['(i) a 600 MB inline string in about 600 KB, the central directory saying 100 bytes', bigString]];
+    const honest = { name: 'menu.xlsx', data: durl(XLSX, XT) };
+    for (const [what, make] of hostile) { const f = make(); await sleep(100); // building (i) blocks for seconds: let the client notice a keep-alive socket the server closed meanwhile
+      const t1 = Date.now();
+      const r = await api('/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'hostile.xlsx', data: durl(f, XT) } }), ms = Date.now() - t1;
+      const after = (await fetch(API + '/health').then(x => x.ok, () => false)) && (await api('/canteen/menu/read', { ...SB, method: 'POST', body: honest })).data?.total === 4;
+      check(`${what} (${Math.round(f.length / 1024)} KB): 400 in under 8 s, then the server still answers and reads a good file`, r.status === 400 && /too large/i.test(r.error?.message || '') && ms < 8000 && after, `${r.status} ${r.error?.message || ''} ${ms} ms, after: ${after}`); }
+    const m400 = await ok('a 400-row workbook saved by openpyxl still reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm400.xlsx', data: durl(fs.readFileSync(path.join(ROOT, 'test/fixtures/menu-400.xlsx')), XT) } });
+    check('…all 400 rows', m400?.total === 400 && m400.columns.length === 5, JSON.stringify(m400?.columns));
     await run('UPDATE tenants SET canteen_on=0 WHERE id=?', B);
   }
 

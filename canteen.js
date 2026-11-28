@@ -12,6 +12,7 @@ const qrSvg = async text => { if (!qrLib) { try { qrLib = (await import('qrcode'
   return qrLib.toString(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } }); };
 import { pool, one, all, run, uid, now, tx } from './db.js';
 import fs from 'node:fs/promises';
+import { Worker } from 'node:worker_threads';
 
 await pool.query(`
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_on INT DEFAULT 0;
@@ -138,8 +139,8 @@ export function itemRules(b, partial) {
 // ---- menu upload: what a file column can map to, and turning one file row (text cells) into what itemRules takes ----
 export const MENU_FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
 const MAX_UPLOAD_ROWS = 500, MAX_UPLOAD_COLS = 50, MAX_UPLOAD_BYTES = 5 * 1024 * 1024, MAX_ITEMS = 500, MAX_CATS = 50;
-// an .xlsx is checked before the reader builds its grid: one cell at XFD200000 in a 1.5 KB file would otherwise take all the memory
-const XLSX_PART_MAX = 10 * 1024 * 1024, XLSX_ROWS_MAX = 1000, XLSX_COLS_MAX = 100;
+// an .xlsx is unpacked and counted before the reader sees it, and read in a worker: one cell at XFD200000 in a 1.5 KB file would otherwise take all the memory
+const XLSX_PART_MAX = 10 * 1024 * 1024, XLSX_TOTAL_MAX = 40 * 1024 * 1024;
 const FLAG = { 1: 1, yes: 1, y: 1, true: 1, veg: 1, 0: 0, no: 0, n: 0, false: 0, nonveg: 0 };
 const FLAG_NAME = { is_veg: 'Veg', sold_out: 'Sold out', active: 'Shown on the menu' };
 const KIND_OF = Object.fromEntries(Object.entries(DEAL_KINDS).flatMap(([k, l]) => [[k, k], [l.toLowerCase(), k]])); // 'flash' or the label 'Flash sale'
@@ -157,12 +158,13 @@ export function uploadRow(r) {
 // a CSV as Excel and Google Sheets save it: comma, semicolon or tab (whichever the header row has most of), "quoted" cells with "" inside
 function parseCsv(text) {
   const head = text.slice(0, text.search(/\r|\n|$/)).replace(/"[^"]*"/g, ''), delim = [',', ';', '\t'].reduce((a, d) => head.split(d).length > head.split(a).length ? d : a, ',');
-  const rows = []; let row = [], cell = '', q = false;
+  const rows = []; let row = [], cell = '', q = false, cells = 0;
   for (let i = 0; i < text.length; i++) { const c = text[i];
     if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
     else if (c === '"' && !cell.trim()) { q = true; cell = ''; }
-    else if (c === delim) { row.push(cell); cell = ''; if (row.length > 1000) throw Object.assign(new Error('wide'), { wide: true }); } // stop early: 200,000 commas are not a menu
-    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else if (c === delim) { row.push(cell); cell = ''; if (row.length > 1000) throw Object.assign(new Error('wide'), { wide: true }); // stop early: 200,000 commas are not a menu
+      if (++cells > 100000) throw Object.assign(new Error('big'), { big: true }); }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; if (rows.length > 5000) throw Object.assign(new Error('big'), { big: true }); }
     else cell += c; }
   if (cell || row.length) { row.push(cell); rows.push(row); }
   return rows;
@@ -493,29 +495,34 @@ export function canteen(d) {
   S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '\ufeff' + MENU_FIELDS.join(',') + '\r\n'); } catch (e) { next(e); } });
   S.get('/canteen/menu-sample.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-sample.csv', await fs.readFile(new URL('./samples/canteen-menu-sample.csv', import.meta.url))); } catch (e) { next(e); } });
   // read-excel-file is loaded only for an .xlsx (as qrcode is for QR codes): if it is missing, CSV uploads still work
-  let xlsx = null, zip = null;
+  let zip = null;
   const tooWide = n => bad(`Too many columns: the file has ${n >= 1000 ? 'over 1,000' : n}, a menu needs at most ${MAX_UPLOAD_COLS}. Delete the extra columns and save again`);
-  const tooLarge = () => bad(`This sheet is too large: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`);
+  const tooLarge = () => bad(`This sheet is too large or not readable: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`);
   const unreadable = () => bad('Could not read this Excel file. Save it as .xlsx or .csv and try again');
-  const colNo = s => [...s].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
-  // Look inside the .xlsx (a zip) before the reader does: every XML part must unpack to at most 10 MB (40 MB together), and the
-  // first sheet may not reach past 1,000 rows or 100 columns by its <dimension>, its rows or any cell address. Only that sheet is unpacked here.
-  const checkXlsx = buf => { const { unzipSync, strFromU8 } = zip; let parts, total = 0;
-    try { parts = unzipSync(buf, { filter: f => { if (/\.(xml|rels)$/.test(f.name)) { if (f.originalSize > XLSX_PART_MAX) throw tooLarge(); total += f.originalSize; } return /^xl\/(workbook\.xml|_rels\/workbook\.xml\.rels)$/.test(f.name); } }); }
-    catch (e) { if (e instanceof HttpErr) throw e; throw unreadable(); }
-    if (total > 4 * XLSX_PART_MAX) throw tooLarge();
-    const text = n => parts[n] ? strFromU8(parts[n]) : '', rid = /<(?:\w+:)?sheet\b[^>]*\br:id="([^"]+)"/.exec(text('xl/workbook.xml'))?.[1];
-    const rel = [...text('xl/_rels/workbook.xml.rels').matchAll(/<(?:\w+:)?Relationship\b[^>]*>/g)].map(x => x[0]).find(x => rid && x.includes(`Id="${rid}"`));
-    const target = /Target="([^"]+)"/.exec(rel || '')?.[1] || 'worksheets/sheet1.xml', path = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
-    let sheet; try { sheet = unzipSync(buf, { filter: f => f.name === path })[path]; } catch { throw unreadable(); }
-    if (!sheet) throw unreadable();
-    const x = strFromU8(sheet), dim = /<(?:\w+:)?dimension\b[^>]*\bref="[A-Z]+\d+(?::([A-Z]+)(\d+))?"/.exec(x);
-    if (dim?.[1] && (colNo(dim[1]) > XLSX_COLS_MAX || +dim[2] > XLSX_ROWS_MAX)) throw tooLarge();
-    if ((x.match(/<(?:\w+:)?row\b/g) || []).length > XLSX_ROWS_MAX) throw tooLarge();
-    for (const c of x.matchAll(/<(?:\w+:)?c\b[^>]*?\br="([A-Z]{1,3})(\d+)"/g)) if (colNo(c[1]) > XLSX_COLS_MAX || +c[2] > XLSX_ROWS_MAX) throw tooLarge(); };
-  const readXlsx = async buf => { if (!xlsx) { try { zip = await import('fflate'); xlsx = (await import('read-excel-file/node')).readSheet; } catch { xlsx = null; console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); } }
-    checkXlsx(buf);
-    try { return await xlsx(buf, 1); } catch { throw unreadable(); } }; // the first sheet only
+  // An .xlsx is a zip. Nothing the file says about itself is trusted: it is unpacked here entry by entry from its local headers (as the
+  // reader would), counting the bytes that actually come out, 8 KB of input at a time; over 10 MB in one part or 40 MB in all stops it.
+  // Only the .xml / .rels parts are kept and packed again, so the reader can only ever see bytes that were counted.
+  const repackXlsx = buf => { const { Unzip, UnzipInflate, zipSync } = zip, kept = {}; let total = 0, stop = null;
+    const uz = new Unzip(); uz.register(UnzipInflate);
+    uz.onfile = f => { if (stop || !/\.(xml|rels)$/i.test(f.name)) return; const parts = []; let n = 0;
+      f.ondata = (err, d, final) => { if (stop) return; if (err) { stop = 'bad'; return; }
+        n += d.length; total += d.length; if (n > XLSX_PART_MAX || total > XLSX_TOTAL_MAX) { stop = 'big'; f.terminate(); return; }
+        parts.push(d); if (final) kept[f.name] = Buffer.concat(parts); };
+      f.start(); };
+    try { for (let i = 0; i < buf.length && !stop; i += 8192) uz.push(buf.subarray(i, i + 8192), i + 8192 >= buf.length); } catch { stop = stop || 'bad'; }
+    if (stop === 'big') throw tooLarge(); if (stop || !kept['xl/workbook.xml']) throw unreadable();
+    return zipSync(kept, { level: 1 }); };
+  // the reader runs in a worker with a memory limit and a time limit: whatever the sheet does, only that worker can fail
+  const readInWorker = data => new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./xlsx-worker.js', import.meta.url), { workerData: data, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16 } });
+    let settled = false; const end = (fn, v) => { if (settled) return; settled = true; clearTimeout(timer); w.terminate().catch(() => {}); fn(v); };
+    const timer = setTimeout(() => end(reject, tooLarge()), 5000);
+    w.on('message', m => m.rows ? end(resolve, m.rows) : end(reject, m.big ? tooLarge() : unreadable()));
+    w.on('error', () => end(reject, tooLarge())); // out of memory (ERR_WORKER_OUT_OF_MEMORY) or anything thrown
+    w.on('exit', () => end(reject, tooLarge())); });
+  // fflate and read-excel-file are loaded only for an .xlsx (as qrcode is for QR codes): if they are missing, CSV uploads still work
+  const readXlsx = async buf => { if (!zip) { try { zip = await import('fflate'); await import('read-excel-file/node'); } catch { zip = null; console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); } }
+    return readInWorker(repackXlsx(buf)); }; // the first sheet only
   S.post('/canteen/menu/read', wrap(async req => { await need(req);
     const name = str(req.body.name, 200), m = /^data:[^,]*;base64,/.exec(typeof req.body.data === 'string' ? req.body.data : '');
     if (!m) throw bad('Choose a .csv or .xlsx file');
@@ -529,7 +536,7 @@ export function canteen(d) {
     if (ext === 'xlsx') grid = await readXlsx(buf);
     else { if (buf.includes(0) || buf.subarray(0, 2).toString('latin1') === 'PK') throw bad("This doesn't look like a CSV file. Save it as .csv or .xlsx and try again");
       let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = new TextDecoder('windows-1252').decode(buf); } // older Excel saves "CSV" in the Windows code page
-      try { grid = parseCsv(text.replace(/^\ufeff/, '')); } catch (e) { if (e.wide) throw tooWide(1000); throw e; } }
+      try { grid = parseCsv(text.replace(/^\ufeff/, '')); } catch (e) { if (e.wide) throw tooWide(1000); if (e.big) throw bad(`This file is too large: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`); throw e; } }
     const recs = grid.map((r, i) => ({ cells: r.map(cellText), line: i + 1 })).filter(r => r.cells.some(Boolean)); // blank rows skipped; row numbers stay as in the file
     if (!recs.length) throw bad('The file is empty');
     const [head, ...body] = recs; if (!body.length) throw bad('The file has only the header row: add one menu item per row under it');
