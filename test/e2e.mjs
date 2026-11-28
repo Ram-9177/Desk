@@ -910,6 +910,16 @@ try {
     await w('priority', { priority: 'low' }), await w('reminders', { in: 'day', note: 'Check it' }), await w('extend', { hours: 2, reason: 'More time' }, T.asha)];
   check('I1: a joined ticket answers 409 "Joined into #X; work it there" to every staff write', rs.every(r => r.status === 409 && r.error.message.includes(`Joined into #${ha.ticket_no}; work it there`)) && (await tk(hb.ticket_no)).status === 'closed', JSON.stringify(rs.map(r => [r.status, r.error?.message])));
   check('I1: "Previous tickets" leaves out a ticket joined away', !(await api(`/tickets/${tHa.id}`, { token: T.pavan })).data.requestor_history.some(h => h.id === tHb.id));
+  // I2: a report that found a ticket open just before a Join committed joins the ticket it went into, never the joined one
+  const ra = await fx('Racea', 'F3', 'Fan'), rb = await fx('Raceb', 'F3', 'Light'), tRa = await tk(ra.ticket_no), tRb = await tk(rb.ticket_no);
+  await join(tRa.id, rb.ticket_no);
+  await run("UPDATE tickets SET status='open' WHERE id=?", tRb.id); // the stale read: findMatch saw it open
+  const rc = await fx('Racec', 'F3', 'Light'); await run("UPDATE tickets SET status='closed' WHERE id=?", tRb.id);
+  check('I2: a report racing a join lands on the ticket it went into, never on the joined one', rc.merged && (await rowOf(rc.ticket_no))?.ticket_id === tRa.id && (await tk(ra.ticket_no)).affected_count === 3, JSON.stringify([rc, await rowOf(rc.ticket_no)]));
+  // I3: staff find a student by that student's own number
+  check("I3: Home search by a joiner's own number finds the shared ticket", ((await api(`/tickets?status=all&q=${rc.ticket_no}`, { token: T.pavan })).data || []).some(x => x.id === tRa.id));
+  const sbt = (await api('/bot', { method: 'POST', token: T.pavan, body: { q: `ticket ${rc.ticket_no}` } })).data || {};
+  check("I3: the staff bot answers a joiner's number with the shared ticket", sbt.text?.startsWith(`Ticket ${rc.ticket_no} (part of #${ra.ticket_no})`) && sbt.items?.[0]?.href === `#/c/t/${tRa.id}`, sbt.text);
   }
 
   sec('Team daily queue, provider phone and priority for requestors');

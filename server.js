@@ -506,7 +506,7 @@ async function createTicket(tenant, b, opts) {
       if (mergeMode() === 'confirm' && b.merge !== 'yes') // the form asks "Same issue?" first
         throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `Ticket ${m.ticket_no} already exists for this problem.`, { ticket_no: m.ticket_no, subject: m.subject, affected_count: m.affected_count });
       merged = await joinTicket(m, r, b, contact, opts.actor, ts, tenant);
-      return merged.ticket;
+      if (merged) return merged.ticket;
     }
     const byStaff = PRIORITIES.includes(b.priority) && opts.actor.type === 'user', priority = byStaff ? b.priority : suggestion ? 'low' : 'medium';
     // the team's daily intake: past it, a portal ticket waits in the team's queue (staff-entered tickets always land now)
@@ -559,7 +559,12 @@ async function findMatch(tn, svcId, lkey, prob, day) {
 }
 // A later report of the same problem: one more requestor (and their photos) on the ticket, under their own number and link
 // from the campus counter, so no two students share a number. The same person never counts twice, and keeps the number they have.
-async function joinTicket(t, r, b, contact, actor, ts, tenant) {
+// The match was read without a lock: a Join may have taken that ticket since. Locked and read again, a joined ticket hands the report to the
+// one it went into (same service and place: the join checked both); a ticket closed meanwhile takes none (null: the caller raises a new one).
+async function joinTicket(m, r, b, contact, actor, ts, tenant) {
+  let t = await one('SELECT * FROM tickets WHERE id=? FOR UPDATE', m.id);
+  for (let hop = 0; t?.joined_into && hop < 5; hop++) t = await one('SELECT * FROM tickets WHERE id=? FOR UPDATE', t.joined_into);
+  if (!t || t.joined_into || !MERGEABLE.includes(t.status)) return null;
   const had = await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND contact=? AND detached_at IS NULL', t.id, contact);
   if (had) return { ticket: t, again: true, count: t.affected_count, row: had };
   const ev = await addEvent(t, actor, 'merged', { body: `Also reported by ${b.name}${b.description ? `: ${b.description}` : ''}`, internal: true, meta: { contact } });
@@ -1185,13 +1190,15 @@ async function staffBot(req, q) {
   const act = ACTIVE.map(() => '?').join(), chips = admin ? ADMIN_CHIPS : STAFF_CHIPS;
   const no = botNo(q);
   if (no) {
-    const t = await one(`SELECT t.*, s.name service, r.name requestor FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id WHERE ${scope} AND t.ticket_no=?`, ...sa, normNo(no));
+    // a student's own number finds the ticket they are on (staff are told it is part of that one)
+    const t = await one(`SELECT t.*, s.name service, r.name requestor FROM tickets t JOIN services s ON s.id=t.service_id JOIN requestors r ON r.id=t.requestor_id WHERE ${scope}
+      AND (t.ticket_no=? OR EXISTS (SELECT 1 FROM ticket_requestors tr WHERE tr.ticket_id=t.id AND tr.detached_at IS NULL AND tr.ticket_no=?)) ORDER BY (t.ticket_no=?) DESC LIMIT 1`, ...sa, normNo(no), normNo(no), normNo(no));
     if (!t) return { text: `Ticket ${normNo(no)} is not in your services (or does not exist).` };
     const up = await lastUpdate(t), late = ACTIVE.includes(t.status) && t.due_at < n, qi = t.status === 'open' ? await queueInfo(t) : null;
     const state = [qi ? `In the daily queue: number ${qi.queue_no} of ${qi.waiting}, reaches the team on ${qi.lands_on}` : '',
       t.status === 'hold' ? `On hold: ${holdReasons(tn).find(x => x.key === t.hold_reason)?.label || 'no reason given'}, resume by ${fmtIST(t.hold_due_at)}` : '',
       t.escalated_at && [...ACTIVE, 'hold'].includes(t.status) ? `Escalated on ${fmtIST(t.escalated_at)}` : '', t.status === 'closed' ? `Closed on ${fmtIST(t.closed_at)}` : ''].filter(Boolean).join('\n');
-    return { text: `#${t.ticket_no} · ${t.subject}\n${BOT_ST[t.status]} · ${t.priority} priority${late ? ' · OVERDUE' : ''}${state ? '\n' + state : ''}\n${t.service}${t.location ? ' · ' + t.location : ''}${t.problem_label ? ' · ' + t.problem_label : ''}`
+    return { text: `${t.ticket_no === normNo(no) ? '' : `Ticket ${normNo(no)} (part of #${t.ticket_no})\n`}#${t.ticket_no} · ${t.subject}\n${BOT_ST[t.status]} · ${t.priority} priority${late ? ' · OVERDUE' : ''}${state ? '\n' + state : ''}\n${t.service}${t.location ? ' · ' + t.location : ''}${t.problem_label ? ' · ' + t.problem_label : ''}`
       + `\nRaised by ${t.requestor}${t.affected_count > 1 ? ` and ${t.affected_count - 1} more` : ''} on ${fmtIST(t.created_at)}${[...ACTIVE, 'hold'].includes(t.status) && t.due_at ? `\nDue ${fmtIST(t.due_at)}` : ''}${up ? `\nLatest: ${up.body}` : ''}`,
       items: [{ title: `Open #${t.ticket_no}`, href: `#/c/t/${t.id}` }] };
   }
@@ -1413,7 +1420,7 @@ const ticketQuery = async (req) => {
   else if (q.status && !['all', 'queued', 'reopen', 'suggestions'].includes(q.status)) { w.push('t.status=?'); a.push(q.status); }
   if (q.service) { w.push('t.service_id=?'); a.push(q.service); }
   if (q.internal === '0') w.push('t.is_internal=0');
-  if (q.q) { w.push('(t.ticket_no ILIKE ? OR t.subject ILIKE ? OR r.name ILIKE ?)'); a.push(...Array(3).fill(`%${q.q}%`)); }
+  if (q.q) { w.push('(t.ticket_no ILIKE ? OR t.subject ILIKE ? OR r.name ILIKE ? OR EXISTS (SELECT 1 FROM ticket_requestors tr WHERE tr.ticket_id=t.id AND tr.detached_at IS NULL AND tr.ticket_no ILIKE ?))'); a.push(...Array(4).fill(`%${q.q}%`)); } // a student's own number finds the ticket they are on
   return { sql: w.join(' AND '), args: a };
 };
 const LIST_SQL = `SELECT t.id,t.ticket_no,t.subject,t.status,t.priority,t.channel,t.is_internal,t.location,t.due_at,t.created_at,t.updated_at,t.closed_at,t.hold_due_at,t.hold_reason,
