@@ -1500,6 +1500,8 @@ async function uiSmoke(tok, id) {
     await visit('campus intro, with the first-visit guide card', '/d/alpha', null, '.guidecard a[href="guide/requestor.html"]');
     await visit('service list', '/d/alpha/raise', null, 'a.svc[href*="ELEC"]');
     await visit('raise form (location type)', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
+    const badPat = await js(`return [...document.querySelectorAll('[pattern]')].filter(i => { try { new RegExp(i.pattern, 'v'); return false; } catch { return true; } }).map(i => i.name + ': ' + i.pattern);`);
+    check('every pattern attribute is a regular expression the browser accepts (else it is silently ignored)', !badPat.length, badPat.join(' | '));
     check('other teams open straight into the problem form: no suggestion choice (that is Food only)', await js(`return !document.querySelector('.kindcard') && !document.querySelector('.kindsw:not([hidden])') && !/suggestion/i.test(document.querySelector('.wrap').innerText.replace(/\\s+/g, ' ').split('Your name')[0]) && /Raise ticket/.test(document.querySelector('#raiseBtn').textContent)`));
     await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
@@ -1514,6 +1516,10 @@ async function uiSmoke(tok, id) {
     await visit('admin people', '/c/users', tok.asha, '.trow .uact');
     await visit('admin SLA & points', '/c/sla', tok.asha, '#sf [name=esc_days]');
     await visit('admin attention', '/c/attention', tok.asha, '#main .attp .att');
+    await visit('a campus admin typing #/c/tenants is sent Home', '/c/tenants', tok.asha, '#main');
+    check('…the address is #/c and there is no New tenant button', await js(`return location.hash === '#/c' && !/New tenant/.test(document.body.innerText);`));
+    await visit('a provider typing #/c/users is sent Home', '/c/users', tok.pavan, '.tcard');
+    check('…the address is #/c', await js(`return location.hash === '#/c';`));
     await visit('admin reports', '/c/reports', tok.asha, '.kpi2');
     await visit('admin audit', '/c/audit', tok.asha, '#main table');
     await visit('super admin email page', '/c/email', tok.sa, '#cf [name=url]');

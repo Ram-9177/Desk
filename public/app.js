@@ -366,7 +366,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <label>Photos <small>(optional, up to 4: camera or gallery)</small></label>${fileButtons('food')}
       <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div></div><label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''}><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
       <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
-        <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
+        <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\\+?[0-9 \\-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
       <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Raise ticket</button></p></form></div>`;
     wireFiles('food'); wireKind();
     const fm = $('#f'), sync = () => { $('#else').hidden = fm.category.value !== 'other'; };
@@ -408,7 +408,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
     <label>Your name</label><input name="name" required autocomplete="name">
     <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === (whoAmI() || 'student') ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
     <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
-      <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
+      <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\\+?[0-9 \\-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
     <div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
       <div><label><span id="dpl"></span></label><input name="department" required></div></div>
     ${typeFields(svc).replace(/<div class="fsec" data-sec="loc"/, '<div class="fsec prob-only" data-sec="loc"')}
@@ -565,6 +565,8 @@ async function shell(active, render, title) {
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (!['c/canteen', 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
+  // a screen typed into the address bar that this role does not have (Tenants for a campus admin, People for a provider) goes Home instead of showing a half-page
+  if (!all.some(n => n[0] === active) && !['c/me', 'c/food', 'c/canteen'].includes(active) && title !== 'Ticket') return location.replace('#/c');
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
   const MAIN = ['c', 'c/canteen', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
