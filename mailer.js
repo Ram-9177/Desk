@@ -60,6 +60,12 @@ export const MAIL_EVENTS = [
   { key: 'status_closed', label: 'Ticket closed', who: 'Requestor', when: 'A provider closes it', vars: [...T, 'note', 'actor_name', 'reopen_days'],
     subject: '[{{ticket_no}}] Your ticket is closed',
     body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+  { key: 'joined_into', label: 'Handled with others', who: 'Requestor', when: 'A provider joins their ticket into another for the same problem', vars: [...T, 'actor_name'],
+    subject: '[{{ticket_no}}] Your ticket is being handled with others',
+    body: 'Hi {{requestor_name}},\nYour ticket {{ticket_no}} reports the same problem as other reports in {{location}}, so the {{service}} team is fixing them as one job. Your number stays **{{ticket_no}}** and you will get every update.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
+  { key: 'split_out', label: 'Handled separately', who: 'Requestor', when: 'A provider separates their report from a shared ticket', vars: [...T, 'actor_name', 'note'],
+    subject: '[{{ticket_no}}] Your ticket is now handled separately',
+    body: 'Hi {{requestor_name}},\nThe {{service}} team looked at your report and it is a different problem from the one it was grouped with, so it now has its own ticket **{{ticket_no}}** with a fresh target of {{due}}.\n> {{note}}\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
   { key: 'status_rejected', label: 'Ticket rejected', who: 'Requestor', when: 'A provider rejects it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket could not be accepted',
     body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n> {{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
@@ -136,7 +142,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
-const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', reopen_requested: 'closed', reopen_declined: 'closed', reopen_accepted: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
+const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', reopen_requested: 'closed', reopen_declined: 'closed', reopen_accepted: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected', joined_into: 'in_progress', split_out: 'open' };
 const sampleAll = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: key === 'invite' ? { kind: 'provider', url: PROVIDER_GUIDE } : { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
 export const sampleVars = (base, key) => eventByKey(key)?.who === 'Requestor' ? forRequestor(sampleAll(base, key)) : sampleAll(base, key);
 

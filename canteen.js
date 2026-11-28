@@ -13,7 +13,9 @@ import { kindOf, heicToJpeg, SHOWN } from './images.js';
 let qrLib = null;
 const qrSvg = async text => { if (!qrLib) { try { qrLib = (await import('qrcode')).default; } catch { console.error('QR code: the "qrcode" package is not installed. Run: npm ci --omit=dev'); const e = new Error('QR codes need the qrcode package. Run npm ci on the server.'); e.status = 503; e.code = 'QR_MISSING'; throw e; } }
   return qrLib.toString(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } }); };
-import { pool, one, all, run, tx, uid, now } from './db.js';
+import { pool, one, all, run, uid, now, tx } from './db.js';
+import fsp from 'node:fs/promises'; // the menu upload reads files with promises; photos use the plain fs above
+import { Worker } from 'node:worker_threads';
 
 await pool.query(`
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_on INT DEFAULT 0;
@@ -145,6 +147,71 @@ export function stateOf(tn) {
 }
 const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
+// One rule for "the same item": a name is unique across a campus's menu (its active items), compared without case, outer spaces
+// or repeated inner spaces ("Masala  Dosa " = "masala dosa"), é typed either way. Used by Add item, Edit item, the import and its category names.
+export const nameKey = v => String(v ?? '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+// a downloaded menu file: a cell with a comma, quote or newline is quoted; typed text starting = + - @ (or a tab or CR) gets a ' so a spreadsheet
+// shows it instead of running it (the upload takes that ' off again: see unq)
+const csvCell = (v, text) => { let s = String(v ?? ''); if (text && /^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const unq = s => /^'[=+\-@\t\r]/.test(s) ? s.slice(1) : s;
+// minutes left on a running deal as the file writes them (5 to 1440, what the upload accepts)
+const dealMinutesLeft = until => Math.min(1440, Math.max(5, Math.ceil((Date.parse(until) - Date.now()) / 6e4)));
+// The rules for an item's own fields, shared by Add / Edit item and the menu upload (no database: the category is checked by the caller).
+// Returns { f } with the columns to save, or { error } with the message a manager sees.
+export function itemRules(b, partial) {
+  const f = {};
+  if (!partial || b.name !== undefined) { f.name = str(b.name, 80).replace(/\s+/g, ' '); if (!f.name) return { error: 'Item name required' }; } // stored with repeated spaces collapsed
+  if (!partial || b.price !== undefined) { f.price_paise = parsePrice(b.price); if (f.price_paise == null) return { error: 'Enter a price in rupees, e.g. 40 or 12.50' }; }
+  if (b.description !== undefined) f.description = str(b.description, 200) || null;
+  if (b.is_veg !== undefined) f.is_veg = b.is_veg ? 1 : 0;
+  if (b.sold_out !== undefined) f.sold_out = b.sold_out ? 1 : 0;
+  if (b.active !== undefined) f.active = b.active ? 1 : 0;
+  if (Number.isInteger(b.sort_order)) f.sort_order = b.sort_order;
+  if (b.deal_pct !== undefined) { const pct = Math.floor(Number(b.deal_pct) || 0);
+    if (pct === 0) Object.assign(f, { deal_pct: 0, deal_kind: null, deal_until: null });
+    else { if (pct < 1 || pct > 90) return { error: 'Discount must be 1% to 90%' }; if (!DEAL_KINDS[b.deal_kind]) return { error: 'Pick discount, flash sale or end-of-day sale' };
+      const mins = Math.floor(Number(b.deal_minutes) || 0); if (b.deal_kind !== 'discount' && !(mins >= 5 && mins <= 1440)) return { error: 'A flash or end-of-day sale needs a time: 5 minutes to 24 hours' };
+      Object.assign(f, { deal_pct: pct, deal_kind: b.deal_kind, deal_until: mins ? new Date(Date.now() + mins * 6e4).toISOString() : null }); } }
+  return { f };
+}
+// ---- menu upload: what a file column can map to, and turning one file row (text cells) into what itemRules takes ----
+export const MENU_FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
+const MAX_UPLOAD_ROWS = 500, MAX_UPLOAD_COLS = 50, MAX_UPLOAD_BYTES = 5 * 1024 * 1024, MAX_ITEMS = 500, MAX_CATS = 50;
+// an .xlsx is unpacked, counted and read in a small worker, one at a time (xlsx-worker.js): one cell at XFD200000 in a 1.5 KB file would otherwise take all the memory
+const XLSX_WORKER_MB = 48, XLSX_RSS_MB = 96, XLSX_TIMEOUT_MS = 5000, XLSX_WAIT_MS = 4000, XLSX_QUEUE = 2, XLSX_READS_PER_HOUR = 40;
+const FLAG = { 1: 1, yes: 1, y: 1, true: 1, veg: 1, 0: 0, no: 0, n: 0, false: 0, nonveg: 0 };
+const FLAG_NAME = { is_veg: 'Veg', sold_out: 'Sold out', active: 'Shown on the menu' };
+const KIND_OF = Object.fromEntries(Object.entries(DEAL_KINDS).flatMap(([k, l]) => [[k, k], [l.toLowerCase(), k]])); // 'flash' or the label 'Flash sale'
+export function uploadRow(r) {
+  const t = k => String(r?.[k] ?? '').trim(), b = { name: unq(t('name')), price: t('price') };
+  if (b.name && !b.price) return { error: 'Enter a price in rupees, e.g. 40 or 12.50' }; // an empty cell is not ₹0
+  if (t('description')) b.description = unq(t('description'));
+  for (const k of ['is_veg', 'sold_out', 'active']) if (t(k)) { const v = FLAG[t(k).toLowerCase().replace(/[\s_-]/g, '')];
+    if (v === undefined) return { error: `${FLAG_NAME[k]}: use yes or no (not “${t(k).slice(0, 20)}”)` }; b[k] = !!v; }
+  if (t('sort_order')) { if (!/^-?\d{1,6}$/.test(t('sort_order'))) return { error: 'Order must be a whole number' }; b.sort_order = +t('sort_order'); }
+  if (t('deal_pct')) { b.deal_pct = t('deal_pct').replace(/\s*%$/, ''); if (!/^\d+(\.\d+)?$/.test(b.deal_pct) || (+b.deal_pct > 0 && +b.deal_pct < 1)) return { error: 'Deal % must be a number from 1 to 90' }; // 0.5 would floor to 0 and clear a deal
+    b.deal_kind = KIND_OF[t('deal_kind').toLowerCase()] || t('deal_kind'); b.deal_minutes = t('deal_minutes'); }
+  return itemRules(b, false);
+}
+// a CSV as Excel and Google Sheets save it: comma, semicolon or tab (whichever the header row has most of), "quoted" cells with "" inside
+// Returns the non-blank records as { cells, line } (line = the row number in the file), trailing empty cells dropped.
+function parseCsv(text) {
+  const head = text.slice(0, text.search(/\r|\n|$/)).replace(/"[^"]*"/g, ''), delim = [',', ';', '\t'].reduce((a, d) => head.split(d).length > head.split(a).length ? d : a, ',');
+  const recs = []; let row = [], cell = '', q = false, cells = 0, line = 0;
+  const big = () => Object.assign(new Error('big'), { big: true });
+  const end = () => { line++; row.push(cell); const c = row.map(cellText); let n = c.length; while (n && !c[n - 1]) n--; row = []; cell = '';
+    if (!n) return; // a blank row: skipped, not counted
+    if (recs.length >= 5000 || (cells += n) > 100000) throw big(); recs.push({ cells: c.slice(0, n), line }); };
+  for (let i = 0; i < text.length; i++) { const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+    else if (c === '"' && !cell.trim()) { q = true; cell = ''; }
+    else if (c === delim) { row.push(cell); cell = ''; if (row.length > 1000) throw Object.assign(new Error('wide'), { wide: true }); } // stop early: 200,000 commas are not a menu
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; end(); }
+    else cell += c; }
+  if (cell || row.length) end();
+  return recs;
+}
+const cellText = v => v == null ? '' : v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === 'number' ? String(+v.toPrecision(12)) : String(v).trim(); // 20.499999999 from a formula reads 20.5
 
 export function canteen(d) {
   const { app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, sendMail, SECRET } = d;
@@ -469,9 +536,11 @@ export function canteen(d) {
     await run('UPDATE tenants SET canteen_pay=? WHERE id=?', JSON.stringify(p), req.tenantId); return p; }));
   // ---- menu ----
   S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { campus_blocks: await blocksOf({ ...a.tenant, canteen_pay: null }), pay: payOf(a.tenant), link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
-  S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
-    const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= 50) throw bad('Up to 50 categories');
-    const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
+  // menu changes that count or match (imports, Add item, Add category) run one at a time per campus, so two at once can't pass a cap together
+  const menuLock = tid => one("SELECT pg_advisory_xact_lock(hashtext('canteen-menu:' || ?::text))", tid);
+  S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required'); return tx(async () => { await menuLock(req.tenantId);
+    const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= MAX_CATS) throw bad('Up to 50 categories');
+    const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }); }));
   S.patch('/canteen/categories/:id', wrap(async req => { await need(req); const name = str(req.body.name, 60);
     const sets = [], args = []; if (name) { sets.push('name=?'); args.push(name); } if (Number.isInteger(req.body.sort_order)) { sets.push('sort_order=?'); args.push(req.body.sort_order); }
     if (!sets.length) throw bad('Nothing to change');
@@ -481,30 +550,29 @@ export function canteen(d) {
     await run('UPDATE canteen_items SET category_id=NULL WHERE category_id=? AND tenant_id=?', req.params.id, req.tenantId);
     const r = await run('DELETE FROM canteen_categories WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
   const itemFields = async (req, partial) => {
-    const b = req.body, f = {};
-    if (!partial || b.name !== undefined) { f.name = str(b.name, 80); if (!f.name) throw bad('Item name required'); }
-    if (!partial || b.price !== undefined) { f.price_paise = parsePrice(b.price); if (f.price_paise == null) throw bad('Enter a price in rupees, e.g. 40 or 12.50'); }
-    if (b.description !== undefined) f.description = str(b.description, 200) || null;
-    if (b.is_veg !== undefined) f.is_veg = b.is_veg ? 1 : 0;
-    if (b.sold_out !== undefined) f.sold_out = b.sold_out ? 1 : 0;
-    if (b.active !== undefined) f.active = b.active ? 1 : 0;
-    if (Number.isInteger(b.sort_order)) f.sort_order = b.sort_order;
-    if (b.deal_pct !== undefined) { const pct = Math.floor(Number(b.deal_pct) || 0);
-      if (pct === 0) Object.assign(f, { deal_pct: 0, deal_kind: null, deal_until: null });
-      else { if (pct < 1 || pct > 90) throw bad('Discount must be 1% to 90%'); if (!DEAL_KINDS[b.deal_kind]) throw bad('Pick discount, flash sale or end-of-day sale');
-        const mins = Math.floor(Number(b.deal_minutes) || 0); if (b.deal_kind !== 'discount' && !(mins >= 5 && mins <= 1440)) throw bad('A flash or end-of-day sale needs a time: 5 minutes to 24 hours');
-        Object.assign(f, { deal_pct: pct, deal_kind: b.deal_kind, deal_until: mins ? new Date(Date.now() + mins * 6e4).toISOString() : null }); } }
+    const b = req.body, { f, error } = itemRules(b, partial); if (error) throw bad(error);
     if (b.category_id !== undefined) { f.category_id = b.category_id || null;
       if (f.category_id && !(await one('SELECT 1 FROM canteen_categories WHERE id=? AND tenant_id=?', f.category_id, req.tenantId))) throw bad('Pick a category'); }
     return f;
   };
-  S.post('/canteen/items', wrap(async req => { await need(req); const f = await itemFields(req, false);
-    if ((await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', req.tenantId)).n >= 500) throw bad('Up to 500 items');
+  // another active item with the same name (nameKey), oldest first; called under menuLock so two changes can't both pass
+  const nameTaken = async (tid, name, exceptId) => { const k = nameKey(name);
+    return (await all('SELECT id, name FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at, id', tid)).find(i => i.id !== exceptId && nameKey(i.name) === k); };
+  const onMenu = i => bad(`"${i.name}" is already on the menu`);
+  S.post('/canteen/items', wrap(async req => { await need(req); const f = await itemFields(req, false); return tx(async () => { await menuLock(req.tenantId);
+    if ((await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', req.tenantId)).n >= MAX_ITEMS) throw bad('Up to 500 items');
+    if (f.active !== 0) { const t = await nameTaken(req.tenantId, f.name); if (t) throw onMenu(t); }
     const o = { id: uid(), tenant_id: req.tenantId, is_veg: 1, created_at: now(), ...f };
-    await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); return { id: o.id }; }));
+    await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); return { id: o.id }; }); }));
+  // a new name, or bringing a removed item back, must not repeat a name on the menu; the item's own name (any case) and a price-only
+  // change never trip it, so a name that was on the menu twice before the rule can still be edited
   S.patch('/canteen/items/:id', wrap(async req => { await need(req); const f = await itemFields(req, true); if (!Object.keys(f).length) throw bad('Nothing to change');
-    const r = await run(`UPDATE canteen_items SET ${Object.keys(f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(f), req.params.id, req.tenantId);
-    if (!r.changes) throw notFound(); return { ok: true }; }));
+    return tx(async () => { await menuLock(req.tenantId);
+      const cur = await one('SELECT name, active FROM canteen_items WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!cur) throw notFound();
+      const name = f.name ?? cur.name, active = f.active ?? cur.active;
+      if (active && (nameKey(name) !== nameKey(cur.name) || !cur.active)) { const t = await nameTaken(req.tenantId, name, req.params.id); if (t) throw onMenu(t); }
+      await run(`UPDATE canteen_items SET ${Object.keys(f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(f), req.params.id, req.tenantId);
+      return { ok: true }; }); }));
   // counter and kitchen staff mark an item sold out / back in stock during the shift (only that; prices stay with the managers)
   S.post('/canteen/items/:id/stock', wrap(async req => { await needCan(req, 'stock', 'menu');
     const r = await run('UPDATE canteen_items SET sold_out=? WHERE id=? AND tenant_id=? AND active=1', req.body.sold_out ? 1 : 0, req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -528,6 +596,112 @@ export function canteen(d) {
   // removing an item hides it (old orders keep their copy of the name and price)
   S.delete('/canteen/items/:id', wrap(async req => { await need(req);
     const r = await run('UPDATE canteen_items SET active=0 WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
+
+  // ---- menu upload (CSV or Excel): read the file, then preview (dry run) and import the mapped rows ----
+  // the template and the sample: UTF-8 with a BOM so Excel shows ₹ and Telugu; the sample is the file the tests import
+  const csvOut = (res, name, body) => res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` }).send(body);
+  S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '\ufeff' + MENU_FIELDS.join(',') + '\r\nSnacks,Samosa,15,Two pieces with chutney,1,0,1,1,,,\r\n'); } catch (e) { next(e); } });
+  // the menu as it is now, in the template's columns: edit it and upload it back (each name updates its item). Active items only,
+  // prices in rupees (12.5, 30), a deal only while it runs, in menu order (categories, then items; no category last)
+  S.get('/canteen/menu-export.csv', async (req, res, next) => { try { const a = await need(req);
+    // a name on the menu twice (from before names were unique): only the oldest copy, the one an upload of this file updates
+    const first = new Set(), keys = new Set(); for (const i of await all('SELECT id, name FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at, id', req.tenantId)) { const k = nameKey(i.name); if (!keys.has(k)) { keys.add(k); first.add(i.id); } }
+    const items = (await all(`SELECT i.id, c.name cat, i.name, i.price_paise, i.description, i.is_veg, i.sold_out, i.sort_order, i.deal_pct, i.deal_kind, i.deal_until FROM canteen_items i
+      LEFT JOIN canteen_categories c ON c.id=i.category_id AND c.tenant_id=i.tenant_id WHERE i.tenant_id=? AND i.active=1 ORDER BY (c.id IS NULL), c.sort_order, c.name, c.id, i.sort_order, i.name, i.created_at, i.id`, req.tenantId)).filter(i => first.has(i.id));
+    const line = i => { const d = dealOf(i);
+      return [[i.cat, 1], [i.name, 1], [i.price_paise / 100], [i.description, 1], [i.is_veg === 0 ? 0 : 1], [i.sold_out ? 1 : 0], [1], [i.sort_order ?? 0],
+        [d ? d.pct : ''], [d ? d.kind : ''], [d?.until ? dealMinutesLeft(d.until) : '']].map(([v, text]) => csvCell(v, text)).join(','); };
+    csvOut(res, `canteen-menu-${a.tenant.slug}.csv`, '\ufeff' + [MENU_FIELDS.join(','), ...items.map(line)].join('\r\n') + '\r\n'); } catch (e) { next(e); } });
+  S.get('/canteen/menu-sample.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-sample.csv', await fsp.readFile(new URL('./samples/canteen-menu-sample.csv', import.meta.url))); } catch (e) { next(e); } });
+  // read-excel-file is loaded only for an .xlsx (as qrcode is for QR codes): if it is missing, CSV uploads still work
+  let xlsxOk = null;
+  const tooWide = n => bad(`Too many columns: the file has ${n >= 1000 ? 'over 1,000' : n || `more than ${MAX_UPLOAD_COLS}`}, a menu needs at most ${MAX_UPLOAD_COLS}. Delete the extra columns and save again`);
+  const tooLarge = () => bad(`This sheet is too large or not readable: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`);
+  const unreadable = () => bad('Could not read this Excel file. Save it as .xlsx or .csv and try again');
+  const tooMany = () => bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file`);
+  const busy = () => new HttpErr(429, 'BUSY', 'The server is busy reading another file. Try again in a moment.');
+  // one .xlsx is read at a time (a worker costs real memory on a 1 GB server); two more may wait a few seconds, the rest are told to retry
+  let xlsxBusy = false; const xlsxWaiting = [];
+  const xlsxSlot = () => new Promise((resolve, reject) => { if (!xlsxBusy) { xlsxBusy = true; return resolve(); }
+    if (xlsxWaiting.length >= XLSX_QUEUE) return reject(busy());
+    const w = { resolve, t: setTimeout(() => { xlsxWaiting.splice(xlsxWaiting.indexOf(w), 1); reject(busy()); }, XLSX_WAIT_MS) }; xlsxWaiting.push(w); });
+  const xlsxFree = () => { const w = xlsxWaiting.shift(); if (w) { clearTimeout(w.t); w.resolve(); } else xlsxBusy = false; };
+  // the worker gets the raw file and answers with menu-sized records or a reason; memory, time, a crash or an early exit are all "too large"
+  const readInWorker = data => new Promise(resolve => {
+    const w = new Worker(new URL('./xlsx-worker.js', import.meta.url), { workerData: data, resourceLimits: { maxOldGenerationSizeMb: XLSX_WORKER_MB, maxYoungGenerationSizeMb: 16 } });
+    let settled = false; const end = m => { if (settled) return; settled = true; clearTimeout(timer); clearInterval(watch); w.terminate().catch(() => {}).finally(() => resolve(m)); }; // the slot frees once the worker is gone
+    const timer = setTimeout(() => end({ big: true }), XLSX_TIMEOUT_MS);
+    // resourceLimits cap the worker's heap, not V8's large-object space: the reader's 16,384-cell rows went to 8 GB of RSS under a 48 MB
+    // limit. So the server's own memory is watched too, every 10 ms: 96 MB above where it started ends the worker (a menu needs a few MB).
+    const base = process.memoryUsage.rss(), watch = setInterval(() => { if (process.memoryUsage.rss() - base > XLSX_RSS_MB * 1048576) end({ big: true }); }, 10);
+    w.on('message', end); w.on('error', () => end({ big: true })); w.on('exit', () => end({ big: true })); });
+  const readXlsx = async (req, buf) => {
+    if (xlsxOk === null) { try { await import('fflate'); await import('read-excel-file/node'); xlsxOk = true; } catch { console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); } }
+    if (!xlsxOk) { xlsxOk = null; throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); }
+    limit('menu-xlsx:' + req.user.id, XLSX_READS_PER_HOUR);
+    await xlsxSlot(); let m; try { m = await readInWorker(buf); } finally { xlsxFree(); }
+    if (m.recs) return m.recs; throw m.wide ? tooWide() : m.many ? tooMany() : m.bad ? unreadable() : tooLarge(); };
+  S.post('/canteen/menu/read', wrap(async req => { await need(req);
+    const name = str(req.body.name, 200), m = /^data:[^,]*;base64,/.exec(typeof req.body.data === 'string' ? req.body.data : '');
+    if (!m) throw bad('Choose a .csv or .xlsx file');
+    if (req.body.data.length > Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 200) throw bad('The file is bigger than 5 MB: a menu file is usually a few KB'); // before decoding
+    const ext = (/\.([a-z0-9]+)$/i.exec(name)?.[1] || '').toLowerCase();
+    if (ext === 'xls') throw bad('This is an old Excel file (.xls). Save it as .xlsx or .csv and upload that');
+    if (ext !== 'csv' && ext !== 'xlsx') throw bad('Choose a .csv or .xlsx file');
+    const buf = Buffer.from(req.body.data.slice(m[0].length), 'base64');
+    if (buf.length > MAX_UPLOAD_BYTES) throw bad('The file is bigger than 5 MB: a menu file is usually a few KB');
+    let recs; // the non-blank rows as { cells, line }
+    if (ext === 'xlsx') recs = await readXlsx(req, buf);
+    else { if (buf.includes(0) || buf.subarray(0, 2).toString('latin1') === 'PK') throw bad("This doesn't look like a CSV file. Save it as .csv or .xlsx and try again");
+      let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = new TextDecoder('windows-1252').decode(buf); } // older Excel saves "CSV" in the Windows code page
+      try { recs = parseCsv(text.replace(/^\ufeff/, '')); } catch (e) { if (e.wide) throw tooWide(1000); if (e.big) throw bad(`This file is too large: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`); throw e; } }
+    if (!recs.length) throw bad('The file is empty');
+    const [head, ...body] = recs; if (!body.length) throw bad('The file has only the header row: add one menu item per row under it');
+    if (body.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file (this one has ${body.length})`);
+    const width = Math.max(...recs.map(r => r.cells.length)); if (width > MAX_UPLOAD_COLS) throw tooWide(width); // trailing empty cells are already gone
+    const pad = c => Array.from({ length: width }, (_, i) => c[i] ?? '');
+    return { columns: pad(head.cells).map((c, i) => str(c, 80) || `Column ${i + 1}`), rows: body.map(r => pad(r.cells)), lines: body.map(r => r.line), total: body.length };
+  }));
+  // Same rules as Add item, per row. A name is one item across the whole menu (nameKey): an active item with that name, in any category,
+  // is updated and, when the file gives another category, moved there (an empty category cell leaves it where it is); otherwise the row
+  // adds an item. A name twice in one file is rejected the second time. A missing category is created. Names already on the menu twice
+  // (from before this rule) update the oldest and are listed in `duplicates`. Rejected rows are skipped and listed; nothing is saved
+  // unless dry_run is false, then all in one go.
+  S.post('/canteen/menu/import', wrap(async req => { await need(req); const tid = req.tenantId, list = req.body.rows, dry = req.body.dry_run !== false;
+    if (!Array.isArray(list) || !list.length) throw bad('No rows to import');
+    if (list.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file`);
+    return tx(async () => { await menuLock(tid); // one menu change at a time per campus: the caps and the name matching stay true
+      const cats = await all('SELECT id, name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid), catId = new Map();
+      for (const c of cats) if (!catId.has(nameKey(c.name))) catId.set(nameKey(c.name), c.id);
+      const have = new Map(), twice = new Map(); // name key → the oldest active item; the names on the menu more than once
+      for (const i of await all('SELECT i.id, i.name, c.name cat, i.deal_pct, i.deal_kind, i.deal_until FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id AND c.tenant_id=i.tenant_id WHERE i.tenant_id=? AND i.active=1 ORDER BY i.created_at, i.id', tid)) {
+        const k = nameKey(i.name); if (!have.has(k)) have.set(k, i); else if (!twice.has(k)) twice.set(k, have.get(k).name); }
+      const newCats = new Map(), seen = new Map(), rejected = [], adds = [], updates = [];
+      list.forEach((r, i) => { const row = Number.isInteger(r?.row) ? r.row : i + 2, v = uploadRow(r); if (v.error) return rejected.push({ row, reason: v.error });
+        const nk = nameKey(v.f.name); if (seen.has(nk)) return rejected.push({ row, reason: `Same item as row ${seen.get(nk)}` }); seen.set(nk, row);
+        const cn = unq(str(r.category, 60)), ck = nameKey(cn), cid = cn ? catId.get(ck) : null, old = have.get(nk);
+        const move = !!old && !!cn && ck !== nameKey(old.cat); // the category it is in already (by name), or an empty cell: it stays put
+        if (cn && !cid && !newCats.has(ck) && (!old || move)) newCats.set(ck, cn);
+        if (!old) return adds.push({ cid, ck, f: v.f });
+        // the item's own deal (same % and type, e.g. a downloaded menu uploaded back) is left alone: a running sale keeps its end, an ended
+        // one stays ended. Only another % or type starts a new deal from the file's minutes.
+        if (v.f.deal_pct && v.f.deal_pct === old.deal_pct && v.f.deal_kind === old.deal_kind) { delete v.f.deal_pct; delete v.f.deal_kind; delete v.f.deal_until; }
+        updates.push({ id: old.id, move, cid, ck, f: v.f }); });
+      const nItems = (await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', tid)).n;
+      if (nItems + adds.length > MAX_ITEMS) throw bad(`The menu holds up to ${MAX_ITEMS} items: it has ${nItems} and this file adds ${adds.length}. Remove old items or rows and try again`);
+      if (cats.length + newCats.size > MAX_CATS) throw bad(`Up to ${MAX_CATS} categories: there are ${cats.length} and this file adds ${newCats.size}`);
+      if (!dry) {
+        let so = cats.length; for (const [ck, name] of newCats) { const id = uid(); catId.set(ck, id); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, tid, name, so++, now()); }
+        for (const a of adds) { const o = { id: uid(), tenant_id: tid, is_veg: 1, created_at: now(), category_id: a.cid === null ? null : a.cid || catId.get(a.ck), ...a.f };
+          await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); }
+        for (const u of updates) { const set = u.move ? { ...u.f, category_id: u.cid || catId.get(u.ck) } : u.f;
+          await run(`UPDATE canteen_items SET ${Object.keys(set).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(set), u.id, tid); }
+      }
+      // updated counts every matched item, moved the ones of them that change category
+      return { dry_run: dry, added: adds.length, updated: updates.length, moved: updates.filter(u => u.move).length, categories_created: newCats.size, rejected,
+        duplicates: { count: twice.size, names: [...twice.values()].slice(0, 5) } };
+    });
+  }));
 
   // end-of-day sale on everything still in stock (or a flash sale on all), and ending every deal at once
   S.post('/canteen/deals/all', wrap(async req => { await need(req); const b = req.body, pct = Math.floor(Number(b.pct) || 0), mins = Math.floor(Number(b.minutes) || 0), kind = b.kind === 'flash' ? 'flash' : 'eod';

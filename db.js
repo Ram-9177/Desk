@@ -98,10 +98,44 @@ CREATE INDEX IF NOT EXISTS t_queue ON tickets(service_id, queue_day) WHERE queue
 CREATE INDEX IF NOT EXISTS t_match ON tickets(tenant_id, service_id, location_key, problem_key, created_date, status);
 CREATE TABLE IF NOT EXISTS ticket_requestors (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL REFERENCES tickets(id), requestor_id TEXT,
   name TEXT NOT NULL, contact TEXT NOT NULL, photo_url TEXT, event_id INT, raised_at TEXT, is_first INT DEFAULT 0, UNIQUE (ticket_id, contact));
--- every ticket's original requestor is its first row
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS joined_into TEXT;
+-- every ticket's original requestor is its first row (not a ticket joined into another: its people may all have moved, keeping their numbers)
 INSERT INTO ticket_requestors (id, ticket_id, requestor_id, name, contact, raised_at, is_first)
   SELECT md5(t.id || ':first'), t.id, r.id, r.name, coalesce(lower(r.email), r.phone), t.created_at, 1 FROM tickets t JOIN requestors r ON r.id = t.requestor_id
-  WHERE NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
+  WHERE t.joined_into IS NULL AND NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
+-- each report on a ticket can carry its own number, token and complaint; a ticket can be joined into another
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS ticket_no TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS tracking_token TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS subject TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS form_data TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_at TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_to TEXT;
+-- one live row per number: a row split out keeps a copy of its number and token, and the new ticket's first row carries them
+-- (an index from before split out, without the detached_at clause, is replaced once; a current one is kept, not rebuilt on every start)
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'tr_no' AND indexdef NOT LIKE '%detached_at IS NULL%') THEN DROP INDEX tr_no; END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_no ON ticket_requestors(tenant_id, ticket_no) WHERE ticket_no IS NOT NULL AND detached_at IS NULL;
+-- the first report of each ticket owns that ticket's number, token and complaint; later reports keep working under the shared number
+UPDATE ticket_requestors r SET tenant_id = t.tenant_id, ticket_no = t.ticket_no, tracking_token = t.tracking_token, subject = t.subject, description = t.description, form_data = t.form_data
+  FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 1 AND r.ticket_no IS NULL;
+UPDATE ticket_requestors r SET tenant_id = t.tenant_id FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 0 AND r.tenant_id IS NULL;
+-- a later report from before own numbers (no number of its own) gets one now, from the campus counter, and a token of its own:
+-- the shared number and token open the first student's page. Only rows still without one, so it runs once per row.
+WITH need AS (SELECT id, tenant_id, row_number() OVER (PARTITION BY tenant_id ORDER BY raised_at, id) n FROM ticket_requestors
+    WHERE is_first = 0 AND ticket_no IS NULL AND detached_at IS NULL AND tenant_id IS NOT NULL),
+  tot AS (SELECT tenant_id, count(*)::int c FROM need GROUP BY tenant_id),
+  top AS (INSERT INTO ticket_counters (tenant_id, year, last_number) SELECT tenant_id, 0, c FROM tot
+    ON CONFLICT (tenant_id, year) DO UPDATE SET last_number = ticket_counters.last_number + EXCLUDED.last_number RETURNING tenant_id, last_number)
+UPDATE ticket_requestors r SET ticket_no = lpad((top.last_number - tot.c + need.n)::text, greatest(4, length((top.last_number - tot.c + need.n)::text)), '0'),
+    tracking_token = replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')
+  FROM need JOIN tot USING (tenant_id) JOIN top USING (tenant_id) WHERE r.id = need.id;
+-- one live row per person on a ticket: someone split out and later joined back gets a live row beside their detached one
+ALTER TABLE ticket_requestors DROP CONSTRAINT IF EXISTS ticket_requestors_ticket_id_contact_key;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_contact ON ticket_requestors(ticket_id, contact) WHERE detached_at IS NULL;
+CREATE INDEX IF NOT EXISTS t_joined ON tickets(joined_into) WHERE joined_into IS NOT NULL;
 -- Food & catering: rate a meal (feedback, never a ticket) or report a serious problem (a normal ticket)
 CREATE TABLE IF NOT EXISTS food_locations (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL,
   active INT DEFAULT 1, sort_order INT DEFAULT 0, UNIQUE (tenant_id, name));

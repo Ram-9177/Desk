@@ -33,6 +33,7 @@ svg{flex-shrink:0;vertical-align:middle}
 .btn:active{transform:scale(.98)}.btn.primary{background:var(--brand);color:#fff;border-color:var(--brand);box-shadow:0 6px 16px rgba(30,75,143,.3)}.btn.primary:hover{background:var(--brand-d)}
 .btn.dark{background:var(--navy);color:#fff;border-color:var(--navy)}.btn.big{min-height:52px;font-size:16px;width:100%}.btn.danger{color:var(--warn)}
 .btn:disabled{opacity:.5;cursor:default}.btn.soft{background:var(--brand-2);color:var(--brand);border-color:transparent}
+.btn.sm{min-height:36px;padding:6px 12px;font-size:13px}
 .iconbtn{width:42px;height:42px;border-radius:14px;display:inline-grid;place-items:center;background:var(--card);box-shadow:var(--shadow);color:var(--ink);position:relative}
 
 /* cards & chips */
@@ -263,6 +264,8 @@ code{font:12.5px var(--mono);background:var(--brand-2);color:var(--brand);paddin
 /* same-day duplicate reports */
 .knownissue{display:flex;gap:8px;align-items:flex-start;text-align:left;margin:10px 0;padding:10px 12px;border-radius:12px;background:var(--hold-2);color:var(--hold);font-size:14px;line-height:1.5}
 .knownissue svg{flex:none;margin-top:1px}
+.card.mine{background:var(--brand-2);border-color:transparent}
+.mine p{margin:6px 0 0}
 .p-many{background:var(--hold-2);color:var(--hold);font-weight:700}
 .rqrow{padding:10px 0;border-top:1px solid var(--line)}.rqrow:first-of-type{border-top:0}
 /* ONE Desk Bot */
@@ -528,6 +531,7 @@ body.on-ticket .cwrap>.head{display:none}
 .upd-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}.upd-row .sp{flex:1}.upd-row .iconbtn{margin:0}
 .chk{display:flex!important;align-items:center;gap:8px;font-weight:400;font-size:13px;color:var(--text-2);margin:0;cursor:pointer}.chk input{width:16px;height:16px;accent-color:var(--accent)}
 #earlyrow{margin-top:12px}.helper{display:flex;gap:6px;align-items:flex-start;font-size:12px;color:var(--text-meta);margin-top:6px}.helper svg{flex:none;margin-top:1px}
+.joinedto{font-size:13px;margin:0 0 14px}.joinedto a{font-weight:600}
 .side{padding:20px;display:flex;flex-direction:column;gap:14px}.chead .sp{flex:1}
 .sla-row{display:flex;gap:12px;align-items:center}.sla-big{font-size:24px;font-weight:700;letter-spacing:-.01em}.sla-sub{font-size:13px;color:var(--text-3)}
 .pbar{height:6px;border-radius:3px;background:#EEF0F3;overflow:hidden}.pbar i{display:block;height:100%;border-radius:3px;background:var(--accent)}
@@ -538,7 +542,7 @@ body.on-ticket .cwrap>.head{display:none}
 .crow{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-2);min-width:0}.crow span{overflow:hidden;text-overflow:ellipsis}.crow svg{color:var(--icon-muted)}.crow:hover{color:var(--accent)}
 .sdiv{height:1px;background:var(--divider)}.slabel{font-size:12px;color:var(--text-meta)}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;color:var(--text-2);font-size:13px}.prow:hover{background:var(--row-hover)}
-.rqrow{padding:10px 0;border-top:1px solid #F2F4F7}.rqrow:first-of-type{border-top:0;padding-top:0}
+.rqrow{padding:10px 0;border-top:1px solid #F2F4F7}.rqrow:first-of-type{border-top:0;padding-top:0}.rqrow .rqsaid{margin:6px 0;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}.rqrow [data-split]{margin-top:6px}
 .tk-bar,.tk-appbar,.segs{display:none}
 @media (max-width:767px){
   body.on-ticket .top,body.on-ticket .bnav{display:none}
@@ -1032,3 +1036,21 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-invg>summary::-webkit-details-marker{display:none}.cn-invg>summary b{font-size:15px}.cn-invg:not([open])>summary{border-bottom:0}.cn-lowt{color:#B45309;font-weight:600}
 .cn-icl{display:flex;flex-direction:column;gap:6px;margin:10px 0}.cn-icr{display:flex;align-items:center;gap:6px}.cn-icr input{flex:1;margin:0;min-height:38px}.cn-icr .muted{white-space:nowrap;min-width:56px}
 .iconbtn:disabled{opacity:.3;cursor:default}
+/* canteen: Upload menu dialog (choose file → match columns → preview) */
+dialog.mu{max-width:640px;max-height:92vh;overflow:auto}
+.mu-file{display:flex;flex-direction:column;align-items:center;gap:4px;margin:14px 0;padding:20px 14px;border:2px dashed var(--line);border-radius:14px;text-align:center;cursor:pointer;color:var(--text-2)}
+.mu-file:hover{border-color:var(--brand);background:var(--brand-2)}.mu-file input{min-height:0;padding:6px;margin-top:8px;max-width:100%;background:none;border:0}
+.mu-dl{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.mu-dl>span{flex-basis:100%}.mu-dl .btn{flex:1 1 0;white-space:nowrap}.mu-dl [data-dl=current]{flex-basis:100%} /* your own menu first, on its own row */
+.mu-map{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:2px 14px}.mu-map label{margin:8px 0 0;min-width:0}.mu-map label>span{display:block;margin-bottom:4px}
+.mu-map select{min-height:42px;padding:8px 12px}.mu-map small{display:block;min-height:1.3em;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mu-req{color:var(--warn)}
+.mu-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:4px 0 10px}.mu-sum div{background:var(--bg);border-radius:12px;padding:10px 6px;text-align:center;font-size:13px;color:var(--text-3)}
+.mu-sum b{display:block;font-size:22px;color:var(--text)}.mu-sum .bad{background:var(--warn-2)}.mu-sum .bad b{color:var(--warn)}
+.mu-sum small{display:block;margin-top:2px;font-size:11.5px;line-height:1.25}.mu-note{margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--hold-2);color:var(--text-2);overflow-wrap:anywhere}
+.mu-rej{max-height:220px;overflow:auto;margin:6px 0;padding-left:18px;font-size:13.5px}.mu-rej li{margin:3px 0}
+@media (max-width:560px){dialog.mu #df>.row{gap:10px}} /* phones stack form rows with no gap; Cancel and the step button need one */
+@media (max-width:520px){.mu-sum{grid-template-columns:repeat(2,1fr)}.mu-dl .btn{flex:1 1 100%}
+  .mu-map label{display:grid;grid-template-columns:38% 1fr;align-items:center;column-gap:10px;margin-top:6px}.mu-map label>span{margin:0;line-height:1.25}.mu-map small{grid-column:2}} /* name beside its select: half the scrolling */
+@media (max-width:560px){.cn-mbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}} /* Menu tab: five buttons in two columns instead of one squeezed row */
+/* Upload menu: Cancel / Next / Preview / Import stay in reach at the bottom while the 11 mapping fields scroll (the dialog itself scrolls) */
+dialog.mu #df>p.row:last-child{position:sticky;bottom:-22px;margin:12px -22px -22px;padding:12px 22px 22px;background:var(--card);border-top:1px solid var(--line);z-index:1}
+dialog.mu #df>p.row>#derr{flex:1 1 100%;min-width:0;margin:0}dialog.mu #df>p.row>#derr:empty{display:none}
