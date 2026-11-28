@@ -381,7 +381,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('25 email steps listed, none connected yet', cfg0.events.length === 25 && !cfg0.url);
+  check('26 email steps listed, none connected yet', cfg0.events.length === 26 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -773,6 +773,30 @@ try {
   await fails('someone not on the ticket it went into cannot add a note there', `/public/alpha/tickets/${h2.ticket_no}/notes`, { method: 'POST', body: { body: 'Anyone?' } }, 409);
   await run('UPDATE tickets SET joined_into=NULL WHERE id IN (?, ?)', hT.id, gT.id); // the rest of the suite sees ordinary tickets
   ids.sharedId = hT.id; // the Chrome screens' live shared ticket (Hopa first, Hopb joined): the Fan one above is closed, so it shows no Split out
+  // a provider joins another ticket for the same room and service into this one: students keep their numbers, the joined ticket counts nowhere
+  const j1 = await own('Joina', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); // Fan and Light: two problems in one room, two tickets
+  const j2 = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } });
+  const j3 = await own('Joinc', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } }); // joins j2
+  const other = await own('Joind', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '203', issue: 'Light' } });
+  const t1 = await tk(j1.ticket_no), t2 = await tk(j2.ticket_no);
+  await fails('join refuses a different room', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'Different room');
+  await fails('join refuses itself', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j1.ticket_no } }, 400);
+  const both = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); check('Joinb reports on both tickets (already on the survivor)', both.merged);
+  const closedBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period;
+  const jr = await ok('provider joins the Light ticket into the Fan ticket (same room, same service)', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } });
+  const t1b = await tk(j1.ticket_no), t2b = await tk(j2.ticket_no);
+  check('people moved, one row per person, count and priority recomputed', jr.moved === 1 && t1b.affected_count === 3 && t1b.priority === 'high' && (await q('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=? AND contact=?', t1.id, 'joinb@own.example.com'))[0].n === 1);
+  check('the joined ticket is closed with no closer, pointing at the survivor', t2b.status === 'closed' && t2b.closed_by === null && t2b.joined_into === t1.id);
+  check('the moved student is emailed once, under their own number', (await q("SELECT count(*)::int n FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].n === 1 && (await q("SELECT subject FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].subject.includes(`[${j3.ticket_no}]`));
+  const oldPage = (await api(`/public/alpha/tickets/${j2.ticket_no}`)).data;
+  check("the joined ticket's number opens the survivor under that number, with that person's own complaint", oldPage.ticket_no === j2.ticket_no && oldPage.affected_count === 3 && oldPage.subject === 'Ticket from Joinb' && !JSON.stringify(oldPage).includes('Joina'), JSON.stringify(oldPage).slice(0, 600));
+  const j5 = await own('Joine', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' }, description: 'Tube light flickers', files: [{ name: 'tube.png', type: 'image/png', source: 'camera', data: PNG }] }); // a new Light ticket (the old one is closed)
+  const jr5 = await ok('a ticket whose first student is not on the survivor joins too', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j5.ticket_no } });
+  const p5 = (await api(`/public/alpha/tickets/${j5.ticket_no}`)).data;
+  check('its first student moves, and their number opens the survivor as them, with their own photo', !j5.merged && jr5.moved === 1 && p5.ticket_no === j5.ticket_no && p5.affected_count === 4 && p5.mine?.description === 'Tube light flickers' && p5.mine?.files.length === 1, JSON.stringify(p5).slice(0, 600));
+  await fails('a ticket already joined cannot be joined again', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } }, 400, `already joined into #${j1.ticket_no}`);
+  check('the joined ticket is out of the list, the CSV and the reports', !(await api('/tickets?status=closed', { token: T.pavan })).data.some(x => x.id === t2.id) && !(await (await fetch(`${API}/tickets.csv?status=all`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).includes(`"${j2.ticket_no}"`) && (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period === closedBefore);
+  check('the provider sees every complaint on the survivor', (await api(`/tickets/${t1.id}`, { token: T.pavan })).data.events.some(e => e.event_type === 'joined' && e.body.includes(`#${j2.ticket_no}`)));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1600,6 +1624,7 @@ async function uiSmoke(tok, id) {
     await visit('workspace: requesters with their own numbers', '/c/t/' + id.sharedId, tok.pavan, '.rqrow [data-split]');
     await visit('workspace: a closed shared ticket lists the numbers', '/c/t/' + id.closedId, tok.pavan, '.rqrow .mono');
     check('…and offers no Split out on a closed ticket', await js("return !document.querySelector('[data-split]')"));
+    await visit('workspace: Join ticket dialog', '/c/t/' + id.sharedId, tok.pavan, '#joinbtn'); await js("document.querySelector('#joinbtn').click()"); check('…opens with a number field', await js("return !!document.querySelector('dialog[open] input[name=ticket_no]')"));
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');

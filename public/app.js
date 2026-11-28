@@ -792,7 +792,7 @@ async function workspace(main, id, { admin }) {
   const stName = v => (STATUS_INFO[v] || [v])[0];
   const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
-    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
+    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)', joined: 'Joined another ticket into this one', joined_into: `Joined into #${esc(e.to_value)}`,
     priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
   // timeline dot: a status change takes the new status's colour; reopened = Open; priority = red; created = accent; the rest grey
   const evDot = e => e.event_type === 'status_changed' ? `var(--st-${ST_VAR[e.to_value] || 'neutral'})` : e.event_type === 'reopened' ? 'var(--st-open)'
@@ -869,7 +869,8 @@ async function workspace(main, id, { admin }) {
     <a href="#/c" class="backlink d-only" data-back>${I('back', 16)}Back to my tickets</a>
     <div class="tk-title"><div><div class="tk-ids"><span class="mono d-only">#${t.ticket_no}</span>${pill(shown)}${priorityTag(t.priority, true)}${flags}</div>
         <h1>${esc(t.subject)}</h1><div class="tk-sub"><span>${esc(t.service.name)}</span><span class="d-only"> · Raised via ${esc(String(t.channel).replace('_', ' '))} by</span><span class="m-only"> ·</span> <span>${esc(r.name)}</span></div></div>
-      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="joinbtn">${I('users', 16)}Join ticket…</button><button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+    ${t.joined_into_no ? `<div class="helper joinedto">${I('users', 14)}<span>Joined into <a href="#/c/t/${esc(t.joined_into)}">#${esc(t.joined_into_no)}</a>. Its students and updates are there now.</span></div>` : ''}
     <div class="tk-cols">
       <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
       ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
@@ -880,7 +881,7 @@ async function workspace(main, id, { admin }) {
       <div class="tk-main"><section class="card sec-details">${details}</section>
         <section class="card sec-activity"><div class="act-h">${cardHeading('history', 'Activity')}<span class="act-n">${evs.length} event${evs.length === 1 ? '' : 's'}<span class="m-only"> · Newest first</span></span></div>${timeline}${updateForm}</section></div>
       <aside class="tk-side">${slaCard}${remCard}<div class="sec-people">${people}</div></aside></div>
-    <div class="tk-bar m-only">${live ? `<button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen">${I('pencil', 16)}Update ticket</button></div>
+    <div class="tk-bar m-only">${live ? `<button type="button" class="btn" id="joinbtnm">${I('users', 16)}Join</button><button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen">${I('pencil', 16)}Update ticket</button></div>
     <div class="msheet-back upd-back" hidden></div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
@@ -934,6 +935,13 @@ async function workspace(main, id, { admin }) {
   const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
   main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
+  // another ticket for the same problem and room: its students move here with their own numbers; the server says why it cannot
+  const join = () => { const d = dlg(`<h2>Join another ticket into this one</h2><p class="muted">Same service and room only. Its students move here and keep their own numbers; that ticket closes and points here. Each moved student is emailed.</p>
+    <label>Ticket number to join</label><input name="ticket_no" required inputmode="numeric" autocomplete="off" placeholder="e.g. 0012">`,
+    async f => { const res = await api(`/tickets/${id}/join`, { method: 'POST', body: { ticket_no: f.elements.ticket_no.value } });
+      toast(`Joined #${f.elements.ticket_no.value.trim().replace(/^#/, '')}: ${res.moved} student${res.moved === 1 ? '' : 's'} moved`); reload(); });
+    d.querySelector('[value=ok]').textContent = 'Join'; };
+  main.querySelectorAll('#joinbtn, #joinbtnm').forEach(b => b.onclick = join);
   main.querySelectorAll('[data-split]').forEach(b => b.onclick = () => toast('Coming in the next step')); // Task 8: the split dialog
   const remind = () => remindDlg(id, reload);
   main.querySelectorAll('[data-remadd]').forEach(b => b.onclick = remind);
@@ -943,7 +951,7 @@ async function workspace(main, id, { admin }) {
       <label>Note to the requester</label><textarea name="note" required placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea>`,
       async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
   // phones: the three-dots menu holds the secondary actions
-  $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
+  $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], live && ['users', 'Join another ticket into this one', join], admin && live && ['clock', 'Extend due time', extend],
     ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
   document.onkeydown = e => { if (!location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
     const m = { h: 'hold', c: 'closed', r: 'rejected' }[e.key];

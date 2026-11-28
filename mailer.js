@@ -24,6 +24,7 @@ export const VARS = {
   guide: 'Block: link to the step-by-step guide (a requestor’s first ticket; the provider guide in the welcome email)',
   affected_note: 'When the report joined a ticket others raised the same day: how many others reported it',
   queue_note: 'When the team’s tickets for today are full: the queue number, how many are ahead and the day it reaches the team',
+  joined_from: 'Number of the ticket that was joined',
   queue_no: 'Queue number (empty once the ticket reaches the team)', lands_on: 'Day and time a queued ticket reaches the team',
 };
 // What a requestor's email leaves out: the priority (the service provider sets it, for the team only).
@@ -60,6 +61,9 @@ export const MAIL_EVENTS = [
   { key: 'status_closed', label: 'Ticket closed', who: 'Requestor', when: 'A provider closes it', vars: [...T, 'note', 'actor_name', 'reopen_days'],
     subject: '[{{ticket_no}}] Your ticket is closed',
     body: 'Hi {{requestor_name}},\nThank you for reporting "{{subject}}". It is now resolved.\n> {{note}}\nStill not fixed? You can ask to reopen it within {{reopen_days}} days.\n{{progress}}\n[[View or reopen your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{timeline}}\n{{ticket_details}}' },
+  { key: 'joined_into', label: 'Handled with others', who: 'Requestor', when: 'A provider joins their ticket into another for the same problem', vars: [...T, 'joined_from', 'actor_name'],
+    subject: '[{{ticket_no}}] Your ticket is being handled with others',
+    body: 'Hi {{requestor_name}},\nYour ticket {{joined_from}} reports the same problem as others in {{location}}, so the {{service}} team is fixing them as one job. Your number stays **{{ticket_no}}** and you will get every update.\n{{progress}}\n[[View your ticket|{{ticket_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
   { key: 'status_rejected', label: 'Ticket rejected', who: 'Requestor', when: 'A provider rejects it', vars: [...T, 'note', 'actor_name'],
     subject: '[{{ticket_no}}] Your ticket could not be accepted',
     body: 'Hi {{requestor_name}},\nThank you for reaching out about "{{subject}}". We are sorry, but we could not take this one up.\n> {{note}}\nYou can raise a new ticket at any time.\n{{progress}}\n[[Raise a new ticket|{{portal_link}}]]\nThank you,\n**{{actor_name}}** · {{service}} team\nONE DESK, {{campus}}\n{{ticket_details}}' },
@@ -128,7 +132,7 @@ export const eventByKey = k => MAIL_EVENTS.find(e => e.key === k);
 export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fan not working', description: 'Ceiling fan stopped working this morning.',
   service: 'Electrical', location: 'Hostel H2, room 214', campus: "St. Mary's Rehabilitation University", status: 'Open', priority: 'Medium',
   due: '29 Oct 2026, 3:15 pm', providers: 'Suresh Babu', escalated_to_name: 'Priya Reddy', note: 'The electrician will replace the fan motor.', actor_name: 'Suresh Babu',
-  hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, from_service: 'Electrical', to_service: 'IT Support',
+  hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, from_service: 'Electrical', to_service: 'IT Support', joined_from: '0012',
   staff_name: 'Kiran Kumar', staff_email: 'kiran@yourcampus.edu', temp_password: 'Sample-Pass-42', password: 'MyNewPass2026', role_name: 'Service provider', services: 'Electrical, IT Support', count: 2,
   ticket_list: '0042 · on hold · Fan not working\n0039 · overdue · Projector not working',
   progress: { status: 'open', service: 'Electrical', due: '29 Oct 2026, 3:15 pm', hold_reason: 'Waiting for parts / material', resume_by: '30 Oct 2026, 3:15 pm', reopen_days: 7, closed_at: '28 Oct 2026, 5:40 pm' },
@@ -136,7 +140,7 @@ export const SAMPLE = { requestor_name: 'Meena', ticket_no: '0042', subject: 'Fa
     ['Location', 'Hostel H2, room 214'], ['Issue', 'Fan'], ['Priority', 'Medium'], ['Raised on', '28 Oct 2026, 9:05 am'], ['Target', '29 Oct 2026, 3:15 pm'], ['Handled by', 'Suresh Babu']],
   timeline: [{ at: '28 Oct, 11:20 am', label: 'Note from Suresh Babu', body: 'The electrician will replace the fan motor.' }, { at: '28 Oct, 9:05 am', label: 'Ticket received', body: '' }] };
 // Preview the progress block in the state that matches the email.
-const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', reopen_requested: 'closed', reopen_declined: 'closed', reopen_accepted: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected' };
+const SAMPLE_STATE = { created: 'open', new_ticket: 'open', queue_landed: 'open', reopen_requested: 'closed', reopen_declined: 'closed', reopen_accepted: 'open', status_hold: 'hold', status_closed: 'closed', status_rejected: 'rejected', joined_into: 'in_progress' };
 const sampleAll = (base, key) => ({ ...SAMPLE, ticket_details: [...SAMPLE.ticket_details, ['Photos', [{ url: `${base}/logo-mark.png`, name: 'photo.jpg' }]]], guide: key === 'invite' ? { kind: 'provider', url: PROVIDER_GUIDE } : { kind: 'requestor', url: `${base}/guide/requestor.html` }, progress: { ...SAMPLE.progress, status: SAMPLE_STATE[key] || 'in_progress' }, ticket_link: `${base}/#/d/smru/t/0042`, staff_link: `${base}/#/c`, portal_link: `${base}/#/d/smru`, login_link: `${base}/#/login` });
 export const sampleVars = (base, key) => eventByKey(key)?.who === 'Requestor' ? forRequestor(sampleAll(base, key)) : sampleAll(base, key);
 

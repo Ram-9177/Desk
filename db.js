@@ -98,10 +98,11 @@ CREATE INDEX IF NOT EXISTS t_queue ON tickets(service_id, queue_day) WHERE queue
 CREATE INDEX IF NOT EXISTS t_match ON tickets(tenant_id, service_id, location_key, problem_key, created_date, status);
 CREATE TABLE IF NOT EXISTS ticket_requestors (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL REFERENCES tickets(id), requestor_id TEXT,
   name TEXT NOT NULL, contact TEXT NOT NULL, photo_url TEXT, event_id INT, raised_at TEXT, is_first INT DEFAULT 0, UNIQUE (ticket_id, contact));
--- every ticket's original requestor is its first row
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS joined_into TEXT;
+-- every ticket's original requestor is its first row (not a ticket joined into another: its people may all have moved, keeping their numbers)
 INSERT INTO ticket_requestors (id, ticket_id, requestor_id, name, contact, raised_at, is_first)
   SELECT md5(t.id || ':first'), t.id, r.id, r.name, coalesce(lower(r.email), r.phone), t.created_at, 1 FROM tickets t JOIN requestors r ON r.id = t.requestor_id
-  WHERE NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
+  WHERE t.joined_into IS NULL AND NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
 -- each report on a ticket can carry its own number, token and complaint; a ticket can be joined into another
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS ticket_no TEXT;
@@ -111,7 +112,6 @@ ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS form_data TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_at TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_to TEXT;
-ALTER TABLE tickets ADD COLUMN IF NOT EXISTS joined_into TEXT;
 -- the first report of each ticket owns that ticket's number, token and complaint; later reports keep working under the shared number
 UPDATE ticket_requestors r SET tenant_id = t.tenant_id, ticket_no = t.ticket_no, tracking_token = t.tracking_token, subject = t.subject, description = t.description, form_data = t.form_data
   FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 1 AND r.ticket_no IS NULL;
