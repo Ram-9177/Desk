@@ -143,9 +143,10 @@ export function canteen(d) {
     const u = req.user, tid = req.tenantId; if (!tid) return { tenant: null, setup: u.role === 'super_admin', manage: false };
     const tn = await tenantRow(tid), row = u.role === 'provider' ? await one('SELECT kind FROM canteen_managers WHERE tenant_id=? AND user_id=?', tid, u.id) : null, /* canteen jobs are for providers */ mgr = row?.kind === 'manager' || (row && !row.kind);
     const manage = !!tn?.canteen_on && (mgr || u.role !== 'provider');
-    return { tenant: tn, setup: u.role === 'super_admin', manage, manager: mgr, kitchen: !!tn?.canteen_on && (manage || row?.kind === 'kitchen'), cook: row?.kind === 'kitchen', counter: !!tn?.canteen_on && (manage || row?.kind === 'counter'), cashier: row?.kind === 'counter', req_admin: u.role === 'tenant_admin' && !!tn?.canteen_on };
+    return { tenant: tn, setup: u.role === 'super_admin', manage, manager: mgr, kitchen: !!tn?.canteen_on && (manage || row?.kind === 'kitchen'), cook: row?.kind === 'kitchen', counter: !!tn?.canteen_on && (manage || row?.kind === 'counter'), cashier: row?.kind === 'counter', owner: !!tn?.canteen_on && row?.kind === 'owner', /* the owner: every report, nothing to change */ req_admin: u.role === 'tenant_admin' && !!tn?.canteen_on };
   }
   const need = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.manage) throw forbid(); return a; };
+  const needReports = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.manage && !a.owner) throw forbid(); return a; };
   const needCounter = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.counter) throw new HttpErr(403, 'FORBIDDEN', 'Only the counter staff and canteen managers can do this'); return a; };
   const needKitchen = async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.kitchen) throw new HttpErr(403, 'FORBIDDEN', 'Only the kitchen and canteen managers can do this'); return a; };
 
@@ -353,14 +354,15 @@ export function canteen(d) {
   // ================= canteen desk (signed in) =================
   S.get('/canteen/access', wrap(async req => { const a = await access(req);
     // canteen-only staff (a canteen job, no ticket team) open straight on the canteen; anyone in a desk team still sees their team's tickets
-    const desk = req.user.role !== 'provider' || !!(await one('SELECT 1 FROM service_members WHERE user_id=? LIMIT 1', req.user.id)) || !(a.manager || a.cook || a.cashier);
-    return { desk, setup: a.setup, manage: a.manage, manager: !!a.manager, kitchen: !!a.kitchen, cook: !!a.cook, counter: !!a.counter, cashier: !!a.cashier, rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
+    const desk = req.user.role !== 'provider' || !!(await one('SELECT 1 FROM service_members WHERE user_id=? LIMIT 1', req.user.id)) || !(a.manager || a.cook || a.cashier || a.owner);
+    return { desk, setup: a.setup, manage: a.manage, manager: !!a.manager, kitchen: !!a.kitchen, cook: !!a.cook, counter: !!a.counter, cashier: !!a.cashier, owner: !!a.owner, reports: !!(a.manage || a.owner), rename: a.setup || !!a.manager || a.req_admin, on: !!a.tenant?.canteen_on, open: a.tenant ? isOpen(a.tenant) : false, name: a.tenant ? canteenName(a.tenant) : null }; }));
   // super admin: switch on for the campus, pick 1–2 desk providers as managers
   S.get('/canteen/setup', wrap(async req => {
     if (req.user.role !== 'super_admin') throw forbid(); if (!req.tenantId) throw bad('Pick a campus first');
     const tn = await tenantRow(req.tenantId);
     return { on: !!tn.canteen_on, slug: tn.slug, name: tn.canteen_name || '', default_name: `${tn.name} Canteen`, managers: (await all(`SELECT user_id FROM canteen_managers WHERE tenant_id=? AND coalesce(kind,'manager')='manager'`, req.tenantId)).map(r => r.user_id),
       kitchen: (await all(`SELECT user_id FROM canteen_managers WHERE tenant_id=? AND kind='kitchen'`, req.tenantId)).map(r => r.user_id),
+      owner: (await all(`SELECT user_id FROM canteen_managers WHERE tenant_id=? AND kind='owner'`, req.tenantId)).map(r => r.user_id),
       counter: (await all(`SELECT user_id FROM canteen_managers WHERE tenant_id=? AND kind='counter'`, req.tenantId)).map(r => r.user_id), max_kitchen: MAX_KITCHEN,
       providers: await all(`SELECT id, name, email FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 ORDER BY name`, req.tenantId), max: MAX_MANAGERS };
   }));
@@ -373,20 +375,20 @@ export function canteen(d) {
     if (ok.length !== ids.length) throw bad('Canteen managers must be active service providers on this campus');
     // kitchen and counter staff: sent together with the managers (leaving one out keeps that list as it is)
     const list = k => req.body[k] === undefined ? null : [...new Set((req.body[k] || []).map(String))];
-    const kit = list('kitchen'), ctr = list('counter');
-    for (const [l, what] of [[kit, 'kitchen staff'], [ctr, 'counter staff']]) if (l) { if (l.length > MAX_KITCHEN) throw bad(`Pick at most ${MAX_KITCHEN} ${what}`);
+    const kit = list('kitchen'), ctr = list('counter'), own = list('owner');
+    for (const [l, what] of [[kit, 'kitchen staff'], [ctr, 'counter staff'], [own, 'owners']]) if (l) { if (l.length > MAX_KITCHEN) throw bad(`Pick at most ${MAX_KITCHEN} ${what}`);
       const ok2 = await all(`SELECT id FROM users WHERE tenant_id=? AND role='provider' AND is_active=1 AND id = ANY(?::text[])`, req.tenantId, l);
       if (ok2.length !== l.length) throw bad(`${what[0].toUpperCase() + what.slice(1)} must be active service providers on this campus`); }
-    const all3 = [...ids, ...(kit || []), ...(ctr || [])]; if (new Set(all3).size !== all3.length) throw bad('A person can have one canteen job: manager, kitchen staff or counter staff, not both');
+    const all3 = [...ids, ...(kit || []), ...(ctr || []), ...(own || [])]; if (new Set(all3).size !== all3.length) throw bad('A person can have one canteen job: manager, kitchen staff or counter staff, not both');
     if (!on) { const live = (await one(`SELECT count(*) n FROM canteen_orders WHERE tenant_id=? AND status IN ${LIVE}`, req.tenantId)).n; // checked before anything is saved
       if (live) throw bad(`${live} order${live === 1 ? ' is' : 's are'} still in progress (waiting for payment, in the kitchen or on the way). Finish or reject ${live === 1 ? 'it' : 'them'} first, then switch the canteen off.`); }
     await run('UPDATE tenants SET canteen_on=?, canteen_name=? WHERE id=?', on ? 1 : 0, str(req.body.name, 60) || null, req.tenantId);
     if (!on) await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId); // switched off: closed too
-    const kinds = ['manager', ...(kit ? ['kitchen'] : []), ...(ctr ? ['counter'] : [])];
+    const kinds = ['manager', ...(kit ? ['kitchen'] : []), ...(ctr ? ['counter'] : []), ...(own ? ['owner'] : [])];
     await run(`DELETE FROM canteen_managers WHERE tenant_id=? AND coalesce(kind,'manager') = ANY(?::text[])`, req.tenantId, kinds);
     await run('DELETE FROM canteen_managers WHERE tenant_id=? AND user_id = ANY(?::text[])', req.tenantId, all3); // one job each: a new job replaces the old
-    for (const [l, k] of [[ids, 'manager'], [kit || [], 'kitchen'], [ctr || [], 'counter']]) for (const id of l) await run('INSERT INTO canteen_managers (tenant_id, user_id, created_at, kind) VALUES (?,?,?,?)', req.tenantId, id, now(), k);
-    return { on, managers: ids, kitchen: kit, counter: ctr };
+    for (const [l, k] of [[ids, 'manager'], [kit || [], 'kitchen'], [ctr || [], 'counter'], [own || [], 'owner']]) for (const id of l) await run('INSERT INTO canteen_managers (tenant_id, user_id, created_at, kind) VALUES (?,?,?,?)', req.tenantId, id, now(), k);
+    return { on, managers: ids, kitchen: kit, counter: ctr, owner: own };
   }));
 
   // rename: the super admin, the canteen managers and the campus admin (not other providers)
@@ -582,7 +584,7 @@ export function canteen(d) {
     if (!r.changes) throw bad('This KOT was already started or is no longer in the kitchen. Please refresh.'); return { ok: true }; }));
 
   // ---- reports: collected orders ----
-  S.get('/canteen/report', wrap(async req => { const a = await need(req), today = dayOf(a.tenant.timezone);
+  S.get('/canteen/report', wrap(async req => { const a = await needReports(req), today = dayOf(a.tenant.timezone);
     const back = { day: 0, week: 6, month: 29 }[req.query.range]; // a range is worked out on the campus's own calendar
     const from = back != null ? addDays(today, -back) : /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : addDays(today, -6), to = back != null ? today : /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
     const rows = await all('SELECT * FROM canteen_orders WHERE tenant_id=? AND day>=? AND day<=? ORDER BY day, token_no', req.tenantId, from, to);
@@ -621,7 +623,7 @@ export function canteen(d) {
       reprints: rows.reduce((s, o) => s + Math.max(0, (o.bill_prints || 0) - 1), 0) };
   }));
   // every order in the period as a spreadsheet (one row per order)
-  S.get('/canteen/orders.csv', async (req, res, next) => { try { const a = await need(req), today = dayOf(a.tenant.timezone);
+  S.get('/canteen/orders.csv', async (req, res, next) => { try { const a = await needReports(req), today = dayOf(a.tenant.timezone);
     const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : addDays(today, -6), to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
     const rows = await all('SELECT * FROM canteen_orders WHERE tenant_id=? AND day>=? AND day<=? ORDER BY day, token_no', req.tenantId, from, to);
     const q = v => { const t = String(v ?? ''); return /[",\n]/.test(t) || /^[=+\-@]/.test(t) ? `"${t.replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"` : t; };

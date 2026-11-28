@@ -1000,3 +1000,19 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-pb .cn-pbq{color:#fff;font-size:13px;font-weight:700}.cn-pb .cn-pbdeal{color:#fff;font-size:11px;font-weight:700}.cn-pb .cn-pbso{color:#991B1B;font-size:13px;font-weight:800}
 .cn-pb.off .cn-pbl{display:none}
 .cn-rcband b{font-size:18px;letter-spacing:.04em;text-align:center;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* emoji in place of a missing photo */
+.cn-pb .cn-pbl{font-size:44px;opacity:1;filter:saturate(1.05)}.cn-pb.off .cn-pbl{display:grid;opacity:.35}
+.cn-emo{display:grid;place-items:center;width:52px;height:52px;border-radius:14px;background:#F1F5F9;font-size:28px;flex-shrink:0;line-height:1}.cn-mic{position:relative;display:inline-flex}.cn-mic .cn-emo{display:none}
+/* phones: no picture area, a compact row with the emoji (photos are for bigger screens) */
+@media(max-width:600px){
+  .cn-mic .cn-th{display:none}.cn-mic .cn-emo{display:grid}.cn-emo{width:44px;height:44px;font-size:24px;border-radius:12px}
+  .cn-posg{grid-template-columns:1fr;gap:8px}
+  .cn-pb{flex-direction:row;align-items:center;border-radius:14px}
+  .cn-pbm{flex:none;width:52px;height:52px;aspect-ratio:auto;margin:8px 0 8px 8px;border-radius:12px}
+  .cn-pbm img{display:none}.cn-pb .cn-pbl{font-size:26px}
+  .cn-pb .cn-pbm .cn-veg{top:3px;left:3px;width:12px;height:12px}
+  .cn-pb .cn-pbq{top:auto;bottom:-6px;right:-6px;font-size:11px;padding:1px 6px}
+  .cn-pb .cn-pbdeal{display:none}.cn-pbso{font-size:9px!important}
+  .cn-pbt{flex:1;flex-direction:row;align-items:center;justify-content:space-between;padding:8px 12px}.cn-pbt b{-webkit-line-clamp:2}
+  .cn-pbp{gap:10px}
+}

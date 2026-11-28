@@ -1450,6 +1450,16 @@ try {
   check("the receipt's daily colour and check code match what the counter sees", !!rcS.check && rcS.check.color === rcB.today_check.color && rcS.check.hex === rcB.today_check.hex
     && rcS.check.code === rcB.orders.find(o => o.id === rcO.id).check_code && /^\d{4}$/.test(rcS.check.code) && !!rcS.server_time);
   await api(`/canteen/orders/${rcO.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${rcO.id}/collected`, { token: T.kavya, method: 'POST' });
+  await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-owner', tenant_id, 'Omar Owner', 'owner2@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+  T.owner = await login('owner2@example.com', 'Pavan2026ok');
+  await ok('super admin makes Omar the canteen owner', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], kitchen: [kid], counter: ['u-cashier'], owner: ['u-owner'], name: 'Hilltop Café' } });
+  const oa = (await api('/canteen/access', { token: T.owner })).data;
+  check('the owner gets the reports, opens on the canteen, and nothing else', oa.owner && oa.reports && !oa.manage && !oa.counter && !oa.kitchen && oa.desk === false);
+  check('…the complete report and the CSV', (await api('/canteen/report?range=month', { token: T.owner })).status === 200 && (await fetch(API + '/canteen/orders.csv', { headers: { authorization: 'Bearer ' + T.owner } })).status === 200);
+  await fails('…but cannot sell', '/canteen/pos', { token: T.owner, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 403);
+  await fails('…change prices', '/canteen/items/' + tea.id, { token: T.owner, method: 'PATCH', body: { price: '1' } }, 403);
+  await fails('…or handle orders', '/canteen/orders', { token: T.owner }, 403);
+  check('counter staff still cannot see reports', (await api('/canteen/report', { token: T.kavya })).status === 403);
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
@@ -1463,7 +1473,7 @@ try {
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya, owner: T.owner }, { t1: ids.t1 });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1771,6 +1781,9 @@ async function uiSmoke(tok, id) {
       document.querySelector('.cn-upid [name=ref]').value = 'WALKIN7788'; document.querySelector('.cn-upid button[value=yes]').click();
       for (let i = 0; i < 30 && !/token/.test(document.querySelector('#toast').textContent); i++) await new Promise(r => setTimeout(r, 200)); return /sent to the kitchen/.test(document.querySelector('#toast').textContent)`)
       && (await q("SELECT pay_mode, pay_status, status, bill_no FROM canteen_orders WHERE upi_ref='WALKIN7788'")).some(r => r.pay_mode === 'upi' && r.pay_status === 'paid' && r.status === 'accepted' && r.bill_no));
+    await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.owner)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
+    let ownOk = false; for (let i = 0; i < 40 && !ownOk; i++) { await sleep(250); ownOk = await js(`return !!document.querySelector('.cn-donut') && !document.querySelector('[data-t=counter], [data-t=orders], [data-t=menu]')`).catch(() => false); }
+    check('the owner lands on the reports, with no counter, orders or menu tabs', ownOk);
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));

@@ -74,6 +74,13 @@ export const printHtml = html => new Promise(res => { const f = document.createE
 // record the print (so a second copy is marked), then print
 const printOrder = async (kind, o, name, pr) => { let dup = false; try { dup = (await H.api(`/canteen/orders/${o.id}/printed`, { method: 'POST', body: { kind } })).duplicate; } catch (e) { H.toast(e.message); return; }
   await printHtml(kind === 'kot' ? kotHtml(o, name, pr, dup) : billHtml(o, name, pr, dup)); };
+// an emoji for an item without a photo, from its name, else its category
+const EMOJI = [[/coffee|espresso|latte|cappuccino/, '☕'], [/\btea\b|chai/, '🍵'], [/juice|soda|lime|shake|lassi|smoothie|drink|cola|beverage|mojito/, '🥤'], [/water/, '💧'], [/biryani|pulao|fried rice|rice bowl/, '🍛'],
+  [/thali|meal|combo|lunch|dinner/, '🍱'], [/dosa|uttapam|pesarattu/, '🫓'], [/idli|vada|upma|pongal|poha|breakfast/, '🍚'], [/paratha|roti|chapati|naan|kulcha/, '🫓'], [/chicken|wings|tikka|kebab|tandoori/, '🍗'],
+  [/mutton|lamb|keema/, '🍖'], [/fish|prawn/, '🐟'], [/egg|omelet/, '🥚'], [/puff|samosa|momo|dumpling|kachori/, '🥟'], [/sandwich|toast|sub\b/, '🥪'], [/burger/, '🍔'], [/pizza/, '🍕'], [/noodle|maggi|ramen|chowmein/, '🍜'],
+  [/pasta|spaghetti/, '🍝'], [/fries|chips/, '🍟'], [/paneer|curry|dal|sabzi|masala/, '🍲'], [/salad|sprouts/, '🥗'], [/ice ?cream|kulfi/, '🍨'], [/cake|pastry|brownie|muffin/, '🍰'], [/sweet|dessert|gulab|halwa|ladoo|kheer/, '🍮'],
+  [/fruit|apple|banana|mango|papaya|watermelon/, '🍎'], [/biscuit|cookie/, '🍪'], [/popcorn|snack|namkeen|pakora|bajji|bonda|chaat|pani ?puri/, '🍿'], [/soup/, '🥣'], [/corn/, '🌽']];
+export const emojiFor = (name = '', cat = '') => { const n = String(name).toLowerCase(), c = String(cat).toLowerCase(); for (const [re, e] of EMOJI) if (re.test(n)) return e; for (const [re, e] of EMOJI) if (re.test(c)) return e; return '🍽️'; };
 const thumb = (src, cls = '') => src ? `<img class="cn-th ${cls}" src="${src}" alt="" loading="lazy" onerror="this.remove()">` : '';
 // a photo picked on the phone or PC, made small (JPEG, longest side 900 px) before upload
 const shrinkImg = f => new Promise((ok, no) => { const u = URL.createObjectURL(f), im = new Image(); im.onload = () => { const k = Math.min(1, 900 / Math.max(im.naturalWidth, im.naturalHeight)), c = document.createElement('canvas');
@@ -98,14 +105,14 @@ export async function studentCanteen(slug, view, id, q) {
   const c = await H.api(`/public/${slug}/canteen`);
   document.title = `${c.name} · ${c.campus}`;
   if (!c.on) { app.innerHTML = `<div class="wrap">${back(`#/d/${slug}`, esc(c.name))}<div class="card empty"><span class="et">No canteen ordering here yet</span><span>${esc(c.campus)} has not started canteen orders on ONE Desk.</span></div></div>`; return; }
-  const items = new Map([...c.categories.flatMap(x => x.items), ...c.uncategorised].map(i => [i.id, i]));
+  const items = new Map([...c.categories.flatMap(x => x.items.map(i => Object.assign(i, { cat: x.name }))), ...c.uncategorised].map(i => [i.id, i]));
   let cart = ls.get(cartKey, {}); for (const k of Object.keys(cart)) if (!items.has(k)) delete cart[k];
   const save = () => ls.set(cartKey, cart), count = () => Object.values(cart).reduce((s, n) => s + n, 0), total = () => Object.entries(cart).reduce((s, [k, n]) => s + items.get(k).price_now * n, 0);
   const mine = ls.get('canteen-mine:' + slug, []).length, pop = new Set(c.popular || []), fast = new Set(c.fast || []);
   const stepper = it => !c.open ? (it.sold_out ? '<span class="cn-so">Out of stock</span>' : '') : !cart[it.id] && it.sold_out ? `<button type="button" class="btn cn-add cn-book" data-inc="${it.id}" title="Out of stock: book it and the canteen confirms">Book</button>` : cart[it.id]
     ? `<span class="cn-step"><button type="button" data-dec="${it.id}" aria-label="One less ${esc(it.name)}">−</button><b>${cart[it.id]}</b><button type="button" data-inc="${it.id}" aria-label="One more ${esc(it.name)}">+</button></span>`
     : `<button type="button" class="btn soft cn-add" data-inc="${it.id}">Add</button>`;
-  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_now}" data-deal="${it.deal ? 1 : 0}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${thumb(it.img, 'lg')}${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${it.sold_out ? ' <span class="cn-oos">Out of stock</span>' : ''}${fast.has(it.id) ? ' <span class="cn-fast">🔥 Fast moving</span>' : pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.deal ? ' ' + dealBadge(it.deal) : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${priceHtml(it)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
+  const row = it => `<div class="cn-item ${it.sold_out ? 'off' : ''}" data-name="${esc((it.name + ' ' + (it.description || '')).toLowerCase())}" data-veg="${it.is_veg ? 1 : 0}" data-price="${it.price_now}" data-deal="${it.deal ? 1 : 0}" data-i="${it.sort_order ?? 0}"><div class="cn-in">${it.img ? `<span class="cn-mic">${thumb(it.img, 'lg')}<span class="cn-emo" aria-hidden="true">${emojiFor(it.name, it.cat)}</span></span>` : `<span class="cn-emo solo" aria-hidden="true">${emojiFor(it.name, it.cat)}</span>`}${vegDot(it.is_veg)}<div><b>${esc(it.name)}</b>${it.sold_out ? ' <span class="cn-oos">Out of stock</span>' : ''}${fast.has(it.id) ? ' <span class="cn-fast">🔥 Fast moving</span>' : pop.has(it.id) ? ' <span class="cn-pop">★ Popular</span>' : ''}${it.deal ? ' ' + dealBadge(it.deal) : ''}${it.description ? `<div class="muted small">${esc(it.description)}</div>` : ''}<div class="cn-price">${priceHtml(it)}</div></div></div><div id="st-${it.id}">${stepper(it)}</div></div>`;
   const groups = [...c.categories, ...(c.uncategorised.length ? [{ id: 'x', name: c.categories.length ? 'More' : 'Menu', items: c.uncategorised }] : [])];
   const bar = () => { const n = count(), b = document.getElementById('cnbar'); if (!b) return;
     b.hidden = !n || !c.open; b.innerHTML = `<a class="btn primary big" href="#/d/${slug}/canteen/cart">${I('utensils', 18)} ${n} item${n === 1 ? '' : 's'} · ${rupees(total())} <span style="margin-left:auto">View cart ${I('chev', 16)}</span></a>`; };
@@ -296,8 +303,8 @@ export async function canteenPage(main, { sa }) {
   clearInterval(timer); // a poller from another campus or screen stops here
   const tid = localStorage.getItem('tid') || ''; if (stateFor !== tid) { stateFor = tid; posCart = {}; posLast = null; kotSeen = null; S_find = ''; openDone = false; posCat = 'all'; }
   const { I, esc, api, toast, dlg } = H, acc = await api('/canteen/access');
-  const tabKey = 'canteen-tab' + (acc.cashier ? '-counter' : acc.cook ? '-kitchen' : ''), st = ls.get(tabKey, acc.cashier ? 'counter' : 'orders'), hash = '#/c/canteen';
-  const tabs = [acc.counter && ['counter', 'Counter (POS)'], acc.counter && ['orders', 'Orders'], acc.kitchen && ['kitchen', 'Kitchen (KOT)'], acc.manage && ['menu', 'Menu'], acc.manage && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
+  const tabKey = 'canteen-tab' + (acc.cashier ? '-counter' : acc.cook ? '-kitchen' : acc.owner ? '-owner' : ''), st = ls.get(tabKey, acc.cashier ? 'counter' : acc.owner ? 'report' : 'orders'), hash = '#/c/canteen';
+  const tabs = [acc.counter && ['counter', 'Counter (POS)'], acc.counter && ['orders', 'Orders'], acc.kitchen && ['kitchen', 'Kitchen (KOT)'], acc.manage && ['menu', 'Menu'], acc.reports && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
   let tab = tabs.some(t => t[0] === st) ? st : tabs[0]?.[0];
   if (!tab) { main.innerHTML = '<div class="card empty"><span class="et">Canteen is not set up for you</span><span>The super admin switches the canteen on and picks the canteen managers.</span></div>'; return; }
   const head = () => `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
@@ -353,7 +360,7 @@ export async function canteenPage(main, { sa }) {
   // Counter (POS): a walk-in customer at the counter. Tap items, take cash (change shown) or UPI, charge: the order is paid,
   // goes straight to the kitchen as a KOT, and the bill prints.
   async function counter() {
-    const p = await api('/canteen/pos'), sh = await api('/canteen/shift'), list = [...p.categories.flatMap(c => c.items.map(i => ({ ...i, cat: c.id }))), ...p.uncategorised.map(i => ({ ...i, cat: 'none' }))];
+    const p = await api('/canteen/pos'), sh = await api('/canteen/shift'), list = [...p.categories.flatMap(c => c.items.map(i => ({ ...i, cat: c.id, catName: c.name }))), ...p.uncategorised.map(i => ({ ...i, cat: 'none' }))];
     const cats = [...p.categories.map(c => ({ id: c.id, name: c.name, n: c.items.length })), ...(p.uncategorised.length ? [{ id: 'none', name: 'Other', n: p.uncategorised.length }] : [])];
     if (posCat !== 'all' && !cats.some(c => c.id === posCat)) posCat = 'all';
     const by = new Map(list.map(i => [i.id, i])); for (const k of Object.keys(posCart)) if (!by.has(k) || by.get(k).sold_out) delete posCart[k];
@@ -389,7 +396,7 @@ export async function canteenPage(main, { sa }) {
     // the middle column: the chosen category (or a search across all), in two sections, Veg and Non-veg
     // an item tile: a picture area (the photo, or the item's first letter on a soft tint), the veg mark on its corner, name, price and +
     const tile = i => `<button type="button" class="cn-pb ${i.sold_out ? 'off' : ''} ${i.is_veg ? 'v' : 'nv'}" data-add="${i.id}" ${i.sold_out ? 'disabled' : ''} aria-label="Add ${esc(i.name)}, ${rupees(i.price_now)}${i.sold_out ? ', sold out' : ''}">
-      <span class="cn-pbm">${i.img ? `<img src="${i.img}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="cn-pbl" aria-hidden="true">${esc((i.name.trim()[0] || '?').toUpperCase())}</span>${vegDot(i.is_veg)}<span class="cn-pbq"></span>${i.sold_out ? '<span class="cn-pbso">Sold out</span>' : ''}${i.deal ? `<span class="cn-pbdeal">${i.deal.kind === 'flash' ? '⚡' : i.deal.kind === 'eod' ? '🌙' : ''} −${i.deal.pct}%</span>` : ''}</span>
+      <span class="cn-pbm">${i.img ? `<img src="${i.img}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="cn-pbl" aria-hidden="true">${emojiFor(i.name, i.catName)}</span>${vegDot(i.is_veg)}<span class="cn-pbq"></span>${i.sold_out ? '<span class="cn-pbso">Sold out</span>' : ''}${i.deal ? `<span class="cn-pbdeal">${i.deal.kind === 'flash' ? '⚡' : i.deal.kind === 'eod' ? '🌙' : ''} −${i.deal.pct}%</span>` : ''}</span>
       <span class="cn-pbt"><b>${esc(i.name)}</b><span class="cn-pbp"><span>${priceHtml(i)}</span>${i.sold_out ? '' : '<i aria-hidden="true">+</i>'}</span></span></button>`;
     const grid = () => { const v = (document.getElementById('posq')?.value || '').trim().toLowerCase(), g = document.getElementById('posgrid');
       if (!list.length) { g.innerHTML = `<div class="card empty"><span class="et">No items on the menu yet</span><span>${acc.manage ? 'Add categories and items with prices on the <b>Menu</b> tab.' : 'Ask the canteen manager to add items on the Menu tab.'}</span></div>`; return; }
@@ -571,18 +578,18 @@ export async function canteenPage(main, { sa }) {
   }
 
   async function setup() {
-    const s0 = await api('/canteen/setup'), arr = v => Array.isArray(v) ? v : [], s = { ...s0, managers: arr(s0.managers), kitchen: arr(s0.kitchen), counter: arr(s0.counter), providers: arr(s0.providers), max: s0.max || 2, max_kitchen: s0.max_kitchen || 10 };
+    const s0 = await api('/canteen/setup'), arr = v => Array.isArray(v) ? v : [], s = { ...s0, managers: arr(s0.managers), kitchen: arr(s0.kitchen), counter: arr(s0.counter), owner: arr(s0.owner), providers: arr(s0.providers), max: s0.max || 2, max_kitchen: s0.max_kitchen || 10 };
     main.innerHTML = `${head()}<form id="cnset" class="card" style="max-width:640px"><b>Canteen for this campus</b>
       <label>Canteen name</label><input name="name" maxlength="60" value="${esc(s.name)}" placeholder="${esc(s.default_name)}">
       <label class="chk" style="margin:12px 0"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Canteen ordering is on</label>
-      <b>Canteen staff</b><div class="muted small">Give desk providers one canteen job each. <b>Manager</b> (1 or 2): menu, prices, timings, payments, reports, everything. <b>Counter</b>: sells to walk-in customers, takes cash / UPI, prints bills, confirms online payments, hands orders over. <b>Kitchen</b>: sees only the KOT screen (start cooking, ready). Campus admins can do everything a manager can.</div>
-      <div class="cn-staff">${s.providers.map(p => { const job = s.managers.includes(p.id) ? 'manager' : s.kitchen.includes(p.id) ? 'kitchen' : s.counter.includes(p.id) ? 'counter' : ''; return `<label class="cn-srow"><span><b>${esc(p.name)}</b><span class="muted small">${esc(p.email)}</span></span><select name="job" data-u="${p.id}" aria-label="Canteen job for ${esc(p.name)}">${[['', 'No canteen job'], ['manager', 'Manager'], ['counter', 'Counter'], ['kitchen', 'Kitchen']].map(([v, l]) => `<option value="${v}" ${job === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`; }).join('') || '<p class="muted small">No active service providers on this campus yet. Add them under People.</p>'}</div>
+      <b>Canteen staff</b><div class="muted small">Give desk providers one canteen job each. <b>Manager</b> (1 or 2): menu, prices, timings, payments, reports, everything. <b>Counter</b>: sells to walk-in customers, takes cash / UPI, prints bills, confirms online payments, hands orders over. <b>Kitchen</b>: sees only the KOT screen (start cooking, ready). <b>Owner</b>: sees every report (sales, charts, cash drawer by staff, refunds, CSV) and can't change anything. Campus admins can do everything a manager can.</div>
+      <div class="cn-staff">${s.providers.map(p => { const job = s.managers.includes(p.id) ? 'manager' : s.kitchen.includes(p.id) ? 'kitchen' : s.counter.includes(p.id) ? 'counter' : s.owner.includes(p.id) ? 'owner' : ''; return `<label class="cn-srow"><span><b>${esc(p.name)}</b><span class="muted small">${esc(p.email)}</span></span><select name="job" data-u="${p.id}" aria-label="Canteen job for ${esc(p.name)}">${[['', 'No canteen job'], ['manager', 'Manager'], ['counter', 'Counter'], ['kitchen', 'Kitchen'], ['owner', 'Owner (reports)']].map(([v, l]) => `<option value="${v}" ${job === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`; }).join('') || '<p class="muted small">No active service providers on this campus yet. Add them under People.</p>'}</div>
       <div class="err" id="cnserr"></div><p><button class="btn primary">Save</button></p>
       ${s.on ? `<p class="muted small">Student link: <code>${esc(location.origin + '/' + s.slug + '/cafeteria')}</code> · the QR code is on the Menu tab.</p>` : ''}</form>`;
     wire();
     const f = document.getElementById('cnset'), jobs = [...f.querySelectorAll('[name=job]')], pick = j => jobs.filter(x => x.value === j).map(x => x.dataset.u);
     jobs.forEach(b => b.onchange = () => { if (pick('manager').length > s.max) { b.value = ''; toast(`At most ${s.max} canteen managers`); } });
-    f.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/setup', { method: 'PUT', body: { name: f.name.value, on: f.on.checked, managers: pick('manager'), kitchen: pick('kitchen'), counter: pick('counter') } }); toast('Canteen settings saved'); location.reload(); }
+    f.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/setup', { method: 'PUT', body: { name: f.name.value, on: f.on.checked, managers: pick('manager'), kitchen: pick('kitchen'), counter: pick('counter'), owner: pick('owner') } }); toast('Canteen settings saved'); location.reload(); }
       catch (er) { document.getElementById('cnserr').textContent = er.message; } };
   }
 }
