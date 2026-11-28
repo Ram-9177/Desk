@@ -114,10 +114,14 @@ ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_at TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_to TEXT;
 -- the first report of each ticket owns that ticket's number, token and complaint; later reports keep working under the shared number
 UPDATE ticket_requestors r SET tenant_id = t.tenant_id, ticket_no = t.ticket_no, tracking_token = t.tracking_token, subject = t.subject, description = t.description, form_data = t.form_data
-  FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 1 AND r.ticket_no IS NULL
-  AND NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.tenant_id = t.tenant_id AND x.ticket_no = t.ticket_no); -- a ticket split out of another: its number stays on the split-out row
+  FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 1 AND r.ticket_no IS NULL;
 UPDATE ticket_requestors r SET tenant_id = t.tenant_id FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 0 AND r.tenant_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS tr_no ON ticket_requestors(tenant_id, ticket_no) WHERE ticket_no IS NOT NULL;
+-- one live row per number: a row split out keeps a copy of its number and token, and the new ticket's first row carries them
+DROP INDEX IF EXISTS tr_no;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_no ON ticket_requestors(tenant_id, ticket_no) WHERE ticket_no IS NOT NULL AND detached_at IS NULL;
+-- one live row per person on a ticket: someone split out and later joined back gets a live row beside their detached one
+ALTER TABLE ticket_requestors DROP CONSTRAINT IF EXISTS ticket_requestors_ticket_id_contact_key;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_contact ON ticket_requestors(ticket_id, contact) WHERE detached_at IS NULL;
 CREATE INDEX IF NOT EXISTS t_joined ON tickets(joined_into) WHERE joined_into IS NOT NULL;
 -- Food & catering: rate a meal (feedback, never a ticket) or report a serious problem (a normal ticket)
 CREATE TABLE IF NOT EXISTS food_locations (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL,
