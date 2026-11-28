@@ -5,7 +5,7 @@ Date: 2026-11-28. Status: reviewed, awaiting approval.
 ## Intent
 
 ONE Desk gets one Claude API connection, set up and controlled entirely from the web app by a super admin, with a
-separate monthly spend limit for each of the four places that use it:
+separate monthly spend limit for each of the three places that use it:
 
 1. **Replies.** In "Check before sending", the provider's short note becomes a full reply written by Claude from the
    ticket (what the requester described and said since) and the provider's note, in the step's tone. The provider sees
@@ -13,9 +13,7 @@ separate monthly spend limit for each of the four places that use it:
    tap Send.
 2. **Reports.** A short written summary, in plain words, on the desk Reports page and at the top of the daily, weekly
    and monthly food feedback emails.
-3. **Student bot.** The public ONE Desk Bot (no login) understands natural questions and answers in natural language,
-   in the language the person wrote in, from the same live data it uses today.
-4. **Super Bot.** The staff bot becomes an "ask anything about the campus" assistant. Campus admins and super admins can
+3. **Super Bot.** The staff bot becomes an "ask anything about the campus" assistant. Campus admins and super admins can
    ask any question about their campus's tickets, teams, people, food scores, notices and reports; providers get the
    same assistant limited to what they can already see (their services and tickets escalated to them). It looks things
    up itself, combines them, and answers in natural language, with links to the tickets it mentions.
@@ -26,8 +24,8 @@ and capped per area, and with everything configured in the app's own settings ra
 ## Goals
 
 - One key, pasted once on an **AI** settings page (super admin only), stored like the Power Automate secret, masked.
-- Four independent switches, monthly limits in USD and model choices, one row per area. Spend so far this month shown
-  next to each. The owner asked for $5 of the budget to go to the Super Bot.
+- Three independent switches, monthly limits in USD and model choices, one row per area. Spend so far this month shown
+  next to each. The owner set $5 a month for each area.
 - Every feature falls back to today's behaviour, silently for the end user, when: no key, the switch is off, the
   limit is reached, the API errors, or the call takes too long. Nothing in the app ever depends on the API being up.
 - Spend is computed from the tokens the API reports, per call, and stored, so the page and the limits are exact.
@@ -36,8 +34,8 @@ and capped per area, and with everything configured in the app's own settings ra
 
 ## Non-goals
 
-- The student bot never runs lookups of its own: the existing bot code does, and Claude only reads the question and
-  phrases the answer. Only the Super Bot (signed-in staff) picks what to look up.
+- No AI in the public student bot. It stays the keyword bot it is today: the owner judged the app's own answers enough
+  for requesters, and it needs no login, so it is the easiest place for someone to run up a bill.
 - The Super Bot only reads. It never changes a ticket, sends an email or edits a setting.
 - No AI anywhere else (ticket forms, notices, canteen, emails other than the report summary).
 - No per-campus (tenant) keys or limits. One connection, one set of limits, for the whole installation.
@@ -47,7 +45,7 @@ and capped per area, and with everything configured in the app's own settings ra
 
 - A student or provider seeing an error, a blank screen or a slower screen because the API was slow or down.
 - A bill above the limits. A limit is a hard stop for that area until the next month.
-- A bot inventing a ticket status, a date or a rule that is not in the data it was given.
+- The Super Bot inventing a ticket status, a date or a rule that is not in the data it was given.
 - The Super Bot showing a provider anything outside their services and escalations, or a campus admin anything from
   another campus. Every lookup runs with the same access rules as the screens.
 - A suggested reply that promises or claims anything the provider's note and the ticket do not say (a date, a part, a
@@ -72,16 +70,15 @@ and capped per area, and with everything configured in the app's own settings ra
 - **B. AI page in the app, key in `app_settings` (chosen).** Same pattern as the Email → Connection tab: masked when
   shown, change audited, test button. Takes effect without a restart.
 
-### How the bots use Claude
+### How the staff bot uses Claude
 
-- **1. Answer from live data only (chosen for the student bot).** Two small calls per typed question: Claude first names
-  which of the bot's existing answers fits the question (and any ticket number, and the language), the existing code
-  runs that lookup, then Claude phrases the answer from those facts in the user's language. Links and chips are the
-  existing ones. Cheap and cannot invent facts. Tapping a chip skips the AI entirely.
-- **2. Free conversation with tools (chosen for the Super Bot).** Claude is given read-only lookup tools over the
-  campus data, each already scoped to the signed-in user's access, decides which to call, chains them, and answers.
-  Several calls per question, so it gets its own larger budget and a per-user daily cap. The owner asked for exactly
-  this for staff: "ask anything", "all kinds of answers".
+- **1. Answer from live data only.** Claude names which of the bot's existing answers fits the question, the existing
+  code runs that lookup, Claude phrases the result. Cheap and cannot invent facts, but only ever answers the dozen
+  questions the bot knows today. Not what the owner asked for ("ask anything", "all kinds of answers").
+- **2. Free conversation with tools (chosen).** Claude is given read-only lookup tools over the campus data, each
+  already scoped to the signed-in user's access, decides which to call, chains them, and answers. Several calls per
+  question, so it gets its own budget and a per-user daily cap.
+- The public student bot was considered for option 1 and left out: the owner finds the app's own answers enough there.
 
 ### Where the Super Bot's loop runs
 
@@ -104,10 +101,10 @@ and capped per area, and with everything configured in the app's own settings ra
 
 A model dropdown per area on the AI page: Claude Opus 5.5 (most capable), Claude Sonnet 5.5, Claude Haiku 5.5
 (cheapest). **My call, open to change:** default every area to Claude Haiku 5.5 because of the stated budget. Rough
-cost per use at Haiku prices: well under a tenth of a cent for a reply or a student-bot question, about a third of a
-cent for a Super Bot question (several lookups and a longer context), so $5 is roughly 1,500 Super Bot questions. At
-Sonnet prices a Super Bot question is a few cents, at Opus about 5 cents; the dropdown is there when quality matters
-more than volume, and the Super Bot is the row most likely to deserve it.
+cost per use at Haiku prices: well under a tenth of a cent for a reply, about a third of a cent for a Super Bot
+question (several lookups and a longer context), so $5 is roughly 1,500 Super Bot questions or many thousands of
+replies. At Sonnet prices a Super Bot question is a few cents, at Opus about 5 cents; the dropdown is there when
+quality matters more than volume, and the Super Bot is the row most likely to deserve it.
 
 ## The design
 
@@ -123,21 +120,18 @@ New **AI** item in the admin navigation (super admins only, next to Tenants), ro
 └──────────────────────────────────────────────────────┘  │ ✓ Replied in 0.8 s        │
                                                           └───────────────────────────┘
 ┌ Where it is used · November (UTC) ───────────────────────────────────────────────────────────┐
-│ Replies      [on ]  model [Haiku 5.5 ▾]  limit $[ 2.00 ]  spent $0.42 · 128 calls  ▓▓░░░░░░ │
-│ Reports      [on ]  model [Haiku 5.5 ▾]  limit $[ 1.00 ]  spent $0.10 ·  12 calls  ▓░░░░░░░ │
-│ Student bot  [on ]  model [Haiku 5.5 ▾]  limit $[ 2.00 ]  spent $0.05 ·  60 calls  ░░░░░░░░ │
+│ Replies      [on ]  model [Haiku 5.5 ▾]  limit $[ 5.00 ]  spent $0.42 · 128 calls  ▓░░░░░░░ │
+│ Reports      [on ]  model [Haiku 5.5 ▾]  limit $[ 5.00 ]  spent $0.10 ·  12 calls  ░░░░░░░░ │
 │ Super Bot    [on ]  model [Sonnet 5.5 ▾] limit $[ 5.00 ]  spent $1.20 ·  41 questions ▓▓░░░ │
-│ Total this month $1.77 of $10.00                                                   [ Save ]  │
+│ Total this month $1.72 of $15.00                                                   [ Save ]  │
 │ When an area reaches its limit it quietly goes back to the built-in behaviour until the 1st  │
-│ of next month. Student bot: at most 40 AI answers per device a day. Super Bot: at most 60    │
-│ questions per person a day.                                                                  │
+│ of next month. Super Bot: at most 60 questions per person a day.                             │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Settings keys: `ai_key`, `ai_last_ok_at`, and per area (`replies`, `reports`, `bot`, `superbot`): `ai_on_<area>`,
-  `ai_model_<area>`, `ai_limit_<area>`; plus `ai_bot_ip_daily` (40) and `ai_superbot_user_daily` (60). Defaults: all
-  off, Haiku everywhere, limits 2 / 1 / 2 / 5 (the owner named $5 for the Super Bot; the rest is my split of the
-  remaining $5).
+- Settings keys: `ai_key`, `ai_last_ok_at`, and per area (`replies`, `reports`, `superbot`): `ai_on_<area>`,
+  `ai_model_<area>`, `ai_limit_<area>`; plus `ai_superbot_user_daily` (60). Defaults: all off, Haiku everywhere,
+  limits $5 each (the owner's figures).
 - Endpoints under the existing super-admin router (`/api/mail` today holds the mail config; the AI ones go under a new
   `/api/ai` router with the same `superOnly` guard): `GET /ai/config`, `PUT /ai/config`, `POST /ai/test`,
   `GET /ai/usage` (this month per feature, plus the last 50 calls for the log).
@@ -154,16 +148,12 @@ New **AI** item in the admin navigation (super admins only, next to Tenants), ro
 - `spent(feature)` = sum of `cost_usd` for the UTC month. Checked **before** every call; if `spent >= limit` the call
   is skipped and the fallback is used. A call that starts under the limit may finish slightly over it; that is the
   accepted tolerance (a fraction of a cent).
-- **Public bot drain guard (my call).** The student bot needs no login, so one person could spend the whole bot budget
-  in a day. Each IP gets at most 40 AI-answered questions per campus day (setting `ai_bot_ip_daily`, shown on the AI
-  page); after that the IP gets the keyword bot for the rest of the day, with no message about it. Chip taps do not
-  count.
 - **Super Bot per-person cap (my call).** At most 60 questions per signed-in user per campus day
   (`ai_superbot_user_daily`), so one heavy user cannot spend the team's $5 in an afternoon. Past the cap, the user is
   told plainly: "You have used today's Super Bot questions. The quick answers below still work." and gets the keyword
   bot.
-- Every call has a deadline (8 s for a reply, 8 s for a whole student-bot question across both calls, 20 s for a
-  report, 30 s for a whole Super Bot question across all its lookups, at most 8 lookups) with SDK retries off; on
+- Every call has a deadline (8 s for a reply, 20 s for a report, 30 s for a whole Super Bot question across all its
+  lookups, at most 8 lookups) with SDK retries off; on
   timeout or error the fallback is used and the error is stored in `ai_usage`. One `ai_usage` row per API call; the
   Super Bot row count on the page is questions, the calls are in the log.
 - **Outage guard (my call).** After 3 consecutive failures the API is skipped for 5 minutes (one row in `ai_usage`
@@ -174,8 +164,8 @@ New **AI** item in the admin navigation (super admins only, next to Tenants), ro
 
 ### Module `ai.js`
 
-One module exports: `aiReady(feature)` (key present, switch on, under limit), `aiWriteReply`, `aiBotIntent`,
-`aiBotPhrase`, `aiSuperBot`, `aiReportSummary`, `aiTest`, plus `aiConfig` / `aiUsage` for the settings endpoints. It owns the SDK
+One module exports: `aiReady(feature)` (key present, switch on, under limit), `aiWriteReply`, `aiSuperBot`,
+`aiReportSummary`, `aiTest`, plus `aiConfig` / `aiUsage` for the settings endpoints. It owns the SDK
 client (rebuilt when the key changes), the price table, the usage rows and the limit check. No other file touches
 the SDK. Text sent to the API passes through one `scrub()` that removes emails and phone numbers.
 
@@ -224,21 +214,6 @@ provider says now, and what happens next, in the step's tone (work started, on h
 - Instructions: plain English for a kitchen or facilities team, no markdown, no numbers the data does not contain,
   British spelling. `max_tokens` about 350.
 
-### Student bot (public, `POST /public/:slug/bot`)
-
-- `publicBot` is restructured so that each existing branch has a key (`track`, `raise`, `teams`, `limit`, `reopen`,
-  `photos`, `time`, `guide`, `food`, `hello`) and a one-line description. The keyword matcher stays as the fallback
-  mapping from text to key.
-- A chip tap sends the chip text; chips map straight to a key with no API call. A plain ticket number is still
-  recognised by the existing code first, with no API call.
-- Typed text, when `aiReady('bot')` and the IP is under its daily cap: **call 1** `aiBotIntent(q, keys)` returns
-  `{ key, ticket_no, language }` using structured output; unknown questions return `key: 'unknown'`. The existing branch
-  runs and yields the facts text, items and chips as today. **Call 2** `aiBotPhrase(q, factsText, language)` rewrites
-  the facts text as a direct answer to the question, in the user's language (English, Telugu, Hindi or mixed as
-  written), keeping every number, date, name and status exactly. Items and chips pass through untouched.
-- The question is scrubbed of emails and phone numbers before call 1. Any failure at either step returns the keyword
-  bot's answer. The panel's subtitle becomes "Answers from ONE Desk's own data" when the AI is on.
-
 ### Super Bot (staff, `POST /bot`)
 
 - **Who:** every signed-in user of the desk. Admins and super admins see the whole current campus (the one the request
@@ -277,7 +252,7 @@ provider says now, and what happens next, in the step's tone (work started, on h
   and `follow_ups` into chips. The answer is plain text, a few sentences or a short list, in the user's language.
 - **Fallback:** when the Super Bot is off, over its limit or cap, or fails, the existing keyword staff bot answers,
   with its chips. The panel header reads "Super Bot" with "Ask anything about your campus" when it is on, and the
-  existing title when it is not.
+  existing title when it is not. The public student bot (`publicBot`, `POST /public/:slug/bot`) is untouched.
 - **Audit:** every Super Bot question is stored in `ai_usage` with the user, the tools called (names and filters, not
   rows) and the token counts, so a super admin can see who asked what and what it cost. The AI page shows the last 50.
 
@@ -285,9 +260,9 @@ provider says now, and what happens next, in the step's tone (work started, on h
 
 The "no API, nothing leaves the machine" sentences for the polisher and the bot become: "with the AI connection off
 (the default) nothing leaves the server; when a super admin turns it on, the provider's note with the ticket's text,
-the bot question with the facts used to answer it, the Super Bot question with the rows it looked up, and report
-statistics are sent to Anthropic's API, with emails and phone numbers removed." Plus a short section on the AI page,
-the four areas, the limits and the caps.
+the staff Super Bot question with the rows it looked up, and report statistics are sent to Anthropic's API, with
+emails and phone numbers removed. The public student bot never uses the API." Plus a short section on the AI page,
+the three areas, the limits and the cap.
 
 ### Tests
 
@@ -296,9 +271,9 @@ the four areas, the limits and the caps.
   `usage` block; can be told to fail or to sleep). The app is started with `ANTHROPIC_BASE_URL` pointing at it (the SDK
   reads that variable). Checks: config saves and masks the key; test connection reports OK and failure; preview
   returns `by: 'ai'` with the stub text, and the request to the stub carries the ticket's description and the
-  requester's note; the rules path when the switch is off; "Write again" makes a new call and stops at 3; a typed bot question goes through
-  intent and phrase and keeps items and chips; a chip tap makes no API call; report summary is cached (second request,
-  no new usage row); a reached limit falls back and the usage row count stops growing; a stub failure falls back.
+  requester's note; the rules path when the switch is off; "Write again" makes a new call and stops at 3; the public
+  student bot makes no API call even with everything on; report summary is cached (second request, no new usage row);
+  a reached limit falls back and the usage row count stops growing; a stub failure falls back.
 - Super Bot checks: the stub plays a two-step conversation (asks for `search_tickets`, then answers naming a ticket);
   the app runs the lookup and the answer carries that ticket as an item; a provider's `search_tickets` never returns
   another service's ticket and `provider_workload` returns the access error; an admin gets the campus; the per-person
