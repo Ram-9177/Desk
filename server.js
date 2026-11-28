@@ -588,7 +588,8 @@ const visibleTo = row => e => (e.event_type !== 'note' && e.event_type !== 'reop
 // Another student's step in someone's timeline: what happened, without their name or words.
 const NEUTRAL = { created: 'Ticket received', note: 'Note', reopened: 'Reopened', reopen_requested: 'Reopen requested' };
 // A shared ticket's timeline as one person sees it (their email, their page): another student's step they may see goes through `neutral`.
-const seenBy = (row, events, neutral) => events.filter(visibleTo(row)).map(e => e.actor_type === 'requestor' && !ownEvent(row, e) ? neutral(e) : e);
+// The `created` step is the first report's, whoever recorded it (a provider can raise a ticket for a student).
+const seenBy = (row, events, neutral) => events.filter(visibleTo(row)).map(e => (e.actor_type === 'requestor' || e.event_type === 'created') && !ownEvent(row, e) ? neutral(e) : e);
 // One person's email on a shared ticket: the ticket's shared values, with their own number, link, name, complaint, answers, photos and notes.
 async function requestorVars(t, vars, row) {
   const { _events = [], _fields = [], _slug, ...v } = vars, joiner = !row.is_first;
@@ -646,12 +647,13 @@ async function publicTicket(t, viewer, shown_no) {
   const svc = await one('SELECT name, code FROM services WHERE id=?', t.service_id), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
   const ev = await all('SELECT id,event_type,from_value,to_value,body,actor_type,actor_name,created_at,meta FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id', t.id);
   const att = await all('SELECT event_id,file_name,mime_type,storage_key,source,stamped_at FROM attachments WHERE ticket_id=?', t.id);
-  const r = await one('SELECT requestor_type FROM requestors WHERE id=?', t.requestor_id);
+  const r = viewer.requestor_id && await one('SELECT requestor_type FROM requestors WHERE id=?', viewer.requestor_id); // the viewer's type decides the provider card (none: a student's)
   // no priority here: the service provider sets it, for the team only
-  const joiner = !viewer.is_first, mine = joiner ? { subject: viewer.subject || t.subject, description: viewer.description || '', raised_at: viewer.raised_at, files: att.filter(a => a.event_id === viewer.event_id) } : null;
+  const mine = viewer.is_first ? null : { subject: viewer.subject || svc.name, description: viewer.description || '', raised_at: viewer.raised_at || null, // never the ticket's: that is the first student's
+    files: viewer.event_id ? await all('SELECT event_id,file_name,mime_type,storage_key,source,stamped_at FROM attachments WHERE event_id=?', viewer.event_id) : [] };
   const evs = ev.map(({ meta, ...e }) => { let m = {}; try { m = JSON.parse(meta || '{}'); } catch { /* none */ } // only the shared notices / policies leave the server, not staff-only meta
     return { ...e, requestor_row: m.requestor_row || null, shared: (m.shared || []).map(x => ({ id: x.id, kind: x.kind, title: x.title, team: x.team })), actor_name: e.actor_type === 'requestor' ? 'You' : e.actor_name,
-      files: joiner && e.event_type === 'created' ? [] : att.filter(a => a.event_id === e.id) }; });
+      files: att.filter(a => a.event_id === e.id) }; });
   return { ticket_no: shown_no || viewer.ticket_no || t.ticket_no, subject: mine ? mine.subject : t.subject, description: mine ? mine.description : t.description, location: t.location, mine, status: t.status, affected_count: t.affected_count || 1,
     queue: t.status === 'open' ? await queueInfo(t) : null, kind: t.kind || 'issue',
     reopen_request: t.reopen_requested_at && t.status === 'closed' ? { at: t.reopen_requested_at, with: (await reopenDeciders(t)).map(x => x.name.split(' ')[0]).join(' or ') } : null,
@@ -669,11 +671,13 @@ async function findPublic(slug, no) {
   if (!t) { viewer = await one('SELECT * FROM ticket_requestors WHERE tenant_id=? AND ticket_no=? AND detached_at IS NULL', tn.id, shown_no);
     t = viewer && await one('SELECT * FROM tickets WHERE id=?', viewer.ticket_id); }
   if (!t) throw notFound();
-  for (let hop = 0; t.joined_into && hop < 5; hop++) {
-    const who = viewer || await one('SELECT contact FROM ticket_requestors WHERE ticket_id=? AND is_first=1', t.id), to = await one('SELECT * FROM tickets WHERE id=?', t.joined_into);
-    if (!to) break;
-    t = to; viewer = who ? await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND contact=? AND detached_at IS NULL', t.id, who.contact) || null : null;
-  }
+  if (!t.joined_into) return { t, viewer, shown_no };
+  // joined away: the person is whoever the number was opened as, all the way along (never someone on a ticket in between)
+  const opened = viewer || await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND is_first=1', t.id);
+  for (let hop = 0, to; t.joined_into && hop < 5 && (to = await one('SELECT * FROM tickets WHERE id=? AND tenant_id=?', t.joined_into, tn.id)); hop++) t = to;
+  viewer = opened && await one('SELECT * FROM ticket_requestors WHERE ticket_id=? AND tenant_id=? AND contact=? AND detached_at IS NULL', t.id, tn.id, opened.contact)
+    // not on it: the team's updates only, and their own complaint from the number they opened
+    || { id: null, is_first: 0, requestor_id: null, name: '', subject: opened?.subject, description: opened?.description, raised_at: opened?.raised_at, event_id: opened?.event_id };
   return { t, viewer, shown_no };
 }
 
@@ -698,9 +702,12 @@ P.post('/:slug/tickets', wrap(async req => {
 P.get('/:slug/tickets/:no', wrap(async req => { const { t, viewer, shown_no } = await findPublic(req.params.slug, req.params.no); return await publicTicket(t, viewer, shown_no); }));
 // What a student does from their page is theirs: their name on it, their row in its meta (so only they, and the team, see it).
 const asViewer = viewer => ({ type: 'requestor', id: viewer.requestor_id, name: viewer.name });
+// Someone whose ticket was joined into one they are not on can follow it, but a note or reopen there would not be theirs.
+const notOnIt = viewer => { if (!viewer.id && !viewer.is_first) throw new HttpErr(409, 'NOT_ON_TICKET', 'This ticket was joined into another one. Raise a new ticket if you need to tell the team more.'); };
 P.post('/:slug/tickets/:no/notes', wrap(async req => {
   const { t, viewer: v, shown_no } = await findPublic(req.params.slug, req.params.no), viewer = await viewerOf(t, v);
   limit('note:' + t.id, 20);
+  notOnIt(viewer);
   if (t.status === 'rejected') throw new HttpErr(409, 'BAD_TRANSITION', 'This ticket is rejected; raise a new one');
   await tx(async () => { const ev = await addEvent(t, asViewer(viewer), 'note', { body: req_(req.body.body, 'Write a note'), meta: { requestor_row: viewer.id } });
     await saveFiles(t, ev, req.body.files, 'requestor'); await run('UPDATE tickets SET updated_at=? WHERE id=?', now(), t.id); });
@@ -709,7 +716,7 @@ P.post('/:slug/tickets/:no/notes', wrap(async req => {
 }));
 P.post('/:slug/tickets/:no/reopen', wrap(async req => {
   const { t, viewer: v, shown_no } = await findPublic(req.params.slug, req.params.no), viewer = await viewerOf(t, v), tn = await one('SELECT * FROM tenants WHERE id=?', t.tenant_id);
-  assertTransition(t.status, 'open', 'requestor');
+  notOnIt(viewer); assertTransition(t.status, 'open', 'requestor');
   if (Date.now() > new Date(addH(t.closed_at, tn.reopen_window_days * 24)).getTime()) throw new HttpErr(409, 'BAD_TRANSITION', 'The reopen window has passed; raise a new ticket');
   if (t.reopen_requested_at) throw new HttpErr(409, 'ALREADY_REQUESTED', 'You already asked to reopen this ticket. The team will answer soon; you can add a note meanwhile.');
   limit('reopen:' + t.id, 5);
@@ -747,7 +754,7 @@ const said = (q, re) => re.test(q.toLowerCase());
 const lastUpdate = async t => (await one("SELECT body, created_at FROM ticket_events WHERE ticket_id=? AND is_internal=0 AND coalesce(body,'')<>'' ORDER BY id DESC LIMIT 1", t.id));
 // The latest update one student may read: the team's, or their own (never another student's note).
 const lastUpdateFor = async (t, row) => seenBy(row, (await all("SELECT event_type, actor_type, body, created_at, meta FROM ticket_events WHERE ticket_id=? AND is_internal=0 AND coalesce(body,'')<>'' ORDER BY id DESC LIMIT 50", t.id))
-  .map(e => ({ ...e, requestor_row: JSON.parse(e.meta || '{}').requestor_row || null })), () => null).find(Boolean);
+  .map(e => { let m = {}; try { m = JSON.parse(e.meta || '{}'); } catch { /* none */ } return { ...e, requestor_row: m.requestor_row || null }; }), () => null).find(Boolean);
 const REQ_CHIPS = ['Track my ticket', 'How to raise a ticket', 'Which teams can help?', 'How long will it take?', 'Daily limit', 'Reopen a ticket'];
 async function publicBot(tn, q) {
   const no = botNo(q), raiseLink = { title: 'Raise a ticket', href: `#/d/${tn.slug}/raise` };

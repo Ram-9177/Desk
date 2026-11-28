@@ -749,6 +749,29 @@ try {
   check("the closed email to the first student does not carry the joiner's note", !closedMails.find(m => m.recipient === 'owna@own.example.com').body.includes('Still not working') && closedMails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Still not working'));
   check('the bot answers a joiner number with that number', (await api('/public/alpha/bot', { method: 'POST', body: { q: a2.ticket_no } })).data.text.startsWith(`Ticket ${a2.ticket_no}`));
   ids.joinerNo = a2.ticket_no; ids.sharedId = shared.id; // for the Chrome screens
+  // a joiner's page never carries the first student's name, complaint or photos
+  const hopForm = { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '170', issue: 'Fan' };
+  const h1 = await own('Hopa', { form_data: hopForm, description: 'Sparks from the socket', files: [{ name: 'spark.png', type: 'image/png', source: 'camera', data: PNG }] });
+  const h2 = await own('Hopb', { form_data: hopForm, description: 'Socket smells burnt' });
+  const ph1 = (await api(`/public/alpha/tickets/${h1.ticket_no}`)).data, ph2 = (await api(`/public/alpha/tickets/${h2.ticket_no}`)).data, sph2 = JSON.stringify(ph2);
+  check("a joiner's page omits the first student's name, complaint and photos", h2.merged && ph2.mine?.description === 'Socket smells burnt' && !sph2.includes('Hopa') && !sph2.includes('Sparks from the socket')
+    && ph2.events.find(e => e.event_type === 'created')?.files.length === 0 && ph1.events.find(e => e.event_type === 'created')?.files.length === 1, sph2.slice(0, 600));
+  r = await api(`/public/alpha/tickets/${a2.ticket_no}/reopen`, { method: 'POST', body: { reason: 'Fan stopped again tonight' } });
+  const reqEv = (await api(`/tickets/${shared.id}`, { token: T.pavan })).data.events.find(e => e.event_type === 'reopen_requested' && e.body === 'Fan stopped again tonight');
+  const rowB = (await q('SELECT id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', alpha.id, a2.ticket_no))[0];
+  const rA = (await api(`/public/alpha/tickets/${a1.ticket_no}`)).data, rB = (await api(`/public/alpha/tickets/${a2.ticket_no}`)).data;
+  check('a joiner asks to reopen from their page: under their own row, seen by the provider and on their page only', r.status === 200 && reqEv?.actor_name === 'Ownb' && JSON.parse(reqEv.meta).requestor_row === rowB.id
+    && rB.events.some(e => e.body === 'Fan stopped again tonight') && !rA.events.some(e => e.body === 'Fan stopped again tonight') && !!rA.reopen_request, r.error?.message || JSON.stringify(reqEv));
+  // a ticket joined into another (Task 7 will set joined_into; here it is set by hand): h → g → the shared ticket. Ownc is on g and on the shared ticket.
+  const g = await own('Ownc', { form_data: { ...hopForm, loc_room: '171' } }), hT = await tk(h1.ticket_no), gT = await tk(g.ticket_no);
+  await run('UPDATE tickets SET joined_into=? WHERE id=?', gT.id, hT.id); await run('UPDATE tickets SET joined_into=? WHERE id=?', shared.id, gT.id);
+  const viaG = (await api(`/public/alpha/tickets/${g.ticket_no}`)).data, viaH1 = (await api(`/public/alpha/tickets/${h1.ticket_no}`)).data, viaH2 = (await api(`/public/alpha/tickets/${h2.ticket_no}`)).data;
+  const others = /Still not working|Fan stopped again|Still sparking|Owna|Ownb|Hopa|Hopb/;
+  check('a joined-away number opens the ticket it went into, as the same person there, under the number opened', !g.merged && viaG.ticket_no === g.ticket_no && viaG.status === 'closed' && viaG.mine?.description === 'Something is broken.' && !others.test(JSON.stringify(viaG.events)), JSON.stringify(viaG).slice(0, 600));
+  check("two hops on, someone not on that ticket sees the team's updates and their own complaint only, never another student's", [[viaH1, h1, 'Sparks from the socket'], [viaH2, h2, 'Socket smells burnt']].every(([p, n, d]) => p.ticket_no === n.ticket_no && p.mine?.description === d
+    && !others.test(JSON.stringify(p.events)) && !/Ownc/.test(JSON.stringify(p)) && p.events.some(e => e.body?.startsWith('Electrician on the way'))), JSON.stringify([viaH1, viaH2]).slice(0, 800));
+  await fails('someone not on the ticket it went into cannot add a note there', `/public/alpha/tickets/${h2.ticket_no}/notes`, { method: 'POST', body: { body: 'Anyone?' } }, 409);
+  await run('UPDATE tickets SET joined_into=NULL WHERE id IN (?, ?)', hT.id, gT.id); // the rest of the suite sees ordinary tickets
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
