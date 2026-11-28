@@ -724,6 +724,19 @@ try {
   const mails = await q("SELECT recipient, subject, body FROM notifications WHERE template_key='status_in_progress' AND ticket_id=? ORDER BY recipient", shared.id);
   check('one status change: three emails, each under its own number', r.status === 200 && mails.length === 3 && mails.find(m => m.recipient === 'ownb@own.example.com')?.subject.includes(`[${a2.ticket_no}]`) && mails.find(m => m.recipient === 'ownc@own.example.com')?.subject.includes(`[${a3.ticket_no}]`));
   check("a joiner's email never carries the first student's name", !mails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Owna'));
+  const strMail = async to => (await q("SELECT text_body FROM notifications WHERE template_key='created' AND recipient=?", to))[0]?.text_body || '';
+  const stra = await strMail('stra@example.com'), strb = await strMail('strb@example.com');
+  check("a joiner's email lists their own form answer, not the first student's", strb.includes('projector not turning on!!') && !strb.includes('Projector is not turning on') && stra.includes('Projector is not turning on'), strb);
+  await run("UPDATE ticket_requestors SET raised_at='2026-01-05T06:30:00.000Z' WHERE tenant_id=? AND ticket_no=?", alpha.id, a2.ticket_no);
+  r = await act(shared.id, { to: 'closed', note: 'Rewired the fan' });
+  const closedB = (await q("SELECT text_body FROM notifications WHERE template_key='status_closed' AND recipient='ownb@own.example.com'"))[0]?.text_body || '';
+  check("a joiner's details say when they reported it", r.status === 200 && closedB.includes('Raised on: 5 Jan 2026, 12:00 pm'), closedB);
+  r = await api(`/public/alpha/tickets/${a1.ticket_no}/reopen`, { method: 'POST', body: { reason: 'Still sparking near the switch' } });
+  const acc = await api(`/tickets/${shared.id}/reopen-request`, { token: T.pavan, method: 'POST', body: { decision: 'accept', note: 'We will look again', approved: true } });
+  const reo = async to => (await q("SELECT text_body FROM notifications WHERE template_key='reopen_accepted' AND recipient=?", to))[0]?.text_body || '';
+  const reoA = await reo('owna@own.example.com'), reoB = await reo('ownb@own.example.com');
+  check("after the first student reopens, the joiner's timeline says Reopened, without their name or words", r.status === 200 && acc.status === 200 && reoB.includes('Reopened') && !reoB.includes('Owna') && !reoB.includes('Still sparking'), reoB);
+  check('the first student still sees their own reopen reason', reoA.includes('Still sparking near the switch'), reoA);
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1570,7 +1583,7 @@ async function uiSmoke(tok, id) {
       return shot;`);
     check('guide in the app opens; Start shows step 1 with the outline clear of the words', gok && g1?.shown && g1.on && g1.roomy && !errors.length, JSON.stringify(g1) + errors.join(' | ').slice(0, 200));
     // every kind of email button, opened the way Gmail opens it: the address travels encoded in a redirect link
-    const mails = await q('SELECT recipient, html FROM notifications'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
+    const mails = await q('SELECT recipient, html FROM notifications ORDER BY created_at, id'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
     const hrefs = [...new Set(mails.flatMap(n => hrefsOf(n.html)))], big = Math.max(...mails.map(n => String(n.html || '').length));
     const ours = h => h.startsWith(APP + '/') || h === 'https://claude.ai/artifact/XwZ2wYi78wQ7t8PcCMpHhv'; // the provider guide is a shared claude.ai page
     check('every link in every email is a full address of this site (or the provider guide)', hrefs.length > 0 && hrefs.every(ours), hrefs.filter(h => !ours(h)).slice(0, 3).join(' '));

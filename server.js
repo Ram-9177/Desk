@@ -231,12 +231,15 @@ async function queueInfo(t) {
 }
 const queueNote = q => q ? `${q.service} takes ${q.daily_cap} tickets a day and today's are full, so your ticket is in the queue. Queue number: ${q.queue_no}`
   + ` (${q.ahead ? `${q.ahead} ticket${q.ahead === 1 ? '' : 's'} ahead of you` : 'you are next'}). It reaches the team on ${q.lands_on}.` : '';
+// The questions of a service's form a ticket email lists (the place fields go in Location), and one report's answers to them.
+const answerFields = schema => fieldsOf(schema).filter(f => !f.key.startsWith('loc_'));
+const formAnswers = (fields, fd) => fields.map(f => [f.label, Array.isArray(fd[f.key]) ? fd[f.key].join(', ') : fd[f.key]]).filter(([, a]) => a !== undefined && a !== '');
 // Everything a ticket email can show; `extra` adds the values for one step (note, hold reason…).
 async function ticketVars(t, extra = {}) {
   t = await one('SELECT * FROM tickets WHERE id=?', t.id) || t;
   const tn = await tenantRow(t.tenant_id), svc = await one('SELECT name FROM services WHERE id=?', t.service_id), r = await one('SELECT name FROM requestors WHERE id=?', t.requestor_id);
   const svcRow = await one('SELECT name, form_schema FROM services WHERE id=?', t.service_id), fd = JSON.parse(t.form_data || '{}'), held = t.status === 'hold';
-  const answers = fieldsOf(JSON.parse(svcRow?.form_schema || '{}')).filter(f => !f.key.startsWith('loc_')).map(f => [f.label, Array.isArray(fd[f.key]) ? fd[f.key].join(', ') : fd[f.key]]).filter(([, a]) => a !== undefined && a !== '');
+  const fields = answerFields(JSON.parse(svcRow?.form_schema || '{}')), answers = formAnswers(fields, fd);
   const provNames = (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', ');
   const escName = t.escalated_to ? (await one('SELECT name FROM users WHERE id=?', t.escalated_to))?.name || '' : '';
   const q = t.status === 'open' ? await queueInfo(t) : null;
@@ -262,7 +265,7 @@ async function ticketVars(t, extra = {}) {
       photos: e.event_type === 'created' ? [] : pics(e.id) };
   });
   const timeline = events.map(({ at, label, body, photos }) => ({ at, label, body, photos })); // staff emails: every public update
-  return { progress, ticket_details, timeline, _events: events, escalated_to_name: escName,
+  return { progress, ticket_details, timeline, _events: events, _fields: fields, _slug: tn.slug, escalated_to_name: escName,
     ticket_no: t.ticket_no, subject: t.subject, description: t.description || '', location: t.location || '', service: svc?.name || '', campus: tn.name,
     requestor_name: r?.name || '', status: STATUS_WORDS[t.status] || t.status, priority: t.priority[0].toUpperCase() + t.priority.slice(1), kind: sug ? 'Suggestion' : 'Ticket', due: sug ? 'No target (suggestion)' : fmtIST(t.due_at),
     providers: (await providersFor(t.tenant_id, t.service_id)).map(p => p.name).join(', '), ticket_link: await trackUrl(t), staff_link: `${base()}/#/c/t/${t.id}`,
@@ -278,8 +281,9 @@ const staffVars = async (u, pw) => {
     services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
 };
 // A ticket's public page; given a person's row on it, that person's own number and link (a joiner from before own numbers keeps the shared one).
-const trackUrl = async (t, row = null) => { const tn = await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id), k = row?.ticket_no ? row : t;
-  return `${base()}/#/d/${tn.slug}/t/${k.ticket_no}?k=${k.tracking_token}`; };
+// `slug`: the campus's, when the caller already has it (one email per person on a ticket looks it up once).
+const trackUrl = async (t, row = null, slug = null) => { slug ||= (await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id)).slug; const k = row?.ticket_no ? row : t;
+  return `${base()}/#/d/${slug}/t/${k.ticket_no}?k=${k.tracking_token}`; };
 // Statuses: queued → sent | failed (after 4 tries); 'logged' = no flow connected or sending paused (printed to the server log only).
 async function sendOne(id) {
   const n = await one('SELECT * FROM notifications WHERE id=?', id); if (!n || n.status !== 'queued') return;
@@ -579,22 +583,32 @@ async function recount(t, ts, { allowDown = false } = {}) {
 }
 // An update seen by one person on a shared ticket: everything the team does, but of the students' own notes and reopen requests
 // only theirs (a requestor event from before notes carried their row is the first requestor's).
-const visibleTo = row => e => (e.event_type !== 'note' && e.event_type !== 'reopen_requested') || e.actor_type !== 'requestor' || (e.requestor_row ? e.requestor_row === row.id : !!row.is_first);
-// One person's email on a shared ticket: the ticket's shared values, with their own number, link, name, complaint, photos and notes.
+const ownEvent = (row, e) => e.requestor_row ? e.requestor_row === row.id : !!row.is_first;
+const visibleTo = row => e => (e.event_type !== 'note' && e.event_type !== 'reopen_requested') || e.actor_type !== 'requestor' || ownEvent(row, e);
+// Another student's step in someone's timeline: what happened, without their name or words.
+const NEUTRAL = { created: 'Ticket received', note: 'Note', reopened: 'Reopened', reopen_requested: 'Reopen requested' };
+// One person's email on a shared ticket: the ticket's shared values, with their own number, link, name, complaint, answers, photos and notes.
 async function requestorVars(t, vars, row) {
-  const { _events = [], ...v } = vars;
-  const ticket_no = row.ticket_no || v.ticket_no, subject = row.subject || v.subject, description = row.description ?? (row.is_first ? v.description : '') ?? '';
-  const files = row.is_first ? null : await all('SELECT file_name, mime_type, storage_key FROM attachments WHERE event_id=? ORDER BY created_at', row.event_id);
+  const { _events = [], _fields = [], _slug, ...v } = vars, joiner = !row.is_first;
+  const ticket_no = row.ticket_no || v.ticket_no, subject = row.subject || v.subject, description = row.description ?? (joiner ? '' : v.description) ?? '';
+  const files = joiner ? await all('SELECT file_name, mime_type, storage_key FROM attachments WHERE event_id=? ORDER BY created_at', row.event_id) : null;
   const photos = files && files.filter(f => Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
   let details = v.ticket_details;
-  if (Array.isArray(details)) {
-    details = details.filter(([k]) => !['Subject', 'Description', ...(photos ? ['Photos'] : [])].includes(k)).map(([k, x]) => [k, k === 'Ticket' ? String(ticket_no) : x]);
-    const at = Math.max(details.findIndex(([k]) => k === 'Ticket'), details.findIndex(([k]) => k === 'Service')) + 1;
-    details.splice(at, 0, ...[['Subject', subject], ['Description', description]].filter(([, x]) => x && String(x).trim()).map(([k, x]) => [k, String(x)]));
-    if (photos?.length) details.push(['Photos', photos]);
+  if (Array.isArray(details)) { // a joiner's own form answers stand where the ticket's were (the first row's are the ticket's)
+    const asked = new Set(_fields.map(f => f.label)), mine = joiner ? formAnswers(_fields, JSON.parse(row.form_data || '{}')).map(([k, x]) => [k, String(x)]) : null, out = [];
+    for (const [k, x] of details) {
+      if (k === 'Subject' || k === 'Description' || (photos && k === 'Photos') || (mine && asked.has(k))) continue;
+      if (mine && (k === 'Priority' || k === 'Raised on')) out.push(...mine.splice(0));
+      out.push([k, k === 'Ticket' ? String(ticket_no) : k === 'Raised on' && joiner && row.raised_at ? fmtIST(row.raised_at) : x]);
+    }
+    const at = Math.max(out.findIndex(([k]) => k === 'Ticket'), out.findIndex(([k]) => k === 'Service')) + 1;
+    out.splice(at, 0, ...[['Subject', subject], ['Description', description]].filter(([, x]) => x && String(x).trim()).map(([k, x]) => [k, String(x)]));
+    if (photos?.length) out.push(['Photos', photos]);
+    details = out;
   }
-  return { ...v, ticket_no, ticket_link: await trackUrl(t, row), requestor_name: row.name || v.requestor_name, subject, description: description || '', ticket_details: details,
-    timeline: _events.filter(visibleTo(row)).map(({ at, label, body, photos }) => ({ at, label, body, photos })) };
+  return { ...v, ticket_no, ticket_link: await trackUrl(t, row, _slug), requestor_name: row.name || v.requestor_name, subject, description: description || '', ticket_details: details,
+    timeline: _events.filter(visibleTo(row)).map(e => e.actor_type === 'requestor' && !ownEvent(row, e) ? { at: e.at, label: NEUTRAL[e.event_type] || 'Update', body: '', photos: [] }
+      : { at: e.at, label: e.label, body: e.body, photos: e.photos }) };
 }
 // One email per person who reported the ticket (and is still on it), each under their own number and link. A long list goes out after the reply (the outbox sends it).
 async function notifyRequestors(t, key, vars) {
