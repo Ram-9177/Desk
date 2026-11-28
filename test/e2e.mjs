@@ -829,8 +829,22 @@ try {
     && (await q("SELECT 1 FROM audit_logs WHERE action='ticket.split' AND entity_id=?", t1.id)).length === 1);
   check("the student's page shows no other ticket's number either", (sp3 => !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(sp3)))(JSON.stringify((await api(`/public/alpha/tickets/${j3.ticket_no}`)).data)));
   await fails('a split-out row cannot be split again', `/tickets/${t1.id}/requestors/${rowC.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'Already');
-  const rowF = (await q('SELECT id FROM ticket_requestors WHERE ticket_id=? AND contact=?', t1.id, 'joinf@own.example.com'))[0]; // their number is the joined ticket's own: it cannot be given to a second ticket
-  await fails('a student whose number is a joined ticket\'s is not split out (that number is taken)', `/tickets/${t1.id}/requestors/${rowF.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'joined here');
+  // a wrong join undone: the first student of a ticket that was joined in gets that ticket back, open again under their own number
+  const rf = { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '206' };
+  const m1 = await own('Revs', { form_data: { ...rf, issue: 'Fan' } }), m2 = await own('Reva', { form_data: { ...rf, issue: 'Light' }, files: [{ name: 'reva.png', type: 'image/png', source: 'camera', data: PNG }] }), m3 = await own('Revb', { form_data: { ...rf, issue: 'Light' } });
+  const tS = await tk(m1.ticket_no), tO = await tk(m2.ticket_no), openBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.open;
+  await ok('provider joins a two-report ticket into another', `/tickets/${tS.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: m2.ticket_no } });
+  check('…both its students move', m3.merged && (await tk(m1.ticket_no)).affected_count === 3 && (await tk(m1.ticket_no)).priority === 'high' && (await tk(m2.ticket_no)).joined_into === tS.id);
+  const rowA = (await q('SELECT id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', alpha.id, m2.ticket_no))[0], splitAt = new Date().toISOString();
+  const sb = await ok('provider splits the moved first student out', `/tickets/${tS.id}/requestors/${rowA.id}/split`, { token: T.pavan, method: 'POST', body: { note: 'The light is a separate job' } });
+  const pO = (await api(`/public/alpha/tickets/${m2.ticket_no}`)).data, tO2 = await tk(m2.ticket_no), tS2 = await tk(m1.ticket_no);
+  check('their old number opens as their own open ticket again, with a fresh target and their photo', sb.revived && sb.ticket_id === tO.id && sb.ticket_no === m2.ticket_no && pO.ticket_no === m2.ticket_no && pO.affected_count === 1 && pO.status === 'open'
+    && tO2.joined_into === null && tO2.closed_at === null && tO2.due_at > splitAt && pO.events.find(e => e.event_type === 'created')?.files.length === 1 && pO.events.some(e => e.body === 'Split out of a shared ticket; handled separately again'), JSON.stringify([sb, tO2, pO]).slice(0, 900));
+  check('the survivor counts one fewer and its priority follows the count down', tS2.affected_count === 2 && tS2.priority === 'medium' && (await q("SELECT 1 FROM ticket_events WHERE ticket_id=? AND event_type='split_back'", tS.id)).length === 1);
+  const revMail = (await q("SELECT text_body FROM notifications WHERE template_key='split_out' AND recipient='reva@own.example.com'"))[0]?.text_body || '', revNos = [m1, m3, j1, j2, j3].map(x => x.ticket_no);
+  check('they get the split-out email naming only their own number', new RegExp(`\\b${m2.ticket_no}\\b`).test(revMail) && !revNos.some(n => new RegExp(`\\b${n}\\b`).test(revMail)) && revMail.includes('The light is a separate job') && !/Revs|Revb/.test(revMail), revMail);
+  check("the revived ticket is back in the provider's list and counts once in the reports", (await api('/tickets?status=open', { token: T.pavan })).data.some(x => x.id === tO.id)
+    && (await api('/reports?days=1', { token: T.asha })).data.counts.open === openBefore);
   // the count going down: three in room 205 raise a ticket to High; splitting one takes it back to Medium; a priority set by hand stays
   const kf = { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '205', issue: 'Fan' } }, k1 = await own('Splita', kf), k2 = await own('Splitb', kf), k3 = await own('Splitc', { ...kf, files: [{ name: 'own.png', type: 'image/png', source: 'camera', data: PNG }] });
   const tK = await tk(k1.ticket_no), rowK = no => q('SELECT id, event_id FROM ticket_requestors WHERE ticket_no=?', no).then(r => r[0]);

@@ -258,7 +258,7 @@ async function ticketVars(t, extra = {}) {
   const SW = { hold: 'Put on hold', in_progress: 'Work started', open: 'Work resumed', closed: 'Resolved', rejected: 'Not accepted' };
   const events = (await all('SELECT * FROM ticket_events WHERE ticket_id=? AND is_internal=0 ORDER BY id DESC LIMIT 6', t.id)).map(e => {
     const m = JSON.parse(e.meta || '{}'), who = e.actor_name || '';
-    const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', landed: `Reached the ${e.to_value} team`, note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
+    const label = { escalated: `Escalated to ${e.to_value}`, created: 'Ticket received', separated: 'Handled separately', landed: `Reached the ${e.to_value} team`, note: `Note from ${who}`, reopened: `Reopened by ${who}`, transferred: `Moved to ${e.to_value}`,
       status_changed: `${e.from_value === 'hold' && e.to_value === 'in_progress' ? 'Work resumed' : SW[e.to_value] || e.to_value}${who ? ` by ${who}` : ''}${m.hold_reason ? ` · ${m.hold_reason}` : ''}` }[e.event_type] || e.event_type;
     return { id: e.id, event_type: e.event_type, actor_type: e.actor_type, requestor_row: m.requestor_row || null, label,
       at: new Date(e.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }), body: e.body || '',
@@ -1622,6 +1622,7 @@ S.post('/tickets/:id/join', wrap(async req => {
 // tracking token and gets a ticket of their own from their stored complaint, its clock starting now (its created event notes when they
 // first reported, so it is never handed over already overdue); their photos go with them. This ticket counts one fewer, and its priority
 // follows the count down as well as up unless a provider set it by hand. The student's email and page carry their own number only.
+// A student who first reported on a ticket that was later joined here gets that ticket back (it still holds their number): a wrong join undone.
 S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
   const t0 = await loadTicket(req), note = String(req.body.note ?? '').trim().slice(0, 2000);
   const row0 = await one('SELECT * FROM ticket_requestors WHERE id=? AND ticket_id=?', req.params.rid, t0.id);
@@ -1629,36 +1630,53 @@ S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
   if (row0.is_first) throw bad('That is the first requester; split the others instead');
   if (row0.detached_at) throw bad('Already split out');
   if (!MERGEABLE.includes(t0.status) || t0.joined_into) throw bad('The ticket is closed');
-  // a report that arrived as a ticket of its own and was joined here: that ticket still holds the number, so no second ticket can take it
-  if (!row0.ticket_no || await one('SELECT 1 AS x FROM tickets WHERE tenant_id=? AND ticket_no=?', t0.tenant_id, row0.ticket_no))
-    throw bad(`#${row0.ticket_no || '?'} was a ticket of its own before it was joined here; it cannot be split out`);
+  if (!row0.ticket_no) throw bad('This report has no number of its own');
+  const own = await one('SELECT id, joined_into FROM tickets WHERE tenant_id=? AND ticket_no=?', t0.tenant_id, row0.ticket_no); // their number is a ticket joined in
+  if (own && !own.joined_into) throw bad(`#${row0.ticket_no} is already a ticket of its own`);
   const ts = now(), tn = await tenantRow(t0.tenant_id), svc = await one('SELECT name FROM services WHERE id=?', t0.service_id); let nt, first;
   await tx(async () => {
-    // the ticket and the row locked, then checked again: two providers splitting the same student at once make one ticket
-    const t = await one(`SELECT * FROM tickets WHERE id=? AND joined_into IS NULL AND status IN (${MERGEABLE.map(() => '?').join()}) FOR UPDATE`, t0.id, ...MERGEABLE);
-    if (!t) throw bad('The ticket is closed');
+    // the tickets and the row locked (in one order, as the join does), then checked again: two providers splitting the same student at once make one ticket
+    const locked = await all(`SELECT * FROM tickets WHERE id IN (${own ? '?, ?' : '?'}) ORDER BY id FOR UPDATE`, t0.id, ...(own ? [own.id] : []));
+    const t = locked.find(x => x.id === t0.id), o = own && locked.find(x => x.id === own.id);
+    if (!t || t.joined_into || !MERGEABLE.includes(t.status)) throw bad('The ticket is closed');
     const row = await one('SELECT * FROM ticket_requestors WHERE id=? AND ticket_id=? AND detached_at IS NULL FOR UPDATE', row0.id, t.id);
     if (!row) throw bad('Already split out');
-    nt = await insert('tickets', { id: uid(), tenant_id: t.tenant_id, ticket_no: row.ticket_no, service_id: t.service_id, requestor_id: row.requestor_id,
-      subject: row.subject || t.subject, description: row.description, location: t.location, form_data: row.form_data || t.form_data,
-      priority: 'medium', status: 'open', channel: t.channel, is_internal: 0, created_by_user_id: null,
-      due_at: await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, 'medium') * 60, t.service_id), kind: 'issue', tracking_token: row.tracking_token,
-      idempotency_key: null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,
-      location_key: t.location_key, problem_key: t.problem_key, problem_label: t.problem_label, created_date: dayIn(tn.timezone || 'Asia/Kolkata', ts), affected_count: 1, priority_by_staff: 0, not_merged: 0,
-      queued: 0, queue_day: dayIn(tn.timezone || 'Asia/Kolkata', ts), lands_at: null });
-    first = await insert('ticket_requestors', { id: uid(), tenant_id: t.tenant_id, ticket_id: nt.id, ticket_no: null, tracking_token: null, requestor_id: row.requestor_id, name: row.name, contact: row.contact,
-      photo_url: row.photo_url, raised_at: row.raised_at, is_first: 1, subject: nt.subject, description: row.description, form_data: nt.form_data });
-    await run('UPDATE ticket_requestors SET detached_at=?, detached_to=? WHERE id=?', ts, nt.id, row.id);
-    // the created event is public (the student's page and later emails show it): the shared ticket's number stays in its staff-only meta
-    const ev = await addEvent(nt, actorOf(req), 'created', { to: svc.name, body: `Split out of a shared ticket; first reported ${fmtIST(row.raised_at)}`, meta: { split_from: t.ticket_no, reported_at: row.raised_at } });
-    if (row.event_id) await run('UPDATE attachments SET ticket_id=?, event_id=? WHERE ticket_id=? AND event_id=?', nt.id, ev, t.id, row.event_id);
-    await addEvent(t, actorOf(req), 'split_out', { internal: true, body: `${row.name} (${row.ticket_no}) split out as its own ticket`, meta: { to_ticket: nt.id } });
+    if (own) {
+      if (!o?.joined_into) throw bad('That ticket changed just now. Open it again.');
+      // their own ticket opens again with a fresh target from now (it reaches the team now: later recounts start from here too)
+      const pr = o.priority_by_staff ? o.priority : 'medium';
+      await run(`UPDATE tickets SET joined_into=NULL, status='open', closed_at=NULL, closed_by=NULL, priority=?, due_at=?, held_minutes=0, hold_started_at=NULL, hold_reason=NULL, hold_due_at=NULL,
+        reopen_requested_at=NULL, reopen_request_note=NULL, queued=0, queue_day=?, lands_at=?, updated_at=? WHERE id=?`,
+        pr, await dueFrom(o.tenant_id, ts, await targetHours(o.tenant_id, o.service_id, pr) * 60, o.service_id), dayIn(tn.timezone || 'Asia/Kolkata', ts), ts, ts, o.id);
+      // the join moved their first row here with their photos under that ticket's created event: both go back
+      await run('UPDATE ticket_requestors SET ticket_id=?, is_first=1, event_id=NULL WHERE id=?', o.id, row.id);
+      if (row.event_id) await run('UPDATE attachments SET ticket_id=? WHERE ticket_id=? AND event_id=?', o.id, t.id, row.event_id);
+      await run('UPDATE tickets SET affected_count=(SELECT count(*)::int FROM ticket_requestors WHERE ticket_id=? AND detached_at IS NULL) WHERE id=?', o.id, o.id);
+      await addEvent(o, actorOf(req), 'separated', { body: 'Split out of a shared ticket; handled separately again', meta: { split_from: t.ticket_no } });
+      await addEvent(t, actorOf(req), 'split_back', { internal: true, body: `${row.name} (${row.ticket_no}) split back to their own ticket`, meta: { to_ticket: o.id } });
+      nt = await one('SELECT * FROM tickets WHERE id=?', o.id); first = await one('SELECT * FROM ticket_requestors WHERE id=?', row.id);
+    } else {
+      nt = await insert('tickets', { id: uid(), tenant_id: t.tenant_id, ticket_no: row.ticket_no, service_id: t.service_id, requestor_id: row.requestor_id,
+        subject: row.subject || t.subject, description: row.description, location: t.location, form_data: row.form_data || t.form_data,
+        priority: 'medium', status: 'open', channel: t.channel, is_internal: 0, created_by_user_id: null,
+        due_at: await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, 'medium') * 60, t.service_id), kind: 'issue', tracking_token: row.tracking_token,
+        idempotency_key: null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,
+        location_key: t.location_key, problem_key: t.problem_key, problem_label: t.problem_label, created_date: dayIn(tn.timezone || 'Asia/Kolkata', ts), affected_count: 1, priority_by_staff: 0, not_merged: 0,
+        queued: 0, queue_day: dayIn(tn.timezone || 'Asia/Kolkata', ts), lands_at: null });
+      first = await insert('ticket_requestors', { id: uid(), tenant_id: t.tenant_id, ticket_id: nt.id, ticket_no: null, tracking_token: null, requestor_id: row.requestor_id, name: row.name, contact: row.contact,
+        photo_url: row.photo_url, raised_at: row.raised_at, is_first: 1, subject: nt.subject, description: row.description, form_data: nt.form_data });
+      await run('UPDATE ticket_requestors SET detached_at=?, detached_to=? WHERE id=?', ts, nt.id, row.id);
+      // the created event is public (the student's page and later emails show it): the shared ticket's number stays in its staff-only meta
+      const ev = await addEvent(nt, actorOf(req), 'created', { to: svc.name, body: `Split out of a shared ticket; first reported ${fmtIST(row.raised_at)}`, meta: { split_from: t.ticket_no, reported_at: row.raised_at } });
+      if (row.event_id) await run('UPDATE attachments SET ticket_id=?, event_id=? WHERE ticket_id=? AND event_id=?', nt.id, ev, t.id, row.event_id);
+      await addEvent(t, actorOf(req), 'split_out', { internal: true, body: `${row.name} (${row.ticket_no}) split out as its own ticket`, meta: { to_ticket: nt.id } });
+    }
     await recount(t, ts, { allowDown: true });
-    await audit(req, 'ticket.split', 'ticket', t.id, { to: nt.ticket_no });
+    await audit(req, 'ticket.split', 'ticket', t.id, { to: nt.ticket_no, ...(own ? { revived: true } : {}) });
   });
   // the student only (the providers already have them on this ticket): their own number, link and complaint
   if (String(first.contact || '').includes('@')) await notify(nt, [first.contact], 'split_out', await requestorVars(nt, await ticketVars(nt, { note, actor_name: req.user.name }), first));
-  return { ok: true, ticket_id: nt.id, ticket_no: nt.ticket_no };
+  return { ok: true, ticket_id: nt.id, ticket_no: nt.ticket_no, ...(own ? { revived: true } : {}) };
 }));
 // A requestor asked to reopen: the provider who closed it (or an admin) accepts (it reopens, with a fresh target) or declines (it stays closed)
 S.post('/tickets/:id/reopen-request', wrap(async req => {

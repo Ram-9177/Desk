@@ -501,7 +501,7 @@ async function ticketPage(slug, no, q) {
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
-    note: `Note from ${esc(e.actor_name)}`, reopened: e.actor_name ? `Reopened by ${esc(e.actor_name)}` : 'Reopened', reopen_requested: 'You asked to reopen', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
+    note: `Note from ${esc(e.actor_name)}`, reopened: e.actor_name ? `Reopened by ${esc(e.actor_name)}` : 'Reopened', reopen_requested: 'You asked to reopen', separated: 'Handled separately', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && !t.reopen_request && new Date(t.reopen_until) > new Date(), sug = t.kind === 'suggestion';
   const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
@@ -792,7 +792,7 @@ async function workspace(main, id, { admin }) {
   const stName = v => (STATUS_INFO[v] || [v])[0];
   const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}${meta(e).split_from ? ` · split out of #${esc(meta(e).split_from)}` : ''}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
-    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)', joined: 'Joined another ticket into this one', joined_into: `Joined into #${esc(e.to_value)}`, split_out: 'Split a student out as their own ticket',
+    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)', joined: 'Joined another ticket into this one', joined_into: `Joined into #${esc(e.to_value)}`, split_out: 'Split a student out as their own ticket', split_back: 'Split a student back to their own ticket', separated: 'Split back out of a shared ticket',
     priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
   // timeline dot: a status change takes the new status's colour; reopened = Open; priority = red; created = accent; the rest grey
   const evDot = e => e.event_type === 'status_changed' ? `var(--st-${ST_VAR[e.to_value] || 'neutral'})` : e.event_type === 'reopened' ? 'var(--st-open)'
