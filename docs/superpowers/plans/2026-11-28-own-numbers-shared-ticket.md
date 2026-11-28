@@ -236,7 +236,7 @@ Chrome section (after line 1506 `requestor ticket page`): `await visit('a joiner
   const t1 = await tk(j1.ticket_no), t2 = await tk(j2.ticket_no);
   await fails('join refuses a different room', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'Different room');
   await fails('join refuses itself', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j1.ticket_no } }, 400);
-  await ok('Joinb reports on both tickets (already on the survivor)', `/public/alpha/tickets`, { method: 'POST', body: { ...elecBody('Joinb', 'joinb@own.example.com'), form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } } });
+  const both = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); check('Joinb reports on both tickets (already on the survivor)', both.merged);
   const closedBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period;
   const jr = await ok('provider joins the Light ticket into the Fan ticket (same room, same service)', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } });
   const t1b = await tk(j1.ticket_no), t2b = await tk(j2.ticket_no);
