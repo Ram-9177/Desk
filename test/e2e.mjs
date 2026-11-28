@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import jpeg from 'jpeg-js';
+import { zipSync, strToU8 } from 'fflate'; // builds .xlsx files for the menu upload limits
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4397, APP = `http://localhost:${PORT}`, API = APP + '/api';
@@ -1729,7 +1730,7 @@ try {
     check('no sign-in: 401 on all four', (await Promise.all(ends.map(([m, p, b]) => api(p, { method: m, body: b })))).every(r => r.status === 401));
     check('a campus with the canteen off refuses (super admin on Beta)', (await Promise.all(ends.map(([m, p, b]) => api(p, { ...SB, method: m, body: b })))).every(r => r.status === 403));
     const tpl = await api('/canteen/menu-template.csv', { token: T.pavan, raw: true }), tplText = Buffer.from(await tpl.arrayBuffer()).toString('utf8');
-    check('the manager downloads the template: UTF-8 with BOM, every field as a column', tpl.status === 200 && /text\/csv/.test(tpl.headers.get('content-type')) && tplText.startsWith('﻿') && tplText.slice(1).split(/\r?\n/)[0] === FIELDS.join(','), tplText.slice(0, 200));
+    check('the manager downloads the template: UTF-8 with BOM, every field as a column', tpl.status === 200 && /text\/csv/.test(tpl.headers.get('content-type')) && tplText.startsWith('\ufeff') && tplText.slice(1).split(/\r?\n/)[0] === FIELDS.join(','), tplText.slice(0, 200));
     const smp = await api('/canteen/menu-sample.csv', { token: T.pavan, raw: true });
     check('…and the sample menu, byte for byte the shipped fixture', smp.status === 200 && /attachment/.test(smp.headers.get('content-disposition') || '') && Buffer.from(await smp.arrayBuffer()).equals(SAMPLE));
     const rdA = await ok('the manager reads a file (nothing saved)', '/canteen/menu/read', { token: T.pavan, method: 'POST', body: readBody });
@@ -1752,7 +1753,7 @@ try {
     check('…updates the 29 (same name in the same category), adds none', imp2.added === 0 && imp2.updated === 29 && imp2.categories_created === 0 && (await cnt()) === 29
       && (await q("SELECT price_paise FROM canteen_items WHERE tenant_id=? AND name='Tea'", B))[0].price_paise === 1400, JSON.stringify(imp2));
     // a CSV saved by a spreadsheet: BOM, semicolons, quoted commas, ₹ prices, yes/no veg, own column names
-    const semi = '﻿Item Name;Rate;Veg;Section;Description\r\n"Paneer Roll";₹60;yes;Rolls;"Paneer, onion; mint"\r\nChicken Roll;"₹1,200";NO;Rolls;Big\r\n;;;;\r\nEgg Roll;₹45.50;n;;\r\n';
+    const semi = '\ufeffItem Name;Rate;Veg;Section;Description\r\n"Paneer Roll";₹60;yes;Rolls;"Paneer, onion; mint"\r\nChicken Roll;"₹1,200";NO;Rolls;Big\r\n;;;;\r\nEgg Roll;₹45.50;n;;\r\n';
     const rs = await ok('a semicolon CSV with BOM reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'Rolls.CSV', data: durl(semi) } });
     check('…headers, quoted commas and ₹ prices as cells, blank rows skipped, row numbers kept', rs.columns.join('|') === 'Item Name|Rate|Veg|Section|Description' && rs.rows.length === 3 && rs.rows[0][4] === 'Paneer, onion; mint'
       && rs.rows[1][1] === '₹1,200' && rs.lines.join() === '2,3,5', JSON.stringify(rs));
@@ -1791,7 +1792,7 @@ try {
     await run("DELETE FROM canteen_items WHERE tenant_id=? AND (id LIKE 'fill-%' OR name='One')", B);
     await fails('more than 500 rows in one import are refused', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: Array.from({ length: 501 }, (_, i) => ({ row: i + 2, name: 'R' + i, price: '1' })), dry_run: true } }, 400, '500');
     // files that cannot be read
-    await fails('a file with only the header row', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('﻿name,price\r\n') } }, 400, 'only the header');
+    await fails('a file with only the header row', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('\ufeffname,price\r\n') } }, 400, 'only the header');
     await fails('an empty file', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('') } }, 400, 'empty');
     await fails('a binary file renamed .csv', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.csv', data: PNG } }, 400, 'CSV');
     await fails('a broken .xlsx', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xlsx', data: durl('not a workbook') } }, 400, 'Excel');
@@ -1799,6 +1800,38 @@ try {
     await fails('another type (.pdf)', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.pdf', data: durl('%PDF') } }, 400, '.csv or .xlsx');
     await fails('more than 500 rows in a file', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price\n' + 'a,1\n'.repeat(501)) } }, 400, '500');
     await fails('a file over 5 MB', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price\n' + 'x'.repeat(5.5e6)) } }, 400, '5 MB');
+    // review fixes: a fractional deal, a too-long upload, a wide CSV, two imports at once, and Excel files built to exhaust memory
+    const half = await ok('a deal of 0.5% …', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Half off', price: '10', deal_pct: '0.5', deal_kind: 'discount' }], dry_run: true } });
+    check('…is rejected (not read as 0, which would clear a deal)', half.added === 0 && /1 to 90/.test(half.rejected[0]?.reason || ''), JSON.stringify(half));
+    await fails('an upload over 7 MB is refused before decoding', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: 'data:text/csv;base64,' + 'A'.repeat(7.5e6) } }, 400, '5 MB');
+    await fails('a CSV with a 200 KB header of commas', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price' + ','.repeat(2e5) + '\nVada,20\n') } }, 400, 'Too many columns');
+    await fails('a CSV with 51 named columns', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl(Array.from({ length: 51 }, (_, i) => 'c' + i).join(',') + '\n' + '1,'.repeat(50) + '1\n') } }, 400, 'Too many columns');
+    const par = await ok('a file for two imports at once', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'p.csv', data: durl('category,name,price\nParallel,P1,10\nParallel,P2,11\nParallel,P3,12\n') } });
+    const parRows = mapRows(par, byName(par)), [pa, pb] = await Promise.all([0, 1].map(() => api('/canteen/menu/import', { ...SB, method: 'POST', body: { rows: parRows, dry_run: false } })));
+    const parItems = await q("SELECT i.name FROM canteen_items i JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND c.name='Parallel'", B);
+    check('two imports of the same file at once: its items and its category exactly once', pa.status === 200 && pb.status === 200 && pa.data.added + pb.data.added === 3 && parItems.length === 3
+      && (await q("SELECT count(*)::int n FROM canteen_categories WHERE tenant_id=? AND name='Parallel'", B))[0].n === 1, JSON.stringify({ pa: pa.data, pb: pb.data, parItems }));
+    const colName = n => { let s = ''; for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
+    const XT = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const mkXlsx = sheet => Buffer.from(zipSync({ // the smallest workbook Excel and the reader accept: one sheet
+      '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'),
+      '_rels/.rels': strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+      'xl/workbook.xml': strToU8(`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${REL}"><sheets><sheet name="Menu" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`),
+      'xl/worksheets/sheet1.xml': strToU8(`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${sheet}</worksheet>`) }));
+    const grid = (nr, nc) => { const out = ['<sheetData>']; for (let r = 1; r <= nr; r++) { out.push(`<row r="${r}">`); for (let c = 0; c < nc; c++) out.push(r === 1 ? `<c r="${colName(c)}1" t="inlineStr"><is><t>Col ${c + 1}</t></is></c>` : `<c r="${colName(c)}${r}"><v>${r}</v></c>`); out.push('</row>'); } out.push('</sheetData>'); return out.join(''); };
+    const xin = await ok('an .xlsx just inside the limits (50 columns, 500 rows) still reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'big.xlsx', data: durl(mkXlsx(`<dimension ref="A1:${colName(49)}501"/>` + grid(501, 50)), XT) } });
+    check('…all of it', xin?.columns?.length === 50 && xin.total === 500 && xin.rows[499][49] === '501', JSON.stringify(xin?.columns?.length));
+    await fails('an .xlsx with 51 columns', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'wide.xlsx', data: durl(mkXlsx(grid(3, 51)), XT) } }, 400, 'Too many columns');
+    const tall = mkXlsx(`<dimension ref="A1:B150000"/><sheetData>${Array.from({ length: 150000 }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}"><v>${i}</v></c><c r="B${i + 1}"><v>1</v></c></row>`).join('')}</sheetData>`);
+    let t0 = Date.now(); await fails(`an .xlsx with 150,000 rows (${Math.round(tall.length / 1024)} KB) is refused before it is parsed`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'tall.xlsx', data: durl(tall, XT) } }, 400, 'too large');
+    check('…quickly', Date.now() - t0 < 4000, `${Date.now() - t0} ms`);
+    await fails('an .xlsx whose sheet unpacks to over 10 MB', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'fat.xlsx', data: durl(mkXlsx(`<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>${'x'.repeat(11e6)}</t></is></c></row></sheetData>`), XT) } }, 400, 'too large');
+    const bomb = mkXlsx('<dimension ref="A1:XFD200000"/><sheetData><row r="200000"><c r="XFD200000" t="inlineStr"><is><t>x</t></is></c></row></sheetData>');
+    t0 = Date.now(); await fails(`a ${(bomb.length / 1024).toFixed(1)} KB .xlsx with one cell at XFD200000 is refused`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb.xlsx', data: durl(bomb, XT) } }, 400, 'too large');
+    check('…quickly, and the server stays up', Date.now() - t0 < 3000 && (await fetch(API + '/health').then(r => r.ok, () => false)), `${Date.now() - t0} ms`);
+    const bomb2 = mkXlsx('<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="XFD1"><v>1</v></c></row><row r="2"><c r="A2"><v>1</v></c></row></sheetData>');
+    await fails('…the same without a <dimension> (cell addresses are scanned)', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb2.xlsx', data: durl(bomb2, XT) } }, 400, 'too large');
     await run('UPDATE tenants SET canteen_on=0 WHERE id=?', B);
   }
 

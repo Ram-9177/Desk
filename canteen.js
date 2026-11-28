@@ -137,7 +137,9 @@ export function itemRules(b, partial) {
 }
 // ---- menu upload: what a file column can map to, and turning one file row (text cells) into what itemRules takes ----
 export const MENU_FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
-const MAX_UPLOAD_ROWS = 500, MAX_UPLOAD_BYTES = 5 * 1024 * 1024, MAX_ITEMS = 500, MAX_CATS = 50;
+const MAX_UPLOAD_ROWS = 500, MAX_UPLOAD_COLS = 50, MAX_UPLOAD_BYTES = 5 * 1024 * 1024, MAX_ITEMS = 500, MAX_CATS = 50;
+// an .xlsx is checked before the reader builds its grid: one cell at XFD200000 in a 1.5 KB file would otherwise take all the memory
+const XLSX_PART_MAX = 10 * 1024 * 1024, XLSX_ROWS_MAX = 1000, XLSX_COLS_MAX = 100;
 const FLAG = { 1: 1, yes: 1, y: 1, true: 1, veg: 1, 0: 0, no: 0, n: 0, false: 0, nonveg: 0 };
 const FLAG_NAME = { is_veg: 'Veg', sold_out: 'Sold out', active: 'Shown on the menu' };
 const KIND_OF = Object.fromEntries(Object.entries(DEAL_KINDS).flatMap(([k, l]) => [[k, k], [l.toLowerCase(), k]])); // 'flash' or the label 'Flash sale'
@@ -148,7 +150,7 @@ export function uploadRow(r) {
   for (const k of ['is_veg', 'sold_out', 'active']) if (t(k)) { const v = FLAG[t(k).toLowerCase().replace(/[\s_-]/g, '')];
     if (v === undefined) return { error: `${FLAG_NAME[k]}: use yes or no (not “${t(k).slice(0, 20)}”)` }; b[k] = !!v; }
   if (t('sort_order')) { if (!/^-?\d{1,6}$/.test(t('sort_order'))) return { error: 'Order must be a whole number' }; b.sort_order = +t('sort_order'); }
-  if (t('deal_pct')) { b.deal_pct = t('deal_pct').replace(/\s*%$/, ''); if (!/^\d+(\.\d+)?$/.test(b.deal_pct)) return { error: 'Deal % must be a number from 1 to 90' };
+  if (t('deal_pct')) { b.deal_pct = t('deal_pct').replace(/\s*%$/, ''); if (!/^\d+(\.\d+)?$/.test(b.deal_pct) || (+b.deal_pct > 0 && +b.deal_pct < 1)) return { error: 'Deal % must be a number from 1 to 90' }; // 0.5 would floor to 0 and clear a deal
     b.deal_kind = KIND_OF[t('deal_kind').toLowerCase()] || t('deal_kind'); b.deal_minutes = t('deal_minutes'); }
   return itemRules(b, false);
 }
@@ -159,7 +161,7 @@ function parseCsv(text) {
   for (let i = 0; i < text.length; i++) { const c = text[i];
     if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
     else if (c === '"' && !cell.trim()) { q = true; cell = ''; }
-    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === delim) { row.push(cell); cell = ''; if (row.length > 1000) throw Object.assign(new Error('wide'), { wide: true }); } // stop early: 200,000 commas are not a menu
     else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
     else cell += c; }
   if (cell || row.length) { row.push(cell); rows.push(row); }
@@ -450,9 +452,11 @@ export function canteen(d) {
     await run('UPDATE tenants SET canteen_pay=? WHERE id=?', JSON.stringify(p), req.tenantId); return p; }));
   // ---- menu ----
   S.get('/canteen/menu', wrap(async req => { const a = await need(req); return { campus_blocks: await blocksOf({ ...a.tenant, canteen_pay: null }), pay: payOf(a.tenant), link: shortLink(a.tenant), hours: hoursOf(a.tenant), state: stateOf(a.tenant), name: canteenName(a.tenant), open: isOpen(a.tenant), day: dayOf(a.tenant.timezone), slug: a.tenant.slug, ...(await menuOf(req.tenantId, true)) }; }));
-  S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required');
+  // menu changes that count or match (imports, Add item, Add category) run one at a time per campus, so two at once can't pass a cap together
+  const menuLock = tid => one("SELECT pg_advisory_xact_lock(hashtext('canteen-menu:' || ?::text))", tid);
+  S.post('/canteen/categories', wrap(async req => { await need(req); const name = str(req.body.name, 60); if (!name) throw bad('Category name required'); return tx(async () => { await menuLock(req.tenantId);
     const n = (await one('SELECT count(*) n FROM canteen_categories WHERE tenant_id=?', req.tenantId)).n; if (n >= MAX_CATS) throw bad('Up to 50 categories');
-    const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }));
+    const id = uid(); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, req.tenantId, name, n, now()); return { id, name }; }); }));
   S.patch('/canteen/categories/:id', wrap(async req => { await need(req); const name = str(req.body.name, 60);
     const sets = [], args = []; if (name) { sets.push('name=?'); args.push(name); } if (Number.isInteger(req.body.sort_order)) { sets.push('sort_order=?'); args.push(req.body.sort_order); }
     if (!sets.length) throw bad('Nothing to change');
@@ -467,10 +471,10 @@ export function canteen(d) {
       if (f.category_id && !(await one('SELECT 1 FROM canteen_categories WHERE id=? AND tenant_id=?', f.category_id, req.tenantId))) throw bad('Pick a category'); }
     return f;
   };
-  S.post('/canteen/items', wrap(async req => { await need(req); const f = await itemFields(req, false);
+  S.post('/canteen/items', wrap(async req => { await need(req); const f = await itemFields(req, false); return tx(async () => { await menuLock(req.tenantId);
     if ((await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', req.tenantId)).n >= MAX_ITEMS) throw bad('Up to 500 items');
     const o = { id: uid(), tenant_id: req.tenantId, is_veg: 1, created_at: now(), ...f };
-    await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); return { id: o.id }; }));
+    await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); return { id: o.id }; }); }));
   S.patch('/canteen/items/:id', wrap(async req => { await need(req); const f = await itemFields(req, true); if (!Object.keys(f).length) throw bad('Nothing to change');
     const r = await run(`UPDATE canteen_items SET ${Object.keys(f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(f), req.params.id, req.tenantId);
     if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -486,15 +490,36 @@ export function canteen(d) {
   // ---- menu upload (CSV or Excel): read the file, then preview (dry run) and import the mapped rows ----
   // the template and the sample: UTF-8 with a BOM so Excel shows ₹ and Telugu; the sample is the file the tests import
   const csvOut = (res, name, body) => res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` }).send(body);
-  S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '﻿' + MENU_FIELDS.join(',') + '\r\n'); } catch (e) { next(e); } });
+  S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '\ufeff' + MENU_FIELDS.join(',') + '\r\n'); } catch (e) { next(e); } });
   S.get('/canteen/menu-sample.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-sample.csv', await fs.readFile(new URL('./samples/canteen-menu-sample.csv', import.meta.url))); } catch (e) { next(e); } });
   // read-excel-file is loaded only for an .xlsx (as qrcode is for QR codes): if it is missing, CSV uploads still work
-  let xlsx = null;
-  const readXlsx = async buf => { if (!xlsx) { try { xlsx = (await import('read-excel-file/node')).default; } catch { console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); } }
-    try { return (await xlsx(buf))[0]?.data || []; } catch { throw bad('Could not read this Excel file. Save it as .xlsx or .csv and try again'); } };
+  let xlsx = null, zip = null;
+  const tooWide = n => bad(`Too many columns: the file has ${n >= 1000 ? 'over 1,000' : n}, a menu needs at most ${MAX_UPLOAD_COLS}. Delete the extra columns and save again`);
+  const tooLarge = () => bad(`This sheet is too large: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`);
+  const unreadable = () => bad('Could not read this Excel file. Save it as .xlsx or .csv and try again');
+  const colNo = s => [...s].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  // Look inside the .xlsx (a zip) before the reader does: every XML part must unpack to at most 10 MB (40 MB together), and the
+  // first sheet may not reach past 1,000 rows or 100 columns by its <dimension>, its rows or any cell address. Only that sheet is unpacked here.
+  const checkXlsx = buf => { const { unzipSync, strFromU8 } = zip; let parts, total = 0;
+    try { parts = unzipSync(buf, { filter: f => { if (/\.(xml|rels)$/.test(f.name)) { if (f.originalSize > XLSX_PART_MAX) throw tooLarge(); total += f.originalSize; } return /^xl\/(workbook\.xml|_rels\/workbook\.xml\.rels)$/.test(f.name); } }); }
+    catch (e) { if (e instanceof HttpErr) throw e; throw unreadable(); }
+    if (total > 4 * XLSX_PART_MAX) throw tooLarge();
+    const text = n => parts[n] ? strFromU8(parts[n]) : '', rid = /<(?:\w+:)?sheet\b[^>]*\br:id="([^"]+)"/.exec(text('xl/workbook.xml'))?.[1];
+    const rel = [...text('xl/_rels/workbook.xml.rels').matchAll(/<(?:\w+:)?Relationship\b[^>]*>/g)].map(x => x[0]).find(x => rid && x.includes(`Id="${rid}"`));
+    const target = /Target="([^"]+)"/.exec(rel || '')?.[1] || 'worksheets/sheet1.xml', path = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
+    let sheet; try { sheet = unzipSync(buf, { filter: f => f.name === path })[path]; } catch { throw unreadable(); }
+    if (!sheet) throw unreadable();
+    const x = strFromU8(sheet), dim = /<(?:\w+:)?dimension\b[^>]*\bref="[A-Z]+\d+(?::([A-Z]+)(\d+))?"/.exec(x);
+    if (dim?.[1] && (colNo(dim[1]) > XLSX_COLS_MAX || +dim[2] > XLSX_ROWS_MAX)) throw tooLarge();
+    if ((x.match(/<(?:\w+:)?row\b/g) || []).length > XLSX_ROWS_MAX) throw tooLarge();
+    for (const c of x.matchAll(/<(?:\w+:)?c\b[^>]*?\br="([A-Z]{1,3})(\d+)"/g)) if (colNo(c[1]) > XLSX_COLS_MAX || +c[2] > XLSX_ROWS_MAX) throw tooLarge(); };
+  const readXlsx = async buf => { if (!xlsx) { try { zip = await import('fflate'); xlsx = (await import('read-excel-file/node')).readSheet; } catch { xlsx = null; console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); } }
+    checkXlsx(buf);
+    try { return await xlsx(buf, 1); } catch { throw unreadable(); } }; // the first sheet only
   S.post('/canteen/menu/read', wrap(async req => { await need(req);
     const name = str(req.body.name, 200), m = /^data:[^,]*;base64,/.exec(typeof req.body.data === 'string' ? req.body.data : '');
     if (!m) throw bad('Choose a .csv or .xlsx file');
+    if (req.body.data.length > Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 200) throw bad('The file is bigger than 5 MB: a menu file is usually a few KB'); // before decoding
     const ext = (/\.([a-z0-9]+)$/i.exec(name)?.[1] || '').toLowerCase();
     if (ext === 'xls') throw bad('This is an old Excel file (.xls). Save it as .xlsx or .csv and upload that');
     if (ext !== 'csv' && ext !== 'xlsx') throw bad('Choose a .csv or .xlsx file');
@@ -504,12 +529,14 @@ export function canteen(d) {
     if (ext === 'xlsx') grid = await readXlsx(buf);
     else { if (buf.includes(0) || buf.subarray(0, 2).toString('latin1') === 'PK') throw bad("This doesn't look like a CSV file. Save it as .csv or .xlsx and try again");
       let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = new TextDecoder('windows-1252').decode(buf); } // older Excel saves "CSV" in the Windows code page
-      grid = parseCsv(text.replace(/^﻿/, '')); }
+      try { grid = parseCsv(text.replace(/^\ufeff/, '')); } catch (e) { if (e.wide) throw tooWide(1000); throw e; } }
     const recs = grid.map((r, i) => ({ cells: r.map(cellText), line: i + 1 })).filter(r => r.cells.some(Boolean)); // blank rows skipped; row numbers stay as in the file
     if (!recs.length) throw bad('The file is empty');
     const [head, ...body] = recs; if (!body.length) throw bad('The file has only the header row: add one menu item per row under it');
     if (body.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file (this one has ${body.length})`);
-    const width = Math.max(head.cells.length, ...body.map(r => r.cells.length)), pad = c => Array.from({ length: width }, (_, i) => c[i] ?? '');
+    const used = c => { let n = c.length; while (n && !c[n - 1]) n--; return n; }; // empty cells at the end of a row don't count
+    const width = Math.max(used(head.cells), ...body.map(r => used(r.cells))); if (width > MAX_UPLOAD_COLS) throw tooWide(width);
+    const pad = c => Array.from({ length: width }, (_, i) => c[i] ?? '');
     return { columns: pad(head.cells).map((c, i) => str(c, 80) || `Column ${i + 1}`), rows: body.map(r => pad(r.cells)), lines: body.map(r => r.line), total: body.length };
   }));
   // Same rules as Add item, per row. An active item with the same name (any case) in the same category is updated, otherwise added;
@@ -517,7 +544,7 @@ export function canteen(d) {
   S.post('/canteen/menu/import', wrap(async req => { await need(req); const tid = req.tenantId, list = req.body.rows, dry = req.body.dry_run !== false;
     if (!Array.isArray(list) || !list.length) throw bad('No rows to import');
     if (list.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file`);
-    return tx(async () => {
+    return tx(async () => { await menuLock(tid); // one menu change at a time per campus: the caps and the name matching stay true
       const cats = await all('SELECT id, name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid), catId = new Map();
       for (const c of cats) if (!catId.has(c.name.trim().toLowerCase())) catId.set(c.name.trim().toLowerCase(), c.id);
       const have = new Map(); for (const i of await all('SELECT id, name, category_id FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at', tid)) { const k = `${i.category_id || ''}\n${i.name.trim().toLowerCase()}`; if (!have.has(k)) have.set(k, i.id); }
