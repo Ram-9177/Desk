@@ -1512,6 +1512,32 @@ try {
   const icsv = await fetch(API + '/canteen/inventory.csv', { headers: { authorization: 'Bearer ' + T.store } });
   check('inventory history downloads as CSV', icsv.status === 200 && /Sri Ram Traders/.test(await icsv.text()));
   check('managers have the inventory too', (await api('/canteen/inventory', { token: T.pavan })).status === 200);
+  // ---- inventory categories: create, read, rename, reorder, delete ----
+  const ic0 = (await api('/canteen/inventory', { token: T.store })).data;
+  check('the category typed on Rice became a real category, with its item count', ic0.cats.some(c => c.name === 'Grains' && c.items === 1) && ic0.items.find(i => i.name === 'Rice').category_id === ic0.cats.find(c => c.name === 'Grains').id);
+  const dairy = await ok('add the category Dairy', '/canteen/inventory/categories', { token: T.store, method: 'POST', body: { name: 'Dairy' } });
+  await fails('the same category twice is refused (any letter case)', '/canteen/inventory/categories', { token: T.store, method: 'POST', body: { name: 'dairy' } }, 400, 'already exists');
+  const milk = await ok('add Milk into Dairy', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Milk', unit: 'litre', category_id: dairy.id, qty: '20', min_qty: '5', cost: '56' } });
+  check('…Milk is in Dairy', milk.category_id === dairy.id && milk.category === 'Dairy');
+  await fails('a category from another campus or a made-up one is refused', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Curd', unit: 'kg', category_id: 'nope' } }, 400, 'category');
+  await ok('rename Dairy to Dairy & eggs', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'PATCH', body: { name: 'Dairy & eggs' } });
+  const ic1 = (await api('/canteen/inventory', { token: T.store })).data;
+  check('…the item shows the new name', ic1.items.find(i => i.id === milk.id).category === 'Dairy & eggs');
+  await fails('renaming onto another category\'s name is refused', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'PATCH', body: { name: 'grains' } }, 400, 'already has that name');
+  const firstBefore = ic1.cats[0].name;
+  await ok('move Dairy & eggs up', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'PATCH', body: { move: 'up' } });
+  check('…it is now first', (await api('/canteen/inventory', { token: T.store })).data.cats[0].id === dairy.id && firstBefore !== 'Dairy & eggs');
+  await ok('move a stock item to another category', '/canteen/inventory/' + milk.id, { token: T.store, method: 'PATCH', body: { category_id: ic1.cats.find(c => c.name === 'Grains').id } });
+  await ok('…and back', '/canteen/inventory/' + milk.id, { token: T.store, method: 'PATCH', body: { category_id: dairy.id } });
+  await fails('a category with items cannot be deleted without saying where they go', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'DELETE', body: {} }, 409, 'Pick where to move');
+  const gid = ic1.cats.find(c => c.name === 'Grains').id;
+  const del = await ok('delete Dairy & eggs, moving Milk to Grains', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'DELETE', body: { move_to: gid } });
+  const ic2 = (await api('/canteen/inventory', { token: T.store })).data;
+  check('…the category is gone and Milk is in Grains', del.moved === 1 && !ic2.cats.some(c => c.id === dairy.id) && ic2.items.find(i => i.id === milk.id).category === 'Grains');
+  const empty = await ok('an empty category', '/canteen/inventory/categories', { token: T.store, method: 'POST', body: { name: 'Spices' } });
+  await ok('…deletes straight away', '/canteen/inventory/categories/' + empty.id, { token: T.store, method: 'DELETE', body: {} });
+  await fails('counter staff cannot change inventory categories', '/canteen/inventory/categories', { token: T.kavya, method: 'POST', body: { name: 'X' } }, 403);
+  check('the inventory report groups by category', (await api('/canteen/inventory/report?range=day', { token: T.store })).data.by_category.some(c => c.category === 'Grains'));
   const tur = await ok('turmeric in grams at ₹0.45 a gram', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Turmeric', unit: 'g', qty: '1000', cost: '0.45' } });
   check('…its value is exact (₹450, not rounded per gram)', tur.value_paise === 45000);
   await ok('…a count finds 990 g', `/canteen/inventory/${tur.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count', qty: '990' } });
@@ -1847,6 +1873,9 @@ async function uiSmoke(tok, id) {
     let invOk = false; for (let i = 0; i < 40 && !invOk; i++) { await sleep(250); invOk = await js(`return !!document.querySelector('.cn-inv') && !document.querySelector('[data-t]')`).catch(() => false); }
     check('#/c/inventory: inventory staff see only the inventory', invOk);
     check('…searching finds rice', await js(`const q = document.querySelector('#invq'); q.value = 'rice'; q.dispatchEvent(new Event('input')); return [...document.querySelectorAll('.cn-inv')].filter(r => !r.hidden).length === 1`));
+    check('stock is grouped by category, and the Categories window lists them', await js(`const q = document.querySelector('#invq'); q.value = ''; q.dispatchEvent(new Event('input'));
+      const groups = [...document.querySelectorAll('.cn-invg summary b')].map(b => b.textContent); document.querySelector('#invcats').click(); await new Promise(r => setTimeout(r, 300));
+      const rows = document.querySelectorAll('dialog .cn-icr').length; document.querySelector('dialog')?.close(); return groups.includes('Grains') && rows >= 1`));
     await visit('super admin: Set up with search and features', '/c/canteen', tok.sa, '[data-t]');
     check('…searching people and opening a person\'s features', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#stq'); i++) await new Promise(r => setTimeout(r, 200));
       const q = document.querySelector('#stq'); q.value = 'kavya'; q.dispatchEvent(new Event('input')); const shown = [...document.querySelectorAll('[data-row]')].filter(r => !r.hidden);

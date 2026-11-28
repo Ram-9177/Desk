@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS canteen_inv_items (id TEXT PRIMARY KEY, tenant_id TEX
   qty DOUBLE PRECISION NOT NULL DEFAULT 0, min_qty DOUBLE PRECISION NOT NULL DEFAULT 0, cost_paise INT NOT NULL DEFAULT 0, active INT DEFAULT 1, created_at TEXT, updated_at TEXT);
 CREATE INDEX IF NOT EXISTS cinv_t ON canteen_inv_items(tenant_id, active);
 ALTER TABLE canteen_inv_items ALTER COLUMN cost_paise TYPE DOUBLE PRECISION; -- per gram or ml the cost is a fraction of a paisa
+-- inventory categories (Grains, Dairy, Vegetables …): their own list; an item keeps the category's id and, for reading, its name
+CREATE TABLE IF NOT EXISTS canteen_inv_categories (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL, sort_order INT DEFAULT 0, created_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS cinvc_name ON canteen_inv_categories(tenant_id, lower(name));
+ALTER TABLE canteen_inv_items ADD COLUMN IF NOT EXISTS category_id TEXT;
+-- categories typed on items before this list existed become real categories
+INSERT INTO canteen_inv_categories (id, tenant_id, name, sort_order, created_at)
+  SELECT md5(tenant_id || ':' || lower(category)), tenant_id, min(category), 0, now()::text FROM canteen_inv_items WHERE category IS NOT NULL AND category_id IS NULL GROUP BY tenant_id, lower(category) ON CONFLICT DO NOTHING;
+UPDATE canteen_inv_items i SET category_id = c.id FROM canteen_inv_categories c WHERE i.category_id IS NULL AND i.category IS NOT NULL AND c.tenant_id = i.tenant_id AND lower(c.name) = lower(i.category);
 CREATE TABLE IF NOT EXISTS canteen_inv_moves (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, item_id TEXT NOT NULL REFERENCES canteen_inv_items(id), kind TEXT NOT NULL CHECK (kind IN ('in','use','waste','count')),
   qty DOUBLE PRECISION NOT NULL, before_qty DOUBLE PRECISION, after_qty DOUBLE PRECISION, cost_paise INT DEFAULT 0, note TEXT, user_id TEXT, user_name TEXT, created_at TEXT);
 CREATE INDEX IF NOT EXISTS cinvm_t ON canteen_inv_moves(tenant_id, created_at);
@@ -628,27 +636,57 @@ export function canteen(d) {
   // ---- inventory: raw stock (rice, oil, milk, gas …), every change kept with who and why ----
   const UNITS = ['kg', 'g', 'litre', 'ml', 'pcs', 'packet', 'dozen', 'tray', 'bottle', 'can', 'box', 'cylinder', 'bag'];
   const num = (v, what, min = 0) => { if (v === undefined || v === null || String(v).trim() === '') throw bad(`Enter the ${what}`); const n = Number(String(v).replace(/,/g, '')); if (!Number.isFinite(n) || n < min || n > 1e7) throw bad(`Enter a valid ${what}`); return Math.round(n * 1000) / 1000; };
-  const invRow = r => ({ id: r.id, name: r.name, unit: r.unit, category: r.category, qty: r.qty, min_qty: r.min_qty, cost_paise: r.cost_paise, active: !!r.active, low: r.active && r.qty <= r.min_qty, out: r.active && r.qty <= 0, value_paise: Math.round(Math.max(0, r.qty) * r.cost_paise), updated_at: r.updated_at });
+  const invRow = r => ({ id: r.id, name: r.name, unit: r.unit, category: r.category, category_id: r.category_id, qty: r.qty, min_qty: r.min_qty, cost_paise: r.cost_paise, active: !!r.active, low: r.active && r.qty <= r.min_qty, out: r.active && r.qty <= 0, value_paise: Math.round(Math.max(0, r.qty) * r.cost_paise), updated_at: r.updated_at });
   S.get('/canteen/inventory', wrap(async req => { await needCan(req, 'inventory');
     const items = (await all('SELECT * FROM canteen_inv_items WHERE tenant_id=? ORDER BY active DESC, category NULLS LAST, name', req.tenantId)).map(invRow), live = items.filter(i => i.active);
     const moves = await all(`SELECT m.*, i.name item, i.unit FROM canteen_inv_moves m JOIN canteen_inv_items i ON i.id=m.item_id WHERE m.tenant_id=? ORDER BY m.created_at DESC LIMIT 60`, req.tenantId);
-    return { units: UNITS, items, low: live.filter(i => i.low).length, out: live.filter(i => i.out).length, value_paise: live.reduce((s, i) => s + i.value_paise, 0), categories: [...new Set(live.map(i => i.category).filter(Boolean))].sort(), moves }; }));
-  const invFields = (b, partial) => { const f = {};
+    const cats = (await all('SELECT id, name, sort_order FROM canteen_inv_categories WHERE tenant_id=? ORDER BY sort_order, lower(name)', req.tenantId)).map(c => { const its = live.filter(i => i.category_id === c.id);
+      return { ...c, items: its.length, low: its.filter(i => i.low).length, value_paise: its.reduce((x, i) => x + i.value_paise, 0) }; });
+    return { cats, units: UNITS, items, low: live.filter(i => i.low).length, out: live.filter(i => i.out).length, value_paise: live.reduce((s, i) => s + i.value_paise, 0), categories: [...new Set(live.map(i => i.category).filter(Boolean))].sort(), moves }; }));
+  const invFields = async (req, b, partial) => { const f = {};
     if (!partial || b.name !== undefined) { f.name = str(b.name, 80); if (!f.name) throw bad('Name required'); }
     if (!partial || b.unit !== undefined) { f.unit = str(b.unit, 20).toLowerCase(); if (!UNITS.includes(f.unit)) throw bad('Pick a unit from the list'); }
-    if (b.category !== undefined) f.category = str(b.category, 40) || null;
+    if (b.category_id !== undefined) { if (!b.category_id) Object.assign(f, { category_id: null, category: null });
+      else { const c = await one('SELECT id, name FROM canteen_inv_categories WHERE id=? AND tenant_id=?', String(b.category_id), req.tenantId); if (!c) throw bad('Pick a category from the list'); Object.assign(f, { category_id: c.id, category: c.name }); } }
+    else if (b.category !== undefined) { const name = str(b.category, 40); // a category by name: the existing one, or a new one
+      if (!name) Object.assign(f, { category_id: null, category: null }); else { const c = await invCat(req.tenantId, name); Object.assign(f, { category_id: c.id, category: c.name }); } }
     if (b.min_qty !== undefined) f.min_qty = String(b.min_qty).trim() === '' ? 0 : num(b.min_qty, 'minimum level');
     if (b.cost !== undefined) f.cost_paise = String(b.cost).trim() === '' ? 0 : num(b.cost, 'cost per unit') * 100;
     if (b.active !== undefined) f.active = b.active ? 1 : 0;
     return f; };
-  S.post('/canteen/inventory', wrap(async req => { const a = await needCan(req, 'inventory'), f = invFields(req.body, false), qty = num(req.body.qty ?? 0, 'opening stock');
+  const invCat = async (tid, name) => { const c = await one('SELECT id, name FROM canteen_inv_categories WHERE tenant_id=? AND lower(name)=lower(?)', tid, name); if (c) return c;
+    if ((await one('SELECT count(*) n FROM canteen_inv_categories WHERE tenant_id=?', tid)).n >= 100) throw bad('Up to 100 inventory categories');
+    const id = uid(), n = (await one('SELECT coalesce(max(sort_order),0)+1 n FROM canteen_inv_categories WHERE tenant_id=?', tid)).n;
+    await run('INSERT INTO canteen_inv_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING', id, tid, name, n, now());
+    return one('SELECT id, name FROM canteen_inv_categories WHERE tenant_id=? AND lower(name)=lower(?)', tid, name); };
+  // ---- inventory categories: add, rename, reorder, delete (items move to another category or to none) ----
+  S.post('/canteen/inventory/categories', wrap(async req => { await needCan(req, 'inventory'); const name = str(req.body.name, 40); if (!name) throw bad('Category name required');
+    if (await one('SELECT 1 FROM canteen_inv_categories WHERE tenant_id=? AND lower(name)=lower(?)', req.tenantId, name)) throw bad('That category already exists');
+    return invCat(req.tenantId, name); }));
+  S.patch('/canteen/inventory/categories/:id', wrap(async req => { await needCan(req, 'inventory');
+    const c = await one('SELECT * FROM canteen_inv_categories WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!c) throw notFound();
+    if (req.body.name !== undefined) { const name = str(req.body.name, 40); if (!name) throw bad('Category name required');
+      if (await one('SELECT 1 FROM canteen_inv_categories WHERE tenant_id=? AND lower(name)=lower(?) AND id<>?', req.tenantId, name, c.id)) throw bad('Another category already has that name');
+      await tx(async () => { await run('UPDATE canteen_inv_categories SET name=? WHERE id=?', name, c.id); await run('UPDATE canteen_inv_items SET category=? WHERE category_id=?', name, c.id); }); }
+    if (req.body.move === 'up' || req.body.move === 'down') { // swap places with the neighbour
+      const list = await all('SELECT id FROM canteen_inv_categories WHERE tenant_id=? ORDER BY sort_order, lower(name)', req.tenantId), i = list.findIndex(x => x.id === c.id), j = req.body.move === 'up' ? i - 1 : i + 1;
+      if (j >= 0 && j < list.length) { [list[i], list[j]] = [list[j], list[i]]; await tx(async () => { for (const [k, x] of list.entries()) await run('UPDATE canteen_inv_categories SET sort_order=? WHERE id=?', k, x.id); }); } }
+    return { ok: true }; }));
+  S.delete('/canteen/inventory/categories/:id', wrap(async req => { await needCan(req, 'inventory');
+    const c = await one('SELECT * FROM canteen_inv_categories WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!c) throw notFound();
+    const n = (await one('SELECT count(*) n FROM canteen_inv_items WHERE category_id=?', c.id)).n, to = req.body?.move_to;
+    if (n && to === undefined) throw new HttpErr(409, 'HAS_ITEMS', `${n} stock item${n === 1 ? ' is' : 's are'} in ${c.name}. Pick where to move ${n === 1 ? 'it' : 'them'} first.`);
+    const dest = to ? await one('SELECT id, name FROM canteen_inv_categories WHERE id=? AND tenant_id=? AND id<>?', String(to), req.tenantId, c.id) : null; if (to && !dest) throw bad('Pick another category to move the items to');
+    await tx(async () => { await run('UPDATE canteen_inv_items SET category_id=?, category=?, updated_at=? WHERE category_id=?', dest?.id ?? null, dest?.name ?? null, now(), c.id); await run('DELETE FROM canteen_inv_categories WHERE id=?', c.id); });
+    return { moved: n, to: dest?.name ?? null }; }));
+  S.post('/canteen/inventory', wrap(async req => { const a = await needCan(req, 'inventory'), f = await invFields(req, req.body, false), qty = num(req.body.qty ?? 0, 'opening stock');
     if ((await one('SELECT count(*) n FROM canteen_inv_items WHERE tenant_id=?', req.tenantId)).n >= 1000) throw bad('Up to 1000 stock items');
     if (await one('SELECT 1 FROM canteen_inv_items WHERE tenant_id=? AND lower(name)=lower(?) AND active=1', req.tenantId, f.name)) throw bad('That item is already in the inventory');
-    const id = uid(), t = now(); await run(`INSERT INTO canteen_inv_items (id, tenant_id, name, unit, category, qty, min_qty, cost_paise, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?)`,
-      id, req.tenantId, f.name, f.unit, f.category ?? null, qty, f.min_qty ?? 0, f.cost_paise ?? 0, t, t);
+    const id = uid(), t = now(); await run(`INSERT INTO canteen_inv_items (id, tenant_id, name, unit, category, category_id, qty, min_qty, cost_paise, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
+      id, req.tenantId, f.name, f.unit, f.category ?? null, f.category_id ?? null, qty, f.min_qty ?? 0, f.cost_paise ?? 0, t, t);
     if (qty) await run(`INSERT INTO canteen_inv_moves (id, tenant_id, item_id, kind, qty, before_qty, after_qty, cost_paise, note, user_id, user_name, created_at) VALUES (?,?,?,'count',?,0,?,0,'Opening stock',?,?,?)`, uid(), req.tenantId, id, qty, qty, req.user.id, req.user.name, t);
     return invRow(await one('SELECT * FROM canteen_inv_items WHERE id=?', id)); }));
-  S.patch('/canteen/inventory/:id', wrap(async req => { await needCan(req, 'inventory'); const f = invFields(req.body, true); if (!Object.keys(f).length) throw bad('Nothing to change');
+  S.patch('/canteen/inventory/:id', wrap(async req => { await needCan(req, 'inventory'); const f = await invFields(req, req.body, true); if (!Object.keys(f).length) throw bad('Nothing to change');
     const cur = await one('SELECT name, active FROM canteen_inv_items WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!cur) throw notFound();
     if ((f.active ?? cur.active) && await one('SELECT 1 FROM canteen_inv_items WHERE tenant_id=? AND lower(name)=lower(?) AND active=1 AND id<>?', req.tenantId, f.name ?? cur.name, req.params.id)) throw bad('Another stock item already has that name');
     const r = await run(`UPDATE canteen_inv_items SET ${Object.keys(f).map(k => k + '=?').join(',')}, updated_at=? WHERE id=? AND tenant_id=?`, ...Object.values(f), now(), req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -672,12 +710,13 @@ export function canteen(d) {
   // purchases, use and waste over a period (inventory staff, managers and anyone with reports)
   S.get('/canteen/inventory/report', wrap(async req => { const a = await needCan(req, 'inventory', 'reports'), today = dayOf(a.tenant.timezone), back = { day: 0, week: 6, month: 29 }[req.query.range] ?? 6;
     const from = addDays(today, -back), tz = a.tenant.timezone || 'Asia/Kolkata';
-    const moves = (await all(`SELECT m.*, i.name item, i.unit FROM canteen_inv_moves m JOIN canteen_inv_items i ON i.id=m.item_id WHERE m.tenant_id=? AND m.created_at > ? ORDER BY m.created_at`, req.tenantId, new Date(Date.parse(from + 'T00:00:00Z') - 86400e3).toISOString()))
+    const moves = (await all(`SELECT m.*, i.name item, i.unit, i.category FROM canteen_inv_moves m JOIN canteen_inv_items i ON i.id=m.item_id WHERE m.tenant_id=? AND m.created_at > ? ORDER BY m.created_at`, req.tenantId, new Date(Date.parse(from + 'T00:00:00Z') - 86400e3).toISOString()))
       .filter(m => dayOf(tz, new Date(m.created_at)) >= from);
-    const by = {}; for (const m of moves) { const e = by[m.item_id] ||= { item: m.item, unit: m.unit, in: 0, use: 0, waste: 0, adjust: 0, bought_paise: 0, waste_paise: 0 };
+    const by = {}; for (const m of moves) { const e = by[m.item_id] ||= { item: m.item, category: m.category || 'No category', unit: m.unit, in: 0, use: 0, waste: 0, adjust: 0, bought_paise: 0, waste_paise: 0 };
       if (m.kind === 'in') { e.in += m.qty; e.bought_paise += m.cost_paise; } else if (m.kind === 'use') e.use += m.qty; else if (m.kind === 'waste') { e.waste += m.qty; e.waste_paise += m.cost_paise; } else e.adjust += m.qty; }
     const rows = Object.values(by).sort((x, y) => y.bought_paise - x.bought_paise || x.item.localeCompare(y.item));
-    return { from, to: today, rows, bought_paise: rows.reduce((s, r) => s + r.bought_paise, 0), waste_paise: rows.reduce((s, r) => s + r.waste_paise, 0), moves: moves.length,
+    const by_category = Object.values(rows.reduce((m, r) => { const e = m[r.category] ||= { category: r.category, bought_paise: 0, waste_paise: 0, items: 0 }; e.bought_paise += r.bought_paise; e.waste_paise += r.waste_paise; e.items++; return m; }, {})).sort((x, y) => y.bought_paise - x.bought_paise);
+    return { from, to: today, rows, by_category, bought_paise: rows.reduce((s, r) => s + r.bought_paise, 0), waste_paise: rows.reduce((s, r) => s + r.waste_paise, 0), moves: moves.length,
       by_person: Object.values(moves.reduce((m, x) => { const e = m[x.user_id] ||= { name: x.user_name || 'Someone', changes: 0 }; e.changes++; return m; }, {})) }; }));
   S.get('/canteen/inventory.csv', async (req, res, next) => { try { const a = await needCan(req, 'inventory', 'reports'), tzc = a.tenant.timezone || 'Asia/Kolkata';
     const rows = await all(`SELECT m.*, i.name item, i.unit FROM canteen_inv_moves m JOIN canteen_inv_items i ON i.id=m.item_id WHERE m.tenant_id=? ORDER BY m.created_at DESC LIMIT 20000`, req.tenantId);
