@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import jpeg from 'jpeg-js';
+import { zipSync, strToU8, Zip, ZipDeflate } from 'fflate'; // builds .xlsx files for the menu upload limits
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4397, APP = `http://localhost:${PORT}`, API = APP + '/api';
@@ -144,7 +145,7 @@ try {
   sec('Services and form types');
   const mkSvc = async (t, body) => ok(`create service ${body.code}`, '/services', { ...t, method: 'POST', body });
   const elec = await mkSvc(A, { code: 'ELEC', name: 'Electrical', description: 'Power, fans, lights', escalation_user_id: lata.id,
-    form_schema: { icon: 'bolt', form_type: 'location', lists: { block: ['Main block', 'Hostel block'] }, fields: [{ key: 'issue', label: 'Issue', type: 'select', required: true, options: ['Fan', 'Light', 'Switch'] }] } });
+    form_schema: { icon: 'bolt', form_type: 'location', lists: { block: ['Main block', 'Hostel block', 'Science block'] }, fields: [{ key: 'issue', label: 'Issue', type: 'select', required: true, options: ['Fan', 'Light', 'Switch'] }] } });
   const exam = await mkSvc(A, { code: 'EXAM', name: 'Examinations', form_schema: { icon: 'book', form_type: 'student', fields: [{ label: 'What do you need?', type: 'select', required: true, options: ['Hall ticket', 'Results'] }] } });
   const hostel = await mkSvc(A, { code: 'HOSTEL', name: 'Hostel', form_schema: { form_type: 'both', fields: [] } });
   const trans = await mkSvc(A, { code: 'TRANS', name: 'Transport', form_schema: { form_type: 'general', fields: [] } });
@@ -381,7 +382,7 @@ try {
   sec('Email connection, delivery, templates');
   T.sa = await login(SUPER.email, SUPER.password);
   const cfg0 = await ok('super admin reads mail config', '/mail/config', { token: T.sa });
-  check('25 email steps listed, none connected yet', cfg0.events.length === 25 && !cfg0.url);
+  check('27 email steps listed, none connected yet', cfg0.events.length === 27 && !cfg0.url);
   await fails('campus admin cannot read the connection', '/mail/config', { token: T.asha }, 403);
   await fails('flow URL must be https', '/mail/config', { token: T.sa, method: 'PUT', body: { url: 'ftp://x' } }, 400);
   await fails('short key rejected', '/mail/config', { token: T.sa, method: 'PUT', body: { key: 'short' } }, 400);
@@ -631,11 +632,12 @@ try {
   const d1 = (await dup('Dupa')).data;
   check('the first report makes a ticket (1 affected, normal priority)', !d1.merged && d1.affected_count === 1 && (await tk(d1.ticket_no)).priority === 'medium', JSON.stringify(d1));
   const d2 = (await dup('Dupb', 'Room no. 203')).data;
-  check('a second report of the same spot and problem the same day joins it: 2 affected', d2.merged && d2.ticket_no === d1.ticket_no && d2.affected_count === 2, JSON.stringify(d2));
+  const onT = async (x, no) => (await q('SELECT ticket_id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', alpha.id, x.ticket_no))[0]?.ticket_id === (await tk(no)).id; // a joiner's own number points at the shared ticket
+  check('a second report of the same spot and problem the same day joins it under its own number: 2 affected', d2.merged && d2.ticket_no !== d1.ticket_no && await onT(d2, d1.ticket_no) && d2.affected_count === 2 && (await tk(d1.ticket_no)).affected_count === 2, JSON.stringify(d2));
   const d3 = (await dup('Dupc', '#203')).data, d4 = (await dup('Dupd', '203 room')).data;
-  check('"#203" and "203 room" join it too; 3+ affected makes it High', d3.ticket_no === d1.ticket_no && d4.ticket_no === d1.ticket_no && d4.affected_count === 4 && (await tk(d1.ticket_no)).priority === 'high');
+  check('"#203" and "203 room" join it too; 3+ affected makes it High', await onT(d3, d1.ticket_no) && await onT(d4, d1.ticket_no) && d4.affected_count === 4 && (await tk(d1.ticket_no)).priority === 'high');
   const again = (await dup('Dupb', '203')).data;
-  check('the same person reporting twice is not counted twice', again.ticket_no === d1.ticket_no && (await tk(d1.ticket_no)).affected_count === 4, JSON.stringify(again));
+  check('the same person reporting twice is not counted twice (and keeps their number)', again.ticket_no === d2.ticket_no && await onT(again, d1.ticket_no) && (await tk(d1.ticket_no)).affected_count === 4, JSON.stringify(again));
   check("the joiner's email says how many others reported it", (await q("SELECT body FROM notifications WHERE template_key='created' AND recipient='dupb@dup.example.com'"))[0]?.body.includes('Known issue: 1 other reported this too'));
   check('the ticket page shows how many reported it', (await api(`/public/alpha/tickets/${d1.ticket_no}`)).data.affected_count === 4);
   const other = (await dup('Dupe', '203', { form_data: { loc_block: 'Main block' } })).data;
@@ -657,7 +659,7 @@ try {
   const c1 = (await dup('Dupr', '505')).data; r = await act((await tk(c1.ticket_no)).id, { to: 'closed', note: 'Fixed' });
   const c2 = (await dup('Dups', '505')).data;
   check('a closed ticket does not take a new report', r.status === 200 && !c2.merged && c2.ticket_no !== c1.ticket_no, r.error?.message);
-  // "Other": typed problems match when they are alike (pg_trgm similarity ≥ 0.6)
+  // "Other": typed problems match when nearly identical (filler words dropped, pg_trgm similarity ≥ 0.85)
   const o1 = await raise('alpha', { ...base('Otha'), form_data: { [qHelp]: 'Other: Lost my ID card!!' } });
   const o2 = await raise('alpha', { ...base('Othb'), form_data: { [qHelp]: 'Other: water tap leaking' } });
   check('"Other" problems: alike words join, different ones do not', o1.data?.merged && !o2.data?.merged, JSON.stringify([o1.data || o1.error, o2.data || o2.error]));
@@ -666,7 +668,8 @@ try {
   const bt = await q("SELECT ticket_no, affected_count, priority FROM tickets WHERE tenant_id=? AND location_key='hostel block:301'", alpha.id);
   check('50 reports at the same moment make exactly one ticket with 50 affected', burst.every(x => x.status === 200) && bt.length === 1 && bt[0].affected_count === 50 && bt[0].priority === 'critical',
     JSON.stringify({ errors: burst.filter(x => x.status !== 200).map(x => x.error?.message).slice(0, 2), tickets: bt }));
-  check('…and every one of them got that ticket number', new Set(burst.map(x => x.data.ticket_no)).size === 1);
+  check('…and 50 different numbers, each on that ticket', new Set(burst.map(x => x.data.ticket_no)).size === 50
+    && (await q('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=(SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?) AND ticket_no IS NOT NULL', alpha.id, bt[0].ticket_no))[0].n === 50);
   // one status change: one email to every requestor, each by name
   const big = await tk(d1.ticket_no); r = await act(big.id, { to: 'in_progress', note: 'Electrician on the way' });
   const sent = await q("SELECT recipient, body FROM notifications WHERE template_key='status_in_progress' AND ticket_id=?", big.id);
@@ -681,13 +684,273 @@ try {
   await ok('super admin switches to confirm mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'confirm' } });
   await fails('a tenant admin cannot switch it', '/merge-mode', { token: T.asha, method: 'PUT', body: { mode: 'silent' } }, 403);
   const ask = await dup('Dupv', '301');
-  check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.ticket_no === bt[0].ticket_no, JSON.stringify(ask.error));
+  check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.affected_count === 50, JSON.stringify(ask.error));
+  check('I4: …naming how many reported it and the problem, never that ticket\'s number or subject', !('ticket_no' in ask.error.details) && !('subject' in ask.error.details) && ask.error.details.problem === 'Fan'
+    && !new RegExp(`\\b${bt[0].ticket_no}\\b`).test(JSON.stringify(ask.error)) && /already reported here today \(50 people\)/.test(ask.error.message), JSON.stringify(ask.error));
   const no = (await dup('Dupv', '301', { merge: 'no' })).data, yes = (await dup('Dupw', '301', { merge: 'yes' })).data;
-  check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no === bt[0].ticket_no);
+  check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no !== bt[0].ticket_no && await onT(yes, bt[0].ticket_no));
   await ok('back to silent mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'silent' } });
   const rep = (await api('/reports?days=1', { token: T.asha })).data, row = rep.by_location.find(x => x.location === 'Hostel block · 2nd floor · 301');
   check('reports: students affected in total and per place', rep.affected >= 70 && row?.affected === 52 && row.tickets === 2, JSON.stringify({ affected: rep.affected, row }));
   check('CSV export has the number affected', (await (await fetch(`${API}/tickets.csv`, { headers: { authorization: 'Bearer ' + T.asha } })).text()).split('\r\n')[0].includes('"People affected"'));
+  }
+
+  sec('Own numbers on a shared ticket');
+  { await stop(); await start(); // fresh rate limits
+  const { stripFiller, SIMILARITY_STRICT, similarity } = await import('../merge.js');
+  const oth = (await q("SELECT id FROM services WHERE code='HELP'"))[0], qHelp = (await api('/services', { token: T.asha })).data.find(x => x.code === 'HELP').form_schema.fields[0].key;
+  const base = n => ({ service_id: oth.id, name: n, email: n.toLowerCase() + '@example.com', subject: 'Need help', location: 'Library' });
+  check('filler words go, "not" stays', stripFiller('The fan is not working, please') === 'fan not working' && stripFiller('fan not working') === 'fan not working');
+  check('"fan not working" vs "fan is not working" is identical once stripped', similarity(stripFiller('fan not working'), stripFiller('fan is not working')) === 1);
+  check('"fan not working" vs "fan making noise" is well under the bar', similarity(stripFiller('fan not working'), stripFiller('fan making noise')) < SIMILARITY_STRICT - 0.2);
+  const s1 = (await raise('alpha', { ...base('Stra'), form_data: { [qHelp]: 'Other: Projector is not turning on' } })).data;
+  const s2 = (await raise('alpha', { ...base('Strb'), form_data: { [qHelp]: 'Other: projector not turning on!!' } })).data;
+  const s3 = (await raise('alpha', { ...base('Strc'), form_data: { [qHelp]: 'Other: projector remote missing' } })).data;
+  check('nearly identical "Other" text joins; a different problem in the same place does not', s2.merged && !s3.merged, JSON.stringify([s1, s2, s3]));
+  const cols = (await q("SELECT column_name c FROM information_schema.columns WHERE table_name='ticket_requestors'")).map(x => x.c);
+  check('ticket_requestors carries number, token and complaint', ['tenant_id','ticket_no','tracking_token','subject','description','form_data','detached_at','detached_to'].every(c => cols.includes(c)));
+  const firstRows = await q("SELECT count(*)::int n FROM ticket_requestors r JOIN tickets t ON t.id=r.ticket_id WHERE r.is_first=1 AND (r.ticket_no IS DISTINCT FROM t.ticket_no OR r.tenant_id IS NULL)");
+  check('every first requestor row carries its ticket number', firstRows[0].n === 0);
+  const own = async (n, extra = {}) => (await raise('alpha', { ...elecBody(n, `${n.toLowerCase()}@own.example.com`), form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '101', issue: 'Fan' }, ...extra })).data;
+  const a1 = await own('Owna'), a2 = await own('Ownb'), a3 = await own('Ownc');
+  check('the first report keeps its number; each joiner gets the next number, not the shared one', !a1.merged && a2.merged && a3.merged && a2.ticket_no !== a1.ticket_no && a3.ticket_no !== a2.ticket_no && a2.tracking_token && a2.tracking_token !== a1.tracking_token, JSON.stringify([a1, a2, a3]));
+  const rows = await q('SELECT ticket_no, is_first, description FROM ticket_requestors WHERE ticket_id=(SELECT id FROM tickets WHERE tenant_id=? AND ticket_no=?) ORDER BY raised_at', alpha.id, a1.ticket_no);
+  check('three rows on one ticket, each with its own number and complaint', rows.length === 3 && rows.map(r => r.ticket_no).join() === [a1, a2, a3].map(x => x.ticket_no).join() && rows.every(r => r.description === 'Something is broken.'));
+  const again = await own('Ownb');
+  check('the same person reporting again gets the number they already have, no new one', again.ticket_no === a2.ticket_no && (await q('SELECT last_number FROM ticket_counters WHERE tenant_id=?', alpha.id))[0].last_number === Number(a3.ticket_no));
+  check("the joiner's email carries their own number and link", (await q("SELECT subject, body FROM notifications WHERE template_key='created' AND recipient='ownb@own.example.com'"))[0]?.subject.includes(`[${a2.ticket_no}]`) && (await q("SELECT body FROM notifications WHERE template_key='created' AND recipient='ownb@own.example.com'"))[0].body.includes(`/t/${a2.ticket_no}?k=${a2.tracking_token}`));
+  const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => own(`Many${i}`, { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '150', issue: 'Light' } })));
+  check('50 at once: one ticket, 50 different numbers', new Set(burst.map(x => x.ticket_no)).size === 50 && (await q("SELECT count(*)::int n FROM tickets WHERE tenant_id=? AND location_key='science block:150'", alpha.id))[0].n === 1);
+  const tk = async no => (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', alpha.id, no))[0];
+  const shared = await tk(a1.ticket_no);
+  r = await act(shared.id, { to: 'in_progress', note: 'Electrician on the way' });
+  const mails = await q("SELECT recipient, subject, body FROM notifications WHERE template_key='status_in_progress' AND ticket_id=? ORDER BY recipient", shared.id);
+  check('one status change: three emails, each under its own number', r.status === 200 && mails.length === 3 && mails.find(m => m.recipient === 'ownb@own.example.com')?.subject.includes(`[${a2.ticket_no}]`) && mails.find(m => m.recipient === 'ownc@own.example.com')?.subject.includes(`[${a3.ticket_no}]`));
+  check("a joiner's email never carries the first student's name", !mails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Owna'));
+  const strMail = async to => (await q("SELECT text_body FROM notifications WHERE template_key='created' AND recipient=?", to))[0]?.text_body || '';
+  const stra = await strMail('stra@example.com'), strb = await strMail('strb@example.com');
+  check("a joiner's email lists their own form answer, not the first student's", strb.includes('projector not turning on!!') && !strb.includes('Projector is not turning on') && stra.includes('Projector is not turning on'), strb);
+  await run("UPDATE ticket_requestors SET raised_at='2026-01-05T06:30:00.000Z' WHERE tenant_id=? AND ticket_no=?", alpha.id, a2.ticket_no);
+  r = await act(shared.id, { to: 'closed', note: 'Rewired the fan' });
+  const closedB = (await q("SELECT text_body FROM notifications WHERE template_key='status_closed' AND recipient='ownb@own.example.com'"))[0]?.text_body || '';
+  check("a joiner's details say when they reported it", r.status === 200 && closedB.includes('Raised on: 5 Jan 2026, 12:00 pm'), closedB);
+  r = await api(`/public/alpha/tickets/${a1.ticket_no}/reopen`, { method: 'POST', body: { reason: 'Still sparking near the switch' } });
+  const acc = await api(`/tickets/${shared.id}/reopen-request`, { token: T.pavan, method: 'POST', body: { decision: 'accept', note: 'We will look again', approved: true } });
+  const reo = async to => (await q("SELECT text_body FROM notifications WHERE template_key='reopen_accepted' AND recipient=?", to))[0]?.text_body || '';
+  const reoA = await reo('owna@own.example.com'), reoB = await reo('ownb@own.example.com');
+  check("after the first student reopens, the joiner's timeline says Reopened, without their name or words", r.status === 200 && acc.status === 200 && reoB.includes('Reopened') && !reoB.includes('Owna') && !reoB.includes('Still sparking'), reoB);
+  check('the first student still sees their own reopen reason', reoA.includes('Still sparking near the switch'), reoA);
+  r = await act(shared.id, { to: 'in_progress', note: 'Looking again' }); // the reopen above left it open
+  const pageB = (await api(`/public/alpha/tickets/${a2.ticket_no}`)).data, pageA = (await api(`/public/alpha/tickets/${a1.ticket_no}`)).data;
+  check("a joiner's number opens the shared ticket under their own number, with their own complaint", pageB.ticket_no === a2.ticket_no && pageB.status === 'in_progress' && pageB.affected_count === 3 && pageB.mine?.description === 'Something is broken.' && pageA.mine == null);
+  await ok('the joiner adds a note from their page', `/public/alpha/tickets/${a2.ticket_no}/notes`, { method: 'POST', body: { body: 'Still not working at 2 pm' } });
+  const pA = (await api(`/public/alpha/tickets/${a1.ticket_no}`)).data, pB = (await api(`/public/alpha/tickets/${a2.ticket_no}`)).data, pC = (await api(`/public/alpha/tickets/${a3.ticket_no}`)).data;
+  check('the note shows on their page only; staff updates show on all three', pB.events.some(e => e.body === 'Still not working at 2 pm') && !pA.events.some(e => e.body === 'Still not working at 2 pm') && !pC.events.some(e => e.body === 'Still not working at 2 pm') && [pA, pB, pC].every(p => p.events.some(e => e.body?.startsWith('Electrician on the way'))));
+  check('the provider sees the note with the student and their number', (await api(`/tickets/${shared.id}`, { token: T.pavan })).data.events.some(e => e.body === 'Still not working at 2 pm' && e.actor_name === 'Ownb'));
+  r = await act(shared.id, { to: 'closed', note: 'Fixed' });
+  const closedMails = await q("SELECT recipient, text_body body FROM notifications WHERE template_key='status_closed' AND ticket_id=? ORDER BY created_at DESC", shared.id); // newest first (it was closed once before); the text as sent, not the template
+  check("the closed email to the first student does not carry the joiner's note", !closedMails.find(m => m.recipient === 'owna@own.example.com').body.includes('Still not working') && closedMails.find(m => m.recipient === 'ownb@own.example.com').body.includes('Still not working'));
+  check('the bot answers a joiner number with that number', (await api('/public/alpha/bot', { method: 'POST', body: { q: a2.ticket_no } })).data.text.startsWith(`Ticket ${a2.ticket_no}`));
+  ids.joinerNo = a2.ticket_no; ids.closedId = shared.id; // for the Chrome screens (the shared ticket ends closed: no Split out there)
+  // a joiner's page never carries the first student's name, complaint or photos
+  const hopForm = { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '170', issue: 'Fan' };
+  const h1 = await own('Hopa', { form_data: hopForm, description: 'Sparks from the socket', files: [{ name: 'spark.png', type: 'image/png', source: 'camera', data: PNG }] });
+  const h2 = await own('Hopb', { form_data: hopForm, description: 'Socket smells burnt' });
+  const ph1 = (await api(`/public/alpha/tickets/${h1.ticket_no}`)).data, ph2 = (await api(`/public/alpha/tickets/${h2.ticket_no}`)).data, sph2 = JSON.stringify(ph2);
+  check("a joiner's page omits the first student's name, complaint and photos", h2.merged && ph2.mine?.description === 'Socket smells burnt' && !sph2.includes('Hopa') && !sph2.includes('Sparks from the socket')
+    && ph2.events.find(e => e.event_type === 'created')?.files.length === 0 && ph1.events.find(e => e.event_type === 'created')?.files.length === 1, sph2.slice(0, 600));
+  r = await api(`/public/alpha/tickets/${a2.ticket_no}/reopen`, { method: 'POST', body: { reason: 'Fan stopped again tonight' } });
+  const reqEv = (await api(`/tickets/${shared.id}`, { token: T.pavan })).data.events.find(e => e.event_type === 'reopen_requested' && e.body === 'Fan stopped again tonight');
+  const rowB = (await q('SELECT id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', alpha.id, a2.ticket_no))[0];
+  const rA = (await api(`/public/alpha/tickets/${a1.ticket_no}`)).data, rB = (await api(`/public/alpha/tickets/${a2.ticket_no}`)).data;
+  check('a joiner asks to reopen from their page: under their own row, seen by the provider and on their page only', r.status === 200 && reqEv?.actor_name === 'Ownb' && JSON.parse(reqEv.meta).requestor_row === rowB.id
+    && rB.events.some(e => e.body === 'Fan stopped again tonight') && !rA.events.some(e => e.body === 'Fan stopped again tonight') && !!rA.reopen_request, r.error?.message || JSON.stringify(reqEv));
+  // a ticket joined into another (Task 7 will set joined_into; here it is set by hand): h → g → the shared ticket. Ownc is on g and on the shared ticket.
+  const g = await own('Ownc', { form_data: { ...hopForm, loc_room: '171' } }), hT = await tk(h1.ticket_no), gT = await tk(g.ticket_no);
+  await run('UPDATE tickets SET joined_into=? WHERE id=?', gT.id, hT.id); await run('UPDATE tickets SET joined_into=? WHERE id=?', shared.id, gT.id);
+  const viaG = (await api(`/public/alpha/tickets/${g.ticket_no}`)).data, viaH1 = (await api(`/public/alpha/tickets/${h1.ticket_no}`)).data, viaH2 = (await api(`/public/alpha/tickets/${h2.ticket_no}`)).data;
+  const others = /Still not working|Fan stopped again|Still sparking|Owna|Ownb|Hopa|Hopb/;
+  check('a joined-away number opens the ticket it went into, as the same person there, under the number opened', !g.merged && viaG.ticket_no === g.ticket_no && viaG.status === 'closed' && viaG.mine?.description === 'Something is broken.' && !others.test(JSON.stringify(viaG.events)), JSON.stringify(viaG).slice(0, 600));
+  check("two hops on, someone not on that ticket sees the team's updates and their own complaint only, never another student's", [[viaH1, h1, 'Sparks from the socket'], [viaH2, h2, 'Socket smells burnt']].every(([p, n, d]) => p.ticket_no === n.ticket_no && p.mine?.description === d
+    && !others.test(JSON.stringify(p.events)) && !/Ownc/.test(JSON.stringify(p)) && p.events.some(e => e.body?.startsWith('Electrician on the way'))), JSON.stringify([viaH1, viaH2]).slice(0, 800));
+  await fails('someone not on the ticket it went into cannot add a note there', `/public/alpha/tickets/${h2.ticket_no}/notes`, { method: 'POST', body: { body: 'Anyone?' } }, 409);
+  await run('UPDATE tickets SET joined_into=NULL WHERE id IN (?, ?)', hT.id, gT.id); // the rest of the suite sees ordinary tickets
+  ids.sharedId = hT.id; // the Chrome screens' live shared ticket (Hopa first, Hopb joined): the Fan one above is closed, so it shows no Split out
+  // a provider joins another ticket for the same room and service into this one: students keep their numbers, the joined ticket counts nowhere
+  const j1 = await own('Joina', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); // Fan and Light: two problems in one room, two tickets
+  const j2 = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' }, files: [{ name: 'light.png', type: 'image/png', source: 'camera', data: PNG }] }); // Joinb stays on it: their photo goes under the summary
+  const j3 = await own('Joinc', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } }); // joins j2
+  const other = await own('Joind', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '203', issue: 'Light' } });
+  const t1 = await tk(j1.ticket_no), t2 = await tk(j2.ticket_no);
+  await fails('join refuses a different room', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'Different room');
+  const help = (await raise('alpha', { ...base('Joinx'), form_data: { [qHelp]: 'Other: join test across teams' } })).data;
+  await fails('join refuses another service', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: help.ticket_no } }, 400, 'Different service');
+  const jg = await own('Joing', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '204', issue: 'Light' } }), tg = await tk(jg.ticket_no);
+  await run('UPDATE tickets SET location_key=NULL WHERE id=?', tg.id); // a ticket with no place (as a general form gives)
+  await fails('join refuses when this ticket has no place', `/tickets/${tg.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: other.ticket_no } }, 400, 'No place on this ticket');
+  await fails('join refuses when that ticket has no place', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: jg.ticket_no } }, 400, 'No place on that ticket');
+  await fails('join refuses itself', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j1.ticket_no } }, 400);
+  const both = await own('Joinb', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Fan' } }); check('Joinb reports on both tickets (already on the survivor)', both.merged);
+  const closedBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period;
+  const jr = await ok('provider joins the Light ticket into the Fan ticket (same room, same service)', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } });
+  const t1b = await tk(j1.ticket_no), t2b = await tk(j2.ticket_no);
+  check('people moved, one row per person, count and priority recomputed', jr.moved === 1 && t1b.affected_count === 3 && t1b.priority === 'high' && (await q('SELECT count(*)::int n FROM ticket_requestors WHERE ticket_id=? AND contact=?', t1.id, 'joinb@own.example.com'))[0].n === 1);
+  check('the joined ticket is closed with no closer, pointing at the survivor', t2b.status === 'closed' && t2b.closed_by === null && t2b.joined_into === t1.id);
+  check('…through no close path: no closed email, no points', (await q("SELECT count(*)::int n FROM notifications WHERE ticket_id=? AND template_key='status_closed'", t2.id))[0].n === 0 && (await q('SELECT count(*)::int n FROM provider_points WHERE ticket_id=?', t2.id))[0].n === 0);
+  const jev = (await q("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='joined' ORDER BY id DESC LIMIT 1", t1.id))[0], lp = (await q("SELECT ticket_id, event_id FROM attachments WHERE file_name='light.png' AND ticket_id IN (?, ?)", t1.id, t2.id))[0];
+  check("the joined ticket's other photos move to the survivor, under the summary event", lp?.ticket_id === t1.id && lp?.event_id === jev?.id, JSON.stringify([lp, jev]));
+  const jcMail = (await q("SELECT text_body FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0]?.text_body || '';
+  const otherNos = [j1, j2, other, both].map(x => x.ticket_no).filter(n => n !== j3.ticket_no); // a number alone opens that ticket's page: a requestor's email carries their own only
+  check("the moved student's email carries their own number only and names no other student", jcMail.includes(`Your ticket ${j3.ticket_no} reports the same problem`) && !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(jcMail)) && !/Joina|Joinb|Joind/.test(jcMail), jcMail);
+  check('the moved student is emailed once, under their own number', (await q("SELECT count(*)::int n FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].n === 1 && (await q("SELECT subject FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com'"))[0].subject.includes(`[${j3.ticket_no}]`));
+  const oldPage = (await api(`/public/alpha/tickets/${j2.ticket_no}`)).data;
+  check("the joined ticket's number opens the survivor under that number, with that person's own complaint", oldPage.ticket_no === j2.ticket_no && oldPage.affected_count === 3 && oldPage.subject === 'Ticket from Joinb' && !JSON.stringify(oldPage).includes('Joina'), JSON.stringify(oldPage).slice(0, 600));
+  const j5 = await own('Joine', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' }, description: 'Tube light flickers', files: [{ name: 'tube.png', type: 'image/png', source: 'camera', data: PNG }] }); // a new Light ticket (the old one is closed)
+  const jr5 = await ok('a ticket whose first student is not on the survivor joins too', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j5.ticket_no } });
+  const p5 = (await api(`/public/alpha/tickets/${j5.ticket_no}`)).data;
+  check('its first student moves, and their number opens the survivor as them, with their own photo', !j5.merged && jr5.moved === 1 && p5.ticket_no === j5.ticket_no && p5.affected_count === 4 && p5.mine?.description === 'Tube light flickers' && p5.mine?.files.length === 1, JSON.stringify(p5).slice(0, 600));
+  const j6 = await own('Joinf', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } }), t6 = await tk(j6.ticket_no);
+  await run("UPDATE tickets SET created_date=created_date - 1 WHERE id=?", t6.id); // raised yesterday: a provider may join across days
+  const jr6 = await ok('a ticket from another day joins too', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j6.ticket_no } });
+  ids.joinedId = t2.id; // the Chrome screens' joined ticket: banner, no update form
+  check('…its student moves', jr6.moved === 1 && (await tk(j6.ticket_no)).joined_into === t1.id);
+  await fails('a ticket already joined cannot be joined again', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } }, 400, `already joined into #${j1.ticket_no}`);
+  check('the joined ticket is out of the list, the CSV and the reports', !(await api('/tickets?status=closed', { token: T.pavan })).data.some(x => x.id === t2.id) && !(await (await fetch(`${API}/tickets.csv?status=all`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).includes(`"${j2.ticket_no}"`) && (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period === closedBefore);
+  check('the provider sees every complaint on the survivor', (await api(`/tickets/${t1.id}`, { token: T.pavan })).data.events.some(e => e.event_type === 'joined' && e.body.includes(`#${j2.ticket_no}`)));
+  // a provider splits a student out: they keep their number and token and get a ticket of their own, its clock starting now.
+  // t1 holds five people here (Joina first, Joinb and Joinc on numbers of their own, Joine and Joinf whose numbers were the tickets joined in) at High.
+  const rowC = (await q('SELECT id FROM ticket_requestors WHERE ticket_no=?', j3.ticket_no))[0];
+  await fails('the first requester cannot be split out', `/tickets/${t1.id}/requestors/${(await q('SELECT id FROM ticket_requestors WHERE ticket_id=? AND is_first=1', t1.id))[0].id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'first');
+  await fails('a closed ticket cannot split anyone out', `/tickets/${shared.id}/requestors/${rowB.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'closed');
+  const sp = await ok('provider splits Joinc out', `/tickets/${t1.id}/requestors/${rowC.id}/split`, { token: T.pavan, method: 'POST', body: { note: 'Different fixture' } });
+  const nt = await tk(j3.ticket_no), t1c = await tk(j1.ticket_no);
+  check('the new ticket keeps the number and token, starts its clock now, and the old one drops to 4', sp.ticket_no === j3.ticket_no && nt.id === sp.ticket_id && nt.tracking_token === j3.tracking_token && nt.status === 'open' && nt.created_at > t1.created_at && nt.due_at > nt.created_at && nt.affected_count === 1 && t1c.affected_count === 4 && t1c.priority === 'high', JSON.stringify([sp, nt?.tracking_token === j3.tracking_token, t1c.affected_count, t1c.priority]));
+  const spMail = (await q("SELECT text_body FROM notifications WHERE template_key='split_out' AND recipient='joinc@own.example.com'"))[0]?.text_body || '';
+  check('the student is emailed and their page now shows the new ticket', (await q("SELECT 1 FROM notifications WHERE template_key='split_out' AND recipient='joinc@own.example.com'")).length === 1 && (await api(`/public/alpha/tickets/${j3.ticket_no}`)).data.affected_count === 1);
+  check("the split student's email carries their own number only, never the old ticket's", new RegExp(`\\b${j3.ticket_no}\\b`).test(spMail) && !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(spMail)) && spMail.includes('Different fixture') && !/Joina|Joinb|Joind/.test(spMail), spMail);
+  check('both tickets record the split, the photos follow, and no new-ticket email goes to the providers', (await q("SELECT 1 FROM ticket_events WHERE ticket_id=? AND event_type='split_out'", t1.id)).length === 1
+    && (e => JSON.parse(e?.meta || '{}').split_from === j1.ticket_no && e.body.startsWith('Split out of a shared ticket; first reported') && e.body.includes('Different fixture'))((await q("SELECT body, meta FROM ticket_events WHERE ticket_id=? AND event_type='created'", nt.id))[0]) && (await q("SELECT 1 FROM notifications WHERE ticket_id=? AND template_key='new_ticket'", nt.id)).length === 0
+    && (await q("SELECT 1 FROM audit_logs WHERE action='ticket.split' AND entity_id=?", t1.id)).length === 1);
+  check("the student's page shows no other ticket's number either", (sp3 => !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(sp3)))(JSON.stringify((await api(`/public/alpha/tickets/${j3.ticket_no}`)).data)));
+  await fails('a split-out row cannot be split again', `/tickets/${t1.id}/requestors/${rowC.id}/split`, { token: T.pavan, method: 'POST', body: {} }, 400, 'Already');
+  // the split ticket joined back: the student moves with their own number and token (never the survivor's), and can be split out again
+  await ok('the split ticket is joined back into the shared one', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j3.ticket_no } });
+  const backRow = (await q("SELECT * FROM ticket_requestors WHERE ticket_id=? AND contact='joinc@own.example.com' AND detached_at IS NULL", t1.id))[0];
+  check('the moved row carries their own number and token', backRow?.ticket_no === j3.ticket_no && backRow?.tracking_token === j3.tracking_token && !backRow.is_first, JSON.stringify(backRow));
+  const backMail = (await q("SELECT text_body FROM notifications WHERE template_key='joined_into' AND recipient='joinc@own.example.com' ORDER BY created_at DESC LIMIT 1"))[0]?.text_body || '';
+  check("their join email carries only their number and their own link, not the survivor's", backMail.includes(`k=${j3.tracking_token}`) && !backMail.includes(`k=${t1.tracking_token}`) && new RegExp(`\\b${j3.ticket_no}\\b`).test(backMail) && !otherNos.some(n => new RegExp(`\\b${n}\\b`).test(backMail)), backMail);
+  const backPage = (await api(`/public/alpha/tickets/${j3.ticket_no}`)).data;
+  check('their number opens the shared ticket as them', backPage.ticket_no === j3.ticket_no && !!backPage.mine && !/Joina|Joinb|Joind|Joine|Joinf/.test(JSON.stringify(backPage)), JSON.stringify(backPage).slice(0, 600));
+  check('M1: the Requesters card lists them once (their split-out copy is hidden while they are back on it)', (await api(`/tickets/${t1.id}`, { token: T.pavan })).data.requestors.filter(x => x.ticket_no === j3.ticket_no).length === 1);
+  const sp2 = await ok('…and they can be split out again', `/tickets/${t1.id}/requestors/${backRow.id}/split`, { token: T.pavan, method: 'POST', body: {} });
+  check('…back to their own ticket, open', sp2.revived && sp2.ticket_id === nt.id && (await tk(j3.ticket_no)).status === 'open' && (await api(`/public/alpha/tickets/${j3.ticket_no}`)).data.affected_count === 1, JSON.stringify(sp2));
+  const csvT1 = (await (await fetch(`${API}/tickets.csv?status=all&q=${j1.ticket_no}`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).split('\r\n').find(l => l.startsWith(`"${j1.ticket_no}"`)) || '';
+  check('M1: the CSV "Also reported by" leaves out students split out of the ticket', csvT1.includes('Joinb') && !csvT1.includes('Joinc'), csvT1);
+  // a wrong join undone: the first student of a ticket that was joined in gets that ticket back, open again under their own number
+  const rf = { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '206' };
+  const m1 = await own('Revs', { form_data: { ...rf, issue: 'Fan' } }), m2 = await own('Reva', { form_data: { ...rf, issue: 'Light' }, files: [{ name: 'reva.png', type: 'image/png', source: 'camera', data: PNG }] }), m3 = await own('Revb', { form_data: { ...rf, issue: 'Light' } });
+  const tS = await tk(m1.ticket_no), tO = await tk(m2.ticket_no), openBefore = (await api('/reports?days=1', { token: T.asha })).data.counts.open;
+  await ok('provider joins a two-report ticket into another', `/tickets/${tS.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: m2.ticket_no } });
+  check('…both its students move', m3.merged && (await tk(m1.ticket_no)).affected_count === 3 && (await tk(m1.ticket_no)).priority === 'high' && (await tk(m2.ticket_no)).joined_into === tS.id);
+  const rowA = (await q('SELECT id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', alpha.id, m2.ticket_no))[0], splitAt = new Date().toISOString();
+  const sb = await ok('provider splits the moved first student out', `/tickets/${tS.id}/requestors/${rowA.id}/split`, { token: T.pavan, method: 'POST', body: { note: 'The light is a separate job' } });
+  const pO = (await api(`/public/alpha/tickets/${m2.ticket_no}`)).data, tO2 = await tk(m2.ticket_no), tS2 = await tk(m1.ticket_no);
+  check('their old number opens as their own open ticket again, with a fresh target and their photo', sb.revived && sb.ticket_id === tO.id && sb.ticket_no === m2.ticket_no && pO.ticket_no === m2.ticket_no && pO.affected_count === 1 && pO.status === 'open'
+    && tO2.joined_into === null && tO2.closed_at === null && tO2.due_at > splitAt && pO.events.find(e => e.event_type === 'created')?.files.length === 1 && pO.events.some(e => e.body?.startsWith('Split out of a shared ticket; handled separately again') && e.body.includes('separate job')), JSON.stringify([sb, tO2, pO]).slice(0, 900));
+  check('the survivor counts one fewer and its priority follows the count down', tS2.affected_count === 2 && tS2.priority === 'medium' && (await q("SELECT 1 FROM ticket_events WHERE ticket_id=? AND event_type='split_back'", tS.id)).length === 1);
+  const revMail = (await q("SELECT text_body FROM notifications WHERE template_key='split_out' AND recipient='reva@own.example.com'"))[0]?.text_body || '', revNos = [m1, m3, j1, j2, j3].map(x => x.ticket_no);
+  check('they get the split-out email naming only their own number', new RegExp(`\\b${m2.ticket_no}\\b`).test(revMail) && !revNos.some(n => new RegExp(`\\b${n}\\b`).test(revMail)) && revMail.includes('The light is a separate job') && !/Revs|Revb/.test(revMail), revMail);
+  check("the revived ticket is back in the provider's list and counts once in the reports", (await api('/tickets?status=open', { token: T.pavan })).data.some(x => x.id === tO.id)
+    && (await api('/reports?days=1', { token: T.asha })).data.counts.open === openBefore);
+  // the count going down: three in room 205 raise a ticket to High; splitting one takes it back to Medium; a priority set by hand stays
+  const kf = { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '205', issue: 'Fan' } }, k1 = await own('Splita', kf), k2 = await own('Splitb', kf), k3 = await own('Splitc', { ...kf, files: [{ name: 'own.png', type: 'image/png', source: 'camera', data: PNG }] });
+  const tK = await tk(k1.ticket_no), rowK = no => q('SELECT id, event_id FROM ticket_requestors WHERE ticket_no=?', no).then(r => r[0]);
+  check('three reports in one room make one High ticket', k2.merged && k3.merged && tK.affected_count === 3 && tK.priority === 'high');
+  const r3 = await rowK(k3.ticket_no), spK = await ok('provider splits Splitc out', `/tickets/${tK.id}/requestors/${r3.id}/split`, { token: T.pavan, method: 'POST', body: {} });
+  const nK = await tk(k3.ticket_no), cEv = (await q("SELECT id FROM ticket_events WHERE ticket_id=? AND event_type='created'", nK.id))[0];
+  check("fewer people bring a priority raised by the count back down; the student's photo goes with them", (await tk(k1.ticket_no)).affected_count === 2 && (await tk(k1.ticket_no)).priority === 'medium'
+    && (ps => ps.length === 1 && ps[0].ticket_id === nK.id && ps[0].event_id === cEv?.id)(await q("SELECT ticket_id, event_id FROM attachments WHERE file_name='own.png' AND ticket_id IN (?, ?)", tK.id, nK.id)) && spK.ticket_id === nK.id);
+  await ok('provider sets the priority by hand', `/tickets/${tK.id}/priority`, { token: T.pavan, method: 'POST', body: { priority: 'critical' } });
+  await ok('…and splits another out', `/tickets/${tK.id}/requestors/${(await rowK(k2.ticket_no)).id}/split`, { token: T.pavan, method: 'POST', body: {} });
+  check('a priority set by hand is left alone by a split', (await tk(k1.ticket_no)).priority === 'critical' && (await tk(k1.ticket_no)).affected_count === 1);
+  }
+
+  sec('Final review fixes');
+  { await stop(); await start(); // fresh rate limits
+  const tk = async no => (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', alpha.id, no))[0];
+  const rowOf = async no => (await q('SELECT * FROM ticket_requestors WHERE tenant_id=? AND ticket_no=? AND detached_at IS NULL', alpha.id, no))[0];
+  const fx = (n, room, issue = 'Fan', extra = {}) => raise('alpha', { ...elecBody(n, `${n.toLowerCase()}@fix.example.com`), ...extra,
+    form_data: { loc_block: 'Main block', loc_floor: 'Ground floor', loc_room: room, issue } }).then(r => r.data || r);
+  const join = (into, no) => api(`/tickets/${into}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: no } });
+  const split = (id, rid) => api(`/tickets/${id}/requestors/${rid}/split`, { token: T.pavan, method: 'POST', body: {} });
+  const word = n => new RegExp(`\\b${n}\\b`);
+  // C1: a student who joined the old way (a row with no number of its own) and is moved by a Join gets a number and token of their own
+  const la = await fx('Legfirst', 'F1', 'Fan', { description: 'Fan sparks at the regulator', files: [{ name: 'legfirst.png', type: 'image/png', source: 'camera', data: PNG }] });
+  const lo = await fx('Legold', 'F1', 'Light'), tA = await tk(la.ticket_no), tO = await tk(lo.ticket_no);
+  await run("INSERT INTO ticket_requestors (id, tenant_id, ticket_id, name, contact, raised_at, is_first) VALUES (?, ?, ?, 'Legacy', 'legacy@fix.example.com', ?, 0)", crypto.randomUUID(), alpha.id, tO.id, new Date().toISOString());
+  const jr = await join(tA.id, lo.ticket_no);
+  const leg = (await q("SELECT * FROM ticket_requestors WHERE contact='legacy@fix.example.com' AND detached_at IS NULL"))[0] || {};
+  check('C1: a legacy joiner moved by a Join gets a number and token of their own', jr.status === 200 && leg.ticket_id === tA.id && !!leg.ticket_no && ![la.ticket_no, lo.ticket_no].includes(leg.ticket_no)
+    && !!leg.tracking_token && ![tA.tracking_token, tO.tracking_token].includes(leg.tracking_token), JSON.stringify([jr.error, leg]));
+  const legMail = (await q("SELECT subject, text_body FROM notifications WHERE template_key='joined_into' AND recipient='legacy@fix.example.com'"))[0] || { subject: '', text_body: '' };
+  const leaks = m => [la.ticket_no, lo.ticket_no].some(n => word(n).test(m.subject + m.text_body)) || [tA.tracking_token, tO.tracking_token].some(k => m.text_body.includes(k)) || /Legfirst|Fan sparks|legfirst\.png|\/api\/files\//.test(m.subject + m.text_body);
+  check("C1: …their join email carries only that number and link, never the first student's subject, complaint or photo", legMail.subject.includes(`[${leg.ticket_no}]`) && legMail.text_body.includes(`k=${leg.tracking_token}`) && !leaks(legMail), legMail.subject + '\n' + legMail.text_body);
+  await act(tA.id, { to: 'in_progress', note: 'Electrician on the way' });
+  const legUp = (await q("SELECT subject, text_body FROM notifications WHERE template_key='status_in_progress' AND recipient='legacy@fix.example.com'"))[0] || { subject: '', text_body: '' };
+  check('C1: …and so does every later update', legUp.subject.includes(`[${leg.ticket_no}]`) && legUp.text_body.includes(`k=${leg.tracking_token}`) && !leaks(legUp), legUp.text_body);
+  // C1 backfill (and M3): a restart gives every live row still without a number one from the campus counter; the tr_no index is kept as it is
+  const lb = await fx('Legback', 'F2'), tB = await tk(lb.ticket_no), before = (await q('SELECT last_number n FROM ticket_counters WHERE tenant_id=? AND year=0', alpha.id))[0].n;
+  await run("INSERT INTO ticket_requestors (id, tenant_id, ticket_id, name, contact, raised_at, is_first) VALUES (?, ?, ?, 'Legacy Two', 'legacy2@fix.example.com', ?, 0)", crypto.randomUUID(), alpha.id, tB.id, new Date().toISOString());
+  const idx = async () => (await q("SELECT 'tr_no'::regclass::oid::text o"))[0].o, idx0 = await idx();
+  await stop(); await start();
+  const l2 = (await q("SELECT * FROM ticket_requestors WHERE contact='legacy2@fix.example.com'"))[0], after = (await q('SELECT last_number n FROM ticket_counters WHERE tenant_id=? AND year=0', alpha.id))[0].n;
+  check('C1 backfill: after a restart every live row has a number; the legacy one takes the next from the counter, with a token of its own', (await q('SELECT count(*)::int n FROM ticket_requestors WHERE detached_at IS NULL AND ticket_no IS NULL'))[0].n === 0
+    && l2.ticket_no === String(before + 1).padStart(4, '0') && after === before + 1 && l2.tracking_token?.length >= 32 && l2.tracking_token !== tB.tracking_token, JSON.stringify({ before, after, l2 }));
+  check('C1 backfill: …and their number opens the shared ticket as them', (p => p.ticket_no === l2.ticket_no && !!p.mine && !/Legback/.test(JSON.stringify(p)))((await api(`/public/alpha/tickets/${l2.ticket_no}`)).data || {}));
+  check('M3: a restart keeps the tr_no index (no drop and rebuild)', (await idx()) === idx0);
+  // I1: a joined ticket is worked on the ticket it went into
+  const ha = await fx('Histy', 'F4', 'Fan'), hb = await fx('Histy', 'F4', 'Light'), tHa = await tk(ha.ticket_no), tHb = await tk(hb.ticket_no);
+  await join(tHa.id, hb.ticket_no);
+  const help = (await q("SELECT id FROM services WHERE code='HELP'"))[0].id, w = (p, body, token = T.pavan) => api(`/tickets/${tHb.id}/${p}`, { token, method: 'POST', body });
+  const rs = [await w('status', { to: 'open', note: 'Reopening it', approved: true }), await w('notes', { body: 'A note', approved: true }), await w('transfer', { service_id: help, note: 'Moving it', approved: true }),
+    await w('priority', { priority: 'low' }), await w('reminders', { in: 'day', note: 'Check it' }), await w('extend', { hours: 2, reason: 'More time' }, T.asha)];
+  check('I1: a joined ticket answers 409 "Joined into #X; work it there" to every staff write', rs.every(r => r.status === 409 && r.error.message.includes(`Joined into #${ha.ticket_no}; work it there`)) && (await tk(hb.ticket_no)).status === 'closed', JSON.stringify(rs.map(r => [r.status, r.error?.message])));
+  check('I1: "Previous tickets" leaves out a ticket joined away', !(await api(`/tickets/${tHa.id}`, { token: T.pavan })).data.requestor_history.some(h => h.id === tHb.id));
+  // I2: a report that found a ticket open just before a Join committed joins the ticket it went into, never the joined one
+  const ra = await fx('Racea', 'F3', 'Fan'), rb = await fx('Raceb', 'F3', 'Light'), tRa = await tk(ra.ticket_no), tRb = await tk(rb.ticket_no);
+  await join(tRa.id, rb.ticket_no);
+  await run("UPDATE tickets SET status='open' WHERE id=?", tRb.id); // the stale read: findMatch saw it open
+  const rc = await fx('Racec', 'F3', 'Light'); await run("UPDATE tickets SET status='closed' WHERE id=?", tRb.id);
+  check('I2: a report racing a join lands on the ticket it went into, never on the joined one', rc.merged && (await rowOf(rc.ticket_no))?.ticket_id === tRa.id && (await tk(ra.ticket_no)).affected_count === 3, JSON.stringify([rc, await rowOf(rc.ticket_no)]));
+  // I3: staff find a student by that student's own number
+  check("I3: Home search by a joiner's own number finds the shared ticket", ((await api(`/tickets?status=all&q=${rc.ticket_no}`, { token: T.pavan })).data || []).some(x => x.id === tRa.id));
+  const sbt = (await api('/bot', { method: 'POST', token: T.pavan, body: { q: `ticket ${rc.ticket_no}` } })).data || {};
+  check("I3: the staff bot answers a joiner's number with the shared ticket", sbt.text?.startsWith(`Ticket ${rc.ticket_no} (part of #${ra.ticket_no})`) && sbt.items?.[0]?.href === `#/c/t/${tRa.id}`, sbt.text);
+  // I5: the group report counts a joined ticket's close nowhere
+  const grp = (await api('/group/report', { token: T.sa })).data.find(g => g.code === 'ALPHA');
+  check('I5: the group report leaves joined tickets out of "closed"', grp.closed === (await q("SELECT count(*)::int n FROM tickets WHERE tenant_id=? AND status='closed' AND joined_into IS NULL", alpha.id))[0].n, JSON.stringify(grp));
+  // M2: a split-created ticket keeps the place but not the problem key, so today's reports never join it and "close earlier" never closes it
+  const pa = await fx('Probone', 'F5'), pb2 = await fx('Probtwo', 'F5'), tPa = await tk(pa.ticket_no);
+  const sp = await split(tPa.id, (await rowOf(pb2.ticket_no)).id), nP = await tk(pb2.ticket_no);
+  check('M2: the split ticket keeps the place and problem label, not the problem key', sp.status === 200 && nP.problem_key === null && nP.location_key === tPa.location_key && nP.problem_label === tPa.problem_label, JSON.stringify(nP));
+  const pc = await fx('Probthree', 'F5');
+  check('M2: …a later report joins the shared ticket', pc.merged && (await rowOf(pc.ticket_no)).ticket_id === tPa.id);
+  // M5: a split-created ticket does not count against the student's daily limit
+  await fx('Limhost', 'F6'); const ls = await fx('Limsplit', 'F6');
+  await split((await rowOf(ls.ticket_no)).ticket_id, (await rowOf(ls.ticket_no)).id);
+  const more = []; for (const room of ['G1', 'G2', 'G3', 'G4', 'G5', 'G6']) more.push(await raise('alpha', { ...elecBody('Limsplit', 'limsplit@fix.example.com'), form_data: { loc_block: 'Main block', loc_floor: 'Ground floor', loc_room: room, issue: 'Fan' } }));
+  check('M5: after a split the student can still raise five tickets today, and the sixth is refused', more.slice(0, 5).every(x => x.status === 200) && more[5].status === 429, JSON.stringify(more.map(x => x.status)));
+  // M4: one reopen request per ticket, worded for whoever asks; the note limit is per student
+  const oa = await fx('Reoa', 'F7'), ob = await fx('Reob', 'F7'), tR = await tk(oa.ticket_no);
+  await act(tR.id, { to: 'closed', note: 'Fixed the fan' });
+  const reo = no => api(`/public/alpha/tickets/${no}/reopen`, { method: 'POST', body: { reason: 'Still broken' } });
+  const rB = await reo(ob.ticket_no), rA = await reo(oa.ticket_no), rB2 = await reo(ob.ticket_no);
+  check('M4: a second student is told someone already asked; the same one is told they did', rB.status === 200 && rA.status === 409 && /^Someone already asked to reopen this ticket\. The team will answer soon\./.test(rA.error.message)
+    && rB2.status === 409 && /^You already asked/.test(rB2.error.message), JSON.stringify([rB.status, rA.error?.message, rB2.error?.message]));
+  check('M4: the staff reopen card names the student who asked', (await api(`/tickets/${tR.id}`, { token: T.pavan })).data.reopen_request?.by === 'Reob');
+  for (let i = 0; i < 20; i++) await api(`/public/alpha/tickets/${oa.ticket_no}/notes`, { method: 'POST', body: { body: `Note ${i}` } });
+  const nA = await api(`/public/alpha/tickets/${oa.ticket_no}/notes`, { method: 'POST', body: { body: 'One more' } }), nB = await api(`/public/alpha/tickets/${ob.ticket_no}/notes`, { method: 'POST', body: { body: 'Mine' } });
+  check("M4: one student's notes do not use up another's limit", nA.status === 429 && nB.status === 200, JSON.stringify([nA.status, nB.status]));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -696,7 +959,7 @@ try {
   const A = { token: T.sa, tenant: (await q("SELECT id FROM tenants WHERE slug='alpha'"))[0].id }, aid = A.tenant;
   const pavanId = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id;
   await ok('Pavan has a mobile number', `/users/${pavanId}`, { ...A, method: 'PATCH', body: { phone: '9000055555' } });
-  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND (queue_day=(now() AT TIME ZONE 'Asia/Kolkata')::date OR (queue_day IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date))", ids.elec))[0];
+  const { n: today } = (await q("SELECT count(*)::int n FROM tickets WHERE service_id=? AND joined_into IS NULL AND (queue_day=(now() AT TIME ZONE 'Asia/Kolkata')::date OR (queue_day IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date))", ids.elec))[0];
   await ok('admin sets Electrical to take today’s tickets + 2 a day', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: today + 2 } });
   await fails('tickets a day must be a whole number', `/services/${ids.elec}`, { ...A, method: 'PATCH', body: { daily_cap: -3 } }, 400);
   check('the service shows its daily limit', (await api('/services', A)).data.find(x => x.id === ids.elec)?.daily_cap === today + 2);
@@ -1034,7 +1297,8 @@ try {
   const c1 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fa', { files: PNGF }) })).data, c2 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fb', { files: PNGF }) })).data;
   const ct = (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', aid, c1?.ticket_no))[0];
   check('a complaint is a normal ticket for the food service, with location, meal and category', ct?.service_id === fsvc.id && ct.meal === 'lunch' && ct.food_category === 'insect' && ct.food_location_id === L1 && ct.subject.includes('Insect'), JSON.stringify(c1));
-  check('the same problem at the same mess today joins that ticket', c2?.ticket_no === c1.ticket_no && c2.merged && c2.affected_count === 2);
+  check('the same problem at the same mess today joins that ticket, under its own number', c2?.ticket_no !== c1.ticket_no && c2.merged && c2.affected_count === 2
+    && (await q('SELECT ticket_id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=?', aid, c2.ticket_no))[0]?.ticket_id === ct.id);
   const c3 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fc', { category: 'other', files: PNGF }) })).data, c4 = (await api('/public/alpha/food/complaint', { method: 'POST', body: cb('Fd', { category: 'other', files: PNGF }) })).data;
   check('"Something else" complaints never merge', c3.ticket_no !== c4.ticket_no && !c4.merged);
   check('the requestor gets the usual acknowledgement email', (await q("SELECT 1 FROM notifications WHERE template_key='created' AND ticket_id=? AND recipient='fa@food.example.com'", ct.id)).length === 1);
@@ -1074,7 +1338,11 @@ try {
   await ok('admin puts the defaults back', '/food/settings', { ...A, method: 'PUT', body: { meals: before.meals.map(m => ({ ...m, active: true })), chips: before.default_chips } });
   check('back to three meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,dinner');
   const cs = dsh.complaint_split;
-  check('the kitchen sees complaints apart from feedback: total, open, by problem and by meal', cs.total >= 1 && cs.open >= 1 && cs.by_category.length >= 1 && cs.by_meal.reduce((x, y) => x + y.count, 0) === cs.total, JSON.stringify(cs)); }
+  check('the kitchen sees complaints apart from feedback: total, open, by problem and by meal', cs.total >= 1 && cs.open >= 1 && cs.by_category.length >= 1 && cs.by_meal.reduce((x, y) => x + y.count, 0) === cs.total, JSON.stringify(cs));
+  const fj = (await q("SELECT id FROM tickets WHERE service_id=? AND joined_into IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date LIMIT 1", dsh.service.id))[0];
+  await run('UPDATE tickets SET joined_into=? WHERE id=?', ids.t1, fj.id); // joined into another ticket: that one counts it
+  const cs2 = (await api('/food/dashboard', { token: T.pavan })).data.complaint_split; await run('UPDATE tickets SET joined_into=NULL WHERE id=?', fj.id);
+  check('I5: a complaint joined into another is not counted again on the kitchen dashboard (nor in the food reports)', cs2.total === cs.total - 1, JSON.stringify([cs.total, cs2.total])); }
   check('CSV export', /meal_date,meal,location,rating/.test(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()));
   // reports
   const rep = (per, qs = '', key = 'food-report-key-0123456789') => fetch(`${API}/reports/food/${per}?tenant=alpha&format=json${qs}`, { headers: { 'x-report-key': key } });
@@ -1428,6 +1696,123 @@ try {
   await ok('KOTs print in one place: choosing the kitchen printer turns off the counter one', '/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', auto_kot: true, kot_at_counter: true } });
   check('…only the counter one stays when both are sent', (await api('/canteen/menu', { token: T.pavan })).data.pay.auto_kot === false);
   await api('/canteen/payments', { token: T.pavan, method: 'PUT', body: { cash: true, upi_id: 'hilltop@okhdfcbank', kot_at_counter: true } });
+  const uq = await fetch(API + '/canteen/pos/upi.svg?amount=1250', { headers: { authorization: 'Bearer ' + T.kavya } });
+  check('walk-in UPI: the counter gets a QR for the exact bill', uq.status === 200 && /svg/.test(uq.headers.get('content-type')) && /<svg/.test(await uq.text()));
+  check('…not the kitchen, and not without an amount', (await fetch(API + '/canteen/pos/upi.svg?amount=1250', { headers: { authorization: 'Bearer ' + T.lata } })).status === 403
+    && (await fetch(API + '/canteen/pos/upi.svg', { headers: { authorization: 'Bearer ' + T.kavya } })).status === 400);
+  await fails('counter staff cannot change item photos', `/canteen/items/${dosa.id}/photo`, { token: T.kavya, method: 'PUT', body: { data: PNG } }, 403);
+  await fails('a non-picture is refused as a photo', `/canteen/items/${dosa.id}/photo`, { token: T.pavan, method: 'PUT', body: { data: 'data:text/plain;base64,aGVsbG8gd29ybGQgdGhpcyBpcyB0ZXh0' } }, 400, 'photo');
+  const cph = await ok('manager adds a photo to Masala dosa', `/canteen/items/${dosa.id}/photo`, { token: T.pavan, method: 'PUT', body: { data: PNG } });
+  check('…served for everyone to see', /^\/api\/canteen-img\/canteen-[a-f0-9]{24}\.png$/.test(cph.img) && (await fetch(APP + cph.img)).status === 200);
+  check('…on the student menu and the counter', [...(await api('/public/alpha/canteen')).data.categories.flatMap(c => c.items)].find(i => i.id === dosa.id).img === cph.img
+    && (await api('/canteen/pos', { token: T.kavya })).data.categories.flatMap(c => c.items).find(i => i.id === dosa.id).img === cph.img);
+  const pho = await ok('an order with it', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: dosa.id, qty: 1 }] } });
+  check('…the kitchen KOT shows the photo (screens only)', (await api('/canteen/kitchen', { token: T.lata })).data.kots.find(o => o.id === pho.id)?.items[0].img === cph.img);
+  check('a made-up photo name is not served', (await fetch(APP + '/api/canteen-img/..%2F..%2Fetc%2Fpasswd')).status === 404 && (await fetch(APP + '/api/canteen-img/canteen-zz.png')).status === 404);
+  await api(`/canteen/orders/${pho.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${pho.id}/collected`, { token: T.kavya, method: 'POST' });
+  // the live receipt: today's colour and word and a check code, the same on the student's screen and the counter's
+  const rcO = await ok('a student order for the receipt', '/public/alpha/canteen/orders', { method: 'POST', body: { device: dev.device, name: 'Receipt', items: [{ id: tea.id, qty: 1 }] } });
+  check('no receipt before payment', !(await api(`/public/alpha/canteen/orders/${rcO.id}?k=${rcO.key}`)).data.check);
+  await ok('…paid at the counter', `/canteen/orders/${rcO.id}/accepted`, { token: T.kavya, method: 'POST' });
+  const rcS = (await api(`/public/alpha/canteen/orders/${rcO.id}?k=${rcO.key}`)).data, rcB = (await api('/canteen/orders', { token: T.kavya })).data;
+  check("the receipt's daily colour and check code match what the counter sees", !!rcS.check && rcS.check.color === rcB.today_check.color && rcS.check.hex === rcB.today_check.hex
+    && rcS.check.code === rcB.orders.find(o => o.id === rcO.id).check_code && /^\d{4}$/.test(rcS.check.code) && !!rcS.server_time);
+  await api(`/canteen/orders/${rcO.id}/ready`, { token: T.kavya, method: 'POST' }); await api(`/canteen/orders/${rcO.id}/collected`, { token: T.kavya, method: 'POST' });
+  await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-owner', tenant_id, 'Omar Owner', 'owner2@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+  T.owner = await login('owner2@example.com', 'Pavan2026ok');
+  await ok('super admin makes Omar the canteen owner', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { on: true, managers: [pid], kitchen: [kid], counter: ['u-cashier'], owner: ['u-owner'], name: 'Hilltop Café' } });
+  const oa = (await api('/canteen/access', { token: T.owner })).data;
+  check('the owner gets the reports, opens on the canteen, and nothing else', oa.owner && oa.reports && !oa.manage && !oa.counter && !oa.kitchen && oa.desk === false);
+  check('…the complete report and the CSV', (await api('/canteen/report?range=month', { token: T.owner })).status === 200 && (await fetch(API + '/canteen/orders.csv', { headers: { authorization: 'Bearer ' + T.owner } })).status === 200);
+  await fails('…but cannot sell', '/canteen/pos', { token: T.owner, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 403);
+  await fails('…change prices', '/canteen/items/' + tea.id, { token: T.owner, method: 'PATCH', body: { price: '1' } }, 403);
+  await fails('…or handle orders', '/canteen/orders', { token: T.owner }, 403);
+  check('counter staff still cannot see reports', (await api('/canteen/report', { token: T.kavya })).status === 403);
+  // ---- custom permissions per person ----
+  const st0 = (await api('/canteen/setup', { token: T.sa, tenant: A2 })).data;
+  check('set up lists the features and each job\'s defaults', st0.features.length === 9 && st0.jobs.counter.join() === 'pos,orders,openclose,stock' && st0.jobs.owner.join() === 'reports');
+  const cbase = { on: true, managers: [pid], kitchen: [kid], counter: ['u-cashier'], owner: ['u-owner'], name: 'Hilltop Café' };
+  await fails('a person needs at least one feature', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': [] } } }, 400, 'at least one feature');
+  check('…and nothing was changed by the refused save', (await api('/canteen/access', { token: T.kavya })).data.can.pos === true);
+  await ok('super admin lets Kavya (counter) also see reports, but not open the day', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': ['pos', 'orders', 'stock', 'reports'] } } });
+  const kc = (await api('/canteen/access', { token: T.kavya })).data;
+  check('Kavya now has reports and not open/close', kc.can.reports && !kc.can.openclose && kc.can.pos);
+  check('…the report opens for her', (await api('/canteen/report', { token: T.kavya })).status === 200);
+  await fails('…open/close is refused', '/canteen/close', { token: T.kavya, method: 'POST' }, 403, 'job does not include');
+  await ok('a save that does not mention her features keeps them', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: cbase });
+  check('…still custom', (await api('/canteen/access', { token: T.kavya })).data.can.reports === true && (await api('/canteen/setup', { token: T.sa, tenant: A2 })).data.custom.includes('u-cashier'));
+  await ok('back to the job\'s defaults', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': null } } });
+  check('…reports gone again, open/close back', (await api('/canteen/access', { token: T.kavya })).data.can.reports === false && (await api('/canteen/access', { token: T.kavya })).data.can.openclose === true);
+  await ok('the kitchen can be given open/close', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['kitchen', 'stock', 'openclose', 'orders'] } } });
+  check('…Lata can open the day now', (await api('/canteen/open', { token: T.lata, method: 'POST' })).status === 200);
+  await fails('a set with no screen to use it on is refused', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['stock', 'openclose'] } } }, 400, 'at least one screen');
+  await fails('settings need the Menu tab', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['kitchen', 'settings'] } } }, 400, 'Menu');
+  await fails('no more than 2 people with every feature (a counter person given everything counts)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, managers: [pid, 'u-owner'], owner: [], perms: { 'u-cashier': ['pos', 'orders', 'openclose', 'stock', 'kitchen', 'menu', 'settings', 'reports', 'inventory'] } } }, 400, 'every canteen feature');
+  await ok('(kitchen back to defaults)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: null } } });
+  await fails('a campus admin cannot change canteen staff', '/canteen/setup', { token: T.asha, method: 'PUT', body: cbase }, 403);
+  // ---- inventory ----
+  await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-store', tenant_id, 'Sita Store', 'store@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+  T.store = await login('store@example.com', 'Pavan2026ok');
+  await ok('super admin gives Sita the Inventory job', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, inventory: ['u-store'] } });
+  const sa2 = (await api('/canteen/access', { token: T.store })).data;
+  check('inventory staff: only the inventory, opening on the canteen', sa2.can.inventory && !sa2.can.pos && !sa2.can.menu && !sa2.can.reports && sa2.desk === false);
+  await fails('…cannot sell', '/canteen/pos', { token: T.store, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 403);
+  await fails('counter staff cannot touch the inventory', '/canteen/inventory', { token: T.kavya }, 403);
+  const rice = await ok('add rice: 25 kg, alert at 10, ₹48/kg', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Rice', unit: 'kg', category: 'Grains', qty: '25', min_qty: '10', cost: '48' } });
+  check('…stock and value', rice.qty === 25 && rice.value_paise === 25 * 4800 && !rice.low);
+  await fails('the same item twice is refused', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'rice', unit: 'kg' } }, 400, 'already');
+  const r1 = await ok('used 18 kg', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'use', qty: '18' } });
+  check('…7 kg left: low stock', r1.qty === 7 && r1.low === true);
+  await fails('cannot use more than is there', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'use', qty: '8' } }, 400, 'Only 7');
+  await fails('waste needs a reason', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'waste', qty: '1' } }, 400, 'why');
+  await ok('1 kg wasted (wet)', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'waste', qty: '1', note: 'got wet' } });
+  const r3 = await ok('bought 50 kg for ₹2,500', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'in', qty: '50', cost: '2500', note: 'Sri Ram Traders' } });
+  check('…56 kg, the new price ₹50/kg', r3.qty === 56 && r3.cost_paise === 5000 && !r3.low);
+  const r4 = await ok('a count finds 55 kg', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count', qty: '55' } });
+  check('…the level is set to the count', r4.qty === 55);
+  await fails('a count with no number is refused (not taken as zero)', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count' } }, 400, 'Enter the quantity');
+  await fails('an unknown unit is refused', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Salt', unit: 'bucket' } }, 400, 'unit');
+  const inv = (await api('/canteen/inventory', { token: T.store })).data;
+  check('every change is kept with who did it', inv.moves.length === 5 && inv.moves.every(m => m.user_name === 'Sita Store') && inv.moves[0].kind === 'count' && inv.moves[0].qty === -1);
+  const ir = (await api('/canteen/inventory/report?range=day', { token: T.store })).data;
+  check('inventory report: bought, used, wasted', ir.bought_paise === 250000 && ir.rows[0].use === 18 && ir.rows[0].waste === 1 && ir.waste_paise === 4800);
+  check('the owner sees the inventory report too', (await api('/canteen/inventory/report', { token: T.owner })).status === 200 && (await api('/canteen/inventory', { token: T.owner })).status === 403);
+  const icsv = await fetch(API + '/canteen/inventory.csv', { headers: { authorization: 'Bearer ' + T.store } });
+  check('inventory history downloads as CSV', icsv.status === 200 && /Sri Ram Traders/.test(await icsv.text()));
+  check('managers have the inventory too', (await api('/canteen/inventory', { token: T.pavan })).status === 200);
+  // ---- inventory categories: create, read, rename, reorder, delete ----
+  const ic0 = (await api('/canteen/inventory', { token: T.store })).data;
+  check('the category typed on Rice became a real category, with its item count', ic0.cats.some(c => c.name === 'Grains' && c.items === 1) && ic0.items.find(i => i.name === 'Rice').category_id === ic0.cats.find(c => c.name === 'Grains').id);
+  const dairy = await ok('add the category Dairy', '/canteen/inventory/categories', { token: T.store, method: 'POST', body: { name: 'Dairy' } });
+  await fails('the same category twice is refused (any letter case)', '/canteen/inventory/categories', { token: T.store, method: 'POST', body: { name: 'dairy' } }, 400, 'already exists');
+  const milk = await ok('add Milk into Dairy', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Milk', unit: 'litre', category_id: dairy.id, qty: '20', min_qty: '5', cost: '56' } });
+  check('…Milk is in Dairy', milk.category_id === dairy.id && milk.category === 'Dairy');
+  await fails('a category from another campus or a made-up one is refused', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Curd', unit: 'kg', category_id: 'nope' } }, 400, 'category');
+  await ok('rename Dairy to Dairy & eggs', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'PATCH', body: { name: 'Dairy & eggs' } });
+  const ic1 = (await api('/canteen/inventory', { token: T.store })).data;
+  check('…the item shows the new name', ic1.items.find(i => i.id === milk.id).category === 'Dairy & eggs');
+  await fails('renaming onto another category\'s name is refused', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'PATCH', body: { name: 'grains' } }, 400, 'already has that name');
+  const firstBefore = ic1.cats[0].name;
+  await ok('move Dairy & eggs up', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'PATCH', body: { move: 'up' } });
+  check('…it is now first', (await api('/canteen/inventory', { token: T.store })).data.cats[0].id === dairy.id && firstBefore !== 'Dairy & eggs');
+  await ok('move a stock item to another category', '/canteen/inventory/' + milk.id, { token: T.store, method: 'PATCH', body: { category_id: ic1.cats.find(c => c.name === 'Grains').id } });
+  await ok('…and back', '/canteen/inventory/' + milk.id, { token: T.store, method: 'PATCH', body: { category_id: dairy.id } });
+  await fails('a category with items cannot be deleted without saying where they go', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'DELETE', body: {} }, 409, 'Pick where to move');
+  const gid = ic1.cats.find(c => c.name === 'Grains').id;
+  const del = await ok('delete Dairy & eggs, moving Milk to Grains', '/canteen/inventory/categories/' + dairy.id, { token: T.store, method: 'DELETE', body: { move_to: gid } });
+  const ic2 = (await api('/canteen/inventory', { token: T.store })).data;
+  check('…the category is gone and Milk is in Grains', del.moved === 1 && !ic2.cats.some(c => c.id === dairy.id) && ic2.items.find(i => i.id === milk.id).category === 'Grains');
+  const empty = await ok('an empty category', '/canteen/inventory/categories', { token: T.store, method: 'POST', body: { name: 'Spices' } });
+  await ok('…deletes straight away', '/canteen/inventory/categories/' + empty.id, { token: T.store, method: 'DELETE', body: {} });
+  await fails('counter staff cannot change inventory categories', '/canteen/inventory/categories', { token: T.kavya, method: 'POST', body: { name: 'X' } }, 403);
+  check('the inventory report groups by category', (await api('/canteen/inventory/report?range=day', { token: T.store })).data.by_category.some(c => c.category === 'Grains'));
+  const tur = await ok('turmeric in grams at ₹0.45 a gram', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Turmeric', unit: 'g', qty: '1000', cost: '0.45' } });
+  check('…its value is exact (₹450, not rounded per gram)', tur.value_paise === 45000);
+  await ok('…a count finds 990 g', `/canteen/inventory/${tur.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count', qty: '990' } });
+  check("…the count's cost is the 10 g difference (₹4.50), not the whole stock", (await q("SELECT cost_paise FROM canteen_inv_moves WHERE item_id=? AND kind='count' ORDER BY created_at DESC LIMIT 1", tur.id))[0].cost_paise === 450);
+  await ok('remove turmeric', '/canteen/inventory/' + tur.id, { token: T.store, method: 'DELETE' });
+  await ok('add a new Turmeric', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Turmeric', unit: 'g' } });
+  await fails('putting the old one back would make two with the same name', '/canteen/inventory/' + tur.id, { token: T.store, method: 'PATCH', body: { active: true } }, 400, 'already has that name');
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
@@ -1440,8 +1825,299 @@ try {
   await ok('a kitchen person is deactivated…', '/users/u-temp', { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
+  sec('Canteen: menu upload');
+  {
+    const B = ids.beta, SB = { token: T.sa, tenant: B }; // imports go to Beta (a clean menu) so Alpha's menu stays as the screens below expect
+    const durl = (buf, type = 'text/csv') => `data:${type};base64,${Buffer.from(buf).toString('base64')}`;
+    const SAMPLE = fs.readFileSync(path.join(ROOT, 'test/fixtures/canteen-menu-sample.csv')), XLSX = fs.readFileSync(path.join(ROOT, 'test/fixtures/menu.xlsx'));
+    const FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
+    // what the dialog does: apply a column mapping { field: column index } to the rows the server read
+    const mapRows = (rd, map) => rd.rows.map((r, i) => ({ ...Object.fromEntries(Object.entries(map).map(([f, c]) => [f, r[c]])), row: rd.lines[i] }));
+    const byName = rd => Object.fromEntries(FIELDS.map(f => [f, rd.columns.indexOf(f)]).filter(([, c]) => c >= 0));
+    await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-plain', tenant_id, 'Paul Plain', 'plain@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+    T.plain = await login('plain@example.com', 'Pavan2026ok');
+    const readBody = { name: 'menu.csv', data: durl(SAMPLE) }, impBody = { rows: [{ name: 'X', price: '10', row: 2 }], dry_run: true };
+    const ends = [['GET', '/canteen/menu-template.csv'], ['GET', '/canteen/menu-sample.csv'], ['GET', '/canteen/menu-export.csv'], ['POST', '/canteen/menu/read', readBody], ['POST', '/canteen/menu/import', impBody]];
+    for (const [who, tk] of [['counter staff', T.kavya], ['kitchen staff', T.lata], ['a provider who is not a manager', T.plain]])
+      check(`${who} get 403 on all five upload endpoints (the current-menu download too)`, (await Promise.all(ends.map(([m, p, b]) => api(p, { token: tk, method: m, body: b })))).every(r => r.status === 403));
+    check('no sign-in: 401 on all five', (await Promise.all(ends.map(([m, p, b]) => api(p, { method: m, body: b })))).every(r => r.status === 401));
+    check('a campus with the canteen off refuses (super admin on Beta)', (await Promise.all(ends.map(([m, p, b]) => api(p, { ...SB, method: m, body: b })))).every(r => r.status === 403));
+    const tpl = await api('/canteen/menu-template.csv', { token: T.pavan, raw: true }), tplText = Buffer.from(await tpl.arrayBuffer()).toString('utf8');
+    const tplLines = tplText.slice(1).split(/\r?\n/).filter(Boolean);
+    check('the manager downloads the template: UTF-8 with BOM, every field as a column, one example row', tpl.status === 200 && /text\/csv/.test(tpl.headers.get('content-type')) && tplText.startsWith('\ufeff') && tplLines[0] === FIELDS.join(',') && tplLines.length === 2 && tplLines[1].split(',').length === FIELDS.length, tplText.slice(0, 200));
+    const nn = s => String(s).trim().replace(/\s+/g, ' ').toLowerCase(); // the server's one rule for "the same name"
+    const sampleNames = SAMPLE.toString('utf8').replace(/^\ufeff/, '').trim().split(/\r?\n/).slice(1).map(l => l.split(',')[1]);
+    const ex = await api('/canteen/menu-export.csv', { token: T.pavan, raw: true }), exText = Buffer.from(await ex.arrayBuffer()).toString('utf8'), exLines = exText.slice(1).split(/\r\n/).filter(Boolean);
+    const alphaItems = await q('SELECT name FROM canteen_items WHERE tenant_id=? AND active=1', A2);
+    check('the manager downloads the current menu: UTF-8 with BOM, the template columns, one row per item on the menu', ex.status === 200 && /text\/csv/.test(ex.headers.get('content-type')) && /attachment/.test(ex.headers.get('content-disposition') || '')
+      && exText.startsWith('\ufeff') && exLines[0] === FIELDS.join(',') && exLines.length - 1 === alphaItems.length && alphaItems.length > 0, exText.slice(0, 300));
+    const smp = await api('/canteen/menu-sample.csv', { token: T.pavan, raw: true });
+    check('…and the sample menu, byte for byte the shipped fixture', smp.status === 200 && /attachment/.test(smp.headers.get('content-disposition') || '') && Buffer.from(await smp.arrayBuffer()).equals(SAMPLE));
+    const rdA = await ok('the manager reads a file (nothing saved)', '/canteen/menu/read', { token: T.pavan, method: 'POST', body: readBody });
+    check('…the sample: 11 columns, 29 rows, file row numbers', rdA?.columns?.join() === FIELDS.join() && rdA.rows.length === 29 && rdA.total === 29 && rdA.lines[0] === 2 && rdA.lines[28] === 30 && rdA.rows[6][3] === 'Rice, 2 curries, dal, curd, pickle', JSON.stringify(rdA?.columns));
+    const dryP = await ok('…and previews it on Alpha', '/canteen/menu/import', { token: T.pavan, method: 'POST', body: { rows: mapRows(rdA, byName(rdA)), dry_run: true } });
+    const onAlpha = sampleNames.filter(n => alphaItems.some(i => nn(i.name) === nn(n))).length; // e.g. "Masala dosa" and "Tea" from the menu sections: a name is one item across the menu
+    check('…a dry run reports without saving (names already on Alpha, in any category, are updates)', dryP?.added === 29 - onAlpha && dryP.updated === onAlpha && dryP.rejected.length === 0 && !(await q("SELECT 1 FROM canteen_items WHERE tenant_id=? AND name='Gulab Jamun (2 pcs)'", A2)).length, JSON.stringify(dryP));
+    await run('UPDATE tenants SET canteen_on=1 WHERE id=?', B); // Beta's canteen on for the imports below (switched off again at the end)
+    const cnt = async () => (await q('SELECT count(*)::int n FROM canteen_items WHERE tenant_id=?', B))[0].n;
+    const rd = await ok('super admin reads the sample on Beta', '/canteen/menu/read', { ...SB, method: 'POST', body: readBody });
+    const rows = mapRows(rd, byName(rd));
+    const dry = await ok('dry run', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows, dry_run: true } });
+    check('…29 to add in 5 new categories, and nothing changed', dry.added === 29 && dry.updated === 0 && dry.categories_created === 5 && (await cnt()) === 0 && !(await q('SELECT 1 FROM canteen_categories WHERE tenant_id=?', B)).length, JSON.stringify(dry));
+    const imp = await ok('import the sample', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows, dry_run: false } });
+    const bm = (await api('/canteen/menu', SB)).data;
+    check('…29 items in 5 categories exactly', imp.added === 29 && imp.updated === 0 && imp.categories_created === 5 && imp.rejected.length === 0 && (await cnt()) === 29 && bm.categories.length === 5 && bm.categories.reduce((s, c) => s + c.items.length, 0) === 29, JSON.stringify(imp));
+    const it = n => bm.categories.flatMap(c => c.items).find(i => i.name === n);
+    check('…prices, veg, order and deals as in the file', it('Chicken Biryani').price_paise === 12000 && it('Chicken Biryani').is_veg === 0 && it('Idli (2 pcs)').is_veg === 1 && it('Plain Dosa').sort_order === 2
+      && it('Mirchi Bajji (4 pcs)').deal?.kind === 'eod' && it('Mirchi Bajji (4 pcs)').deal.pct === 20 && it('Cold Coffee').deal?.kind === 'flash' && bm.categories.map(c => c.name).join() === 'Breakfast,Meals,Snacks,Beverages,Desserts');
+    const imp2 = await ok('importing the same file again', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: rows.map(r => r.name === 'Tea' ? { ...r, price: '14' } : r), dry_run: false } });
+    check('…updates the 29 (same name in the same category), adds none', imp2.added === 0 && imp2.updated === 29 && imp2.categories_created === 0 && (await cnt()) === 29
+      && (await q("SELECT price_paise FROM canteen_items WHERE tenant_id=? AND name='Tea'", B))[0].price_paise === 1400, JSON.stringify(imp2));
+    // a CSV saved by a spreadsheet: BOM, semicolons, quoted commas, ₹ prices, yes/no veg, own column names
+    const semi = '\ufeffItem Name;Rate;Veg;Section;Description\r\n"Paneer Roll";₹60;yes;Rolls;"Paneer, onion; mint"\r\nChicken Roll;"₹1,200";NO;Rolls;Big\r\n;;;;\r\nEgg Roll;₹45.50;n;;\r\n';
+    const rs = await ok('a semicolon CSV with BOM reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'Rolls.CSV', data: durl(semi) } });
+    check('…headers, quoted commas and ₹ prices as cells, blank rows skipped, row numbers kept', rs.columns.join('|') === 'Item Name|Rate|Veg|Section|Description' && rs.rows.length === 3 && rs.rows[0][4] === 'Paneer, onion; mint'
+      && rs.rows[1][1] === '₹1,200' && rs.lines.join() === '2,3,5', JSON.stringify(rs));
+    const is = await ok('…and imports', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rs, { name: 0, price: 1, is_veg: 2, category: 3, description: 4 }), dry_run: false } });
+    const rolls = await q("SELECT i.name, i.price_paise, i.is_veg, i.description, c.name cat FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND i.name LIKE '%Roll'", B);
+    const rl = n => rolls.find(r => r.name === n) || {};
+    check('…veg yes/NO/n, ₹1,200 = 120000 paise, an empty category = Uncategorised; Chicken Roll (Snacks) is the same item: updated and moved to Rolls', is.added === 2 && is.updated === 1 && is.moved === 1 && is.categories_created === 1 && rolls.filter(r => r.name === 'Chicken Roll').length === 1 && rl('Paneer Roll').is_veg === 1 && rl('Paneer Roll').description === 'Paneer, onion; mint'
+      && rl('Chicken Roll').price_paise === 120000 && rl('Chicken Roll').is_veg === 0 && rl('Egg Roll').price_paise === 4550 && rl('Egg Roll').is_veg === 0 && rl('Egg Roll').cat === null, JSON.stringify(rolls));
+    const tsv = await ok('a tab-separated file reads too', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name\tprice\nVada\t20\n') } });
+    check('…two columns', tsv.columns.join() === 'name,price' && tsv.rows[0].join() === 'Vada,20');
+    const rx = await ok('an Excel file (.xlsx) reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xlsx', data: durl(XLSX, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') } });
+    check('…first sheet, a price typed as a number or as text', rx.columns.join('|') === 'Section|Item Name|Rate|Veg|Description' && rx.rows.length === 4 && rx.rows[0][2] === '15' && rx.rows[1][2] === '25' && rx.rows[2][2] === '20.5' && rx.rows[3][2] === '₹30' && rx.rows[2][4] === '', JSON.stringify(rx));
+    const ix = await ok('…and imports', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rx, { category: 0, name: 1, price: 2, is_veg: 3, description: 4 }), dry_run: false } });
+    check('…Filter Coffee ₹20.50, Egg Puff (Snacks) updated, Samosa updated', ix.added === 2 && ix.updated === 2 && (await q("SELECT price_paise FROM canteen_items WHERE tenant_id=? AND name='Filter Coffee'", B))[0]?.price_paise === 2050
+      && (await q("SELECT price_paise, is_veg FROM canteen_items WHERE tenant_id=? AND name='Egg Puff'", B))[0].is_veg === 0, JSON.stringify(ix));
+    // bad rows are listed with their row numbers; the good ones still go in
+    const badRows = [{ row: 2, name: '', price: '10' }, { row: 3, name: 'Bad price', price: 'abc' }, { row: 4, name: 'Too much off', price: '10', deal_pct: '95', deal_kind: 'discount' },
+      { row: 5, name: 'Flash no time', price: '10', deal_pct: '10', deal_kind: 'Flash sale' }, { row: 6, name: 'Wow deal', price: '10', deal_pct: '10', deal_kind: 'wow' },
+      { row: 7, name: 'Maybe veg', price: '10', is_veg: 'maybe' }, { row: 8, name: 'No price', price: '' },
+      { row: 9, category: 'Extras', name: 'Good one', price: '₹ 22', deal_pct: '15', deal_kind: 'End-of-day sale', deal_minutes: '30', sort_order: '4', sold_out: 'yes', is_veg: 'Non-Veg' },
+      { row: 10, category: 'extras', name: 'good ONE', price: '25' }];
+    const before = await cnt();
+    const bd = await ok('a file with bad rows: preview', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: badRows, dry_run: true } });
+    const why = n => bd.rejected.find(r => r.row === n)?.reason || '';
+    check('…each bad row rejected with its row number and reason', bd.added === 1 && bd.rejected.map(r => r.row).join() === '2,3,4,5,6,7,8,10' && /name/i.test(why(2)) && /price/i.test(why(3)) && /90%/.test(why(4))
+      && /time/i.test(why(5)) && /discount, flash/i.test(why(6)) && /yes or no/i.test(why(7)) && /price/i.test(why(8)) && /row 9/.test(why(10)) && (await cnt()) === before, JSON.stringify(bd));
+    const bi = await ok('…import: the good row goes in, the rest are skipped', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: badRows, dry_run: false } });
+    const g1 = (await q("SELECT i.*, c.name cat FROM canteen_items i JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND i.name='Good one'", B))[0];
+    check('…with its deal (label accepted), flags and order', bi.added === 1 && bi.rejected.length === 8 && g1?.cat === 'Extras' && g1.price_paise === 2200 && g1.deal_kind === 'eod' && g1.deal_pct === 15 && !!g1.deal_until && g1.sort_order === 4 && g1.sold_out === 1 && g1.is_veg === 0, JSON.stringify(g1));
+    // the 500-item cap counts what is on the menu plus what the file adds
+    const n0 = await cnt();
+    await run(`INSERT INTO canteen_items (id, tenant_id, name, price_paise, created_at) SELECT 'fill-' || g, ?, 'Filler ' || g, 100, now()::text FROM generate_series(1, ?::int) g`, B, 499 - n0);
+    await fails('the menu holds 500 items: a file adding two more to 499 is refused', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'One', price: '1' }, { row: 3, name: 'Two', price: '1' }], dry_run: true } }, 400, '500 items');
+    const one1 = await ok('…one more fits', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'One', price: '1' }], dry_run: false } });
+    check('…500 now', one1.added === 1 && (await cnt()) === 500);
+    await run("DELETE FROM canteen_items WHERE tenant_id=? AND (id LIKE 'fill-%' OR name='One')", B);
+    await fails('more than 500 rows in one import are refused', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: Array.from({ length: 501 }, (_, i) => ({ row: i + 2, name: 'R' + i, price: '1' })), dry_run: true } }, 400, '500');
+    // files that cannot be read
+    await fails('a file with only the header row', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('\ufeffname,price\r\n') } }, 400, 'only the header');
+    await fails('an empty file', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('') } }, 400, 'empty');
+    await fails('a binary file renamed .csv', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.csv', data: PNG } }, 400, 'CSV');
+    await fails('a broken .xlsx', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xlsx', data: durl('not a workbook') } }, 400, 'Excel');
+    await fails('an old .xls file: save as .xlsx or .csv', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.xls', data: durl('x') } }, 400, 'Save it as .xlsx or .csv');
+    await fails('another type (.pdf)', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'menu.pdf', data: durl('%PDF') } }, 400, '.csv or .xlsx');
+    await fails('more than 500 rows in a file', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price\n' + 'a,1\n'.repeat(501)) } }, 400, '500');
+    await fails('a file over 5 MB', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price\n' + 'x'.repeat(5.5e6)) } }, 400, '5 MB');
+    // review fixes: a fractional deal, a too-long upload, a wide CSV, two imports at once, and Excel files built to exhaust memory
+    const half = await ok('a deal of 0.5% …', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Half off', price: '10', deal_pct: '0.5', deal_kind: 'discount' }], dry_run: true } });
+    check('…is rejected (not read as 0, which would clear a deal)', half.added === 0 && /1 to 90/.test(half.rejected[0]?.reason || ''), JSON.stringify(half));
+    await fails('an upload over 7 MB is refused before decoding', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: 'data:text/csv;base64,' + 'A'.repeat(7.5e6) } }, 400, '5 MB');
+    await fails('a CSV with a 200 KB header of commas', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl('name,price' + ','.repeat(2e5) + '\nVada,20\n') } }, 400, 'Too many columns');
+    await fails('a CSV with 51 named columns', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl(Array.from({ length: 51 }, (_, i) => 'c' + i).join(',') + '\n' + '1,'.repeat(50) + '1\n') } }, 400, 'Too many columns');
+    const par = await ok('a file for two imports at once', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'p.csv', data: durl('category,name,price\nParallel,P1,10\nParallel,P2,11\nParallel,P3,12\n') } });
+    const parRows = mapRows(par, byName(par)), [pa, pb] = await Promise.all([0, 1].map(() => api('/canteen/menu/import', { ...SB, method: 'POST', body: { rows: parRows, dry_run: false } })));
+    const parItems = await q("SELECT i.name FROM canteen_items i JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND c.name='Parallel'", B);
+    check('two imports of the same file at once: its items and its category exactly once', pa.status === 200 && pb.status === 200 && pa.data.added + pb.data.added === 3 && parItems.length === 3
+      && (await q("SELECT count(*)::int n FROM canteen_categories WHERE tenant_id=? AND name='Parallel'", B))[0].n === 1, JSON.stringify({ pa: pa.data, pb: pb.data, parItems }));
+    const colName = n => { let s = ''; for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
+    const XT = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const mkXlsx = sheet => Buffer.from(zipSync({ // the smallest workbook Excel and the reader accept: one sheet
+      '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'),
+      '_rels/.rels': strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+      'xl/workbook.xml': strToU8(`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${REL}"><sheets><sheet name="Menu" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`),
+      'xl/worksheets/sheet1.xml': strToU8(`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${sheet}</worksheet>`) }));
+    const grid = (nr, nc) => { const out = ['<sheetData>']; for (let r = 1; r <= nr; r++) { out.push(`<row r="${r}">`); for (let c = 0; c < nc; c++) out.push(r === 1 ? `<c r="${colName(c)}1" t="inlineStr"><is><t>Col ${c + 1}</t></is></c>` : `<c r="${colName(c)}${r}"><v>${r}</v></c>`); out.push('</row>'); } out.push('</sheetData>'); return out.join(''); };
+    const xin = await ok('an .xlsx just inside the limits (50 columns, 500 rows) still reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'big.xlsx', data: durl(mkXlsx(`<dimension ref="A1:${colName(49)}501"/>` + grid(501, 50)), XT) } });
+    check('…all of it', xin?.columns?.length === 50 && xin.total === 500 && xin.rows[499][49] === '501', JSON.stringify(xin?.columns?.length));
+    await fails('an .xlsx with 51 columns', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'wide.xlsx', data: durl(mkXlsx(grid(3, 51)), XT) } }, 400, 'Too many columns');
+    const tall = mkXlsx(`<dimension ref="A1:B150000"/><sheetData>${Array.from({ length: 150000 }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}"><v>${i}</v></c><c r="B${i + 1}"><v>1</v></c></row>`).join('')}</sheetData>`);
+    let t0 = Date.now(); await fails(`an .xlsx with 150,000 rows (${Math.round(tall.length / 1024)} KB) is refused before it is parsed`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'tall.xlsx', data: durl(tall, XT) } }, 400, 'too large');
+    check('…quickly', Date.now() - t0 < 4000, `${Date.now() - t0} ms`);
+    await fails('an .xlsx whose sheet unpacks to over 10 MB', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'fat.xlsx', data: durl(mkXlsx(`<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>${'x'.repeat(11e6)}</t></is></c></row></sheetData>`), XT) } }, 400, 'too large');
+    const bomb = mkXlsx('<dimension ref="A1:XFD200000"/><sheetData><row r="200000"><c r="XFD200000" t="inlineStr"><is><t>x</t></is></c></row></sheetData>');
+    t0 = Date.now(); await fails(`a ${(bomb.length / 1024).toFixed(1)} KB .xlsx with one cell at XFD200000 is refused`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb.xlsx', data: durl(bomb, XT) } }, 400, 'too large');
+    check('…quickly, and the server stays up', Date.now() - t0 < 3000 && (await fetch(API + '/health').then(r => r.ok, () => false)), `${Date.now() - t0} ms`);
+    const bomb2 = mkXlsx('<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="XFD1"><v>1</v></c></row><row r="2"><c r="A2"><v>1</v></c></row></sheetData>');
+    await fails('a sheet with a cell at XFD1 (2 rows): too many columns', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb2.xlsx', data: durl(bomb2, XT) } }, 400, 'Too many columns');
+    // files that lie about themselves (the review's bypasses): each answers 400 quickly, and the server keeps working afterwards
+    const xmlHead = '<?xml version="1.0" encoding="UTF-8"?>', NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const book = (sheets, wbSheets, rels) => ({ // a workbook from its sheets: { 'xl/worksheets/sheet1.xml': xml, … }
+      '[Content_Types].xml': strToU8(`${xmlHead}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${Object.keys(sheets).map(p => `<Override PartName="/${p}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`),
+      '_rels/.rels': strToU8(`${xmlHead}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+      'xl/workbook.xml': strToU8(`${xmlHead}<workbook xmlns="${NS}" xmlns:r="${REL}"><sheets>${wbSheets || '<sheet name="Menu" sheetId="1" r:id="rId1"/>'}</sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(`${xmlHead}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels || `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/>`}</Relationships>`),
+      ...Object.fromEntries(Object.entries(sheets).map(([p, x]) => [p, typeof x === 'string' ? strToU8(x) : x])) });
+    const ws = data => `${xmlHead}<worksheet xmlns="${NS}"><sheetData>${data}</sheetData></worksheet>`;
+    // the central directory says the sheet unpacks to `size` bytes (the reader walks the local headers and unpacks all of it anyway)
+    const understate = (zipBuf, name, size) => { const b = Buffer.from(zipBuf); for (let i = b.indexOf('PK\x01\x02'); i >= 0; i = b.indexOf('PK\x01\x02', i + 4))
+      if (b.toString('utf8', i + 46, i + 46 + b.readUInt16LE(i + 28)) === name) b.writeUInt32LE(size, i + 24); return b; };
+    const S1 = 'xl/worksheets/sheet1.xml', bombRows = '<row r="1"><c r="A1"><v>1</v></c></row><row r="200000"><c r="XFD200000" t="inlineStr"><is><t>x</t></is></c></row>';
+    // 600 MB of one inline string, deflated as it is made (never 600 MB in this process): about 600 KB on disk
+    const bigString = () => { const out = []; const z = new Zip((err, d) => { if (err) throw err; out.push(d); });
+      for (const [p, d] of Object.entries(book({}))) { const f = new ZipDeflate(p, { level: 9 }); z.add(f); f.push(d, true); }
+      const f = new ZipDeflate(S1, { level: 9 }); z.add(f); f.push(strToU8(`${xmlHead}<worksheet xmlns="${NS}"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>`));
+      const mb = strToU8('x'.repeat(1 << 20)); for (let i = 0; i < 600; i++) f.push(mb); f.push(strToU8('</t></is></c></row></sheetData></worksheet>'), true); z.end();
+      return understate(Buffer.concat(out), S1, 100); };
+    const hostile = [
+      ['(a) one cell at XFD200000, the central directory saying the sheet is 60 bytes', () => understate(zipSync(book({ [S1]: ws(bombRows) })), S1, 60)],
+      ['(g) the same cell with single-quoted attributes', () => zipSync(book({ [S1]: ws(bombRows.replaceAll('"', "'")) }))],
+      ['(j) the same cell written as a character reference (&#88;FD200000)', () => zipSync(book({ [S1]: ws(bombRows.replace('r="XFD200000"', 'r="&#88;FD200000"')) }))],
+      ['(n) a commented-out decoy sheet in workbook.xml', () => zipSync(book({ [S1]: ws(bombRows), 'xl/worksheets/sheet2.xml': ws('<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c></row>') },
+        '<!--<sheet name="x" sheetId="9" r:id="rId2"/>--><sheet name="Menu" sheetId="1" r:id="rId1"/>',
+        `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`))],
+      ['(h) 400,000 rows in about 4 MB, the central directory saying 200 bytes', () => understate(zipSync(book({ [S1]: ws(Array.from({ length: 400000 }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}"><v>${i + 1}</v></c><c r="B${i + 1}"><v>1</v></c></row>`).join('')) }), { level: 9 }), S1, 200)],
+      ['(i) a 600 MB inline string in about 600 KB, the central directory saying 100 bytes', bigString]];
+    const honest = { name: 'menu.xlsx', data: durl(XLSX, XT) };
+    for (const [what, make] of hostile) { const f = make(); await sleep(100); // building (i) blocks for seconds: let the client notice a keep-alive socket the server closed meanwhile
+      const t1 = Date.now();
+      const r = await api('/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'hostile.xlsx', data: durl(f, XT) } }), ms = Date.now() - t1;
+      const after = (await fetch(API + '/health').then(x => x.ok, () => false)) && (await api('/canteen/menu/read', { ...SB, method: 'POST', body: honest })).data?.total === 4;
+      check(`${what} (${Math.round(f.length / 1024)} KB): 400 in under 8 s, then the server still answers and reads a good file`, r.status === 400 && /too large/i.test(r.error?.message || '') && ms < 8000 && after, `${r.status} ${r.error?.message || ''} ${ms} ms, after: ${after}`); }
+    const m400 = await ok('a 400-row workbook saved by openpyxl still reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm400.xlsx', data: durl(fs.readFileSync(path.join(ROOT, 'test/fixtures/menu-400.xlsx')), XT) } });
+    check('…all 400 rows', m400?.total === 400 && m400.columns.length === 5, JSON.stringify(m400?.columns));
+    // round 3: one 10 MB shared string used by 500 cells (copied once per cell on its way back, it was 5 GB), five hostile files at once,
+    // and the server's memory after them (production restarts the process at 400 MB)
+    const rssMb = () => Math.round(+execFileSync('ps', ['-o', 'rss=', '-p', String(server.pid)]).toString().trim() / 1024);
+    const sstAmp = zipSync({ ...book({ [S1]: ws(Array.from({ length: 10 }, (_, r) => `<row r="${r + 1}">${Array.from({ length: 50 }, (_, c) => `<c r="${colName(c)}${r + 1}" t="s"><v>0</v></c>`).join('')}</row>`).join('')) }, null,
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/sharedStrings" Target="sharedStrings.xml"/>`),
+      'xl/sharedStrings.xml': strToU8(`${xmlHead}<sst xmlns="${NS}" count="1" uniqueCount="1"><si><t>${'x'.repeat(10 * 1024 * 1024 - 200)}</t></si></sst>`) }, { level: 9 });
+    await sleep(100); let t3 = Date.now();
+    await fails(`one 10 MB shared string in 500 cells (${Math.round(sstAmp.length / 1024)} KB)`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'sst.xlsx', data: durl(sstAmp, XT) } }, 400, 'too large');
+    const rssAfter = rssMb();
+    check('…quickly; the server still answers and stays under 350 MB', Date.now() - t3 < 8000 && (await fetch(API + '/health').then(x => x.ok, () => false)) && rssAfter < 350, `${Date.now() - t3} ms, ${rssAfter} MB`);
+    const bombA = durl(hostile[0][1](), XT); t3 = Date.now();
+    const five = await Promise.all([0, 1, 2, 3, 4].map(() => api('/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'a.xlsx', data: bombA } })));
+    check('five hostile files at once: each 400 (read one at a time) or 429 (busy), within 15 s; the server still answers and stays under 350 MB',
+      five.every(r => r.status === 400 || (r.status === 429 && /busy/i.test(r.error?.message || ''))) && five.some(r => r.status === 400) && Date.now() - t3 < 15000
+      && (await fetch(API + '/health').then(x => x.ok, () => false)) && rssMb() < 350, `${five.map(r => r.status).join(',')} in ${Date.now() - t3} ms, ${rssMb()} MB`);
+    check('…and a good file reads right after', (await api('/canteen/menu/read', { ...SB, method: 'POST', body: honest })).data?.total === 4);
+    // CSV limits count what is kept: blank lines and empty trailing columns are free
+    const sampleText = SAMPLE.toString('utf8'), [sHead, ...sRows] = sampleText.replace(/\r?\n$/, '').split(/\r?\n/);
+    const blanks = await ok('a 29-row CSV followed by 6,000 blank lines reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'b.csv', data: durl(sampleText + '\n'.repeat(6000)) } });
+    check('…29 rows', blanks?.total === 29 && blanks.columns.length === 11);
+    const rows500 = Array.from({ length: 500 }, (_, i) => sRows[i % 29].replace(/^([^,]*),([^,]*),/, `$1,$2 ${i},`) + ','.repeat(200));
+    const trail = await ok('a 500-row CSV with 200 empty columns at the end of every row reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 't.csv', data: durl([sHead + ','.repeat(200), ...rows500].join('\n')) } });
+    check('…500 rows, 11 columns', trail?.total === 500 && trail.columns.length === 11, JSON.stringify(trail?.columns?.length));
+    // ---- one name, one item across the whole menu (case and spacing ignored); the current menu as a file; the round trip ----
+    const act = async n => q("SELECT i.*, c.name cat FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id WHERE i.tenant_id=? AND i.active=1 AND lower(i.name)=lower(?) ORDER BY i.created_at, i.id", B, n);
+    const sam0 = (await act('Samosa'))[0], catsN = async () => (await q('SELECT count(*)::int n FROM canteen_categories WHERE tenant_id=?', B))[0].n;
+    const mv = [{ row: 2, category: 'Desserts', name: '  samosa ', price: '16' }];
+    const mvDry = await ok('a file row for "  samosa " under Desserts (Samosa is under Snacks): preview', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mv, dry_run: true } });
+    check('…the same item: 0 added, 1 updated, of which 1 moved; nothing saved', mvDry.added === 0 && mvDry.updated === 1 && mvDry.moved === 1 && mvDry.rejected.length === 0 && (await act('Samosa'))[0].cat === 'Snacks', JSON.stringify(mvDry));
+    const mvImp = await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mv, dry_run: false } });
+    const sam1 = await act('Samosa');
+    check('…one Samosa, the same id, now under Desserts at ₹16', mvImp.added === 0 && mvImp.moved === 1 && sam1.length === 1 && sam1[0].id === sam0.id && sam1[0].created_at === sam0.created_at && sam1[0].cat === 'Desserts' && sam1[0].price_paise === 1600, JSON.stringify(sam1));
+    const keep = await ok('a matching row with an empty category cell', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, category: '', name: 'SAMOSA', price: '17' }], dry_run: false } });
+    const sam2 = await act('Samosa');
+    check('…updates the price and leaves the item in its category', keep.updated === 1 && keep.moved === 0 && sam2.length === 1 && sam2[0].cat === 'Desserts' && sam2[0].price_paise === 1700, JSON.stringify(sam2));
+    const nc0 = await catsN();
+    await ok('a matching row under a category that does not exist yet', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, category: 'Chaat', name: 'Samosa', price: '17' }], dry_run: false } });
+    check('…creates the category and moves the item there', (await catsN()) === nc0 + 1 && (await act('Samosa')).length === 1 && (await act('Samosa'))[0].cat === 'Chaat');
+    const twin = await ok('one file, the same name in two categories (different case and spacing)', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, category: 'Alpha Cat', name: 'Twin Item', price: '5' }, { row: 3, category: 'Beta Cat', name: ' twin   ITEM', price: '6' }], dry_run: true } });
+    check('…the second row is rejected: same item as row 2', twin.added === 1 && twin.rejected.length === 1 && twin.rejected[0].row === 3 && /Same item as row 2/.test(twin.rejected[0].reason), JSON.stringify(twin));
+    const vp0 = (await act('Veg Puff'))[0];
+    await ok('a matching row spelled "veg   PUFF" (repeated spaces)', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'veg   PUFF', price: String(vp0.price_paise / 100) }], dry_run: false } });
+    check('…updates the same item and stores the file\'s spelling with the spaces collapsed', (await act('veg PUFF')).length === 1 && (await act('veg PUFF'))[0].id === vp0.id && (await act('veg PUFF'))[0].name === 'veg PUFF');
+    // Add item and Edit item
+    const cats = await q('SELECT id, name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order', B);
+    await fails('Add item: a name already on the menu, in another category, other case and spacing, is refused', '/canteen/items', { ...SB, method: 'POST', body: { name: ' masala   DOSA ', price: '50', category_id: cats.find(c => c.name === 'Snacks').id } }, 400, '"Masala Dosa" is already on the menu');
+    check('…and nothing added', (await act('Masala Dosa')).length === 1);
+    const same = await Promise.all([0, 1].map(() => api('/canteen/items', { ...SB, method: 'POST', body: { name: 'Same  Time Dish', price: '20' } })));
+    const sameRows = await q("SELECT name FROM canteen_items WHERE tenant_id=? AND active=1 AND lower(name) LIKE 'same%time dish'", B);
+    check('two Add item requests with the same name at once: one item (spaces collapsed), one 400', same.map(r => r.status).sort().join() === '200,400' && sameRows.length === 1 && sameRows[0].name === 'Same Time Dish', JSON.stringify(sameRows));
+    await ok('Add item "Cafe\u0301 Latte" (e + combining accent)', '/canteen/items', { ...SB, method: 'POST', body: { name: 'Cafe\u0301 Latte', price: '40' } });
+    await fails('…then "Caf\u00e9 latte" (one composed é) is the same name', '/canteen/items', { ...SB, method: 'POST', body: { name: 'Caf\u00e9 latte', price: '40' } }, 400, 'is already on the menu');
+    const nw = await ok('Add item with a new name works', '/canteen/items', { ...SB, method: 'POST', body: { name: 'Pani Puri', price: '30' } });
+    const plain = (await act('Plain Dosa'))[0], md = (await act('Masala Dosa'))[0];
+    await fails('Edit item: renaming Plain Dosa to "masala dosa" is refused', '/canteen/items/' + plain.id, { ...SB, method: 'PATCH', body: { name: 'masala dosa' } }, 400, 'is already on the menu');
+    await ok('…saving an item with its own name and a new price works', '/canteen/items/' + md.id, { ...SB, method: 'PATCH', body: { name: 'Masala Dosa', price: '56', category_id: md.category_id, description: md.description, is_veg: true } });
+    await ok('…a price-only change works', '/canteen/items/' + md.id, { ...SB, method: 'PATCH', body: { price: '57' } });
+    await ok('…changing only the capitals of its own name works', '/canteen/items/' + md.id, { ...SB, method: 'PATCH', body: { name: 'MASALA dosa' } });
+    check('…one Masala Dosa at ₹57, renamed', (await act('Masala Dosa')).length === 1 && (await act('Masala Dosa'))[0].price_paise === 5700 && (await act('Masala Dosa'))[0].name === 'MASALA dosa');
+    await api('/canteen/items/' + nw.id, { ...SB, method: 'DELETE' }); // hidden: the name is free again
+    const nw2 = await ok('a removed item\'s name can be used again', '/canteen/items', { ...SB, method: 'POST', body: { name: 'pani puri', price: '32' } });
+    await fails('…but bringing the removed one back while the new one is on the menu is refused', '/canteen/items/' + nw.id, { ...SB, method: 'PATCH', body: { active: true } }, 400, 'is already on the menu');
+    await api('/canteen/items/' + nw2.id, { ...SB, method: 'DELETE' });
+    await ok('…once the new one is removed, the old one comes back', '/canteen/items/' + nw.id, { ...SB, method: 'PATCH', body: { active: true } });
+    const [r1, r2] = await Promise.all([plain.id, (await act('Upma'))[0].id].map(id => api('/canteen/items/' + id, { ...SB, method: 'PATCH', body: { name: 'Race Dish' } })));
+    check('two renames to the same new name at once: one wins, the other is refused', [r1.status, r2.status].sort().join() === '200,400' && (await act('Race Dish')).length === 1, `${r1.status} ${r2.status}`);
+    // the current menu as a file: the template columns, rupees, running deals only, quoted where needed, in menu order
+    await run(`UPDATE canteen_items SET description=? WHERE id=?`, 'Hot, "fresh"\nand crisp', (await act('Veg Puff'))[0].id);
+    await run(`UPDATE canteen_items SET deal_pct=30, deal_kind='flash', deal_until=? WHERE id=?`, new Date(Date.now() - 6e4).toISOString(), (await act('Coffee'))[0].id); // ended a minute ago
+    const exB = await api('/canteen/menu-export.csv', { ...SB, raw: true }), exBuf = Buffer.from(await exB.arrayBuffer()), exB_ = exBuf.toString('utf8');
+    const exRows = exB_.slice(1).split('\r\n'), live = await q('SELECT count(*)::int n FROM canteen_items WHERE tenant_id=? AND active=1', B);
+    const lineOf = n => exRows.find(l => l.split(',')[1] === n) || '';
+    check('the current menu downloads: BOM, the header, prices in rupees (45.5, 1200, 57)', exB.status === 200 && exB_.startsWith('﻿') && exRows[0] === FIELDS.join(',')
+      && /^,Egg Roll,45\.5,/.test(lineOf('Egg Roll')) && /^Rolls,Chicken Roll,1200,/.test(lineOf('Chicken Roll')) && /^Breakfast,MASALA dosa,57,/.test(lineOf('MASALA dosa')), exB_.slice(0, 400));
+    check('…a comma, quote or newline is quoted', exB_.includes('"Hot, ""fresh""\nand crisp"') && exB_.includes('"Rice, 2 curries, dal, curd, pickle"'));
+    check('…a running deal is written, an ended one is not', /,20,eod,\d+$/.test(lineOf('Mirchi Bajji (4 pcs)')) && /,1,0,1,\d+,,,$/.test(lineOf('Coffee')), lineOf('Mirchi Bajji (4 pcs)') + ' | ' + lineOf('Coffee'));
+    const catOrder = (await q('SELECT name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', B)).map(c => c.name);
+    const exCats = exRows.slice(1).filter(Boolean).map(l => l.split(',')[0]).filter((c, i, a) => a.indexOf(c) === i);
+    check('…one row per item on the menu, by category order (no category last), then item order', exRows.slice(1).filter(Boolean).length === live[0].n
+      && JSON.stringify(exCats.filter(Boolean)) === JSON.stringify(catOrder.filter(c => exCats.includes(c))) && exCats.indexOf('') === exCats.length - 1, JSON.stringify(exCats));
+    // the round trip: upload the same bytes; nothing added, nothing rejected, nothing visible changes
+    const snap = async () => JSON.stringify(await q('SELECT id, created_at, category_id, name, description, price_paise, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_until FROM canteen_items WHERE tenant_id=? ORDER BY id', B));
+    const before1 = await snap(), cats1 = JSON.stringify(await q('SELECT id, name, sort_order FROM canteen_categories WHERE tenant_id=? ORDER BY id', B));
+    const rt = await ok('round trip: the downloaded menu reads back', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'canteen-menu.csv', data: durl(exBuf) } });
+    const rtRows = mapRows(rt, byName(rt));
+    const rtDry = await ok('…dry run', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: rtRows, dry_run: true } });
+    check('…added 0, rejected none, every item updated, none moved', rtDry.added === 0 && rtDry.rejected.length === 0 && rtDry.updated === live[0].n && rtDry.moved === 0 && rtDry.categories_created === 0, JSON.stringify({ ...rtDry, live: live[0].n }));
+    const rtImp = await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: rtRows, dry_run: false } });
+    check('…the items (ids, created_at, prices, deals) and categories are exactly as before', rtImp.added === 0 && rtImp.rejected.length === 0 && (await snap()) === before1
+      && JSON.stringify(await q('SELECT id, name, sort_order FROM canteen_categories WHERE tenant_id=? ORDER BY id', B)) === cats1);
+    // a deal in a re-uploaded file with the item's own % and type keeps the item's end time, running or ended (an edit in Excel can take a while)
+    const mb = (await act('Mirchi Bajji (4 pcs)'))[0], cc = (await act('Cold Coffee'))[0], iso = ms => new Date(Date.now() + ms).toISOString();
+    await run(`UPDATE canteen_items SET deal_pct=20, deal_kind='eod', deal_until=? WHERE id=?`, iso(60 * 6e4), mb.id);
+    await run(`UPDATE canteen_items SET deal_pct=10, deal_kind='flash', deal_until=? WHERE id=?`, iso(30 * 6e4), cc.id);
+    const exD = Buffer.from(await (await api('/canteen/menu-export.csv', { ...SB, raw: true })).arrayBuffer());
+    const mbEnd = iso(50 * 6e4), ccEnd = iso(-6e4); // 10 minutes of editing later: Mirchi's sale has 50 minutes left, Cold Coffee's flash sale has ended
+    await run('UPDATE canteen_items SET deal_until=? WHERE id=?', mbEnd, mb.id); await run('UPDATE canteen_items SET deal_until=? WHERE id=?', ccEnd, cc.id);
+    const rdD = await ok('a downloaded menu with two deals, uploaded back after the deals moved on', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl(exD) } });
+    await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rdD, byName(rdD)), dry_run: false } });
+    const endOf = async id => (await q('SELECT deal_pct, deal_kind, deal_until FROM canteen_items WHERE id=?', id))[0];
+    check('…the same % and type: the running sale keeps its end, the ended one stays ended', (await endOf(mb.id)).deal_until === mbEnd && (await endOf(cc.id)).deal_until === ccEnd && (await endOf(cc.id)).deal_pct === 10, JSON.stringify([await endOf(mb.id), await endOf(cc.id), mbEnd, ccEnd]));
+    await ok('a row with another % for Mirchi Bajji', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Mirchi Bajji (4 pcs)', price: String(mb.price_paise / 100), deal_pct: '25', deal_kind: 'eod', deal_minutes: '45' }], dry_run: false } });
+    const mb2 = await endOf(mb.id);
+    check('…starts a new sale from the file\'s minutes', mb2.deal_pct === 25 && Math.abs(Date.parse(mb2.deal_until) - Date.now() - 45 * 6e4) < 2 * 6e4, JSON.stringify(mb2));
+    await run('UPDATE canteen_items SET description=? WHERE id=?', '\t=cmd', cc.id); // only a direct database change can store a leading tab
+    check('the download guards text starting with a tab as it does = + - @', (await (await api('/canteen/menu-export.csv', { ...SB, raw: true })).text()).includes(",'\t=cmd,"));
+    await run('UPDATE canteen_items SET description=NULL WHERE id=?', cc.id);
+    // names that were on the menu twice before this rule: nothing breaks, nothing is deleted, the oldest one is updated, the preview says so
+    await run(`INSERT INTO canteen_items (id, tenant_id, name, price_paise, created_at) VALUES ('legacy-a', ?, 'Legacy Twin', 1000, '2020-01-01T00:00:00.000Z'), ('legacy-b', ?, 'legacy  twin', 1100, '2021-01-01T00:00:00.000Z')`, B, B);
+    const catIds = (await q('SELECT id FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', B)).map(c => c.id); // the newer copy in the first category, so it comes first in menu order
+    await run("UPDATE canteen_items SET category_id=? WHERE id='legacy-a'", catIds.at(-1)); await run("UPDATE canteen_items SET category_id=? WHERE id='legacy-b'", catIds[0]);
+    const exL = Buffer.from(await (await api('/canteen/menu-export.csv', { ...SB, raw: true })).arrayBuffer()), twins = exL.toString('utf8').split('\r\n').filter(l => /,legacy\s+twin,/i.test(l));
+    check('a name on the menu twice: the download has one row for it, the oldest copy (the one an upload updates)', twins.length === 1 && /,Legacy Twin,10,/.test(twins[0]), JSON.stringify(twins));
+    const beforeL = await snap(), rdL = await ok('…uploading that file back', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl(exL) } });
+    const impL = await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rdL, byName(rdL)), dry_run: false } });
+    check('…changes nothing: both copies keep their category and price', impL.added === 0 && impL.rejected.length === 0 && (await snap()) === beforeL, JSON.stringify(impL));
+    const lg = await ok('a menu that already has "Legacy Twin" twice: preview', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Legacy Twin', price: '33' }], dry_run: true } });
+    check('…no error: 1 to update, and a note naming the repeated name', lg.updated === 1 && lg.added === 0 && lg.rejected.length === 0 && lg.duplicates?.count === 1 && lg.duplicates.names.join() === 'Legacy Twin', JSON.stringify(lg));
+    await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Legacy Twin', price: '33' }], dry_run: false } });
+    const lgi = await q("SELECT id, price_paise, active FROM canteen_items WHERE id LIKE 'legacy-%' ORDER BY id");
+    check('…the oldest one is updated, the other kept as it was', lgi.length === 2 && lgi[0].price_paise === 3300 && lgi[1].price_paise === 1100 && lgi.every(i => i.active === 1), JSON.stringify(lgi));
+    await ok('…a price-only edit of the newer twin still works', '/canteen/items/legacy-b', { ...SB, method: 'PATCH', body: { price: '12' } });
+    await ok('…and saving it with its own name too', '/canteen/items/legacy-b', { ...SB, method: 'PATCH', body: { name: 'legacy  twin', price: '12' } });
+    await run("DELETE FROM canteen_items WHERE id LIKE 'legacy-%'");
+    await run('UPDATE tenants SET canteen_on=0 WHERE id=?', B);
+  }
+
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya, owner: T.owner, store: T.store }, { t1: ids.t1, joinerNo: ids.joinerNo, sharedId: ids.sharedId, closedId: ids.closedId, joinedId: ids.joinedId });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1496,23 +2172,39 @@ async function uiSmoke(tok, id) {
     await visit('campus intro, with the first-visit guide card', '/d/alpha', null, '.guidecard a[href="guide/requestor.html"]');
     await visit('service list', '/d/alpha/raise', null, 'a.svc[href*="ELEC"]');
     await visit('raise form (location type)', '/d/alpha/raise/ELEC', null, '#f [name=fd_loc_block]');
+    const badPat = await js(`return [...document.querySelectorAll('[pattern]')].filter(i => { try { new RegExp(i.pattern, 'v'); return false; } catch { return true; } }).map(i => i.name + ': ' + i.pattern);`);
+    check('every pattern attribute is a regular expression the browser accepts (else it is silently ignored)', !badPat.length, badPat.join(' | '));
     check('other teams open straight into the problem form: no suggestion choice (that is Food only)', await js(`return !document.querySelector('.kindcard') && !document.querySelector('.kindsw:not([hidden])') && !/suggestion/i.test(document.querySelector('.wrap').innerText.replace(/\\s+/g, ' ').split('Your name')[0]) && /Raise ticket/.test(document.querySelector('#raiseBtn').textContent)`));
     await visit('raise form (student type)', '/d/alpha/raise/EXAM', null, '#f [name=fd_stu_id]');
     await visit('track page', '/d/alpha/track', null, '#f [name=no]');
     await visit('requestor ticket page', '/d/alpha/t/0001', null, '.stamps li');
+    await visit('a joiner\'s own ticket page', '/d/alpha/t/' + id.joinerNo, null, '.mine');
     await visit('staff login', '/login', null, '#f [name=password]');
     await visit('provider home with ticket cards', '/c', tok.pavan, '.tcard');
     check('staff screens offer no guide card (the guide is for requestors)', !(await js("return !!document.querySelector('.guidecard')")));
     await visit('provider ticket workspace', '/c/t/' + id.t1, tok.pavan, '#act #to');
+    await visit('workspace: requesters with their own numbers', '/c/t/' + id.sharedId, tok.pavan, '.rqrow [data-split]');
+    await visit('workspace: a closed shared ticket lists the numbers', '/c/t/' + id.closedId, tok.pavan, '.rqrow .mono');
+    check('…and offers no Split out on a closed ticket', await js("return !document.querySelector('[data-split]')"));
+    await visit('workspace: Join ticket dialog', '/c/t/' + id.sharedId, tok.pavan, '#joinbtn'); await js("document.querySelector('#joinbtn').click()"); check('…opens with a number field', await js("return !!document.querySelector('dialog[open] input[name=ticket_no]')"));
+    await visit('workspace: Split out dialog', '/c/t/' + id.sharedId, tok.pavan, '.rqrow [data-split]'); await js("document.querySelector('.rqrow [data-split]').click()"); check('…asks for confirmation', await js("return !!document.querySelector('dialog[open]')"));
+    await visit('I1: workspace of a joined ticket shows the banner', '/c/t/' + id.joinedId, tok.pavan, '.joinedto');
+    check('I1: …and no update form, Join or Transfer', await js("return document.querySelector('#act').hidden && document.querySelector('#updOpen').hidden && !document.querySelector('#joinbtn') && !document.querySelector('#tr')"));
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');
     await visit('admin people', '/c/users', tok.asha, '.trow .uact');
     await visit('admin SLA & points', '/c/sla', tok.asha, '#sf [name=esc_days]');
     await visit('admin attention', '/c/attention', tok.asha, '#main .attp .att');
+    await visit('a campus admin typing #/c/tenants is sent Home', '/c/tenants', tok.asha, '#main');
+    check('…the address is #/c and there is no New tenant button', await js(`return location.hash === '#/c' && !/New tenant/.test(document.body.innerText);`));
+    await visit('a provider typing #/c/users is sent Home', '/c/users', tok.pavan, '.tcard');
+    check('…the address is #/c', await js(`return location.hash === '#/c';`));
     await visit('admin reports', '/c/reports', tok.asha, '.kpi2');
     await visit('admin audit', '/c/audit', tok.asha, '#main table');
     await visit('super admin email page', '/c/email', tok.sa, '#cf [name=url]');
+    await js(`document.querySelector('[data-tab=events]').click();`); await sleep(1200); // the "Emails sent" tab lists every event
+    check('email page lists joined_into and split_out', await js(`return !!document.querySelector('[data-ev=joined_into]') && !!document.querySelector('[data-ev=split_out]');`));
     await visit('super admin tenants', '/c/tenants', tok.sa, '#main table');
     // the guide inside the app: Voice on/off, a close button back to the app, and Start opens step 1 with room around the outline
     errors.length = 0; await send('Page.navigate', { url: `${APP}/guide/requestor.html` });
@@ -1523,7 +2215,7 @@ async function uiSmoke(tok, id) {
       return shot;`);
     check('guide in the app opens; Start shows step 1 with the outline clear of the words', gok && g1?.shown && g1.on && g1.roomy && !errors.length, JSON.stringify(g1) + errors.join(' | ').slice(0, 200));
     // every kind of email button, opened the way Gmail opens it: the address travels encoded in a redirect link
-    const mails = await q('SELECT recipient, html FROM notifications'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
+    const mails = await q('SELECT recipient, html FROM notifications ORDER BY created_at, id'), hrefsOf = h => [...String(h || '').matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
     const hrefs = [...new Set(mails.flatMap(n => hrefsOf(n.html)))], big = Math.max(...mails.map(n => String(n.html || '').length));
     const ours = h => h.startsWith(APP + '/') || h === 'https://claude.ai/artifact/XwZ2wYi78wQ7t8PcCMpHhv'; // the provider guide is a shared claude.ai page
     check('every link in every email is a full address of this site (or the provider guide)', hrefs.length > 0 && hrefs.every(ours), hrefs.filter(h => !ours(h)).slice(0, 3).join(' '));
@@ -1703,6 +2395,10 @@ async function uiSmoke(tok, id) {
     check('student: the cart asks to verify the email first', await js(`document.querySelector('#cnbar a').click(); for (let i = 0; i < 30 && !document.querySelector('#cnf [name=email]'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('#cnf [name=email]') && /Place order/.test(document.querySelector('#cnf').textContent)`));
     const co = (await q("SELECT id, view_key FROM canteen_orders ORDER BY created_at LIMIT 1"))[0];
     await visit('student: order page shows the token', `/d/alpha/canteen/o/${co.id}?k=${co.view_key}`, null, '.cn-token b');
+    const rcx = (await q("SELECT id, view_key FROM canteen_orders WHERE name='Receipt' ORDER BY created_at DESC LIMIT 1"))[0];
+    if (rcx) { await visit('student: the live receipt', `/d/alpha/canteen/o/${rcx.id}?k=${rcx.view_key}`, null, '.cn-rc');
+      check('…ticking clock, check code, the canteen name in the colour band and the COLLECTED stamp', await js(`await new Promise(r => setTimeout(r, 1300)); const t1 = document.querySelector('#rcclock').textContent; await new Promise(r => setTimeout(r, 1100));
+        return /^\\d{2}:\\d{2}:\\d{2}$/.test(t1) && document.querySelector('#rcclock').textContent !== t1 && /^\\d{4}$/.test(document.querySelector('.cn-rcbig .mono').textContent) && /Hilltop/.test(document.querySelector('.cn-rcband b').textContent) && !!document.querySelector('.cn-rcstamp')`)); }
     await visit('student: menu shows category, price and description', '/d/alpha/canteen', null, '.cn-cat h2');
     check('…with filters; "Veg only" and price sorting work', await js(`const d = document.querySelector('.cn-item .cn-price'); document.querySelector('[data-f=sort]').click(); await new Promise(r => setTimeout(r, 100));
       const p = [...document.querySelector('.cn-list').querySelectorAll('.cn-item')].map(r => +r.dataset.price); document.querySelector('[data-f=sort]').click();
@@ -1729,9 +2425,56 @@ async function uiSmoke(tok, id) {
     check('…the Set up tab lists staff with one job each, no error', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#cnset'); i++) await new Promise(r => setTimeout(r, 200));
       return !!document.querySelector('#cnset select[name=job]') && !document.querySelector('#main .err:not(:empty), #main .cn-warn')`), await js(`return document.querySelector('#main').innerHTML.slice(0, 700)`));
     for (const t of ['orders', 'counter', 'kitchen', 'menu', 'report']) check(`…super admin's ${t} tab opens without an error`, await js(`document.querySelector('[data-t=${t}]').click(); await new Promise(r => setTimeout(r, 1500)); return !document.querySelector('#main p.err, #main .cn-warn')`));
+    await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.kavya)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
+    for (let i = 0; i < 40 && !(await js(`return !!document.querySelector('.cn-pb[data-add]')`).catch(() => false)); i++) await sleep(250);
+    check('counter: categories on the left, items split into Veg and Non-veg', await js(`const cats = [...document.querySelectorAll('.cn-poscats [data-cat]')].map(b => b.textContent);
+      const snack = document.querySelector('.cn-poscats [data-cat]:not([data-cat=all])'); snack.click(); await new Promise(r => setTimeout(r, 100));
+      const heads = [...document.querySelectorAll('#posgrid .cn-pss h3')].map(h => h.className); const veg = [...document.querySelectorAll('#posgrid .cn-pss h3.v + .cn-posg .cn-pb')].every(b => b.classList.contains('v'));
+      document.querySelector('.cn-poscats [data-cat=all]').click(); return cats.length >= 2 && /All items/.test(cats[0]) && heads.includes('v') && veg`));
+    const ordersBefore = (await q('SELECT count(*)::int n FROM canteen_orders'))[0].n;
+    check('walk-in UPI on screen: Charge shows the QR; Cancel makes no order', await js(`window.print = () => {}; window.confirm = () => true;
+      document.querySelector('.cn-pb[data-add]').click(); document.querySelector('#posf [name=pm][value=upi]').click(); document.querySelector('#posf').dispatchEvent(new Event('change'));
+      document.querySelector('#posf').requestSubmit(); for (let i = 0; i < 30 && !document.querySelector('.cn-upid #upiimg[src^="blob:"]'); i++) await new Promise(r => setTimeout(r, 200));
+      const shown = !!document.querySelector('.cn-upid #upiimg[src^="blob:"]'); document.querySelector('.cn-upid button[value=no]').click(); await new Promise(r => setTimeout(r, 600)); return shown && !document.querySelector('.cn-upid')`)
+      && (await q('SELECT count(*)::int n FROM canteen_orders'))[0].n === ordersBefore);
+    check('…Payment received with the UTR: billed, KOT to the kitchen', await js(`document.querySelector('#posf').requestSubmit(); for (let i = 0; i < 30 && !document.querySelector('.cn-upid #upiimg[src^="blob:"]'); i++) await new Promise(r => setTimeout(r, 200));
+      document.querySelector('.cn-upid [name=ref]').value = 'WALKIN7788'; document.querySelector('.cn-upid button[value=yes]').click();
+      for (let i = 0; i < 30 && !/token/.test(document.querySelector('#toast').textContent); i++) await new Promise(r => setTimeout(r, 200)); return /sent to the kitchen/.test(document.querySelector('#toast').textContent)`)
+      && (await q("SELECT pay_mode, pay_status, status, bill_no FROM canteen_orders WHERE upi_ref='WALKIN7788'")).some(r => r.pay_mode === 'upi' && r.pay_status === 'paid' && r.status === 'accepted' && r.bill_no));
+    await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.owner)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
+    let ownOk = false; for (let i = 0; i < 40 && !ownOk; i++) { await sleep(250); ownOk = await js(`return !!document.querySelector('.cn-donut') && !document.querySelector('[data-t=counter], [data-t=orders], [data-t=menu]')`).catch(() => false); }
+    check('the owner lands on the reports, with no counter, orders or menu tabs', ownOk);
+    await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.store)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/inventory` });
+    let invOk = false; for (let i = 0; i < 40 && !invOk; i++) { await sleep(250); invOk = await js(`return !!document.querySelector('.cn-inv') && !document.querySelector('[data-t]')`).catch(() => false); }
+    check('#/c/inventory: inventory staff see only the inventory', invOk);
+    check('…searching finds rice', await js(`const q = document.querySelector('#invq'); q.value = 'rice'; q.dispatchEvent(new Event('input')); return [...document.querySelectorAll('.cn-inv')].filter(r => !r.hidden).length === 1`));
+    check('stock is grouped by category, and the Categories window lists them', await js(`const q = document.querySelector('#invq'); q.value = ''; q.dispatchEvent(new Event('input'));
+      const groups = [...document.querySelectorAll('.cn-invg summary b')].map(b => b.textContent); document.querySelector('#invcats').click(); await new Promise(r => setTimeout(r, 300));
+      const rows = document.querySelectorAll('dialog .cn-icr').length; document.querySelector('dialog')?.close(); return groups.includes('Grains') && rows >= 1`));
+    await visit('super admin: Set up with search and features', '/c/canteen', tok.sa, '[data-t]');
+    check('…searching people and opening a person\'s features', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#stq'); i++) await new Promise(r => setTimeout(r, 200));
+      const q = document.querySelector('#stq'); q.value = 'kavya'; q.dispatchEvent(new Event('input')); const shown = [...document.querySelectorAll('[data-row]')].filter(r => !r.hidden);
+      return shown.length === 1 && shown[0].querySelectorAll('.cn-feat [data-f]').length === 9`));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
+    // menu upload in the real dialog: choose the sample → columns guessed → preview → Import (last of the canteen screens: it adds 29 items to Alpha). `true ===`: a script that throws comes back as {}
+    await visit('canteen desk for the menu upload', '/c/canteen', tok.pavan, '[data-t=menu]');
+    const sampleCsv = fs.readFileSync(path.join(ROOT, 'test/fixtures/canteen-menu-sample.csv'), 'utf8');
+    check('the Menu tab shows Upload menu for the manager', true === await js(`document.querySelector('[data-t=menu]').click(); for (let i = 0; i < 30 && !document.querySelector('#upmenu'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('#upmenu')`));
+    check('…the dialog opens with a file picker and the three downloads', true === await js(`document.querySelector('#upmenu').click(); await new Promise(r => setTimeout(r, 300)); const d = document.querySelector('dialog[open]');
+      return !!d?.querySelector('input[type=file][accept*=".xlsx"]') && !!d.querySelector('[data-dl=template]') && !!d.querySelector('[data-dl=sample]') && /current menu/i.test(d.querySelector('[data-dl=current]')?.textContent || '')`));
+    const uiNames = (await q("SELECT i.name FROM canteen_items i JOIN tenants t ON t.id=i.tenant_id WHERE t.slug='alpha' AND i.active=1")).map(r => r.name.trim().replace(/\s+/g, ' ').toLowerCase());
+    const uiSame = [...new Set(sampleCsv.replace(/^\ufeff/, '').trim().split(/\r?\n/).slice(1).map(l => l.split(',')[1].toLowerCase()))].filter(n => uiNames.includes(n)).length, uiAdd = 29 - uiSame; // names already on Alpha's menu are updates
+    check('…choosing the sample shows the mapping step with name and price guessed', true === await js(`const inp = document.querySelector('dialog[open] input[type=file]'), dt = new DataTransfer();
+      dt.items.add(new File([${JSON.stringify(sampleCsv)}], 'canteen-menu-sample.csv', { type: 'text/csv' })); inp.files = dt.files; inp.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let i = 0; i < 30 && !document.querySelector('dialog[open] select[data-map=name]'); i++) await new Promise(r => setTimeout(r, 200));
+      const s = f => document.querySelector('dialog[open] select[data-map=' + f + ']'); return !!s('name') && s('name').selectedOptions[0].textContent.trim() === 'name' && s('price').selectedOptions[0].textContent.trim() === 'price'`));
+    check('…Preview counts what will happen, nothing saved yet', true === await js(`document.querySelector('dialog[open] #mugo').click(); for (let i = 0; i < 30 && !document.querySelector('dialog[open] .mu-sum'); i++) await new Promise(r => setTimeout(r, 200));
+      const t = document.querySelector('dialog[open] .mu-sum')?.textContent || ''; return new RegExp('${uiAdd}\\\\s*to add', 'i').test(t) && new RegExp('${uiSame}\\\\s*to update', 'i').test(t)`) && !(await q("SELECT 1 FROM canteen_items i JOIN tenants t ON t.id=i.tenant_id WHERE t.slug='alpha' AND i.name='Gulab Jamun (2 pcs)'")).length);
+    check('…Import adds the items to the list', true === await js(`document.querySelector('dialog[open] #mugo').click(); for (let i = 0; i < 40 && !/Gulab Jamun/.test(document.querySelector('#main').textContent); i++) await new Promise(r => setTimeout(r, 200));
+      return !document.querySelector('dialog[open]') && /Gulab Jamun/.test(document.querySelector('#main').textContent) && /Added ${uiAdd}, updated ${uiSame}/.test(document.querySelector('#toast').textContent)`)
+      && (await q("SELECT count(*)::int n FROM canteen_items i JOIN tenants t ON t.id=i.tenant_id WHERE t.slug='alpha' AND i.name='Gulab Jamun (2 pcs)'"))[0].n === 1);
     check('the Canteen tab is in the desk header', await js(`return !!document.querySelector('header nav a[href="#/c/canteen"]')`));
     await api('/notices/' + uiN.id, { token: tok.asha, method: 'DELETE' });
     ws.close();

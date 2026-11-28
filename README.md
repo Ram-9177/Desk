@@ -141,6 +141,10 @@ Set a service's **form type to Food** (Services → Edit). Tapping it then shows
 - **Reports** (feedback only) go to the food service's providers at 10:00 PM campus time: daily, weekly on Sunday, monthly on the last day. Charts are PNG images so Outlook shows them. ONE Desk sends them itself through the email connection; set `FOOD_REPORT_AUTOSEND=0` to send them from Power Automate instead.
 - **Report endpoints** for Power Automate: `GET /api/reports/food/daily|weekly|monthly?tenant=<slug>&format=json` with the header `X-Report-Key: <FOOD_REPORT_KEY>` return `{ to, subject, html }` (without `format=json`: the HTML itself). Set `FOOD_REPORT_KEY` (a long random value) in `.env`; without it the endpoints answer 503.
 
+## Canteen menu from a file
+
+In the Canteen desk, Menu → **Upload menu**: download the template or your current menu (CSV, the same columns: category, name, price, description, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_minutes), edit it in Excel or Google Sheets, and upload it back (.csv or .xlsx); the preview shows what will be added, updated and moved before anything is saved. An item name is unique across the whole menu (capitals and extra spaces ignored): a name that is already on the menu updates that item, and moves it when the file gives another category, instead of adding a second one. Add item and Edit item refuse a name that is already on the menu. A deal in the file with the item's current % and type keeps its end time (a re-uploaded file never restarts or extends a sale); to change how long a deal runs, change its % or type in the file or use the deal buttons on the Menu tab.
+
 ## Notice board
 
 Teams post notices for students (Notices in the staff menu): a title, a message, up to 3 files (photos, PDF, Word, Excel; 10 MB each), who it is for, an optional start and end, and an **Important** switch. Campus admins post for any team or the whole campus; a team's providers post for their own team (and its sub-teams). New teams appear in the team list as soon as they are created.
@@ -148,6 +152,10 @@ Teams post notices for students (Notices in the staff menu): a title, a message,
 - **Campus page**: a Notice board card (important first, then the latest three; "See all" for the rest; an "I'm" filter).
 - **Before a ticket**: when a student picks a team that has a live notice, the notice pops up first with **This answers my question** (no ticket) and **I still need to raise a ticket** (the form). A ticket raised after that carries an internal line "The requester read the notice …".
 - Each notice counts how often it was seen, how many found their answer, and how many raised a ticket anyway.
+
+## Same-day duplicate reports
+
+When several students report the same problem on the same day (same campus, service, room and dropdown answer), their reports join one ticket automatically; a typed "Other" answer joins only when it is nearly identical to an earlier one (filler words ignored, about 85% alike). Every student still gets their own ticket number and tracking link, and sees only their own notes. The provider sees one ticket listing every student with their number, complaint and photos. A provider can **Join** a ticket into another of the same service and room (any day) and **Split out** a student, who keeps their number; a student whose own ticket had been joined gets it back. Two emails go to students, **Handled with others** and **Handled separately** (both on the Email page), and each names only that student's own number. Whether duplicates join silently or ask first is still the super-admin setting on the Tenants page (silent / confirm).
 
 ## Replies to requesters
 

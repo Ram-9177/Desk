@@ -293,10 +293,10 @@ async function portal(slug, q, view, code) {
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
       ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with voice in English or తెలుగు.')}
       <div id="nboard"></div>
-      <div id="cboard"></div>
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
-      ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
+      <div id="cboard"></div>
+      ${seen ? `<a class="guidelink" href="guide/requestor.html">${I('book', 16)}<span>Full guide: how to raise and track a ticket, with voice</span>${I('chev', 14)}</a>` : ''}${iosHintHtml()}</div>${installBtn()}`;
     wireGuide('guide-seen', route); noticeBoard(slug, $('#nboard')); canteenCard(slug, $('#cboard'));
     return;
   }
@@ -369,7 +369,7 @@ async function foodScreens(slug, tenant, svc, flow) {
       <label>Photos <small>(optional, up to 4: camera or gallery)</small></label>${fileButtons('food')}
       <div class="row"><div><label>Your name</label><input name="name" required autocomplete="name"></div></div><label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === 'student' ? 'checked' : ''}><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
       <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
-        <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
+        <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\\+?[0-9 \\-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
       <div class="err" id="err"></div><p><button class="btn primary big">${I('send')} Raise ticket</button></p></form></div>`;
     wireFiles('food'); wireKind();
     const fm = $('#f'), sync = () => { $('#else').hidden = fm.category.value !== 'other'; };
@@ -385,7 +385,7 @@ async function foodScreens(slug, tenant, svc, flow) {
         catch (er) { if (er.code !== 'POSSIBLE_DUPLICATE') throw er; r = await api(`/public/${slug}/food/complaint`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
         const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
         app.innerHTML = `<div class="wrap">${head('Ticket raised', `#/d/${slug}`)}<div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I('check', 28)}</span>
-          <div class="muted">${r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+          <div class="muted">Ticket raised! Your number is</div><div class="no">${r.ticket_no}</div>
           ${r.merged ? knownIssue(r.affected_count) : ''}<p>${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b></p>
           <p class="muted small" style="margin:14px 0 30px">We also emailed these details to you.</p>
           <div class="row"><button class="btn primary" id="cp">${I('copy', 18)} Copy link</button><a class="btn" href="${link}">Track status</a></div></div></div>`;
@@ -411,7 +411,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
     <label>Your name</label><input name="name" required autocomplete="name">
     <label>I'm</label><div class="whochips" role="radiogroup" aria-label="I'm">${REQUESTOR_TYPES.map(t => `<label><input type="radio" name="requestor_type" value="${t}" ${t === (whoAmI() || 'student') ? 'checked' : ''} required><span class="rtb rt-${t}">${cap(t)}</span></label>`).join('')}</div>
     <div class="row"><div><label>Email <small>(we send updates here)</small></label><input name="email" type="email" required autocomplete="email" inputmode="email"></div>
-      <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\+?[0-9 \-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
+      <div><label>Phone</label><input name="phone" type="tel" required autocomplete="tel" inputmode="tel" pattern="\\+?[0-9 \\-]{7,15}" title="7–15 digits, e.g. 9876543210"></div></div>
     <div class="row" id="idrow"><div><label><span id="idl"></span></label><input name="identifier" required></div>
       <div><label><span id="dpl"></span></label><input name="department" required></div></div>
     ${typeFields(svc).replace(/<div class="fsec" data-sec="loc"/, '<div class="fsec prob-only" data-sec="loc"')}
@@ -457,7 +457,7 @@ function raiseForm(slug, tenant, svc, related, kind = 'issue') {
         r = await api(`/public/${slug}/tickets`, { method: 'POST', body: { ...body, merge: await sameIssue(er.details) } }); }
       const link = `${location.origin}${location.pathname}#/d/${slug}/t/${r.ticket_no}?k=${r.tracking_token}`;
       app.innerHTML = `<div class="wrap"><div class="head"><a class="iconbtn" href="#/d/${slug}" aria-label="Back">${I('back')}</a><h1>${r.kind === 'suggestion' ? 'Suggestion sent' : 'Ticket raised'}</h1></div><div class="stub"><span class="chip c2" style="margin:0 auto 10px;width:56px;height:56px;border-radius:50%">${I(r.kind === 'suggestion' ? 'idea' : 'check', 28)}</span>
-        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : r.merged ? 'Added to the ticket for this problem. Your number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
+        <div class="muted">${r.kind === 'suggestion' ? 'Thank you! Your suggestion number is' : 'Ticket raised! Your number is'}</div><div class="no">${r.ticket_no}</div>
         <button type="button" class="btn soft" id="cpn" style="margin:6px auto 4px">${I('copy', 16)} Copy number</button>
         ${r.merged ? knownIssue(r.affected_count) : ''}${queueBox(r.queue)}
         <p>${r.kind === 'suggestion' ? `It went to the ${esc(svc.name)} team. If they reply, we'll email you.` : `${esc(svc.name)} · target by <b>${fmt(r.due_at)}</b>`}</p>
@@ -489,9 +489,11 @@ const queueBox = q => q ? `<div class="queuebox">${I('clock', 22)}<div><b>Queue 
   <div>Today's tickets for ${esc(q.service)} are full (the team takes ${q.daily_cap} a day). ${q.ahead ? `${q.ahead} ticket${q.ahead === 1 ? ' is' : 's are'} ahead of you` : 'You are next'}${q.waiting > 1 ? ` · ${q.waiting} waiting in all` : ''}.</div>
   <div>Your ticket reaches the team on <strong>${esc(q.lands_on)}</strong>. We'll email you then; you don't need to raise it again.</div></div></div>` : '';
 // Many people reporting the same problem the same day share one ticket (see merge.js on the server)
-const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. You will get updates by email.</span></div>` : '';
+const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. The team is fixing it as one job. You will get every update by email, under your own number.</span></div>` : '';
 const sameIssue = d => new Promise(res => {
-  $('#err').innerHTML = `<div class="limitbox">${I('alert', 22)}<div><b>Ticket #${esc(d.ticket_no)} already exists for this problem.</b><div>${esc(d.subject)} · reported by ${d.affected_count} so far. Same issue?</div>
+  // how many and the problem only: another ticket's number or subject would be another student's (a number alone opens their page)
+  const n = Number(d.affected_count) || 1;
+  $('#err').innerHTML = `<div class="limitbox">${I('alert', 22)}<div><b>This problem was already reported here today (${esc(n)} ${n === 1 ? 'person' : 'people'}).</b><div>${esc([d.service, d.problem].filter(Boolean).join(' · '))}${d.service || d.problem ? '. ' : ''}Same issue?</div>
     <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="sy">Yes, add me</button><button type="button" class="btn" id="sn">No, raise new</button></div></div></div>`;
   $('#sy').onclick = () => { $('#err').textContent = ''; res('yes'); }; $('#sn').onclick = () => { $('#err').textContent = ''; res('no'); };
 });
@@ -504,7 +506,7 @@ async function ticketPage(slug, no, q) {
   const label = e => ({ escalated: `Escalated to ${esc(e.to_value)} for faster help`, created: `Received at ${esc(e.to_value)}`, transferred: `Moved from ${esc(e.from_value)} to ${esc(e.to_value)}`,
     landed: `Reached the ${esc(e.to_value)} team`,
     status_changed: e.to_value === 'in_progress' ? (e.from_value === 'hold' ? 'Work resumed' : 'Work started') : { hold: 'Put on hold', open: 'Work resumed', closed: 'Closed', rejected: 'Rejected' }[e.to_value],
-    note: `Note from ${esc(e.actor_name)}`, reopened: `Reopened by ${esc(e.actor_name)}`, reopen_requested: 'You asked to reopen', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
+    note: `Note from ${esc(e.actor_name)}`, reopened: e.actor_name ? `Reopened by ${esc(e.actor_name)}` : 'Reopened', reopen_requested: 'You asked to reopen', separated: 'Handled separately', reopen_declined: `Reopen declined by ${esc(e.actor_name)}` })[e.event_type] || e.event_type;
   const next = { open: 'Work starts', in_progress: 'Closed', hold: 'Work resumes' }[t.status];
   const canReopen = t.status === 'closed' && !t.reopen_request && new Date(t.reopen_until) > new Date(), sug = t.kind === 'suggestion';
   const step = t.queue ? 10 : { open: 25, in_progress: 50, hold: 50, closed: 100, rejected: 100 }[t.status];
@@ -514,6 +516,7 @@ async function ticketPage(slug, no, q) {
     <div class="progress card" style="margin-top:14px;box-shadow:none">${ring(step, 80, t.status === 'rejected' ? 'var(--warn)' : t.status === 'closed' ? 'var(--ok)' : 'var(--brand)')}
       <div><b>${sug ? (t.status === 'closed' ? 'Suggestion closed' : 'Suggestion received') : t.queue ? `In the queue · number ${t.queue.queue_no}` : STATUS_WORDS[t.status]}</b><div class="muted small">${sug && t.status !== 'closed' ? `The ${esc(t.service)} team will read it. If they reply, we'll email you.` : ACTIVE.includes(t.status) ? `Target by ${fmt(t.due_at)}` : t.status === 'hold' && t.hold_due_at ? `${esc(t.hold_label || '')} · expected to resume by ${fmt(t.hold_due_at)}` : t.closed_at ? fmt(t.closed_at) : ''}</div></div></div>
     ${t.providers.map(p => `<span class="plate">${esc(p.name)}${p.phone ? ' · ' + esc(p.phone) : ''}</span>`).join('')}</div>
+    ${t.mine ? `<div class="card mine"><div class="eyebrow">What you reported</div><p>${esc(t.mine.description || t.mine.subject)}</p>${thumbs(t.mine.files)}</div>` : ''}
     <h2>What happened</h2><div class="card"><ul class="stamps">${t.events.map(e => `<li><b>${label(e)}</b><div class="when">${fmt(e.created_at)}${e.actor_type === 'user' ? ' · ' + esc(e.actor_name) : ''}</div>
       ${e.body ? `<div>${esc(e.body)}</div>` : ''}${(e.shared || []).map(x => `<a class="shrd" href="#/d/${slug}/notices/${x.id}">${I(x.kind === 'policy' ? 'file' : 'notice', 15)}<span><small>${x.kind === 'policy' ? 'Policy' : 'Notice'} · ${esc(x.team)}</small><b>${esc(x.title)}</b></span>${I('chev', 16)}</a>`).join('')}${thumbs(e.files)}</li>`).join('')}${next ? `<li class="faint"><b>${next}</b></li>` : ''}</ul></div>
     ${t.status === 'rejected' ? `<div class="card">This ticket was rejected. <a href="#/d/${slug}" id="newt">Raise a new ticket</a></div>` : `
@@ -563,12 +566,14 @@ async function shell(active, render, title) {
   else if (!S.tenant || !S.me.tenants.find(t => t.id === S.tenant)) S.tenant = S.me.tenants[0]?.id;
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
-  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
+  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter || c.owner || c.inventory || c.reports); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
   if (S.mailFor !== S.tenant) { S.mailFor = S.tenant; const m = S.tenant ? await api('/maildesk/me').catch(() => ({})) : {}; S.mailOk = !!m?.role; S.mailOpen = m?.open || 0; } // mail desk: nodal officers, mail managers, admins (only when it is on)
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], S.mailOk && ['c/mail', 'Mail', 'mail'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (!['c/canteen', 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
+  // a screen typed into the address bar that this role does not have (Tenants for a campus admin, People for a provider) goes Home instead of showing a half-page
+  if (!all.some(n => n[0] === active) && !['c/me', 'c/food', 'c/canteen'].includes(active) && title !== 'Ticket') return location.replace('#/c');
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
   const MAIN = ['c', 'c/canteen', 'c/mail', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
@@ -794,9 +799,9 @@ async function workspace(main, id, { admin }) {
   document.body.classList.add('on-ticket'); // phones: this page has its own app bar and bottom action bar
   const meta = e => { try { return JSON.parse(e.meta || '{}'); } catch { return {}; } };
   const stName = v => (STATUS_INFO[v] || [v])[0];
-  const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
+  const evLabel = e => ({ notice_seen: 'Read a team notice before raising', escalated: `Escalated to ${esc(e.to_value)}`, created: `Created in ${esc(e.to_value)}${meta(e).split_from ? ` · split out of #${esc(meta(e).split_from)}` : ''}`, transferred: `Transferred ${esc(e.from_value)} → ${esc(e.to_value)}`,
     status_changed: (m => `${stName(e.from_value)} → ${stName(e.to_value)}${m.hold_reason ? ' · ' + esc(m.hold_reason) : ''}${m.points != null ? ` · ${m.points > 0 ? '+' : ''}${m.points} pts` : ''}`)(meta(e)), note: 'Note',
-    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)',
+    reopened: 'Reopened', reopen_requested: 'Reopen requested', reopen_declined: 'Reopen declined', landed: 'Reached the team from the daily queue', due_extended: `Due extended to ${fmt(e.to_value)}`, merged: 'Also reported (same problem, same day)', joined: 'Joined another ticket into this one', joined_into: `Joined into #${esc(e.to_value)}`, split_out: 'Split a student out as their own ticket', split_back: 'Split a student back to their own ticket', separated: 'Split back out of a shared ticket',
     priority_changed: `Priority ${esc(cap(e.from_value))} → ${esc(cap(e.to_value))}${meta(e).reason ? ' · ' + esc(meta(e).reason) : ''}` })[e.event_type] || esc(e.event_type);
   // timeline dot: a status change takes the new status's colour; reopened = Open; priority = red; created = accent; the rest grey
   const evDot = e => e.event_type === 'status_changed' ? `var(--st-${ST_VAR[e.to_value] || 'neutral'})` : e.event_type === 'reopened' ? 'var(--st-open)'
@@ -813,6 +818,7 @@ async function workspace(main, id, { admin }) {
   const fd = Object.entries(fdRaw).filter(([k, v]) => v !== '' && v != null && !/_label$/.test(k) && k !== 'food_location').map(([k, v]) => [schema.find(f => f.key === k)?.label || cap(k.replace(/^(loc|stu|food)_/, '').replace(/_/g, ' ')),
     k === 'food_category' ? fdRaw.food_category_label || v : k === 'meal' ? fdRaw.meal_label || MEAL_NAMES[v] || v : Array.isArray(v) ? v.join(', ') : v]);
   const live = [...ACTIVE, 'hold'].includes(t.status), r = t.requestor, shown = ticketStatus(t);
+  const work = live && !t.joined_into_no; // a joined ticket is worked on the one it went into: its banner stays, the form, Join and Transfer go
   const dl = rows => rows.map(([k, v]) => `<div class="dli"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
   // SLA: the tag, the big value, and how much of the window is used (by the clock, from when the ticket reached the team)
   const start = new Date(t.lands_at || t.created_at).getTime(), due = new Date(t.due_at).getTime(), used = Math.max(0, Math.min(100, Math.round(100 * (Date.now() - start) / Math.max(1, due - start))));
@@ -838,8 +844,10 @@ async function workspace(main, id, { admin }) {
       <div class="person">${avatar(r.name, 40, 'accent')}<div><b>${esc(r.name)}</b> ${rtBadge(r.requestor_type || 'student')}<div class="psub">${esc([r.department, r.identifier].filter(Boolean).join(' · '))}</div></div></div>
       ${r.email ? `<a class="crow" href="mailto:${esc(r.email)}">${I('mail', 15)}<span>${esc(r.email)}</span></a>` : ''}${r.phone ? `<a class="crow" href="tel:${esc(r.phone)}">${I('phone', 15)}<span>${esc(r.phone)}</span></a>` : ''}
       ${prev.length ? `<div class="sdiv"></div><div class="slabel">Previous tickets</div>${prev.map(h => `<a class="prow" href="#/c/t/${h.id}"><span class="mono">#${h.ticket_no}</span>${pill(h.status)}</a>`).join('')}` : ''}</div>
-    ${t.requestors?.length > 1 ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.length})`)}${t.requestors.map(q => `<div class="rqrow"><b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}
-      <div class="psub">${esc(q.contact)} · ${shortDate(q.raised_at)}</div>${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}</div>`).join('')}</div>` : ''}
+    ${t.requestors?.length ? `<div class="card side">${cardHeading('users', `Requesters (${t.requestors.filter(q => !q.detached_at).length})`)}${t.requestors.map(q => { const no = q.ticket_no || (q.is_first ? t.ticket_no : ''), said = q.description || (q.is_first ? t.description : '');
+      return `<div class="rqrow">${no ? `<span class="mono">#${esc(no)}</span> ` : ''}<b>${esc(q.name)}</b>${q.is_first ? ' <span class="tag">First</span>' : ''}${[q.department, q.identifier].filter(Boolean).map(v => ' · ' + esc(v)).join('')}
+      <div class="psub">${esc(q.contact)} · ${shortDate(q.raised_at)}</div>${said ? `<div class="rqsaid">${esc(said)}</div>` : ''}${thumbs(t.attachments.filter(a => a.event_id === (q.is_first ? t.events.find(e => e.event_type === 'created')?.id : q.event_id)))}
+      ${q.detached_at ? (q.detached_to ? `<a class="small" href="#/c/t/${esc(q.detached_to)}">Split out → #${esc(no)}</a>` : '') : !q.is_first && live ? `<button type="button" class="btn sm" data-split="${esc(q.id)}">Split out</button>` : ''}</div>`; }).join('')}</div>` : ''}
     <div class="card side">${cardHeading('users', 'Assigned to')}${t.providers.map(p => `<div class="person">${avatar(p.name, 40, 'dark')}<div><b>${esc(p.name)}</b><div class="psub">Provider${p.phone ? ' · ' + esc(p.phone) : ''}</div></div></div>`).join('') || '<div class="psub">No provider is mapped to this service.</div>'}</div>
     ${live ? `<div class="card side">${cardHeading('flag', 'Priority')}<select id="pri" aria-label="Priority">${PRIORITIES.map(p => `<option value="${p}" ${p === t.priority ? 'selected' : ''}>${cap(p)}</option>`).join('')}</select>
       <div class="helper">${I('eyeoff', 14)}<span>Set by your team. The requester never sees it.</span></div></div>` : ''}`;
@@ -850,7 +858,7 @@ async function workspace(main, id, { admin }) {
   const details = `<div class="issue"><div class="eyebrow up ic">${tile('file', 14)}Issue</div><p>${esc(t.description || t.subject)}</p></div>
     ${t.location ? `<div class="locrow m-only">${I('pin', 16)}<div><dt>Location</dt><dd>${esc(t.location)}</dd></div></div>` : ''}
     <dl class="dlist">${t.location ? `<div class="dli dli-loc"><dt>Location</dt><dd>${esc(t.location)}</dd></div>` : ''}${dl([...fd, ['Created', fmt(t.created_at)], ['Channel', cap(String(t.channel).replace('_', ' '))], ...(t.is_internal ? [['Kind', 'Internal request']] : [])])}</dl>`;
-  const updateForm = `<form id="act" class="upd" aria-labelledby="updT">
+  const updateForm = `<form id="act" class="upd" aria-labelledby="updT"${t.joined_into_no ? ' hidden' : ''}>
       <div class="upd-h"><div class="chead" id="updT">${tile('pencil')}<span>Update this ticket</span></div><button type="button" class="msheet-x m-only" id="updX" aria-label="Close">${I('x', 20)}</button></div>
       <label for="to">Status<span class="m-only"> · now ${stName(t.status)}</span></label><select name="to" id="to">${STATUSES.map(s2 => `<option value="${s2}" ${s2 === t.status ? 'selected' : ''} ${s2 !== t.status && !targets.includes(s2) ? 'disabled' : ''}>${STATUS_INFO[s2][0]}${s2 === t.status ? ' (current)' : ''}</option>`).join('')}</select>
       <div class="helper" id="tohint"></div>
@@ -871,10 +879,11 @@ async function workspace(main, id, { admin }) {
     <a href="#/c" class="backlink d-only" data-back>${I('back', 16)}Back to my tickets</a>
     <div class="tk-title"><div><div class="tk-ids"><span class="mono d-only">#${t.ticket_no}</span>${pill(shown)}${priorityTag(t.priority, true)}${flags}</div>
         <h1>${esc(t.subject)}</h1><div class="tk-sub"><span>${esc(t.service.name)}</span><span class="d-only"> · Raised via ${esc(String(t.channel).replace('_', ' '))} by</span><span class="m-only"> ·</span> <span>${esc(r.name)}</span></div></div>
-      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${work ? `<button type="button" class="btn" id="joinbtn">${I('users', 16)}Join ticket…</button><button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+    ${t.joined_into_no ? `<div class="helper joinedto">${I('users', 14)}<span>Joined into <a href="#/c/t/${esc(t.joined_into)}">#${esc(t.joined_into_no)}</a>. Its students and updates are there now.</span></div>` : ''}
     <div class="tk-cols">
       <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
-      ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
+      ${t.reopen_request ? `<section class="card reoreq"><div class="reo-h">${tile('history')}<div><b>Reopen requested</b><div class="psub">${esc(t.reopen_request.by || r.name)} · ${shortDate(t.reopen_request.at)}</div></div></div>
         ${t.reopen_request.note ? `<div class="bubble">${esc(t.reopen_request.note)}</div>` : ''}
         ${t.reopen_request.can_decide ? `<div class="psub">Reply with a note below if you need more detail first. Accepting reopens the ticket with a fresh target; the requester is emailed either way.</div>
           <div class="reo-acts"><button type="button" class="btn primary" data-reo="accept">${I('history', 16)}Accept and reopen</button><button type="button" class="btn" data-reo="decline">Decline</button></div>`
@@ -882,7 +891,7 @@ async function workspace(main, id, { admin }) {
       <div class="tk-main"><section class="card sec-details">${details}</section>
         <section class="card sec-activity"><div class="act-h">${cardHeading('history', 'Activity')}<span class="act-n">${evs.length} event${evs.length === 1 ? '' : 's'}<span class="m-only"> · Newest first</span></span></div>${timeline}${updateForm}</section></div>
       <aside class="tk-side">${slaCard}${remCard}<div class="sec-people">${people}</div></aside></div>
-    <div class="tk-bar m-only">${live ? `<button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen">${I('pencil', 16)}Update ticket</button></div>
+    <div class="tk-bar m-only">${work ? `<button type="button" class="btn" id="joinbtnm">${I('users', 16)}Join</button><button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen"${t.joined_into_no ? ' hidden' : ''}>${I('pencil', 16)}Update ticket</button></div>
     <div class="msheet-back upd-back" hidden></div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });
@@ -936,6 +945,19 @@ async function workspace(main, id, { admin }) {
   const extend = () => dlg(`<h2>Extend due time</h2><label>Hours</label><input name="hours" type="number" min="1" required><label>Reason</label><textarea name="reason" required></textarea>`,
     async f => { await api(`/tickets/${id}/extend`, { method: 'POST', body: formVals(f) }); reload(); });
   main.querySelectorAll('#tr, #trm').forEach(b => b.onclick = transfer);
+  // another ticket for the same problem and room: its students move here with their own numbers; the server says why it cannot
+  const join = () => { const d = dlg(`<h2>Join another ticket into this one</h2><p class="muted">Same service and room only. Its students move here and keep their own numbers; that ticket closes and points here. Each moved student is emailed.</p>
+    <label>Ticket number to join</label><input name="ticket_no" required inputmode="numeric" autocomplete="off" placeholder="e.g. 0012">`,
+    async f => { const res = await api(`/tickets/${id}/join`, { method: 'POST', body: { ticket_no: f.elements.ticket_no.value } });
+      toast(`Joined #${f.elements.ticket_no.value.trim().replace(/^#/, '')}: ${res.moved} student${res.moved === 1 ? '' : 's'} moved`); reload(); });
+    d.querySelector('[value=ok]').textContent = 'Join'; };
+  main.querySelectorAll('#joinbtn, #joinbtnm').forEach(b => b.onclick = join);
+  // not the same problem after all: the student gets a ticket of their own, keeping their number; this one counts one fewer
+  main.querySelectorAll('[data-split]').forEach(b => b.onclick = () => { const q = t.requestors.find(x => x.id === b.dataset.split); if (!q) return;
+    const d = dlg(`<h2>Split ${esc(q.name)} out of #${esc(t.ticket_no)}?</h2><p class="muted">Their report becomes a ticket of its own under their number #${esc(q.ticket_no || '')}, with a fresh target from now. Their photos go with it and they are emailed.</p>
+      <label>Note to the student (optional)</label><textarea name="note" placeholder="Why it is a different problem"></textarea>`,
+      async f => { const res = await api(`/tickets/${id}/requestors/${encodeURIComponent(q.id)}/split`, { method: 'POST', body: { note: f.elements.note.value } }); toast(`Split out as #${res.ticket_no}`); reload(); });
+    d.querySelector('[value=ok]').textContent = 'Split out'; });
   const remind = () => remindDlg(id, reload);
   main.querySelectorAll('[data-remadd]').forEach(b => b.onclick = remind);
   main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast(b.textContent === 'Done' ? 'Reminder done' : 'Reminder removed'); reload(); } catch (er) { toast(er.message); } });
@@ -944,7 +966,7 @@ async function workspace(main, id, { admin }) {
       <label>Note to the requester</label><textarea name="note" required placeholder="${acc ? 'What happens next' : 'Why it stays closed'}"></textarea>`,
       async f => { await api(`/tickets/${id}/reopen-request`, { method: 'POST', body: { decision: b.dataset.reo, note: f.elements.note.value } }); toast(acc ? 'Reopened' : 'Kept closed'); reload(); }); }); main.querySelectorAll('#ext').forEach(b => b.onclick = extend);
   // phones: the three-dots menu holds the secondary actions
-  $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], admin && live && ['clock', 'Extend due time', extend],
+  $('#tkmore').onclick = () => actionSheet('More actions', [['alarm', 'Remind me later', remind], live && ['swap', 'Transfer to another service', transfer], live && ['users', 'Join another ticket into this one', join], admin && live && ['clock', 'Extend due time', extend],
     ['eye', "Open the requester's view", () => window.open(t.tracking_url, '_blank', 'noopener')], ['copy', 'Copy the ticket number', () => navigator.clipboard?.writeText(t.ticket_no).then(() => toast('Number copied'))]].filter(Boolean));
   document.onkeydown = e => { if (!location.hash.startsWith('#/c/t/') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('dialog')) return;
     const m = { h: 'hold', c: 'closed', r: 'rejected' }[e.key];
@@ -1826,6 +1848,7 @@ async function route() {
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
       const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage, 'c/canteen': canteenPage };
+      if (page === 'c/inventory') { sessionStorage.setItem('canteen-go', 'inventory'); return location.replace('#/c/canteen'); } // the canteen's Inventory tab
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
       if (seg[1] === 'mail') return await shell('c/mail', async m => (await mailJs()).mailPage(m, seg.slice(2), q), seg[2] === 't' ? 'Mail' : undefined);
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
