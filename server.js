@@ -1659,7 +1659,7 @@ S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
       nt = await one('SELECT * FROM tickets WHERE id=?', o.id); first = await one('SELECT * FROM ticket_requestors WHERE id=?', row.id);
     } else {
       nt = await insert('tickets', { id: uid(), tenant_id: t.tenant_id, ticket_no: row.ticket_no, service_id: t.service_id, requestor_id: row.requestor_id,
-        subject: row.subject || t.problem_label || svc.name, description: row.description, location: t.location, form_data: row.form_data || '{}', // never the first student's
+        subject: row.subject || svc.name, description: row.description, location: t.location, form_data: row.form_data || '{}', // never the first student's
         priority: 'medium', status: 'open', channel: t.channel, is_internal: 0, created_by_user_id: null,
         due_at: await dueFrom(t.tenant_id, ts, await targetHours(t.tenant_id, t.service_id, 'medium') * 60, t.service_id), kind: 'issue', tracking_token: row.tracking_token,
         idempotency_key: null, created_at: ts, updated_at: ts, held_minutes: 0, reopen_count: 0,

@@ -1708,6 +1708,8 @@ async function uiSmoke(tok, id) {
     await visit('admin reports', '/c/reports', tok.asha, '.kpi2');
     await visit('admin audit', '/c/audit', tok.asha, '#main table');
     await visit('super admin email page', '/c/email', tok.sa, '#cf [name=url]');
+    await js(`document.querySelector('[data-tab=events]').click();`); await sleep(1200); // the "Emails sent" tab lists every event
+    check('email page lists joined_into and split_out', await js(`return !!document.querySelector('[data-ev=joined_into]') && !!document.querySelector('[data-ev=split_out]');`));
     await visit('super admin tenants', '/c/tenants', tok.sa, '#main table');
     // the guide inside the app: Voice on/off, a close button back to the app, and Start opens step 1 with room around the outline
     errors.length = 0; await send('Page.navigate', { url: `${APP}/guide/requestor.html` });

@@ -149,6 +149,10 @@ Teams post notices for students (Notices in the staff menu): a title, a message,
 - **Before a ticket**: when a student picks a team that has a live notice, the notice pops up first with **This answers my question** (no ticket) and **I still need to raise a ticket** (the form). A ticket raised after that carries an internal line "The requester read the notice …".
 - Each notice counts how often it was seen, how many found their answer, and how many raised a ticket anyway.
 
+## Same-day duplicate reports
+
+When several students report the same problem on the same day (same campus, service, room and dropdown answer), their reports join one ticket automatically; a typed "Other" answer joins only when it is nearly identical to an earlier one (filler words ignored, about 85% alike). Every student still gets their own ticket number and tracking link, and sees only their own notes. The provider sees one ticket listing every student with their number, complaint and photos. A provider can **Join** a ticket into another of the same service and room (any day) and **Split out** a student, who keeps their number; a student whose own ticket had been joined gets it back. Two emails go to students, **Handled with others** and the split-out one (both on the Email page), and each names only that student's own number. Whether duplicates join silently or ask first is still the super-admin setting on the Tenants page (silent / confirm).
+
 ## Replies to requesters
 
 Every public reply (a note, work started, on hold, resumed, closed, rejected) is tidied on this server before the requester sees it (`polish.js`: a British English dictionary, short-forms and four safe typing-slip rules; no API, nothing leaves the machine; names, places, codes, emails and links stay as typed), shown to the provider in **Check before sending** with the exact email, and sent inside a Hi / note / Thank you template signed with the provider's name and team. Ready-made sentences per step are edited on the Email page (whole campus or one team). Brand lines (logo, Learn · Live · Grow, the ONE strip, the welcome message) are edited there too.

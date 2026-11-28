@@ -112,13 +112,13 @@ ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS form_data TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_at TEXT;
 ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_to TEXT;
+-- one live row per number: a row split out keeps a copy of its number and token, and the new ticket's first row carries them
+DROP INDEX IF EXISTS tr_no;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_no ON ticket_requestors(tenant_id, ticket_no) WHERE ticket_no IS NOT NULL AND detached_at IS NULL;
 -- the first report of each ticket owns that ticket's number, token and complaint; later reports keep working under the shared number
 UPDATE ticket_requestors r SET tenant_id = t.tenant_id, ticket_no = t.ticket_no, tracking_token = t.tracking_token, subject = t.subject, description = t.description, form_data = t.form_data
   FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 1 AND r.ticket_no IS NULL;
 UPDATE ticket_requestors r SET tenant_id = t.tenant_id FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 0 AND r.tenant_id IS NULL;
--- one live row per number: a row split out keeps a copy of its number and token, and the new ticket's first row carries them
-DROP INDEX IF EXISTS tr_no;
-CREATE UNIQUE INDEX IF NOT EXISTS tr_no ON ticket_requestors(tenant_id, ticket_no) WHERE ticket_no IS NOT NULL AND detached_at IS NULL;
 -- one live row per person on a ticket: someone split out and later joined back gets a live row beside their detached one
 ALTER TABLE ticket_requestors DROP CONSTRAINT IF EXISTS ticket_requestors_ticket_id_contact_key;
 CREATE UNIQUE INDEX IF NOT EXISTS tr_contact ON ticket_requestors(ticket_id, contact) WHERE detached_at IS NULL;
