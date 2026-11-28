@@ -967,3 +967,4 @@ dialog.mu{max-width:640px;max-height:92vh;overflow:auto}
 @media (max-width:560px){.cn-mbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}} /* Menu tab: five buttons in two columns instead of one squeezed row */
 /* Upload menu: Cancel / Next / Preview / Import stay in reach at the bottom while the 11 mapping fields scroll (the dialog itself scrolls) */
 dialog.mu #df>p.row:last-child{position:sticky;bottom:-22px;margin:12px -22px -22px;padding:12px 22px 22px;background:var(--card);border-top:1px solid var(--line);z-index:1}
+dialog.mu #df>p.row>#derr{flex:1 1 100%;min-width:0;margin:0}dialog.mu #df>p.row>#derr:empty{display:none}

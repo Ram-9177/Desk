@@ -501,7 +501,7 @@ export async function canteenPage(main, { sa }) {
       const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); } catch (e) { err.textContent = e.message; } };
     document.getElementById('upmenu').onclick = () => {
       const d = dlg('<h3>Upload menu</h3><div id="mu"></div>', async () => {}), f = d.querySelector('form'), box = d.querySelector('#mu'), go = d.querySelector('button[value=ok]'), err = d.querySelector('#derr');
-      d.classList.add('mu'); go.id = 'mugo'; let rd = null, file = '', rows = null, step = 1;
+      d.classList.add('mu'); go.id = 'mugo'; go.parentElement.prepend(err); let rd = null, file = '', rows = null, step = 1; // the message sits in the sticky button row: always in sight
       const show = (html, label, ready = true) => { box.innerHTML = html; go.textContent = label; go.disabled = !ready; err.textContent = ''; };
       const pick = () => { step = 1; show(`<p class="muted small">A .csv or .xlsx file with one item per row and the column names in the first row. Next you match its columns, then see what will change before anything is saved.</p>
         <label class="mu-file">${I('file', 22)}<b>Choose a .csv or .xlsx file</b><span class="muted small">Up to 500 items, 5 MB</span><input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
