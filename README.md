@@ -143,7 +143,7 @@ Set a service's **form type to Food** (Services → Edit). Tapping it then shows
 
 ## Canteen menu from a file
 
-In the Canteen desk, Menu → **Upload menu**: download the template or your current menu (CSV, the same columns: category, name, price, description, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_minutes), edit it in Excel or Google Sheets, and upload it back (.csv or .xlsx); the preview shows what will be added, updated and moved before anything is saved. An item name is unique across the whole menu (capitals and extra spaces ignored): a name that is already on the menu updates that item, and moves it when the file gives another category, instead of adding a second one. Add item and Edit item refuse a name that is already on the menu.
+In the Canteen desk, Menu → **Upload menu**: download the template or your current menu (CSV, the same columns: category, name, price, description, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_minutes), edit it in Excel or Google Sheets, and upload it back (.csv or .xlsx); the preview shows what will be added, updated and moved before anything is saved. An item name is unique across the whole menu (capitals and extra spaces ignored): a name that is already on the menu updates that item, and moves it when the file gives another category, instead of adding a second one. Add item and Edit item refuse a name that is already on the menu. A deal in the file with the item's current % and type keeps its end time (a re-uploaded file never restarts or extends a sale); to change how long a deal runs, change its % or type in the file or use the deal buttons on the Menu tab.
 
 ## Notice board
 

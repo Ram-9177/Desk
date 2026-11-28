@@ -1916,10 +1916,18 @@ try {
     check('…creates the category and moves the item there', (await catsN()) === nc0 + 1 && (await act('Samosa')).length === 1 && (await act('Samosa'))[0].cat === 'Chaat');
     const twin = await ok('one file, the same name in two categories (different case and spacing)', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, category: 'Alpha Cat', name: 'Twin Item', price: '5' }, { row: 3, category: 'Beta Cat', name: ' twin   ITEM', price: '6' }], dry_run: true } });
     check('…the second row is rejected: same item as row 2', twin.added === 1 && twin.rejected.length === 1 && twin.rejected[0].row === 3 && /Same item as row 2/.test(twin.rejected[0].reason), JSON.stringify(twin));
+    const vp0 = (await act('Veg Puff'))[0];
+    await ok('a matching row spelled "veg   PUFF" (repeated spaces)', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'veg   PUFF', price: String(vp0.price_paise / 100) }], dry_run: false } });
+    check('…updates the same item and stores the file\'s spelling with the spaces collapsed', (await act('veg PUFF')).length === 1 && (await act('veg PUFF'))[0].id === vp0.id && (await act('veg PUFF'))[0].name === 'veg PUFF');
     // Add item and Edit item
     const cats = await q('SELECT id, name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order', B);
     await fails('Add item: a name already on the menu, in another category, other case and spacing, is refused', '/canteen/items', { ...SB, method: 'POST', body: { name: ' masala   DOSA ', price: '50', category_id: cats.find(c => c.name === 'Snacks').id } }, 400, '"Masala Dosa" is already on the menu');
     check('…and nothing added', (await act('Masala Dosa')).length === 1);
+    const same = await Promise.all([0, 1].map(() => api('/canteen/items', { ...SB, method: 'POST', body: { name: 'Same  Time Dish', price: '20' } })));
+    const sameRows = await q("SELECT name FROM canteen_items WHERE tenant_id=? AND active=1 AND lower(name) LIKE 'same%time dish'", B);
+    check('two Add item requests with the same name at once: one item (spaces collapsed), one 400', same.map(r => r.status).sort().join() === '200,400' && sameRows.length === 1 && sameRows[0].name === 'Same Time Dish', JSON.stringify(sameRows));
+    await ok('Add item "Cafe\u0301 Latte" (e + combining accent)', '/canteen/items', { ...SB, method: 'POST', body: { name: 'Cafe\u0301 Latte', price: '40' } });
+    await fails('…then "Caf\u00e9 latte" (one composed é) is the same name', '/canteen/items', { ...SB, method: 'POST', body: { name: 'Caf\u00e9 latte', price: '40' } }, 400, 'is already on the menu');
     const nw = await ok('Add item with a new name works', '/canteen/items', { ...SB, method: 'POST', body: { name: 'Pani Puri', price: '30' } });
     const plain = (await act('Plain Dosa'))[0], md = (await act('Masala Dosa'))[0];
     await fails('Edit item: renaming Plain Dosa to "masala dosa" is refused', '/canteen/items/' + plain.id, { ...SB, method: 'PATCH', body: { name: 'masala dosa' } }, 400, 'is already on the menu');
@@ -1958,8 +1966,32 @@ try {
     const rtImp = await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: rtRows, dry_run: false } });
     check('…the items (ids, created_at, prices, deals) and categories are exactly as before', rtImp.added === 0 && rtImp.rejected.length === 0 && (await snap()) === before1
       && JSON.stringify(await q('SELECT id, name, sort_order FROM canteen_categories WHERE tenant_id=? ORDER BY id', B)) === cats1);
+    // a deal in a re-uploaded file with the item's own % and type keeps the item's end time, running or ended (an edit in Excel can take a while)
+    const mb = (await act('Mirchi Bajji (4 pcs)'))[0], cc = (await act('Cold Coffee'))[0], iso = ms => new Date(Date.now() + ms).toISOString();
+    await run(`UPDATE canteen_items SET deal_pct=20, deal_kind='eod', deal_until=? WHERE id=?`, iso(60 * 6e4), mb.id);
+    await run(`UPDATE canteen_items SET deal_pct=10, deal_kind='flash', deal_until=? WHERE id=?`, iso(30 * 6e4), cc.id);
+    const exD = Buffer.from(await (await api('/canteen/menu-export.csv', { ...SB, raw: true })).arrayBuffer());
+    const mbEnd = iso(50 * 6e4), ccEnd = iso(-6e4); // 10 minutes of editing later: Mirchi's sale has 50 minutes left, Cold Coffee's flash sale has ended
+    await run('UPDATE canteen_items SET deal_until=? WHERE id=?', mbEnd, mb.id); await run('UPDATE canteen_items SET deal_until=? WHERE id=?', ccEnd, cc.id);
+    const rdD = await ok('a downloaded menu with two deals, uploaded back after the deals moved on', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl(exD) } });
+    await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rdD, byName(rdD)), dry_run: false } });
+    const endOf = async id => (await q('SELECT deal_pct, deal_kind, deal_until FROM canteen_items WHERE id=?', id))[0];
+    check('…the same % and type: the running sale keeps its end, the ended one stays ended', (await endOf(mb.id)).deal_until === mbEnd && (await endOf(cc.id)).deal_until === ccEnd && (await endOf(cc.id)).deal_pct === 10, JSON.stringify([await endOf(mb.id), await endOf(cc.id), mbEnd, ccEnd]));
+    await ok('a row with another % for Mirchi Bajji', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Mirchi Bajji (4 pcs)', price: String(mb.price_paise / 100), deal_pct: '25', deal_kind: 'eod', deal_minutes: '45' }], dry_run: false } });
+    const mb2 = await endOf(mb.id);
+    check('…starts a new sale from the file\'s minutes', mb2.deal_pct === 25 && Math.abs(Date.parse(mb2.deal_until) - Date.now() - 45 * 6e4) < 2 * 6e4, JSON.stringify(mb2));
+    await run('UPDATE canteen_items SET description=? WHERE id=?', '\t=cmd', cc.id); // only a direct database change can store a leading tab
+    check('the download guards text starting with a tab as it does = + - @', (await (await api('/canteen/menu-export.csv', { ...SB, raw: true })).text()).includes(",'\t=cmd,"));
+    await run('UPDATE canteen_items SET description=NULL WHERE id=?', cc.id);
     // names that were on the menu twice before this rule: nothing breaks, nothing is deleted, the oldest one is updated, the preview says so
     await run(`INSERT INTO canteen_items (id, tenant_id, name, price_paise, created_at) VALUES ('legacy-a', ?, 'Legacy Twin', 1000, '2020-01-01T00:00:00.000Z'), ('legacy-b', ?, 'legacy  twin', 1100, '2021-01-01T00:00:00.000Z')`, B, B);
+    const catIds = (await q('SELECT id FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', B)).map(c => c.id); // the newer copy in the first category, so it comes first in menu order
+    await run("UPDATE canteen_items SET category_id=? WHERE id='legacy-a'", catIds.at(-1)); await run("UPDATE canteen_items SET category_id=? WHERE id='legacy-b'", catIds[0]);
+    const exL = Buffer.from(await (await api('/canteen/menu-export.csv', { ...SB, raw: true })).arrayBuffer()), twins = exL.toString('utf8').split('\r\n').filter(l => /,legacy\s+twin,/i.test(l));
+    check('a name on the menu twice: the download has one row for it, the oldest copy (the one an upload updates)', twins.length === 1 && /,Legacy Twin,10,/.test(twins[0]), JSON.stringify(twins));
+    const beforeL = await snap(), rdL = await ok('…uploading that file back', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm.csv', data: durl(exL) } });
+    const impL = await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: mapRows(rdL, byName(rdL)), dry_run: false } });
+    check('…changes nothing: both copies keep their category and price', impL.added === 0 && impL.rejected.length === 0 && (await snap()) === beforeL, JSON.stringify(impL));
     const lg = await ok('a menu that already has "Legacy Twin" twice: preview', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Legacy Twin', price: '33' }], dry_run: true } });
     check('…no error: 1 to update, and a note naming the repeated name', lg.updated === 1 && lg.added === 0 && lg.rejected.length === 0 && lg.duplicates?.count === 1 && lg.duplicates.names.join() === 'Legacy Twin', JSON.stringify(lg));
     await ok('…import', '/canteen/menu/import', { ...SB, method: 'POST', body: { rows: [{ row: 2, name: 'Legacy Twin', price: '33' }], dry_run: false } });

@@ -119,19 +119,19 @@ export function stateOf(tn) {
 const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
 // One rule for "the same item": a name is unique across a campus's menu (its active items), compared without case, outer spaces
-// or repeated inner spaces ("Masala  Dosa " = "masala dosa"). Used by Add item, Edit item, the import and its category names.
-export const nameKey = v => String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-// a downloaded menu file: a cell with a comma, quote or newline is quoted; typed text starting = + - @ gets a ' so a spreadsheet
+// or repeated inner spaces ("Masala  Dosa " = "masala dosa"), é typed either way. Used by Add item, Edit item, the import and its category names.
+export const nameKey = v => String(v ?? '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+// a downloaded menu file: a cell with a comma, quote or newline is quoted; typed text starting = + - @ (or a tab or CR) gets a ' so a spreadsheet
 // shows it instead of running it (the upload takes that ' off again: see unq)
-const csvCell = (v, text) => { let s = String(v ?? ''); if (text && /^[=+\-@]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-const unq = s => /^'[=+\-@]/.test(s) ? s.slice(1) : s;
+const csvCell = (v, text) => { let s = String(v ?? ''); if (text && /^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const unq = s => /^'[=+\-@\t\r]/.test(s) ? s.slice(1) : s;
 // minutes left on a running deal as the file writes them (5 to 1440, what the upload accepts)
 const dealMinutesLeft = until => Math.min(1440, Math.max(5, Math.ceil((Date.parse(until) - Date.now()) / 6e4)));
 // The rules for an item's own fields, shared by Add / Edit item and the menu upload (no database: the category is checked by the caller).
 // Returns { f } with the columns to save, or { error } with the message a manager sees.
 export function itemRules(b, partial) {
   const f = {};
-  if (!partial || b.name !== undefined) { f.name = str(b.name, 80); if (!f.name) return { error: 'Item name required' }; }
+  if (!partial || b.name !== undefined) { f.name = str(b.name, 80).replace(/\s+/g, ' '); if (!f.name) return { error: 'Item name required' }; } // stored with repeated spaces collapsed
   if (!partial || b.price !== undefined) { f.price_paise = parsePrice(b.price); if (f.price_paise == null) return { error: 'Enter a price in rupees, e.g. 40 or 12.50' }; }
   if (b.description !== undefined) f.description = str(b.description, 200) || null;
   if (b.is_veg !== undefined) f.is_veg = b.is_veg ? 1 : 0;
@@ -520,8 +520,10 @@ export function canteen(d) {
   // the menu as it is now, in the template's columns: edit it and upload it back (each name updates its item). Active items only,
   // prices in rupees (12.5, 30), a deal only while it runs, in menu order (categories, then items; no category last)
   S.get('/canteen/menu-export.csv', async (req, res, next) => { try { const a = await need(req);
-    const items = await all(`SELECT c.name cat, i.name, i.price_paise, i.description, i.is_veg, i.sold_out, i.sort_order, i.deal_pct, i.deal_kind, i.deal_until FROM canteen_items i
-      LEFT JOIN canteen_categories c ON c.id=i.category_id AND c.tenant_id=i.tenant_id WHERE i.tenant_id=? AND i.active=1 ORDER BY (c.id IS NULL), c.sort_order, c.name, c.id, i.sort_order, i.name, i.created_at, i.id`, req.tenantId);
+    // a name on the menu twice (from before names were unique): only the oldest copy, the one an upload of this file updates
+    const first = new Set(), keys = new Set(); for (const i of await all('SELECT id, name FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at, id', req.tenantId)) { const k = nameKey(i.name); if (!keys.has(k)) { keys.add(k); first.add(i.id); } }
+    const items = (await all(`SELECT i.id, c.name cat, i.name, i.price_paise, i.description, i.is_veg, i.sold_out, i.sort_order, i.deal_pct, i.deal_kind, i.deal_until FROM canteen_items i
+      LEFT JOIN canteen_categories c ON c.id=i.category_id AND c.tenant_id=i.tenant_id WHERE i.tenant_id=? AND i.active=1 ORDER BY (c.id IS NULL), c.sort_order, c.name, c.id, i.sort_order, i.name, i.created_at, i.id`, req.tenantId)).filter(i => first.has(i.id));
     const line = i => { const d = dealOf(i);
       return [[i.cat, 1], [i.name, 1], [i.price_paise / 100], [i.description, 1], [i.is_veg === 0 ? 0 : 1], [i.sold_out ? 1 : 0], [1], [i.sort_order ?? 0],
         [d ? d.pct : ''], [d ? d.kind : ''], [d?.until ? dealMinutesLeft(d.until) : '']].map(([v, text]) => csvCell(v, text)).join(','); };
@@ -597,8 +599,9 @@ export function canteen(d) {
         const move = !!old && !!cn && ck !== nameKey(old.cat); // the category it is in already (by name), or an empty cell: it stays put
         if (cn && !cid && !newCats.has(ck) && (!old || move)) newCats.set(ck, cn);
         if (!old) return adds.push({ cid, ck, f: v.f });
-        // the same deal still running (a downloaded menu uploaded back): it keeps its end time rather than restarting from now
-        if (dealOf(old) && old.deal_until && v.f.deal_until && v.f.deal_pct === old.deal_pct && v.f.deal_kind === old.deal_kind && Math.abs(Date.parse(v.f.deal_until) - Date.parse(old.deal_until)) < 120000) v.f.deal_until = old.deal_until;
+        // the item's own deal (same % and type, e.g. a downloaded menu uploaded back) is left alone: a running sale keeps its end, an ended
+        // one stays ended. Only another % or type starts a new deal from the file's minutes.
+        if (v.f.deal_pct && v.f.deal_pct === old.deal_pct && v.f.deal_kind === old.deal_kind) { delete v.f.deal_pct; delete v.f.deal_kind; delete v.f.deal_until; }
         updates.push({ id: old.id, move, cid, ck, f: v.f }); });
       const nItems = (await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', tid)).n;
       if (nItems + adds.length > MAX_ITEMS) throw bad(`The menu holds up to ${MAX_ITEMS} items: it has ${nItems} and this file adds ${adds.length}. Remove old items or rows and try again`);
