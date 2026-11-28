@@ -139,8 +139,8 @@ export function itemRules(b, partial) {
 // ---- menu upload: what a file column can map to, and turning one file row (text cells) into what itemRules takes ----
 export const MENU_FIELDS = ['category', 'name', 'price', 'description', 'is_veg', 'sold_out', 'active', 'sort_order', 'deal_pct', 'deal_kind', 'deal_minutes'];
 const MAX_UPLOAD_ROWS = 500, MAX_UPLOAD_COLS = 50, MAX_UPLOAD_BYTES = 5 * 1024 * 1024, MAX_ITEMS = 500, MAX_CATS = 50;
-// an .xlsx is unpacked and counted before the reader sees it, and read in a worker: one cell at XFD200000 in a 1.5 KB file would otherwise take all the memory
-const XLSX_PART_MAX = 10 * 1024 * 1024, XLSX_TOTAL_MAX = 40 * 1024 * 1024;
+// an .xlsx is unpacked, counted and read in a small worker, one at a time (xlsx-worker.js): one cell at XFD200000 in a 1.5 KB file would otherwise take all the memory
+const XLSX_WORKER_MB = 48, XLSX_RSS_MB = 96, XLSX_TIMEOUT_MS = 5000, XLSX_WAIT_MS = 4000, XLSX_QUEUE = 2, XLSX_READS_PER_HOUR = 40;
 const FLAG = { 1: 1, yes: 1, y: 1, true: 1, veg: 1, 0: 0, no: 0, n: 0, false: 0, nonveg: 0 };
 const FLAG_NAME = { is_veg: 'Veg', sold_out: 'Sold out', active: 'Shown on the menu' };
 const KIND_OF = Object.fromEntries(Object.entries(DEAL_KINDS).flatMap(([k, l]) => [[k, k], [l.toLowerCase(), k]])); // 'flash' or the label 'Flash sale'
@@ -156,18 +156,22 @@ export function uploadRow(r) {
   return itemRules(b, false);
 }
 // a CSV as Excel and Google Sheets save it: comma, semicolon or tab (whichever the header row has most of), "quoted" cells with "" inside
+// Returns the non-blank records as { cells, line } (line = the row number in the file), trailing empty cells dropped.
 function parseCsv(text) {
   const head = text.slice(0, text.search(/\r|\n|$/)).replace(/"[^"]*"/g, ''), delim = [',', ';', '\t'].reduce((a, d) => head.split(d).length > head.split(a).length ? d : a, ',');
-  const rows = []; let row = [], cell = '', q = false, cells = 0;
+  const recs = []; let row = [], cell = '', q = false, cells = 0, line = 0;
+  const big = () => Object.assign(new Error('big'), { big: true });
+  const end = () => { line++; row.push(cell); const c = row.map(cellText); let n = c.length; while (n && !c[n - 1]) n--; row = []; cell = '';
+    if (!n) return; // a blank row: skipped, not counted
+    if (recs.length >= 5000 || (cells += n) > 100000) throw big(); recs.push({ cells: c.slice(0, n), line }); };
   for (let i = 0; i < text.length; i++) { const c = text[i];
     if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
     else if (c === '"' && !cell.trim()) { q = true; cell = ''; }
-    else if (c === delim) { row.push(cell); cell = ''; if (row.length > 1000) throw Object.assign(new Error('wide'), { wide: true }); // stop early: 200,000 commas are not a menu
-      if (++cells > 100000) throw Object.assign(new Error('big'), { big: true }); }
-    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; if (rows.length > 5000) throw Object.assign(new Error('big'), { big: true }); }
+    else if (c === delim) { row.push(cell); cell = ''; if (row.length > 1000) throw Object.assign(new Error('wide'), { wide: true }); } // stop early: 200,000 commas are not a menu
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; end(); }
     else cell += c; }
-  if (cell || row.length) { row.push(cell); rows.push(row); }
-  return rows;
+  if (cell || row.length) end();
+  return recs;
 }
 const cellText = v => v == null ? '' : v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === 'number' ? String(+v.toPrecision(12)) : String(v).trim(); // 20.499999999 from a formula reads 20.5
 
@@ -495,34 +499,33 @@ export function canteen(d) {
   S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '\ufeff' + MENU_FIELDS.join(',') + '\r\n'); } catch (e) { next(e); } });
   S.get('/canteen/menu-sample.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-sample.csv', await fs.readFile(new URL('./samples/canteen-menu-sample.csv', import.meta.url))); } catch (e) { next(e); } });
   // read-excel-file is loaded only for an .xlsx (as qrcode is for QR codes): if it is missing, CSV uploads still work
-  let zip = null;
-  const tooWide = n => bad(`Too many columns: the file has ${n >= 1000 ? 'over 1,000' : n}, a menu needs at most ${MAX_UPLOAD_COLS}. Delete the extra columns and save again`);
+  let xlsxOk = null;
+  const tooWide = n => bad(`Too many columns: the file has ${n >= 1000 ? 'over 1,000' : n || `more than ${MAX_UPLOAD_COLS}`}, a menu needs at most ${MAX_UPLOAD_COLS}. Delete the extra columns and save again`);
   const tooLarge = () => bad(`This sheet is too large or not readable: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`);
   const unreadable = () => bad('Could not read this Excel file. Save it as .xlsx or .csv and try again');
-  // An .xlsx is a zip. Nothing the file says about itself is trusted: it is unpacked here entry by entry from its local headers (as the
-  // reader would), counting the bytes that actually come out, 8 KB of input at a time; over 10 MB in one part or 40 MB in all stops it.
-  // Only the .xml / .rels parts are kept and packed again, so the reader can only ever see bytes that were counted.
-  const repackXlsx = buf => { const { Unzip, UnzipInflate, zipSync } = zip, kept = {}; let total = 0, stop = null;
-    const uz = new Unzip(); uz.register(UnzipInflate);
-    uz.onfile = f => { if (stop || !/\.(xml|rels)$/i.test(f.name)) return; const parts = []; let n = 0;
-      f.ondata = (err, d, final) => { if (stop) return; if (err) { stop = 'bad'; return; }
-        n += d.length; total += d.length; if (n > XLSX_PART_MAX || total > XLSX_TOTAL_MAX) { stop = 'big'; f.terminate(); return; }
-        parts.push(d); if (final) kept[f.name] = Buffer.concat(parts); };
-      f.start(); };
-    try { for (let i = 0; i < buf.length && !stop; i += 8192) uz.push(buf.subarray(i, i + 8192), i + 8192 >= buf.length); } catch { stop = stop || 'bad'; }
-    if (stop === 'big') throw tooLarge(); if (stop || !kept['xl/workbook.xml']) throw unreadable();
-    return zipSync(kept, { level: 1 }); };
-  // the reader runs in a worker with a memory limit and a time limit: whatever the sheet does, only that worker can fail
-  const readInWorker = data => new Promise((resolve, reject) => {
-    const w = new Worker(new URL('./xlsx-worker.js', import.meta.url), { workerData: data, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16 } });
-    let settled = false; const end = (fn, v) => { if (settled) return; settled = true; clearTimeout(timer); w.terminate().catch(() => {}); fn(v); };
-    const timer = setTimeout(() => end(reject, tooLarge()), 5000);
-    w.on('message', m => m.rows ? end(resolve, m.rows) : end(reject, m.big ? tooLarge() : unreadable()));
-    w.on('error', () => end(reject, tooLarge())); // out of memory (ERR_WORKER_OUT_OF_MEMORY) or anything thrown
-    w.on('exit', () => end(reject, tooLarge())); });
-  // fflate and read-excel-file are loaded only for an .xlsx (as qrcode is for QR codes): if they are missing, CSV uploads still work
-  const readXlsx = async buf => { if (!zip) { try { zip = await import('fflate'); await import('read-excel-file/node'); } catch { zip = null; console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); } }
-    return readInWorker(repackXlsx(buf)); }; // the first sheet only
+  const tooMany = () => bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file`);
+  const busy = () => new HttpErr(429, 'BUSY', 'The server is busy reading another file. Try again in a moment.');
+  // one .xlsx is read at a time (a worker costs real memory on a 1 GB server); two more may wait a few seconds, the rest are told to retry
+  let xlsxBusy = false; const xlsxWaiting = [];
+  const xlsxSlot = () => new Promise((resolve, reject) => { if (!xlsxBusy) { xlsxBusy = true; return resolve(); }
+    if (xlsxWaiting.length >= XLSX_QUEUE) return reject(busy());
+    const w = { resolve, t: setTimeout(() => { xlsxWaiting.splice(xlsxWaiting.indexOf(w), 1); reject(busy()); }, XLSX_WAIT_MS) }; xlsxWaiting.push(w); });
+  const xlsxFree = () => { const w = xlsxWaiting.shift(); if (w) { clearTimeout(w.t); w.resolve(); } else xlsxBusy = false; };
+  // the worker gets the raw file and answers with menu-sized records or a reason; memory, time, a crash or an early exit are all "too large"
+  const readInWorker = data => new Promise(resolve => {
+    const w = new Worker(new URL('./xlsx-worker.js', import.meta.url), { workerData: data, resourceLimits: { maxOldGenerationSizeMb: XLSX_WORKER_MB, maxYoungGenerationSizeMb: 16 } });
+    let settled = false; const end = m => { if (settled) return; settled = true; clearTimeout(timer); clearInterval(watch); w.terminate().catch(() => {}).finally(() => resolve(m)); }; // the slot frees once the worker is gone
+    const timer = setTimeout(() => end({ big: true }), XLSX_TIMEOUT_MS);
+    // resourceLimits cap the worker's heap, not V8's large-object space: the reader's 16,384-cell rows went to 8 GB of RSS under a 48 MB
+    // limit. So the server's own memory is watched too, every 10 ms: 96 MB above where it started ends the worker (a menu needs a few MB).
+    const base = process.memoryUsage.rss(), watch = setInterval(() => { if (process.memoryUsage.rss() - base > XLSX_RSS_MB * 1048576) end({ big: true }); }, 10);
+    w.on('message', end); w.on('error', () => end({ big: true })); w.on('exit', () => end({ big: true })); });
+  const readXlsx = async (req, buf) => {
+    if (xlsxOk === null) { try { await import('fflate'); await import('read-excel-file/node'); xlsxOk = true; } catch { console.error('Menu upload: the "read-excel-file" package is not installed. Run: npm ci --omit=dev'); } }
+    if (!xlsxOk) { xlsxOk = null; throw new HttpErr(503, 'XLSX_MISSING', 'Excel files need the read-excel-file package. Run npm ci on the server, or upload a .csv'); }
+    limit('menu-xlsx:' + req.user.id, XLSX_READS_PER_HOUR);
+    await xlsxSlot(); let m; try { m = await readInWorker(buf); } finally { xlsxFree(); }
+    if (m.recs) return m.recs; throw m.wide ? tooWide() : m.many ? tooMany() : m.bad ? unreadable() : tooLarge(); };
   S.post('/canteen/menu/read', wrap(async req => { await need(req);
     const name = str(req.body.name, 200), m = /^data:[^,]*;base64,/.exec(typeof req.body.data === 'string' ? req.body.data : '');
     if (!m) throw bad('Choose a .csv or .xlsx file');
@@ -532,17 +535,15 @@ export function canteen(d) {
     if (ext !== 'csv' && ext !== 'xlsx') throw bad('Choose a .csv or .xlsx file');
     const buf = Buffer.from(req.body.data.slice(m[0].length), 'base64');
     if (buf.length > MAX_UPLOAD_BYTES) throw bad('The file is bigger than 5 MB: a menu file is usually a few KB');
-    let grid;
-    if (ext === 'xlsx') grid = await readXlsx(buf);
+    let recs; // the non-blank rows as { cells, line }
+    if (ext === 'xlsx') recs = await readXlsx(req, buf);
     else { if (buf.includes(0) || buf.subarray(0, 2).toString('latin1') === 'PK') throw bad("This doesn't look like a CSV file. Save it as .csv or .xlsx and try again");
       let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = new TextDecoder('windows-1252').decode(buf); } // older Excel saves "CSV" in the Windows code page
-      try { grid = parseCsv(text.replace(/^\ufeff/, '')); } catch (e) { if (e.wide) throw tooWide(1000); if (e.big) throw bad(`This file is too large: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`); throw e; } }
-    const recs = grid.map((r, i) => ({ cells: r.map(cellText), line: i + 1 })).filter(r => r.cells.some(Boolean)); // blank rows skipped; row numbers stay as in the file
+      try { recs = parseCsv(text.replace(/^\ufeff/, '')); } catch (e) { if (e.wide) throw tooWide(1000); if (e.big) throw bad(`This file is too large: keep it under ${MAX_UPLOAD_ROWS} rows and ${MAX_UPLOAD_COLS} columns`); throw e; } }
     if (!recs.length) throw bad('The file is empty');
     const [head, ...body] = recs; if (!body.length) throw bad('The file has only the header row: add one menu item per row under it');
     if (body.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file (this one has ${body.length})`);
-    const used = c => { let n = c.length; while (n && !c[n - 1]) n--; return n; }; // empty cells at the end of a row don't count
-    const width = Math.max(used(head.cells), ...body.map(r => used(r.cells))); if (width > MAX_UPLOAD_COLS) throw tooWide(width);
+    const width = Math.max(...recs.map(r => r.cells.length)); if (width > MAX_UPLOAD_COLS) throw tooWide(width); // trailing empty cells are already gone
     const pad = c => Array.from({ length: width }, (_, i) => c[i] ?? '');
     return { columns: pad(head.cells).map((c, i) => str(c, 80) || `Column ${i + 1}`), rows: body.map(r => pad(r.cells)), lines: body.map(r => r.line), total: body.length };
   }));

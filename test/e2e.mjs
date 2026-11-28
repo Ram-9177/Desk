@@ -1831,7 +1831,7 @@ try {
     t0 = Date.now(); await fails(`a ${(bomb.length / 1024).toFixed(1)} KB .xlsx with one cell at XFD200000 is refused`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb.xlsx', data: durl(bomb, XT) } }, 400, 'too large');
     check('…quickly, and the server stays up', Date.now() - t0 < 3000 && (await fetch(API + '/health').then(r => r.ok, () => false)), `${Date.now() - t0} ms`);
     const bomb2 = mkXlsx('<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="XFD1"><v>1</v></c></row><row r="2"><c r="A2"><v>1</v></c></row></sheetData>');
-    await fails('…the same without a <dimension>', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb2.xlsx', data: durl(bomb2, XT) } }, 400, 'too large');
+    await fails('a sheet with a cell at XFD1 (2 rows): too many columns', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'bomb2.xlsx', data: durl(bomb2, XT) } }, 400, 'Too many columns');
     // files that lie about themselves (the review's bypasses): each answers 400 quickly, and the server keeps working afterwards
     const xmlHead = '<?xml version="1.0" encoding="UTF-8"?>', NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
     const book = (sheets, wbSheets, rels) => ({ // a workbook from its sheets: { 'xl/worksheets/sheet1.xml': xml, … }
@@ -1868,6 +1868,29 @@ try {
       check(`${what} (${Math.round(f.length / 1024)} KB): 400 in under 8 s, then the server still answers and reads a good file`, r.status === 400 && /too large/i.test(r.error?.message || '') && ms < 8000 && after, `${r.status} ${r.error?.message || ''} ${ms} ms, after: ${after}`); }
     const m400 = await ok('a 400-row workbook saved by openpyxl still reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'm400.xlsx', data: durl(fs.readFileSync(path.join(ROOT, 'test/fixtures/menu-400.xlsx')), XT) } });
     check('…all 400 rows', m400?.total === 400 && m400.columns.length === 5, JSON.stringify(m400?.columns));
+    // round 3: one 10 MB shared string used by 500 cells (copied once per cell on its way back, it was 5 GB), five hostile files at once,
+    // and the server's memory after them (production restarts the process at 400 MB)
+    const rssMb = () => Math.round(+execFileSync('ps', ['-o', 'rss=', '-p', String(server.pid)]).toString().trim() / 1024);
+    const sstAmp = zipSync({ ...book({ [S1]: ws(Array.from({ length: 10 }, (_, r) => `<row r="${r + 1}">${Array.from({ length: 50 }, (_, c) => `<c r="${colName(c)}${r + 1}" t="s"><v>0</v></c>`).join('')}</row>`).join('')) }, null,
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/sharedStrings" Target="sharedStrings.xml"/>`),
+      'xl/sharedStrings.xml': strToU8(`${xmlHead}<sst xmlns="${NS}" count="1" uniqueCount="1"><si><t>${'x'.repeat(10 * 1024 * 1024 - 200)}</t></si></sst>`) }, { level: 9 });
+    await sleep(100); let t3 = Date.now();
+    await fails(`one 10 MB shared string in 500 cells (${Math.round(sstAmp.length / 1024)} KB)`, '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'sst.xlsx', data: durl(sstAmp, XT) } }, 400, 'too large');
+    const rssAfter = rssMb();
+    check('…quickly; the server still answers and stays under 350 MB', Date.now() - t3 < 8000 && (await fetch(API + '/health').then(x => x.ok, () => false)) && rssAfter < 350, `${Date.now() - t3} ms, ${rssAfter} MB`);
+    const bombA = durl(hostile[0][1](), XT); t3 = Date.now();
+    const five = await Promise.all([0, 1, 2, 3, 4].map(() => api('/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'a.xlsx', data: bombA } })));
+    check('five hostile files at once: each 400 (read one at a time) or 429 (busy), within 15 s; the server still answers and stays under 350 MB',
+      five.every(r => r.status === 400 || (r.status === 429 && /busy/i.test(r.error?.message || ''))) && five.some(r => r.status === 400) && Date.now() - t3 < 15000
+      && (await fetch(API + '/health').then(x => x.ok, () => false)) && rssMb() < 350, `${five.map(r => r.status).join(',')} in ${Date.now() - t3} ms, ${rssMb()} MB`);
+    check('…and a good file reads right after', (await api('/canteen/menu/read', { ...SB, method: 'POST', body: honest })).data?.total === 4);
+    // CSV limits count what is kept: blank lines and empty trailing columns are free
+    const sampleText = SAMPLE.toString('utf8'), [sHead, ...sRows] = sampleText.replace(/\r?\n$/, '').split(/\r?\n/);
+    const blanks = await ok('a 29-row CSV followed by 6,000 blank lines reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 'b.csv', data: durl(sampleText + '\n'.repeat(6000)) } });
+    check('…29 rows', blanks?.total === 29 && blanks.columns.length === 11);
+    const rows500 = Array.from({ length: 500 }, (_, i) => sRows[i % 29].replace(/^([^,]*),([^,]*),/, `$1,$2 ${i},`) + ','.repeat(200));
+    const trail = await ok('a 500-row CSV with 200 empty columns at the end of every row reads', '/canteen/menu/read', { ...SB, method: 'POST', body: { name: 't.csv', data: durl([sHead + ','.repeat(200), ...rows500].join('\n')) } });
+    check('…500 rows, 11 columns', trail?.total === 500 && trail.columns.length === 11, JSON.stringify(trail?.columns?.length));
     await run('UPDATE tenants SET canteen_on=0 WHERE id=?', B);
   }
 
