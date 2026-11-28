@@ -965,3 +965,5 @@ dialog.mu{max-width:640px;max-height:92vh;overflow:auto}
 @media (max-width:520px){.mu-sum{grid-template-columns:repeat(2,1fr)}.mu-dl .btn{flex:1 1 100%}
   .mu-map label{display:grid;grid-template-columns:38% 1fr;align-items:center;column-gap:10px;margin-top:6px}.mu-map label>span{margin:0;line-height:1.25}.mu-map small{grid-column:2}} /* name beside its select: half the scrolling */
 @media (max-width:560px){.cn-mbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}} /* Menu tab: five buttons in two columns instead of one squeezed row */
+/* Upload menu: Cancel / Next / Preview / Import stay in reach at the bottom while the 11 mapping fields scroll (the dialog itself scrolls) */
+dialog.mu #df>p.row:last-child{position:sticky;bottom:-22px;margin:12px -22px -22px;padding:12px 22px 22px;background:var(--card);border-top:1px solid var(--line);z-index:1}
