@@ -280,7 +280,7 @@ const staffVars = async (u, pw) => {
     guide: { kind: 'provider', url: PROVIDER_GUIDE }, // the welcome email links the provider guide
     services: svcs.length ? svcs.join(', ') : u.role === 'provider' ? 'Not assigned yet. Your admin will add you to a service.' : 'All services of your campus' };
 };
-// A ticket's public page; given a person's row on it, that person's own number and link (a joiner from before own numbers keeps the shared one).
+// A ticket's public page; given a person's row on it, that person's own number and link (every row has its own: db.js gives one to rows from before).
 // `slug`: the campus's, when the caller already has it (one email per person on a ticket looks it up once).
 const trackUrl = async (t, row = null, slug = null) => { slug ||= (await one('SELECT slug FROM tenants WHERE id=?', t.tenant_id)).slug; const k = row?.ticket_no ? row : t;
   return `${base()}/#/d/${slug}/t/${k.ticket_no}?k=${k.tracking_token}`; };
@@ -593,7 +593,8 @@ const seenBy = (row, events, neutral) => events.filter(visibleTo(row)).map(e => 
 // One person's email on a shared ticket: the ticket's shared values, with their own number, link, name, complaint, answers, photos and notes.
 async function requestorVars(t, vars, row) {
   const { _events = [], _fields = [], _slug, ...v } = vars, joiner = !row.is_first;
-  const ticket_no = row.ticket_no || v.ticket_no, subject = row.subject || v.subject, description = row.description ?? (joiner ? '' : v.description) ?? '';
+  const ticket_no = row.ticket_no || v.ticket_no, subject = row.subject || (joiner ? v.service : v.subject), // a joiner from before own complaints: never the first student's subject
+    description = row.description ?? (joiner ? '' : v.description) ?? '';
   const files = joiner ? await all('SELECT file_name, mime_type, storage_key FROM attachments WHERE event_id=? ORDER BY created_at', row.event_id) : null;
   const photos = files && files.filter(f => Object.values(SHOWN).includes(f.mime_type)).map(f => ({ url: `${base()}/api/files/${f.storage_key}`, name: f.file_name }));
   let details = v.ticket_details;
@@ -1605,7 +1606,9 @@ S.post('/tickets/:id/join', wrap(async req => {
       meta: { joined_ticket_id: o.id, joined_ticket_no: o.ticket_no, moved: moved.length } });
     for (const r of moved) { // a moved first report keeps its photos as its own (they sat on the joined ticket's created event)
       const own = r.event_id || (r.is_first ? created : null);
-      await run('UPDATE ticket_requestors SET ticket_id=?, is_first=0, event_id=? WHERE id=?', t.id, own, r.id); Object.assign(r, { ticket_id: t.id, is_first: 0, event_id: own }); }
+      // a report from before own numbers (db.js numbers them at start; this is the backstop): its own number and token now, never the survivor's
+      const no = r.ticket_no || await nextTicketNo({ id: t.tenant_id }), tok = r.ticket_no ? r.tracking_token : crypto.randomBytes(24).toString('base64url');
+      await run('UPDATE ticket_requestors SET ticket_id=?, is_first=0, event_id=?, ticket_no=?, tracking_token=? WHERE id=?', t.id, own, no, tok, r.id); Object.assign(r, { ticket_id: t.id, is_first: 0, event_id: own, ticket_no: no, tracking_token: tok }); }
     // the joined ticket's photos come here: the moved students' own stay theirs (their page and emails show them), the rest go under the summary
     const keep = moved.map(r => r.event_id).filter(Boolean);
     await run(`UPDATE attachments SET ticket_id=?, event_id=? WHERE ticket_id=?${keep.length ? ` AND (event_id IS NULL OR event_id NOT IN (${keep.map(() => '?').join()}))` : ''}`, t.id, ev, o.id, ...keep);
@@ -1630,8 +1633,7 @@ S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
   if (row0.is_first) throw bad('That is the first requester; split the others instead');
   if (row0.detached_at) throw bad('Already split out');
   if (!MERGEABLE.includes(t0.status) || t0.joined_into) throw bad('The ticket is closed');
-  if (!row0.ticket_no) throw bad('This report has no number of its own');
-  const own = await one('SELECT id, joined_into FROM tickets WHERE tenant_id=? AND ticket_no=?', t0.tenant_id, row0.ticket_no); // their number is a ticket joined in
+  const own = row0.ticket_no && await one('SELECT id, joined_into FROM tickets WHERE tenant_id=? AND ticket_no=?', t0.tenant_id, row0.ticket_no); // their number is a ticket joined in
   if (own && !own.joined_into) throw bad(`#${row0.ticket_no} is already a ticket of its own`);
   // the note goes to the student: tidied like every requestor-facing note, and kept on the public event they see
   const said = note ? await requesterNote(t0, note, req.body.approved) : { body: '', meta: {} }, told = said.body ? `\n${said.body}` : '';
@@ -1644,6 +1646,9 @@ S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
     const row = await one('SELECT * FROM ticket_requestors WHERE id=? FOR UPDATE', row0.id);
     if (!row || row.ticket_id !== t.id) throw bad('This ticket changed just now. Open it again.'); // a join moved them meanwhile
     if (row.detached_at) throw bad('Already split out');
+    if (!row.ticket_no) { // a report from before own numbers (the backstop to db.js): it gets its own number and token now, never the shared one
+      Object.assign(row, { ticket_no: await nextTicketNo({ id: t.tenant_id }), tracking_token: crypto.randomBytes(24).toString('base64url') });
+      await run('UPDATE ticket_requestors SET ticket_no=?, tracking_token=? WHERE id=?', row.ticket_no, row.tracking_token, row.id); }
     if (own) {
       if (!o?.joined_into) throw bad('That ticket changed just now. Open it again.');
       // their own ticket opens again with a fresh target from now (it reaches the team now: later recounts start from here too)

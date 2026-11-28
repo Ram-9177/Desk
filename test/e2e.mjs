@@ -868,6 +868,41 @@ try {
   check('a priority set by hand is left alone by a split', (await tk(k1.ticket_no)).priority === 'critical' && (await tk(k1.ticket_no)).affected_count === 1);
   }
 
+  sec('Final review fixes');
+  { await stop(); await start(); // fresh rate limits
+  const tk = async no => (await q('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', alpha.id, no))[0];
+  const rowOf = async no => (await q('SELECT * FROM ticket_requestors WHERE tenant_id=? AND ticket_no=? AND detached_at IS NULL', alpha.id, no))[0];
+  const fx = (n, room, issue = 'Fan', extra = {}) => raise('alpha', { ...elecBody(n, `${n.toLowerCase()}@fix.example.com`), ...extra,
+    form_data: { loc_block: 'Main block', loc_floor: 'Ground floor', loc_room: room, issue } }).then(r => r.data || r);
+  const join = (into, no) => api(`/tickets/${into}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: no } });
+  const split = (id, rid) => api(`/tickets/${id}/requestors/${rid}/split`, { token: T.pavan, method: 'POST', body: {} });
+  const word = n => new RegExp(`\\b${n}\\b`);
+  // C1: a student who joined the old way (a row with no number of its own) and is moved by a Join gets a number and token of their own
+  const la = await fx('Legfirst', 'F1', 'Fan', { description: 'Fan sparks at the regulator', files: [{ name: 'legfirst.png', type: 'image/png', source: 'camera', data: PNG }] });
+  const lo = await fx('Legold', 'F1', 'Light'), tA = await tk(la.ticket_no), tO = await tk(lo.ticket_no);
+  await run("INSERT INTO ticket_requestors (id, tenant_id, ticket_id, name, contact, raised_at, is_first) VALUES (?, ?, ?, 'Legacy', 'legacy@fix.example.com', ?, 0)", crypto.randomUUID(), alpha.id, tO.id, new Date().toISOString());
+  const jr = await join(tA.id, lo.ticket_no);
+  const leg = (await q("SELECT * FROM ticket_requestors WHERE contact='legacy@fix.example.com' AND detached_at IS NULL"))[0] || {};
+  check('C1: a legacy joiner moved by a Join gets a number and token of their own', jr.status === 200 && leg.ticket_id === tA.id && !!leg.ticket_no && ![la.ticket_no, lo.ticket_no].includes(leg.ticket_no)
+    && !!leg.tracking_token && ![tA.tracking_token, tO.tracking_token].includes(leg.tracking_token), JSON.stringify([jr.error, leg]));
+  const legMail = (await q("SELECT subject, text_body FROM notifications WHERE template_key='joined_into' AND recipient='legacy@fix.example.com'"))[0] || { subject: '', text_body: '' };
+  const leaks = m => [la.ticket_no, lo.ticket_no].some(n => word(n).test(m.subject + m.text_body)) || [tA.tracking_token, tO.tracking_token].some(k => m.text_body.includes(k)) || /Legfirst|Fan sparks|legfirst\.png|\/api\/files\//.test(m.subject + m.text_body);
+  check("C1: …their join email carries only that number and link, never the first student's subject, complaint or photo", legMail.subject.includes(`[${leg.ticket_no}]`) && legMail.text_body.includes(`k=${leg.tracking_token}`) && !leaks(legMail), legMail.subject + '\n' + legMail.text_body);
+  await act(tA.id, { to: 'in_progress', note: 'Electrician on the way' });
+  const legUp = (await q("SELECT subject, text_body FROM notifications WHERE template_key='status_in_progress' AND recipient='legacy@fix.example.com'"))[0] || { subject: '', text_body: '' };
+  check('C1: …and so does every later update', legUp.subject.includes(`[${leg.ticket_no}]`) && legUp.text_body.includes(`k=${leg.tracking_token}`) && !leaks(legUp), legUp.text_body);
+  // C1 backfill (and M3): a restart gives every live row still without a number one from the campus counter; the tr_no index is kept as it is
+  const lb = await fx('Legback', 'F2'), tB = await tk(lb.ticket_no), before = (await q('SELECT last_number n FROM ticket_counters WHERE tenant_id=? AND year=0', alpha.id))[0].n;
+  await run("INSERT INTO ticket_requestors (id, tenant_id, ticket_id, name, contact, raised_at, is_first) VALUES (?, ?, ?, 'Legacy Two', 'legacy2@fix.example.com', ?, 0)", crypto.randomUUID(), alpha.id, tB.id, new Date().toISOString());
+  const idx = async () => (await q("SELECT 'tr_no'::regclass::oid::text o"))[0].o, idx0 = await idx();
+  await stop(); await start();
+  const l2 = (await q("SELECT * FROM ticket_requestors WHERE contact='legacy2@fix.example.com'"))[0], after = (await q('SELECT last_number n FROM ticket_counters WHERE tenant_id=? AND year=0', alpha.id))[0].n;
+  check('C1 backfill: after a restart every live row has a number; the legacy one takes the next from the counter, with a token of its own', (await q('SELECT count(*)::int n FROM ticket_requestors WHERE detached_at IS NULL AND ticket_no IS NULL'))[0].n === 0
+    && l2.ticket_no === String(before + 1).padStart(4, '0') && after === before + 1 && l2.tracking_token?.length >= 32 && l2.tracking_token !== tB.tracking_token, JSON.stringify({ before, after, l2 }));
+  check('C1 backfill: …and their number opens the shared ticket as them', (p => p.ticket_no === l2.ticket_no && !!p.mine && !/Legback/.test(JSON.stringify(p)))((await api(`/public/alpha/tickets/${l2.ticket_no}`)).data || {}));
+  check('M3: a restart keeps the tr_no index (no drop and rebuild)', (await idx()) === idx0);
+  }
+
   sec('Team daily queue, provider phone and priority for requestors');
   { // its own block, so its names don't clash with the rest
   await stop(); await start(); // fresh rate limits
