@@ -1,6 +1,6 @@
 # AI connection: Claude in replies, reports and the bot
 
-Date: 2026-11-28. Status: draft for approval.
+Date: 2026-11-28. Status: reviewed, awaiting approval.
 
 ## Intent
 
@@ -128,8 +128,17 @@ New **AI** item in the admin navigation (super admins only, next to Tenants), ro
 - `spent(feature)` = sum of `cost_usd` for the UTC month. Checked **before** every call; if `spent >= limit` the call
   is skipped and the fallback is used. A call that starts under the limit may finish slightly over it; that is the
   accepted tolerance (a fraction of a cent).
-- Every call has a timeout (8 s for replies and bot, 20 s for reports) and no SDK retries beyond one; on timeout or
-  error the fallback is used and the error is stored in `ai_usage`.
+- **Public bot drain guard (my call).** The student bot needs no login, so one person could spend the whole bot budget
+  in a day. Each IP gets at most 40 AI-answered questions per campus day (setting `ai_bot_ip_daily`, shown on the AI
+  page); after that the IP gets the keyword bot for the rest of the day, with no message about it. Chip taps do not
+  count. The staff bot is per signed-in user and has no extra cap.
+- Every call has a deadline (8 s for a reply, 8 s for a whole bot question across both calls, 20 s for a report) with
+  SDK retries off; on timeout or error the fallback is used and the error is stored in `ai_usage`.
+- **Outage guard (my call).** After 3 consecutive failures the API is skipped for 5 minutes (one row in `ai_usage`
+  notes it), so a bad key or an outage never makes every screen wait for the timeout.
+- **Thinking and length.** The 5.5 models think by default. Calls use effort `low`, thinking off where the model allows
+  it, and a `max_tokens` large enough that thinking cannot swallow the answer (the prompt controls the answer's
+  length). `stop_reason` is checked: `max_tokens` or `refusal` means fallback.
 
 ### Module `ai.js`
 
@@ -150,18 +159,23 @@ the SDK. Text sent to the API passes through one `scrub()` that removes emails a
 - Response to the client gains `by: 'ai' | 'rules'`. The preview sheet shows "Rewritten by AI, meaning kept" with the
   Corrected / My original tabs as today (the rules path keeps its word-by-word list). Editing in the sheet still
   re-renders with `text_as_is`, so the provider's final text is never rewritten again.
-- Send time is unchanged: every public note goes through the preview, so the text saved is what the provider approved.
+- Send time is unchanged for notes that went through the preview: the text saved is what the provider approved.
+- **Notes with no preview (my call).** The transfer note and the reopen-request accept/decline note are sent without a
+  preview today and are tidied by the dictionary polisher at send time. They stay that way: Claude rewrites only what
+  the provider can see and edit before sending. Any API client that omits `approved` also gets the dictionary polisher.
+- Notes typed in Telugu, Hindi or mixed language are tidied in that language, never translated.
 
 ### Reports
 
 - **Desk:** new `GET /reports/summary` taking the same `days` / `from` / `to` as `/reports`, scoped to the user's
-  services like `/reports`. It builds the same `counts` and `by_service`, hashes them, and returns the stored paragraph
+  services like `/reports`. It builds the same `counts`, `by_service` and the daily raised/closed series, hashes them, and returns the stored paragraph
   for that hash if there is one; otherwise asks Claude for 3 to 5 sentences (what moved, what is late, which team is
   busiest, one suggestion) and stores it in a new `ai_cache (hash, text, created_at)`. The Reports page loads it after
   the numbers, into a "In short" card above the chart, and shows nothing if the feature is off or it fails.
 - **Food emails:** `buildReport` in `food.js` gets an "In short" paragraph at the top when `aiReady('reports')`,
   written from the summary object (averages, per-meal scores, top issues, top words, up to 10 comments). Cached the
-  same way, so the Power Automate endpoint and the 10 PM send do not pay twice for the same day.
+  same way by the numbers; when new ratings arrive between a Power Automate fetch and the 10 PM send the paragraph is
+  written again, which is accepted over showing stale numbers.
 - Instructions: plain English for a kitchen or facilities team, no markdown, no numbers the data does not contain,
   British spelling. `max_tokens` about 350.
 
@@ -172,6 +186,7 @@ the SDK. Text sent to the API passes through one `scrub()` that removes emails a
   `food`, `hold`, `escalated`, `points`, `no_provider`, `places`, `workload`, `summary`, `open`, `hello`) and a
   one-line description. The keyword matcher stays as the fallback mapping from text to key.
 - A chip tap sends the chip text; chips map straight to a key with no API call.
+- A plain ticket number in the text is still recognised by the existing code first, with no API call.
 - Typed text, when `aiReady('bot')`: **call 1** `aiBotIntent(q, keys)` returns `{ key, ticket_no, language }` using
   structured output; unknown questions return `key: 'unknown'`. The existing branch for that key runs and yields the
   facts text, items and chips as today. **Call 2** `aiBotPhrase(q, factsText, language)` rewrites the facts text as a
