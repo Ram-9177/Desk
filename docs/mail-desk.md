@@ -174,6 +174,27 @@ How the calls behave:
 - The signing secret is shown once, when the app is saved. Make a new one in Edit if needed.
 - Only `https://` addresses on the internet are accepted.
 
+### 7c. HR candidates and resumes (optional)
+
+1. Connect OneDrive (step 6), e.g. the OneDrive of hr@, folder `Resumes`.
+2. On the jobs mailbox's card (e.g. `jobs@` or `hr@`), tick **Job applications mailbox** and save.
+3. On that mailbox, add the HR team under **Other people on this mailbox**:
+   - **HR:** can work the candidates.
+   - **Can read:** can only look.
+4. Each sender to that mailbox, in Live mode, becomes a candidate (one per email per campus), with one application per post.
+   - **The post** is read by the AI, or from the subject, e.g. "Application for the post of Assistant Professor - Physiotherapy". Otherwise it is "General application".
+   - **Resumes and CVs:** PDF and Word attachments up to 10 MB, checked by their first bytes (a renamed program is refused), are saved to `Resumes/<year>/<post>/<name> - <file>`.
+   - **Duplicates:** the same file sent twice is stored once.
+   - **Newer CVs:** a new CV later in the same mail becomes the one shown.
+   - **Images and signature logos** are ignored.
+5. **Mail → HR candidates:**
+   - The list, by stage (New, Shortlisted, Interview, Offered, Hired, Rejected, On hold), post or search.
+   - Each candidate's page: the resume shown in the page (PDF) or downloaded (Word), the profile, stage, rating, interview date and notes.
+   - **Open the mail**, to reply from the jobs mailbox.
+   - **Delete candidate**, on request: also deletes their resumes from OneDrive.
+
+The resume files open only through ONE Desk, for the people of that mailbox. No share link is ever made, and every view is logged.
+
 ### 8. Add the mailboxes (super admin)
 
 Go to **Mail → Settings → Add a mailbox**, once per address, e.g. `admissions@smru.edu.in` with display name `Admissions`.
@@ -303,6 +324,17 @@ The mail desk API lives under `https://<site>/api/maildesk/…`. It uses the sam
 | `POST /maildesk/integrations` · `PATCH`/`DELETE /maildesk/integrations/:id` | `{ name, baseURL, model, apiKey?, priority?, active?, reasoningEffort?, noTemperature? }` | Any OpenAI-compatible API. Tried in `priority` order. |
 | `POST /maildesk/integrations/:id/test` | | `{ ok, message }` |
 | `PUT /maildesk/switches` | `{ auto_reply_paused: true\|false }` | Pauses every auto-reply in all mailboxes. |
+
+### HR candidates (people of a job-applications mailbox: HR members, its officers, managers)
+
+| Method and path | Body | Notes |
+|---|---|---|
+| `GET /maildesk/hr` | `?stage=new\|…\|all&post=&q=` | `{ applications: [{ id, post, stage, rating, interview_at, full_name, email, experience_years, current_org, highest_qualification, resume_id, resume_name, ref }], posts, stages, can_edit }`. Hired and rejected are left out unless asked for. |
+| `GET /maildesk/hr/:id` | | `{ application, candidate, thread, files, notes, others, can_edit }` |
+| `PATCH /maildesk/hr/:id` | Any of: `stage`, `rating` (1–5), `interview_at`, `post`, `department`, `full_name`, `phone`, `location`, `highest_qualification`, `experience_years`, `current_org`, `skills` (list or comma-separated), `summary` | HR and repliers only. Readers get 403. |
+| `POST /maildesk/hr/:id/notes` | `{ body }` | |
+| `GET /maildesk/hr/:id/files/:file` | `?download=1` | The file itself, streamed from OneDrive (`Cache-Control: private, no-store`). |
+| `DELETE /maildesk/hr/:id/candidate` | | Deletes the candidate, their applications, their notes, and their files in OneDrive. |
 
 ### Connected apps (super admin)
 

@@ -214,3 +214,29 @@ export function pluginBody(cfg, v) {
   return { type: ct === 'json' ? 'application/json' : ct === 'form' ? 'application/x-www-form-urlencoded' : 'text/plain; charset=utf-8',
     body: String(cfg.template || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => safe(v[k] ?? '')) };
 }
+
+/* ---------- HR: candidates and resumes ---------- */
+export const STAGES = ['new', 'shortlisted', 'interview', 'offered', 'hired', 'rejected', 'on_hold'];
+export const STAGE_NAMES = { new: 'New', shortlisted: 'Shortlisted', interview: 'Interview', offered: 'Offered', hired: 'Hired', rejected: 'Rejected', on_hold: 'On hold' };
+export const RESUME_MAX = 10 * 1024 * 1024;
+const RESUME_EXT = { pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', rtf: 'application/rtf', odt: 'application/vnd.oasis.opendocument.text' };
+// a resume or CV: a document (not an image, a signature logo or an inline picture), at most 10 MB
+export function resumeType(name, mime, size, inline) {
+  const ext = String(name || '').toLowerCase().match(/\.([a-z0-9]{2,5})$/)?.[1];
+  if (inline || !ext || !RESUME_EXT[ext] || !(size > 0) || size > RESUME_MAX) return null;
+  return RESUME_EXT[ext];
+}
+// the first bytes must match the type (a renamed .exe is refused)
+export const looksLike = (buf, mime) => mime === 'application/pdf' ? buf.subarray(0, 5).toString('latin1') === '%PDF-'
+  : /openxmlformats|opendocument/.test(mime) ? buf[0] === 0x50 && buf[1] === 0x4b
+  : mime === 'application/msword' ? buf[0] === 0xd0 && buf[1] === 0xcf : mime === 'application/rtf' ? buf.subarray(0, 5).toString('latin1') === '{\\rtf' : false;
+// the post applied for: the AI's reading, else the subject ("Application for the post of Assistant Professor - Physiotherapy")
+export function postFrom(subject, aiPost) {
+  const clean = s => String(s || '').replace(/^\s*((re|fw|fwd)\s*:\s*)+/i, '').replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (aiPost && String(aiPost).trim().length >= 3) return clean(aiPost).slice(0, 160);
+  const s = clean(subject), m = s.match(/(?:application|applying|apply|resume|cv|candidature)\b.*?\b(?:for|to)\s+(?:the\s+)?(?:post|position|role|job|vacancy)?\s*(?:of|as)?\s*[:\-–]?\s*(.{3,120})$/i)
+    || s.match(/(?:post|position|role|vacancy)\s*(?:of|for|:|-|–)\s*(.{3,120})$/i);
+  return m ? m[1].replace(/[.\s]+$/, '').trim().slice(0, 160) : 'General application';
+}
+// a name OneDrive accepts: no " * : < > ? / \ | # %, no leading/trailing dots or spaces
+export const safeName = s => String(s || '').replace(/["*:<>?/\\|#%\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 100) || 'file';

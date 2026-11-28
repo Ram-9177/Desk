@@ -50,11 +50,14 @@ export async function mailPage(main, seg, q) {
   if (!me.role) { main.innerHTML = `<div class="card">${H.emptyState('No mailboxes for you', 'Ask your admin to add you as a nodal officer of a mailbox.')}</div>`; return; }
   if (seg[0] === 't') return thread(main, seg[1], me);
   if (seg[0] === 'confirm') return confirmPage(main, me);
+  if (seg[0] === 'hr' && seg[1]) return candidatePage(main, seg[1], me);
+  if (seg[0] === 'hr') return hrList(main, me);
   if (seg[0] === 'settings') return me.setup ? settings(main, me) : list(main, me, q);
   return list(main, me, q);
 }
 const subnav = (me, on) => `<div class="tabs mt-tabs" style="margin-bottom:12px"><a class="tab ${on === 'list' ? 'on' : ''}" href="#/c/mail">Mail</a>
   <a class="tab ${on === 'confirm' ? 'on' : ''}" href="#/c/mail/confirm"><span>Confirm auto-replies</span>${me.confirm ? `<span class="cnt">${me.confirm}</span>` : ''}</a>
+  ${me.hr ? `<a class="tab ${on === 'hr' ? 'on' : ''}" href="#/c/mail/hr">HR candidates</a>` : ''}
   ${me.setup ? `<a class="tab ${on === 'settings' ? 'on' : ''}" href="#/c/mail/settings">Settings</a>` : ''}</div>`;
 
 /* ================= the mail list ================= */
@@ -210,6 +213,7 @@ async function settings(main, me) {
       <form data-f="box"><div class="row"><div><label>Mode</label>${sel('mode', Object.entries(MODE), c.mode)}</div><div><label>"We received it" reply</label>${sel('ack_mode', [['approve', 'Wait for Confirm (recommended)'], ['auto', 'Send by itself']], c.ack_mode)}</div></div>
         <div class="row"><div><label>Display name</label><input name="display_name" value="${e(c.display_name || '')}" maxlength="120" placeholder="Admissions, St. Mary's"></div><div><label>Usual service for Forward</label>${sel('default_service_id', [['', '—'], ...d.services.map(s => [s.id, s.name])], c.default_service_id)}</div></div>
         <label>Signature <small>(added under every reply)</small></label><textarea name="signature" rows="3" maxlength="1000">${e(c.signature || '')}</textarea>
+        <label class="small"><input type="checkbox" name="is_hr" ${c.is_hr ? 'checked' : ''}> Job applications mailbox: each sender becomes an HR candidate, and resumes/CVs are saved to OneDrive</label>
         <label>Office hours <small>(the reply clock counts only these)</small></label><div class="muted small">${e(hoursTxt(c.office_hours))}</div>
         <div class="mbar"><label class="small"><input type="checkbox" name="own_hours" ${c.office_hours ? 'checked' : ''}> Own hours:</label>
           ${DAYS.map((x, i) => `<label class="small"><input type="checkbox" name="d${i}" ${(c.office_hours?.days || [1, 2, 3, 4, 5, 6]).includes(i) ? 'checked' : ''}>${x}</label>`).join('')}
@@ -266,7 +270,7 @@ async function settings(main, me) {
     sec.querySelector('[data-test]').onclick = async () => { try { const r = await H.api(`/maildesk/channels/${id}/test`, { method: 'POST' }); H.toast(r.message); } catch (er) { H.toast(er.message); } };
     sec.querySelector('[data-sync]')?.addEventListener('click', () => go(() => H.api(`/maildesk/channels/${id}/sync`, { method: 'POST' }), 'Checking the inbox'));
     sec.querySelector('[data-f=box]').onsubmit = ev => { ev.preventDefault(); const f = ev.target, days = DAYS.map((_, i) => i).filter(i => f['d' + i].checked);
-      go(() => H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { mode: f.mode.value, ack_mode: f.ack_mode.value, display_name: f.display_name.value, signature: f.signature.value, default_service_id: f.default_service_id.value,
+      go(() => H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { mode: f.mode.value, ack_mode: f.ack_mode.value, display_name: f.display_name.value, signature: f.signature.value, default_service_id: f.default_service_id.value, is_hr: f.is_hr.checked,
         office_hours: f.own_hours.checked ? { days, from: f.from.value, to: f.to.value } : null } }), 'Mailbox saved'); };
     const of = sec.querySelector('[data-f=off]'), wireO = () => of.querySelectorAll('[data-rmo]').forEach(b => b.onclick = () => b.closest('[data-o]').remove());
     of.querySelectorAll('[data-addo]').forEach(b => b.onclick = () => { of.querySelector('[data-olist]').insertAdjacentHTML('beforeend', offRow({ role: b.dataset.addo })); wireO(); });
@@ -404,4 +408,79 @@ function wireApps(main, a, redraw) {
     shown(); dl.querySelector('#afmt').onchange = shown;
     dl.querySelector('#appdel')?.addEventListener('click', async () => { if (!confirm('Delete this app? It stops getting events.')) return; try { await H.api('/maildesk/apps/' + x.id, { method: 'DELETE' }); dl.close(); H.toast('App deleted'); redraw(); } catch (er) { H.toast(er.message); } });
   });
+}
+
+/* ================= HR: candidates from the job-applications mailbox, resumes from OneDrive ================= */
+const STAGES = [['new', 'New'], ['shortlisted', 'Shortlisted'], ['interview', 'Interview'], ['offered', 'Offered'], ['hired', 'Hired'], ['rejected', 'Rejected'], ['on_hold', 'On hold']];
+const STAGE = Object.fromEntries(STAGES);
+const stageChip = st => `<span class="mchip stage-${e(st)}">${e(STAGE[st] || st)}</span>`;
+const stars = n => n ? '★'.repeat(n) + '☆'.repeat(5 - n) : '';
+async function hrList(main, me) {
+  const st = (() => { try { return JSON.parse(sessionStorage.getItem('hrf') || '{}'); } catch { return {}; } })();
+  const draw = async () => {
+    const d = await H.api('/maildesk/hr?' + new URLSearchParams(Object.entries(st).filter(([, v]) => v)));
+    main.innerHTML = `${subnav(me, 'hr')}<div class="card mt"><div class="mt-h"><div class="mt-t"><h2>Candidates</h2><span class="mt-n">${d.applications.length}</span></div>
+      <div class="mt-tools"><label class="search">${H.I('search', 18)}<input id="hq" type="search" aria-label="Search candidates" placeholder="Name, email, post, skill or organisation" value="${e(st.q || '')}"></label>
+        ${sel('post', [['', 'All posts'], ...d.posts.map(p => [p.post, `${p.post} (${p.n}${p.new ? `, ${p.new} new` : ''})`])], st.post, 'id="hpost" aria-label="Post"')}</div></div>
+      <div class="tabs mt-tabs">${[['', 'In progress'], ...STAGES, ['all', 'All']].map(([k, l]) => `<button class="tab ${(st.stage || '') === k ? 'on' : ''}" data-stage="${k}"><span>${l}</span>${k && k !== 'all' && d.stages[k] ? `<span class="cnt">${d.stages[k]}</span>` : ''}</button>`).join('')}</div>
+      ${d.applications.length ? `<div class="tblbox"><table class="ttable"><thead><tr><th>Candidate</th><th>Post</th><th>Experience</th><th>Stage</th><th>Resume</th><th>Applied</th></tr></thead><tbody>
+        ${d.applications.map(a => `<tr data-href="#/c/mail/hr/${e(a.id)}"><td><a href="#/c/mail/hr/${e(a.id)}" class="tt-main"><b>${e(a.full_name || a.email)}</b><span class="tt-svc">${e(a.email)}${a.current_org ? ` · ${e(a.current_org)}` : ''}</span></a></td>
+          <td>${e(a.post)}${a.department ? `<div class="muted small">${e(a.department)}</div>` : ''}</td><td>${a.experience_years != null ? `${e(a.experience_years)} ${Number(a.experience_years) === 1 ? "yr" : "yrs"}` : "—"}${a.highest_qualification ? `<div class="muted small">${e(a.highest_qualification)}</div>` : ''}</td>
+          <td>${stageChip(a.stage)}${a.rating ? `<div class="small">${stars(a.rating)}</div>` : ''}${a.interview_at ? `<div class="muted small">Interview ${H.shortDate(a.interview_at)}</div>` : ''}</td>
+          <td>${a.resume_id ? `<span class="small">${H.I('file', 14)} ${e(a.resume_name)}</span>` : '<span class="muted small">No resume</span>'}</td><td><span class="tt-when">${H.shortDate(a.created_at)}</span></td></tr>`).join('')}</tbody></table></div>
+        <div class="tcards">${d.applications.map(a => `<a class="tcard" href="#/c/mail/hr/${e(a.id)}"><span class="tc-r1"><b>${e(a.full_name || a.email)}</b><span class="sp"></span>${stageChip(a.stage)}</span>
+          <span class="tc-r2"><span class="tc-loc">${e(a.post)}${a.experience_years != null ? ` · ${e(a.experience_years)} yrs` : ''}</span></span><span class="tc-r3"><span class="tc-who">${a.resume_id ? 'Resume ✓' : 'No resume'}</span><span class="tc-when">${H.shortDate(a.created_at)}</span></span></a>`).join('')}</div>`
+        : `<div class="mt-empty">${H.emptyState('No candidates here', 'Applications to the job-applications mailbox appear here, with their resumes.')}</div>`}</div>`;
+    const set = (k, v) => { st[k] = v; sessionStorage.setItem('hrf', JSON.stringify(st)); draw(); };
+    main.querySelectorAll('[data-stage]').forEach(b => b.onclick = () => set('stage', b.dataset.stage));
+    main.querySelector('#hq').onchange = ev => set('q', ev.target.value.trim());
+    main.querySelector('#hpost').onchange = ev => set('post', ev.target.value);
+    main.querySelectorAll('tr[data-href]').forEach(tr => tr.onclick = ev => { if (!ev.target.closest('a')) location.hash = tr.dataset.href; });
+  };
+  await draw();
+}
+let blobUrl = null;
+async function candidatePage(main, id, me) {
+  const d = await H.api('/maildesk/hr/' + encodeURIComponent(id)), a = d.application, c = d.candidate, ro = d.can_edit ? '' : 'disabled';
+  const file = d.files.find(f => f.id === a.resume_file_id) || d.files[0];
+  main.innerHTML = `${subnav(me, 'hr')}<div class="mthread">
+    <div class="card"><div class="mt-h"><div><div class="eyebrow">${e(a.post)}${a.department ? ` · ${e(a.department)}` : ''}</div><h2 style="margin:4px 0">${e(c.full_name || c.email)}</h2>
+      <div class="mbar">${stageChip(a.stage)}${a.rating ? `<span>${stars(a.rating)}</span>` : ''}<span class="muted small">${e(c.email)}${c.phone ? ` · ${e(c.phone)}` : ''} · applied ${H.shortDate(a.created_at)}${a.stage_by_name ? ` · ${e(STAGE[a.stage])} by ${e(a.stage_by_name)} ${H.shortDate(a.stage_at)}` : ''}</span></div></div>
+      ${d.thread ? `<a class="btn" href="#/c/mail/t/${e(d.thread.ref)}">${H.I('mail', 16)}Open the mail ${e(d.thread.ref)} (reply from here)</a>` : ''}</div>
+      ${d.can_edit ? `<div class="mbar" style="margin-top:10px">${STAGES.map(([k, l]) => `<button type="button" class="btn ${a.stage === k ? 'primary' : ''}" data-st="${k}">${l}</button>`).join('')}</div>` : ''}</div>
+    <section class="card"><div class="chead">${H.I('file', 16)}<span>Resume</span>${d.files.length > 1 ? `<span class="muted small">${d.files.length} files</span>` : ''}</div>
+      ${file ? `<div class="mbar">${d.files.map(f => `<button type="button" class="btn ${f.id === file.id ? 'primary' : ''}" data-file="${e(f.id)}">${e(f.file_name)} <span class="muted small">${Math.max(1, Math.round(f.size_bytes / 1024))} KB</span></button>`).join('')}
+        <button type="button" class="btn" id="fdl">${H.I('download', 16)}Download</button></div><div id="fview" class="mresume"><p class="muted small">Opening…</p></div>`
+        : '<p class="muted small">No resume came with the mail. Ask for one from the mail, or check OneDrive is connected.</p>'}</section>
+    <form class="card" id="cf"><div class="chead">${H.I('user', 16)}<span>Profile</span><span class="muted small">${d.can_edit ? 'HR fills this in from the resume' : 'read only'}</span></div>
+      <div class="row"><div><label>Full name</label><input name="full_name" value="${e(c.full_name || '')}" ${ro}></div><div><label>Phone</label><input name="phone" value="${e(c.phone || '')}" ${ro}></div></div>
+      <div class="row"><div><label>Highest qualification</label><input name="highest_qualification" value="${e(c.highest_qualification || '')}" ${ro}></div><div><label>Experience (years)</label><input name="experience_years" type="number" min="0" max="60" step="0.5" value="${e(c.experience_years ?? '')}" ${ro}></div></div>
+      <div class="row"><div><label>Current organisation</label><input name="current_org" value="${e(c.current_org || '')}" ${ro}></div><div><label>Location</label><input name="location" value="${e(c.location || '')}" ${ro}></div></div>
+      <label>Skills <small>(comma-separated)</small></label><input name="skills" value="${e(c.skills.join(', '))}" ${ro}>
+      <label>Summary</label><textarea name="summary" rows="3" maxlength="2000" ${ro}>${e(c.summary || '')}</textarea>
+      <div class="row"><div><label>Post</label><input name="post" value="${e(a.post)}" ${ro}></div><div><label>Department</label><input name="department" value="${e(a.department || '')}" ${ro}></div></div>
+      <div class="row"><div><label>Rating</label>${sel('rating', [['', '—'], ...[1, 2, 3, 4, 5].map(n => [n, stars(n)])], a.rating, ro)}</div><div><label>Interview</label><input type="datetime-local" name="interview_at" value="${a.interview_at ? new Date(new Date(a.interview_at).getTime() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : ''}" ${ro}></div></div>
+      ${d.can_edit ? '<p class="mbar"><button class="btn primary">Save profile</button><span class="sp"></span><button type="button" class="btn" id="cdel">Delete candidate</button></p>' : ''}</form>
+    <section class="card"><div class="chead">${H.I('pencil', 16)}<span>Notes</span><span class="muted small">HR only, never mailed</span></div>
+      ${d.notes.map(n => `<div class="mnote"><b>${e(n.author || '')}</b> <span class="muted small">${H.shortDate(n.created_at)}</span><div>${e(n.body).replace(/\n/g, '<br>')}</div></div>`).join('') || '<p class="muted small">No notes yet.</p>'}
+      ${d.can_edit ? '<form id="hn" class="mbar"><input name="body" required maxlength="4000" placeholder="e.g. Good teaching demo; check references" aria-label="Note"><button class="btn">Add</button></form>' : ''}</section>
+    ${d.others.length ? `<section class="card"><div class="chead">${H.I('history', 16)}<span>Other applications</span></div>${d.others.map(o => `<p><a href="#/c/mail/hr/${e(o.id)}">${e(o.post)}</a> ${stageChip(o.stage)} <span class="muted small">${H.shortDate(o.created_at)}</span></p>`).join('')}</section>` : ''}</div>`;
+  const redraw = () => candidatePage(main, id, me), go = async (fn, m) => { try { await fn(); H.toast(m); redraw(); } catch (er) { H.toast(er.message); } };
+  main.querySelectorAll('[data-st]').forEach(b => b.onclick = () => go(() => H.api(`/maildesk/hr/${id}`, { method: 'PATCH', body: { stage: b.dataset.st } }), `Stage: ${STAGE[b.dataset.st]}`));
+  const cf = main.querySelector('#cf'); if (d.can_edit) cf.onsubmit = ev => { ev.preventDefault(); const v = Object.fromEntries(new FormData(cf));
+    go(() => H.api(`/maildesk/hr/${id}`, { method: 'PATCH', body: { ...v, interview_at: v.interview_at ? new Date(v.interview_at).toISOString() : null } }), 'Profile saved'); };
+  const hn = main.querySelector('#hn'); if (hn) hn.onsubmit = ev => { ev.preventDefault(); go(() => H.api(`/maildesk/hr/${id}/notes`, { method: 'POST', body: { body: hn.body.value } }), 'Note added'); };
+  main.querySelector('#cdel')?.addEventListener('click', () => { if (confirm(`Delete ${c.full_name || c.email} and all their applications, notes and resumes (also from OneDrive)? This cannot be undone.`))
+    H.api(`/maildesk/hr/${id}/candidate`, { method: 'DELETE' }).then(() => { H.toast('Candidate deleted'); location.hash = '#/c/mail/hr'; }, er => H.toast(er.message)); });
+  // the resume: fetched through ONE Desk (signed in), shown as a PDF in the page or offered as a download
+  let cur = file;
+  const show = async f => { cur = f; const box = main.querySelector('#fview'); if (!box) return;
+    if (f.mime !== 'application/pdf') { box.innerHTML = `<p class="muted small">${e(f.file_name)} is a Word document: press Download to open it.</p>`; return; }
+    try { const r = await H.api(`/maildesk/hr/${id}/files/${f.id}`, { raw: true }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || 'Could not open the resume');
+      if (blobUrl) URL.revokeObjectURL(blobUrl); blobUrl = URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: 'application/pdf' }));
+      box.innerHTML = `<iframe title="Resume of ${e(c.full_name || c.email)}" src="${blobUrl}"></iframe>`; } catch (er) { box.innerHTML = `<p class="err small">${e(er.message)}</p>`; } };
+  main.querySelectorAll('[data-file]').forEach(b => b.onclick = () => { main.querySelectorAll('[data-file]').forEach(x => x.classList.toggle('primary', x === b)); show(d.files.find(f => f.id === b.dataset.file)); });
+  main.querySelector('#fdl')?.addEventListener('click', async () => { try { const r = await H.api(`/maildesk/hr/${id}/files/${cur.id}?download=1`, { raw: true }); if (!r.ok) throw new Error('Could not download');
+    const a2 = document.createElement('a'); a2.href = URL.createObjectURL(await r.blob()); a2.download = cur.file_name; a2.click(); } catch (er) { H.toast(er.message); } });
+  if (file) show(file);
 }

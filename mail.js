@@ -105,6 +105,27 @@ ALTER TABLE mail.threads ADD COLUMN IF NOT EXISTS ref TEXT;
 UPDATE mail.threads SET ref='MAIL-L' || ref_no WHERE ref IS NULL; -- the first version's mail: the L keeps them apart from any campus's numbers
 CREATE UNIQUE INDEX IF NOT EXISTS mth_ref ON mail.threads (upper(ref));
 CREATE TABLE IF NOT EXISTS mail.ref_counters (tenant_id TEXT PRIMARY KEY REFERENCES public.tenants(id) ON DELETE CASCADE, last INT NOT NULL);
+-- HR: a job-applications mailbox turns each applicant into a candidate; resumes and CVs are kept in OneDrive
+ALTER TABLE mail.channels ADD COLUMN IF NOT EXISTS is_hr INT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS mail.stored_files (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  store TEXT NOT NULL DEFAULT 'onedrive', account TEXT NOT NULL, external_id TEXT NOT NULL, path TEXT NOT NULL, file_name TEXT NOT NULL, mime TEXT NOT NULL,
+  size_bytes BIGINT NOT NULL, sha256 TEXT NOT NULL, source_email_id TEXT REFERENCES mail.inbound_emails(id) ON DELETE SET NULL, created_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS msf_sha ON mail.stored_files (tenant_id, sha256);
+CREATE TABLE IF NOT EXISTS mail.candidates (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE, email TEXT NOT NULL,
+  full_name TEXT, phone TEXT, location TEXT, highest_qualification TEXT, experience_years NUMERIC(4,1), current_org TEXT, skills TEXT NOT NULL DEFAULT '[]', summary TEXT,
+  created_at TEXT, updated_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS mca_e ON mail.candidates (tenant_id, lower(email));
+CREATE TABLE IF NOT EXISTS mail.candidate_applications (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES mail.candidates(id) ON DELETE CASCADE,
+  channel_id TEXT REFERENCES mail.channels(id) ON DELETE SET NULL, post TEXT NOT NULL, department TEXT,
+  stage TEXT NOT NULL DEFAULT 'new' CHECK (stage IN ('new','shortlisted','interview','offered','hired','rejected','on_hold')),
+  thread_id TEXT REFERENCES mail.threads(id) ON DELETE SET NULL, resume_file_id TEXT REFERENCES mail.stored_files(id) ON DELETE SET NULL,
+  rating INT CHECK (rating BETWEEN 1 AND 5), interview_at TEXT, stage_by TEXT, stage_at TEXT, created_at TEXT, updated_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS mcap_u ON mail.candidate_applications (candidate_id, lower(post));
+CREATE INDEX IF NOT EXISTS mcap_s ON mail.candidate_applications (channel_id, stage);
+CREATE TABLE IF NOT EXISTS mail.candidate_files (application_id TEXT NOT NULL REFERENCES mail.candidate_applications(id) ON DELETE CASCADE,
+  file_id TEXT NOT NULL REFERENCES mail.stored_files(id) ON DELETE CASCADE, created_at TEXT, PRIMARY KEY (application_id, file_id));
+CREATE TABLE IF NOT EXISTS mail.candidate_notes (id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES mail.candidate_applications(id) ON DELETE CASCADE,
+  author_user_id TEXT, author_name TEXT, body TEXT NOT NULL, created_at TEXT NOT NULL);
 -- a reply's effects wait until it has really gone (Undo leaves the thread as it was)
 ALTER TABLE mail.outbound_emails ADD COLUMN IF NOT EXISTS close_after INT NOT NULL DEFAULT 0;
 ALTER TABLE mail.outbound_emails ADD COLUMN IF NOT EXISTS started_at TEXT;
@@ -359,6 +380,7 @@ export async function mail(d) {
     if (ch.mode === 'live') {
       if (res.fresh) await draftAck(ch, res.t, res.inb, ai?.reading).catch(e => console.error('mail ack', e.message));
       if (res.fresh) emit('mail.received', res.t.id);
+      if (ch.is_hr) await enqueue('hr', { channel_id: ch.id, inbound_id: res.inb.id, post: ai?.reading?.post || null, name: ai?.reading?.name || null }, `hr:${res.inb.id}`); // candidate + resume, in its own job
       graph('PATCH', `${mbox(ch.address)}/messages/${encodeURIComponent(messageId)}`, { categories: ['ONE ✓'] }).catch(e => console.warn('mail tag', e.message)); // seen in Outlook as handled by ONE Desk
       if (res.fresh && lane === 'important') await alert(ch.tenant_id, L.queueFor(await officersOf(ch)), 'mail_important', `[${res.t.ref}] Important mail: ${subject || '(no subject)'}`,
         [`An important mail reached ${ch.address} from ${res.t.requester_name || fromEmail}.`, ai?.reading.summary || subject].filter(Boolean), threadLink(res.t));
@@ -488,6 +510,7 @@ export async function mail(d) {
     if (!(await tenantRow(ch.tenant_id))?.is_active) return; // a campus switched off: its mailboxes rest too
     if (j.kind === 'ingest') return ingest(ch, p.message_id);
     if (j.kind === 'catchup') return catchup(ch);
+    if (j.kind === 'hr') return applicant(ch, p);
   }
   let busy = false;
   async function work() {
@@ -563,7 +586,8 @@ export async function mail(d) {
     const a = await access(req); if (!a.role) return { role: null };
     const ids = a.ids, mine = ids.length ? await one(`SELECT count(*)::int n FROM mail.threads WHERE channel_id = ANY(?::text[]) AND status IN ('open','in_progress','hold') AND lane<>'noise'`, ids) : { n: 0 };
     const confirm = ids.length ? await one("SELECT count(*)::int n FROM mail.outbound_emails WHERE channel_id = ANY(?::text[]) AND state='pending_approval'", ids) : { n: 0 };
-    return { role: a.role, setup: a.setup, admin: a.admin, open: mine.n, confirm: confirm.n,
+    const hr = a.chans.some(c => c.is_hr && (a.manager || c.my_roles || c.member));
+    return { role: a.role, setup: a.setup, admin: a.admin, open: mine.n, confirm: confirm.n, hr,
       channels: a.chans.map(c => ({ id: c.id, address: c.address, display_name: c.display_name, mode: c.mode, my_roles: c.my_roles ? c.my_roles.split(',') : [], member: c.member || null })) };
   }));
   const LIST = `SELECT t.*, c.address, c.display_name, c.mode,
@@ -749,6 +773,7 @@ export async function mail(d) {
     if ('mode' in b) { if (!L.MODES.includes(b.mode)) throw bad('Mode: off, shadow or live'); f.mode = b.mode; }
     if ('ack_mode' in b) { if (!['approve', 'auto'].includes(b.ack_mode)) throw bad('Auto-reply: approve or auto'); f.ack_mode = b.ack_mode; }
     if ('default_service_id' in b) f.default_service_id = b.default_service_id || null;
+    if ('is_hr' in b) f.is_hr = b.is_hr ? 1 : 0;
     return f;
   };
   S.post('/maildesk/channels', wrap(async req => {
@@ -922,6 +947,133 @@ export async function mail(d) {
     let msg; try { const o = await askAi(i, 'Test', 'Hello, what are the B.Tech fees for 2027?'); msg = `Works: sorted the test mail as ${L.LANE_NAMES[o.reading.lane]} (${o.reading.category})`; }
     catch (e) { msg = `Failed: ${e.message}`; }
     await run('UPDATE mail.integrations SET last_test_at=?, last_test_result=? WHERE id=?', now(), msg.slice(0, 255), i.id); return { ok: msg.startsWith('Works'), message: msg }; }));
+
+  /* ================= HR: candidates from a job-applications mailbox, resumes kept in OneDrive ================= */
+  // Each sender is a candidate (one per email per campus) with an application per post; the post comes from the AI or the subject.
+  // Resumes/CVs (PDF, Word; up to 10 MB; checked by their first bytes) go to the connected OneDrive: Resumes/<year>/<post>/<name> - <file>.
+  // The same file sent again is stored once. Files open only through ONE Desk (no share links).
+  async function graphBytes(path) {
+    let auth; try { auth = await token(); } catch (e) { e.notSent = true; throw e; }
+    const r = await fetch(GRAPH + path, { headers: { authorization: 'Bearer ' + auth }, signal: AbortSignal.timeout(60000) });
+    if (!r.ok) { const e = new Error(`Microsoft 365: ${r.status}`); e.status = r.status; throw e; }
+    return { buf: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') || '' };
+  }
+  async function applicant(ch, p) {
+    const inb = await one('SELECT * FROM mail.inbound_emails WHERE id=?', p.inbound_id); if (!inb) return;
+    const t = await one('SELECT * FROM mail.threads WHERE id=?', inb.thread_id); if (!t) return;
+    const post = L.postFrom(inb.subject, p.post), email = inb.from_email.toLowerCase(), ts = now();
+    // the resumes first (outside the transaction: OneDrive can be slow); a OneDrive problem fails this job, which is tried again
+    const files = [];
+    if (inb.has_attachments) {
+      const list = (await graph('GET', `${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/attachments?$select=id,name,contentType,size,isInline`)).value || [];
+      const d = await drive();
+      for (const a of list.filter(a => (a['@odata.type'] || '#microsoft.graph.fileAttachment') === '#microsoft.graph.fileAttachment')) {
+        const mime = L.resumeType(a.name, a.contentType, a.size, a.isInline); if (!mime) continue;
+        if (!d?.account) { await note(t.id, `A resume (${a.name}) came with this mail, but OneDrive is not connected, so it was not saved. Connect it on Mail → Settings.`); break; }
+        const { buf } = await graphBytes(`${mbox(ch.address)}/messages/${encodeURIComponent(inb.provider_message_id)}/attachments/${encodeURIComponent(a.id)}/$value`);
+        if (buf.length > L.RESUME_MAX || !L.looksLike(buf, mime)) { await note(t.id, `${a.name} was not saved: it is not a real ${mime.includes('pdf') ? 'PDF' : 'document'} or is over 10 MB.`); continue; }
+        const sha = crypto.createHash('sha256').update(buf).digest('hex');
+        let f = await one('SELECT * FROM mail.stored_files WHERE tenant_id=? AND sha256=?', ch.tenant_id, sha);
+        if (!f) {
+          const who = L.safeName(t.requester_name || p.name || email.split('@')[0]), rel = `${ts.slice(0, 4)}/${L.safeName(post)}/${who} - ${L.safeName(a.name)}`;
+          const put = await storePut(rel, buf, mime);
+          try { f = await insert('mail.stored_files', { id: uid(), tenant_id: ch.tenant_id, account: d.account, external_id: put.externalId, path: put.path, file_name: L.safeName(a.name), mime, size_bytes: buf.length, sha256: sha, source_email_id: inb.id, created_at: ts }); }
+          catch (e) { if (e.code !== '23505') throw e; await storeRemove(put.externalId).catch(() => {}); f = await one('SELECT * FROM mail.stored_files WHERE tenant_id=? AND sha256=?', ch.tenant_id, sha); } // the same file at the same moment: one kept
+        }
+        files.push(f);
+      }
+    }
+    await tx(async () => {
+      await one('SELECT pg_advisory_xact_lock(hashtext(?)) x', `cand|${ch.tenant_id}|${email}`);
+      let c = await one('SELECT * FROM mail.candidates WHERE tenant_id=? AND lower(email)=?', ch.tenant_id, email);
+      if (!c) c = await insert('mail.candidates', { id: uid(), tenant_id: ch.tenant_id, email, full_name: t.requester_name || p.name || null, skills: '[]', created_at: ts, updated_at: ts });
+      // a later mail in the same thread belongs to the application that thread started; otherwise one application per post
+      let ap = await one('SELECT * FROM mail.candidate_applications WHERE thread_id=? AND candidate_id=?', t.id, c.id)
+        || await one('SELECT * FROM mail.candidate_applications WHERE candidate_id=? AND lower(post)=lower(?)', c.id, post);
+      if (!ap) ap = await insert('mail.candidate_applications', { id: uid(), candidate_id: c.id, channel_id: ch.id, post, stage: 'new', thread_id: t.id, created_at: ts, updated_at: ts });
+      for (const f of files) await run('INSERT INTO mail.candidate_files (application_id, file_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', ap.id, f.id, ts);
+      if (files.length) await run('UPDATE mail.candidate_applications SET resume_file_id=?, updated_at=? WHERE id=?', files[files.length - 1].id, ts, ap.id); // the latest resume is the one shown
+      else await run('UPDATE mail.candidate_applications SET updated_at=? WHERE id=?', ts, ap.id);
+    });
+  }
+  // who may see HR: the people of a job-applications mailbox (officers, its members) and managers; anyone else gets 404
+  async function hrFor(req) {
+    const a = await access(req), chans = a.chans.filter(c => c.is_hr && (a.manager || c.my_roles || c.member));
+    if (!chans.length) throw notFound();
+    return { a, ids: chans.map(c => c.id), edit: chans.filter(c => a.manager || c.my_roles || ['hr', 'replier'].includes(c.member)).map(c => c.id) };
+  }
+  async function appFor(req, id, { edit = false } = {}) {
+    const h = await hrFor(req), ap = await one(`SELECT ap.*, c.tenant_id FROM mail.candidate_applications ap JOIN mail.candidates c ON c.id=ap.candidate_id WHERE ap.id=?`, id);
+    if (!ap || !h.ids.includes(ap.channel_id) || ap.tenant_id !== req.tenantId) throw notFound();
+    if (edit && !h.edit.includes(ap.channel_id)) throw forbid('You can read candidates but not change them');
+    return { h, ap };
+  }
+  S.get('/maildesk/hr', wrap(async req => {
+    const h = await hrFor(req), q = req.query, where = ['ap.channel_id = ANY(?::text[])'], args = [h.ids];
+    if (L.STAGES.includes(q.stage)) { where.push('ap.stage=?'); args.push(q.stage); } else if (q.stage !== 'all') where.push("ap.stage NOT IN ('rejected','hired')");
+    if (q.post) { where.push('lower(ap.post)=lower(?)'); args.push(String(q.post).slice(0, 160)); }
+    if (q.q) { const x = `%${String(q.q).toLowerCase().slice(0, 100)}%`; where.push("(lower(coalesce(c.full_name,'')) LIKE ? OR lower(c.email) LIKE ? OR lower(ap.post) LIKE ? OR lower(c.skills) LIKE ? OR lower(coalesce(c.current_org,'')) LIKE ?)"); args.push(x, x, x, x, x); }
+    const rows = await all(`SELECT ap.id, ap.post, ap.department, ap.stage, ap.rating, ap.interview_at, ap.created_at, ap.updated_at, c.id candidate_id, c.full_name, c.email, c.phone,
+        c.highest_qualification, c.experience_years, c.current_org, t.ref, f.file_name resume_name, f.mime resume_mime, f.id resume_id, ch.address
+      FROM mail.candidate_applications ap JOIN mail.candidates c ON c.id=ap.candidate_id LEFT JOIN mail.threads t ON t.id=ap.thread_id
+      LEFT JOIN mail.stored_files f ON f.id=ap.resume_file_id LEFT JOIN mail.channels ch ON ch.id=ap.channel_id
+      WHERE ${where.join(' AND ')} ORDER BY ap.created_at DESC LIMIT 500`, ...args);
+    const posts = await all(`SELECT ap.post, count(*)::int n, count(*) FILTER (WHERE ap.stage='new')::int new FROM mail.candidate_applications ap WHERE ap.channel_id = ANY(?::text[]) GROUP BY ap.post ORDER BY max(ap.created_at) DESC LIMIT 100`, h.ids);
+    const stages = Object.fromEntries((await all('SELECT stage, count(*)::int n FROM mail.candidate_applications WHERE channel_id = ANY(?::text[]) GROUP BY stage', h.ids)).map(r => [r.stage, r.n]));
+    return { applications: rows, posts, stages, can_edit: h.edit.length > 0 };
+  }));
+  S.get('/maildesk/hr/:id', wrap(async req => {
+    const { h, ap } = await appFor(req, req.params.id), c = await one('SELECT * FROM mail.candidates WHERE id=?', ap.candidate_id);
+    const t = ap.thread_id && await one('SELECT ref, subject, status FROM mail.threads WHERE id=?', ap.thread_id);
+    const files = await all('SELECT f.id, f.file_name, f.mime, f.size_bytes, f.created_at FROM mail.candidate_files cf JOIN mail.stored_files f ON f.id=cf.file_id WHERE cf.application_id=? ORDER BY f.created_at DESC', ap.id);
+    const notes = await all('SELECT n.id, n.body, n.created_at, coalesce(u.name, n.author_name) author FROM mail.candidate_notes n LEFT JOIN users u ON u.id=n.author_user_id WHERE n.application_id=? ORDER BY n.created_at', ap.id);
+    const others = await all('SELECT id, post, stage, created_at FROM mail.candidate_applications WHERE candidate_id=? AND id<>? AND channel_id = ANY(?::text[]) ORDER BY created_at DESC', c.id, ap.id, h.ids);
+    const by = ap.stage_by && await one('SELECT name FROM users WHERE id=?', ap.stage_by);
+    audit(req, 'view', 'candidate', c.id);
+    return { application: { ...ap, tenant_id: undefined, stage_by_name: by?.name || null }, candidate: { ...c, skills: json(c.skills, []) }, thread: t || null, files, notes, others, can_edit: h.edit.includes(ap.channel_id) };
+  }));
+  S.patch('/maildesk/hr/:id', wrap(async req => {
+    const { ap } = await appFor(req, req.params.id, { edit: true }), b = req.body || {}, f = {}, cf = {};
+    if ('stage' in b) { if (!L.STAGES.includes(b.stage)) throw bad('Pick a stage'); f.stage = b.stage; f.stage_by = req.user.id; f.stage_at = now(); }
+    if ('rating' in b) { const r = b.rating == null || b.rating === '' ? null : Number(b.rating); if (r !== null && !(Number.isInteger(r) && r >= 1 && r <= 5)) throw bad('Rating: 1 to 5'); f.rating = r; }
+    if ('interview_at' in b) { if (b.interview_at && isNaN(Date.parse(b.interview_at))) throw bad('Interview: a date and time'); f.interview_at = b.interview_at ? new Date(b.interview_at).toISOString() : null; }
+    if ('post' in b) { f.post = str(b.post, 160); if (!f.post) throw bad('Post required');
+      if (await one('SELECT 1 x FROM mail.candidate_applications WHERE candidate_id=? AND lower(post)=lower(?) AND id<>?', ap.candidate_id, f.post, ap.id)) throw new HttpErr(409, 'EXISTS', 'This candidate already has an application for that post'); }
+    if ('department' in b) f.department = str(b.department, 120) || null;
+    const txt = (k, n) => { if (k in b) cf[k] = str(b[k], n) || null; };
+    txt('full_name', 255); txt('phone', 40); txt('location', 120); txt('highest_qualification', 120); txt('current_org', 255); txt('summary', 2000);
+    if ('experience_years' in b) { const y = b.experience_years === '' || b.experience_years == null ? null : Number(b.experience_years); if (y !== null && !(y >= 0 && y <= 60)) throw bad('Experience: 0 to 60 years'); cf.experience_years = y; }
+    if ('skills' in b) cf.skills = JSON.stringify((Array.isArray(b.skills) ? b.skills : String(b.skills || '').split(',')).map(x => str(x, 40)).filter(Boolean).slice(0, 30));
+    if (!Object.keys(f).length && !Object.keys(cf).length) throw bad('Nothing to change');
+    await tx(async () => {
+      if (Object.keys(f).length) await run(`UPDATE mail.candidate_applications SET ${Object.keys(f).map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), ap.id);
+      if (Object.keys(cf).length) await run(`UPDATE mail.candidates SET ${Object.keys(cf).map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...Object.values(cf), now(), ap.candidate_id);
+    });
+    audit(req, 'hr_change', 'candidate', ap.candidate_id, { application: ap.id, ...f, fields: Object.keys(cf) }); return { ok: true };
+  }));
+  S.post('/maildesk/hr/:id/notes', wrap(async req => {
+    const { ap } = await appFor(req, req.params.id, { edit: true }), body = str(req.body.body, 4000); if (!body) throw bad('Write the note first');
+    await insert('mail.candidate_notes', { id: uid(), application_id: ap.id, author_user_id: req.user.id, body, created_at: now() }); return { ok: true };
+  }));
+  // the resume itself, streamed from OneDrive through ONE Desk (the file never gets a public link)
+  S.get('/maildesk/hr/:id/files/:file', async (req, res, next) => { try {
+    const { ap } = await appFor(req, req.params.id);
+    const f = await one('SELECT f.* FROM mail.candidate_files cf JOIN mail.stored_files f ON f.id=cf.file_id WHERE cf.application_id=? AND f.id=?', ap.id, req.params.file); if (!f) throw notFound();
+    const { buf } = await graphBytes(`${mbox(f.account)}/drive/items/${encodeURIComponent(f.external_id)}/content`).catch(e => { throw e.status === 404 ? new HttpErr(404, 'GONE', 'This file is no longer in OneDrive') : e; });
+    audit(req, 'view', 'resume', f.id, { application: ap.id });
+    res.set({ 'Content-Type': f.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `${f.mime === 'application/pdf' && req.query.download !== '1' ? 'inline' : 'attachment'}; filename="${f.file_name.replace(/[^\w .()-]/g, '_')}"`,
+      'Content-Security-Policy': "default-src 'none'; sandbox" }).send(buf);
+  } catch (e) { next(e); } });
+  // remove a candidate on request: their applications, notes and their files in OneDrive (a file another candidate also sent stays)
+  S.delete('/maildesk/hr/:id/candidate', wrap(async req => {
+    const { ap } = await appFor(req, req.params.id, { edit: true });
+    const files = await all(`SELECT DISTINCT f.* FROM mail.candidate_files cf JOIN mail.candidate_applications a ON a.id=cf.application_id JOIN mail.stored_files f ON f.id=cf.file_id
+      WHERE a.candidate_id=? AND NOT EXISTS (SELECT 1 FROM mail.candidate_files o JOIN mail.candidate_applications oa ON oa.id=o.application_id WHERE o.file_id=f.id AND oa.candidate_id<>?)`, ap.candidate_id, ap.candidate_id);
+    for (const f of files) await graph('DELETE', `${mbox(f.account)}/drive/items/${encodeURIComponent(f.external_id)}`).catch(e => { if (e.status !== 404) throw new HttpErr(502, 'DRIVE', `Could not remove ${f.file_name} from OneDrive (${e.message}); nothing was deleted`); });
+    await tx(async () => { await run('DELETE FROM mail.stored_files WHERE id = ANY(?::text[])', files.map(f => f.id)); await run('DELETE FROM mail.candidates WHERE id=?', ap.candidate_id); });
+    audit(req, 'delete', 'candidate', ap.candidate_id, { files: files.length }); return { ok: true, files_removed: files.length };
+  }));
 
   /* ================= Connected apps: any API you buy gets the mail events (Settings, super admin) ================= */
   // e.g. a WhatsApp or SMS provider told of escalations, a CRM or lead sheet told of every new admissions mail.

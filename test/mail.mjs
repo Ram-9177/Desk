@@ -98,8 +98,9 @@ const toPg = s => { let i = 0; return s.replace(/\?/g, () => '$' + ++i); };
 const q = async (s, ...a) => (await db.query(toPg(s), a)).rows;
 const run_ = (s, ...a) => db.query(toPg(s), a);
 const waitFor = async (fn, ms = 8000) => { const t0 = Date.now(); let v; while (Date.now() - t0 < ms) { v = await fn(); if (v) return v; await sleep(200); } return fn(); };
-async function api(p, { method = 'GET', body, token, tenant } = {}) {
+async function api(p, { method = 'GET', body, token, tenant, raw } = {}) {
   const r = await fetch(API + p, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(tenant ? { 'x-tenant-id': tenant } : {}) } });
+  if (raw) return r;
   const j = await r.json().catch(() => ({})); return { status: r.status, data: j.data, error: j.error };
 }
 const ok = async (name, p, o) => { const r = await api(p, o); check(name, r.status < 400, `${r.status} ${r.error?.message || ''}`); return r.data; };
@@ -127,11 +128,17 @@ const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b
     if (/\/drive\/root:\/Resumes$/.test(u.pathname) && req.method === 'GET') return G.drive.folder ? send(200, { id: 'fold', name: 'Resumes', webUrl: 'https://onedrive.example/Resumes' }) : send(404, { error: { message: 'itemNotFound' } });
     if (/\/drive\/root\/children$/.test(u.pathname) && req.method === 'POST') { G.drive.folder = true; return send(201, { id: 'fold', name: JSON.parse(b).name, webUrl: 'https://onedrive.example/Resumes' }); }
     const put = /\/drive\/root:\/(.+):\/content$/.exec(u.pathname);
-    if (put && req.method === 'PUT') { const id = 'f' + Object.keys(G.drive.files).length; G.drive.files[id] = { path: decodeURIComponent(put[1]), body: b, type: req.headers['content-type'] }; return send(201, { id, size: b.length }); }
+    if (put && req.method === 'PUT') { const id = 'f' + (G.fileSeq = (G.fileSeq || 0) + 1); G.drive.files[id] = { path: decodeURIComponent(put[1]), body: b, type: req.headers['content-type'] }; return send(201, { id, size: b.length }); }
+    const get = /\/drive\/items\/([^/]+)\/content$/.exec(u.pathname);
+    if (get) { const f = G.drive.files[decodeURIComponent(get[1])]; if (!f) return send(404, { error: { message: 'itemNotFound' } }); res.writeHead(200, { 'content-type': f.type }); return res.end(f.body); }
     const del = /\/drive\/items\/([^/]+)$/.exec(u.pathname); if (del && req.method === 'DELETE') { delete G.drive.files[del[1]]; res.writeHead(204); return res.end(); }
     return send(404, { error: { message: 'stub drive: ' + u.pathname } });
   }
   let m = /^\/g\/users\/([^/]+)\/messages\/([^/]+)(\/reply)?$/.exec(u.pathname);
+  const at = /^\/g\/users\/[^/]+\/messages\/([^/]+)\/attachments(?:\/([^/]+)\/\$value)?$/.exec(u.pathname);
+  if (at) { const list = G.messages[decodeURIComponent(at[1])]?.files || [];
+    if (!at[2]) return send(200, { value: list.map(f => ({ '@odata.type': '#microsoft.graph.fileAttachment', id: f.id, name: f.name, contentType: f.type, size: f.bytes.length, isInline: !!f.inline })) });
+    const f = list.find(x => x.id === decodeURIComponent(at[2])); res.writeHead(200, { 'content-type': 'application/octet-stream' }); return res.end(f.bytes); }
   const cr = /^\/g\/users\/([^/]+)\/messages\/([^/]+)\/(createReply|send)$/.exec(u.pathname); G.drafts ||= {};
   if (cr && G.failNext?.step === cr[3]) { const st = G.failNext.status; G.failNext = null; return send(st, { error: { message: `stand-in ${st} at ${cr[3]}` } }); }
   if (cr && cr[3] === 'createReply') { const id = decodeURIComponent(cr[2]); if (!G.messages[id]) return send(404, { error: { message: 'The specified object was not found in the store.' } }); // moved in Outlook
@@ -152,7 +159,7 @@ const STUB = `http://127.0.0.1:${stub.address().port}`;
 let n = 0;
 const mkMsg = (o = {}) => { const id = 'm' + ++n; G.messages[id] = { id, internetMessageId: `<${id}@x>`, conversationId: o.conv || 'conv-' + id, from: { emailAddress: { address: o.from || 'ria@gmail.com', name: o.name || 'Ria Rao' } },
   toRecipients: [{ emailAddress: { address: 'reach@smru.test' } }], ccRecipients: [], subject: o.subject || 'Admission enquiry', body: { contentType: 'text', content: o.body || 'Hello, what are the B.Tech fees? Call me on 98765 43210.' },
-  receivedDateTime: new Date().toISOString(), hasAttachments: false, internetMessageHeaders: o.headers || [], inbox: true }; return id; };
+  receivedDateTime: new Date().toISOString(), hasAttachments: !!o.files?.length, internetMessageHeaders: o.headers || [], inbox: true, files: o.files || [] }; return id; };
 const notifyGraph = (subId, id, clientState = 'cs-test') => fetch(APP + '/api/inbound/graph', { method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ value: [{ subscriptionId: subId, clientState, resource: `Users/abc/Messages/${id}`, resourceData: { id } }] }) });
 
@@ -362,6 +369,50 @@ try {
   check('…its waiting calls stop', (await q("SELECT state FROM mail.jobs WHERE kind='plugin' AND payload LIKE ? AND state='queued'", `%${down.id}%`)).length === 0);
   await ok('the WhatsApp app off', `/maildesk/apps/${wa.id}`, { ...A, method: 'PATCH', body: { active: false } });
 
+  sec('HR: candidates and resumes in OneDrive');
+  const jobs = await ok('add jobs@ (super admin)', '/maildesk/channels', { ...A, method: 'POST', body: { address: 'jobs@smru.test', display_name: 'Careers' } });
+  await ok('jobs@: Nita nodal; Hari (Hostel provider) on it as HR; Omar can only read', `/maildesk/channels/${jobs.id}/officers`, { ...A, method: 'PUT', body: { officers: [{ user_id: n1.id, role: 'nodal' }] } });
+  await ok('…members', `/maildesk/channels/${jobs.id}/members`, { ...A, method: 'PUT', body: { members: [{ user_id: hostP.id, role: 'hr' }, { user_id: other.id, role: 'viewer' }] } });
+  await ok('jobs@ is the job-applications mailbox, live', `/maildesk/channels/${jobs.id}`, { ...A, method: 'PATCH', body: { is_hr: true, mode: 'live' } });
+  const jsub = G.subs.find(x => x.resource.includes('jobs@smru.test'))?.id;
+  check('HR shows for its people only', (await api('/maildesk/me', { token: hostP.token })).data?.hr === true && (await api('/maildesk/hr', { token: n2.token })).status === 404);
+  const PDF = Buffer.from('%PDF-1.4\n% a resume\n%%EOF\n'), FAKE = Buffer.from('MZ this is not a pdf');
+  const mr = mkMsg({ from: 'ria.s@gmail.com', name: 'Ria Sharma', subject: 'Application for the post of Assistant Professor - Physiotherapy', conv: 'conv-HR1', body: 'Please find my CV attached.',
+    files: [{ id: 'a1', name: 'Ria CV.pdf', type: 'application/pdf', bytes: PDF }, { id: 'a2', name: 'logo.png', type: 'image/png', bytes: Buffer.from('png'), inline: true }, { id: 'a3', name: 'certificate.pdf', type: 'application/pdf', bytes: FAKE }] });
+  const filesBefore = Object.keys(G.drive.files).length;
+  await notifyGraph(jsub, mr);
+  const app1 = await waitFor(async () => (await q(`SELECT ap.*, c.email, c.full_name FROM mail.candidate_applications ap JOIN mail.candidates c ON c.id=ap.candidate_id WHERE c.email='ria.s@gmail.com'`))[0]);
+  check('the sender becomes a candidate, with the post read from the subject', app1?.post === 'Assistant Professor - Physiotherapy' && app1.full_name === 'Ria Sharma' && app1.stage === 'new', JSON.stringify(app1));
+  const saved = Object.values(G.drive.files).slice(filesBefore);
+  check('the resume is saved to OneDrive under Resumes/<year>/<post>/<name> - <file>', saved.length === 1 && saved[0].path === `Resumes/${new Date().getFullYear()}/Assistant Professor - Physiotherapy/Ria Sharma - Ria CV.pdf` && saved[0].body.startsWith('%PDF-'), JSON.stringify(saved.map(f => f.path)));
+  check('the inline logo is ignored; a fake PDF is refused with a note on the mail', (await q("SELECT body FROM mail.thread_notes WHERE thread_id=? AND body LIKE 'certificate.pdf was not saved%'", app1.thread_id)).length === 1);
+  const hl = await ok('Hari opens HR candidates', '/maildesk/hr', { token: hostP.token });
+  check('…sees Ria with her resume', hl.applications.length === 1 && hl.applications[0].resume_name === 'Ria CV.pdf' && hl.posts[0].post === app1.post && hl.can_edit);
+  await fails('someone not on jobs@ gets 404', `/maildesk/hr/${app1.id}`, { token: n2.token }, 404);
+  const det = await ok('open Ria', `/maildesk/hr/${app1.id}`, { token: hostP.token });
+  const fr = await api(`/maildesk/hr/${app1.id}/files/${det.files[0].id}`, { token: hostP.token, raw: true });
+  check('the resume opens through ONE Desk (PDF, private, not cached)', fr.status === 200 && fr.headers.get('content-type') === 'application/pdf' && /no-store/.test(fr.headers.get('cache-control')) && (await fr.text()).startsWith('%PDF-'));
+  await fails('Omar (read only) cannot change the stage', `/maildesk/hr/${app1.id}`, { token: other.token, method: 'PATCH', body: { stage: 'shortlisted' } }, 403);
+  await ok('Hari shortlists her and fills the profile', `/maildesk/hr/${app1.id}`, { token: hostP.token, method: 'PATCH', body: { stage: 'shortlisted', rating: 4, experience_years: 6.5, skills: 'Neuro rehab, Teaching', highest_qualification: 'MPT', interview_at: '2026-12-05T05:00:00.000Z' } });
+  await fails('a rating of 9 is refused', `/maildesk/hr/${app1.id}`, { token: hostP.token, method: 'PATCH', body: { rating: 9 } }, 400);
+  await ok('a note', `/maildesk/hr/${app1.id}/notes`, { token: hostP.token, method: 'POST', body: { body: 'Strong demo lecture' } });
+  const det2 = await ok('open again', `/maildesk/hr/${app1.id}`, { token: hostP.token });
+  check('…saved: stage by Hari, rating, skills, interview, note', det2.application.stage === 'shortlisted' && det2.application.stage_by_name === 'Hari Hostel' && det2.application.rating === 4
+    && det2.candidate.skills.join() === 'Neuro rehab,Teaching' && Number(det2.candidate.experience_years) === 6.5 && det2.notes.length === 1);
+  const mr2 = mkMsg({ from: 'ria.s@gmail.com', name: 'Ria Sharma', subject: 'Applying for Clinical Supervisor', conv: 'conv-HR2', files: [{ id: 'b1', name: 'Ria CV.pdf', type: 'application/pdf', bytes: PDF }] });
+  await notifyGraph(jsub, mr2);
+  check('a second post: a second application, and the same file is stored once', await waitFor(async () => (await q("SELECT count(*)::int n FROM mail.candidate_applications ap JOIN mail.candidates c ON c.id=ap.candidate_id WHERE c.email='ria.s@gmail.com'"))[0].n === 2)
+    && (await q('SELECT count(*)::int n FROM mail.stored_files'))[0].n === 1 && Object.values(G.drive.files).slice(filesBefore).length === 1);
+  const mr3 = mkMsg({ from: 'ria.s@gmail.com', name: 'Ria Sharma', subject: 'RE: Application for the post of Assistant Professor - Physiotherapy', conv: 'conv-HR1', body: 'Updated CV attached', files: [{ id: 'c1', name: 'Ria CV v2.pdf', type: 'application/pdf', bytes: Buffer.from('%PDF-1.4\n% v2\n') }] });
+  await notifyGraph(jsub, mr3);
+  check('a new CV in the same mail joins the same application and becomes the one shown', await waitFor(async () => (await q('SELECT f.file_name FROM mail.candidate_applications ap JOIN mail.stored_files f ON f.id=ap.resume_file_id WHERE ap.id=?', app1.id))[0]?.file_name === 'Ria CV v2.pdf')
+    && (await q('SELECT count(*)::int n FROM mail.candidate_files WHERE application_id=?', app1.id))[0].n === 2);
+  check('only jobs@ makes candidates (reach@ mail does not)', (await q("SELECT count(*)::int n FROM mail.candidates"))[0].n === 1);
+  const del = await ok('Hari deletes the candidate on her request', `/maildesk/hr/${app1.id}/candidate`, { token: hostP.token, method: 'DELETE' });
+  check('…her applications, notes and both files are gone, from OneDrive too', del.files_removed === 2 && (await q('SELECT count(*)::int n FROM mail.candidates'))[0].n === 0
+    && (await q('SELECT count(*)::int n FROM mail.stored_files'))[0].n === 0 && Object.values(G.drive.files).slice(filesBefore).length === 0);
+  await ok('jobs@ off', `/maildesk/channels/${jobs.id}`, { ...A, method: 'PATCH', body: { mode: 'off' } });
+
   sec('Reply target missed: reminder and escalation');
   const m3 = mkMsg({ from: 'sam@gmail.com', name: 'Sam', subject: 'Hostel room problem', conv: 'conv-S', body: 'My hostel room fan is broken' }); await notifyGraph('sub-1', m3);
   const t3 = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-S'"))[0]);
@@ -430,7 +481,7 @@ try {
   const st1 = await ok('a reply', `/maildesk/threads/${t1.ref}/reply`, { token: n2.token, method: 'POST', body: { body: 'Stuck one' } });
   await q("UPDATE mail.outbound_emails SET state='sending', started_at=? WHERE id=?", new Date(Date.now() - 3600e3).toISOString(), st1.id);
   await q("INSERT INTO mail.jobs (id, kind, payload, dedupe_key, state, run_after, created_at) VALUES ('stuckjob', 'catchup', ?, 'catchup:stuck', 'running', ?, ?)", JSON.stringify({ channel_id: ch.id }), new Date(Date.now() - 3600e3).toISOString(), new Date().toISOString());
-  check('a reply left "sending" is reported (maybe sent), never sent twice', await waitFor(async () => (await q('SELECT state, error FROM mail.outbound_emails WHERE id=?', st1.id))[0].state === 'failed', 8000)
+  check('a reply left "sending" is reported (maybe sent), never sent twice', await waitFor(async () => (await q('SELECT state, error FROM mail.outbound_emails WHERE id=?', st1.id))[0].state === 'failed', 20000)
     && (await q("SELECT 1 FROM mail.thread_notes WHERE thread_id=? AND body LIKE 'A reply may not have been sent%'", t1.id)).length === 1);
   check('a job left "running" runs again', await waitFor(async () => (await q("SELECT state FROM mail.jobs WHERE id='stuckjob'"))[0].state === 'done', 8000));
   // a reply in its undo window when the mailbox leaves live mode

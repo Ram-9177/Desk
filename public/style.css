@@ -967,3 +967,6 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .mconn .mt-h{align-items:center}.mconn ol{padding-left:20px;line-height:1.6}.mconn details{margin:6px 0 8px}
 .msteps{list-style:none;padding:0;margin:10px 0 4px;display:grid;gap:4px}.msteps li{display:flex;gap:8px;align-items:flex-start;font-size:13.5px}
 .msteps li.ok svg{color:var(--st-closed-icon)}.msteps li.bad{color:#B42318}.msteps li svg{flex:none;margin-top:2px}
+.mresume{margin-top:10px}.mresume iframe{width:100%;height:75vh;border:1px solid var(--border);border-radius:10px;background:#fff}
+.mchip.stage-new{color:#175CD3}.mchip.stage-shortlisted,.mchip.stage-interview{color:#6938EF;border-color:#D9D6FE}.mchip.stage-offered,.mchip.stage-hired{color:#067647;background:#ECFDF3;border-color:#ABEFC6}
+.mchip.stage-rejected{color:#B42318}.mchip.stage-on_hold{color:#B54708}
