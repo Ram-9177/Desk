@@ -55,3 +55,12 @@ No image upload, no deleting items that are absent from the file, no scheduled i
 ## Tests (in `test/e2e.mjs`, new section "Canteen: menu upload")
 
 API: permissions (manager ok; counter staff, kitchen staff, a provider who is not a manager, an unauthenticated call all refused; a campus with the canteen off refuses); the shipped sample imports 29 items in 5 categories exactly (and a second import updates 29, adds 0); a CSV with BOM, quoted commas, `₹` prices, yes/no veg and semicolons reads correctly; an `.xlsx` fixture (create `test/fixtures/menu.xlsx` with python `openpyxl`, 4 rows, one price stored as a number, one as text) reads correctly; bad rows (empty name, price "abc", deal_pct 95, flash without minutes, deal_kind "wow") are rejected with their row numbers and good rows still import; dry run changes nothing; the 500-item cap; a file with only headers; a binary file renamed `.csv`. Chrome: the Menu tab shows Upload menu for the manager, the dialog opens, the mapping step appears for the sample file with `name` and `price` guessed, and Import adds the items to the list.
+
+## Amendment (28 November 2026): no duplicate items, download the current menu
+
+Owner: "Template download should be there and also they will upload the same template, with menu data. No duplicate menu items."
+
+- An item name is unique across a campus's active menu, compared without case, outer spaces or repeated inner spaces (`nameKey` in `canteen.js`). This replaces the matching rule in step 5: a file row whose name is on the menu updates that item in any category and moves it when the file names another category (an empty category cell leaves it); a name twice in one file is rejected the second time. The preview counts `added`, `updated` and, of the updated, `moved`.
+- Add item, Edit item (renaming, or bringing a removed item back) refuse a name already on the menu: `"<name>" is already on the menu`. Both run under the per-campus menu lock.
+- Names already on a menu twice from before the rule are left alone: an import updates the oldest and the preview lists up to five of them (`duplicates: { count, names }`).
+- `GET /api/canteen/menu-export.csv` (manage only): the active items in the template columns, prices in rupees, running deals only, in menu order. Uploading it back unchanged adds nothing and changes nothing. The template now has one example row.

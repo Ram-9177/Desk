@@ -955,11 +955,12 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 dialog.mu{max-width:640px;max-height:92vh;overflow:auto}
 .mu-file{display:flex;flex-direction:column;align-items:center;gap:4px;margin:14px 0;padding:20px 14px;border:2px dashed var(--line);border-radius:14px;text-align:center;cursor:pointer;color:var(--text-2)}
 .mu-file:hover{border-color:var(--brand);background:var(--brand-2)}.mu-file input{min-height:0;padding:6px;margin-top:8px;max-width:100%;background:none;border:0}
-.mu-dl{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.mu-dl>span{flex-basis:100%}
+.mu-dl{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.mu-dl>span{flex-basis:100%}.mu-dl .btn{flex:1 1 0;white-space:nowrap}.mu-dl [data-dl=current]{flex-basis:100%} /* your own menu first, on its own row */
 .mu-map{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:2px 14px}.mu-map label{margin:8px 0 0;min-width:0}.mu-map label>span{display:block;margin-bottom:4px}
 .mu-map select{min-height:42px;padding:8px 12px}.mu-map small{display:block;min-height:1.3em;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mu-req{color:var(--warn)}
 .mu-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:4px 0 10px}.mu-sum div{background:var(--bg);border-radius:12px;padding:10px 6px;text-align:center;font-size:13px;color:var(--text-3)}
 .mu-sum b{display:block;font-size:22px;color:var(--text)}.mu-sum .bad{background:var(--warn-2)}.mu-sum .bad b{color:var(--warn)}
+.mu-sum small{display:block;margin-top:2px;font-size:11.5px;line-height:1.25}.mu-note{margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--hold-2);color:var(--text-2);overflow-wrap:anywhere}
 .mu-rej{max-height:220px;overflow:auto;margin:6px 0;padding-left:18px;font-size:13.5px}.mu-rej li{margin:3px 0}
 @media (max-width:560px){dialog.mu #df>.row{gap:10px}} /* phones stack form rows with no gap; Cancel and the step button need one */
 @media (max-width:520px){.mu-sum{grid-template-columns:repeat(2,1fr)}.mu-dl .btn{flex:1 1 100%}

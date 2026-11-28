@@ -118,6 +118,15 @@ export function stateOf(tn) {
 }
 const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const parsePrice = v => { const n = Number(String(v ?? '').replace(/[₹,\s]/g, '')); if (!Number.isFinite(n) || n < 0 || n > 100000) return null; return Math.round(n * 100); };
+// One rule for "the same item": a name is unique across a campus's menu (its active items), compared without case, outer spaces
+// or repeated inner spaces ("Masala  Dosa " = "masala dosa"). Used by Add item, Edit item, the import and its category names.
+export const nameKey = v => String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+// a downloaded menu file: a cell with a comma, quote or newline is quoted; typed text starting = + - @ gets a ' so a spreadsheet
+// shows it instead of running it (the upload takes that ' off again: see unq)
+const csvCell = (v, text) => { let s = String(v ?? ''); if (text && /^[=+\-@]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const unq = s => /^'[=+\-@]/.test(s) ? s.slice(1) : s;
+// minutes left on a running deal as the file writes them (5 to 1440, what the upload accepts)
+const dealMinutesLeft = until => Math.min(1440, Math.max(5, Math.ceil((Date.parse(until) - Date.now()) / 6e4)));
 // The rules for an item's own fields, shared by Add / Edit item and the menu upload (no database: the category is checked by the caller).
 // Returns { f } with the columns to save, or { error } with the message a manager sees.
 export function itemRules(b, partial) {
@@ -145,9 +154,9 @@ const FLAG = { 1: 1, yes: 1, y: 1, true: 1, veg: 1, 0: 0, no: 0, n: 0, false: 0,
 const FLAG_NAME = { is_veg: 'Veg', sold_out: 'Sold out', active: 'Shown on the menu' };
 const KIND_OF = Object.fromEntries(Object.entries(DEAL_KINDS).flatMap(([k, l]) => [[k, k], [l.toLowerCase(), k]])); // 'flash' or the label 'Flash sale'
 export function uploadRow(r) {
-  const t = k => String(r?.[k] ?? '').trim(), b = { name: t('name'), price: t('price') };
+  const t = k => String(r?.[k] ?? '').trim(), b = { name: unq(t('name')), price: t('price') };
   if (b.name && !b.price) return { error: 'Enter a price in rupees, e.g. 40 or 12.50' }; // an empty cell is not ₹0
-  if (t('description')) b.description = t('description');
+  if (t('description')) b.description = unq(t('description'));
   for (const k of ['is_veg', 'sold_out', 'active']) if (t(k)) { const v = FLAG[t(k).toLowerCase().replace(/[\s_-]/g, '')];
     if (v === undefined) return { error: `${FLAG_NAME[k]}: use yes or no (not “${t(k).slice(0, 20)}”)` }; b[k] = !!v; }
   if (t('sort_order')) { if (!/^-?\d{1,6}$/.test(t('sort_order'))) return { error: 'Order must be a whole number' }; b.sort_order = +t('sort_order'); }
@@ -477,13 +486,24 @@ export function canteen(d) {
       if (f.category_id && !(await one('SELECT 1 FROM canteen_categories WHERE id=? AND tenant_id=?', f.category_id, req.tenantId))) throw bad('Pick a category'); }
     return f;
   };
+  // another active item with the same name (nameKey), oldest first; called under menuLock so two changes can't both pass
+  const nameTaken = async (tid, name, exceptId) => { const k = nameKey(name);
+    return (await all('SELECT id, name FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at, id', tid)).find(i => i.id !== exceptId && nameKey(i.name) === k); };
+  const onMenu = i => bad(`"${i.name}" is already on the menu`);
   S.post('/canteen/items', wrap(async req => { await need(req); const f = await itemFields(req, false); return tx(async () => { await menuLock(req.tenantId);
     if ((await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', req.tenantId)).n >= MAX_ITEMS) throw bad('Up to 500 items');
+    if (f.active !== 0) { const t = await nameTaken(req.tenantId, f.name); if (t) throw onMenu(t); }
     const o = { id: uid(), tenant_id: req.tenantId, is_veg: 1, created_at: now(), ...f };
     await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); return { id: o.id }; }); }));
+  // a new name, or bringing a removed item back, must not repeat a name on the menu; the item's own name (any case) and a price-only
+  // change never trip it, so a name that was on the menu twice before the rule can still be edited
   S.patch('/canteen/items/:id', wrap(async req => { await need(req); const f = await itemFields(req, true); if (!Object.keys(f).length) throw bad('Nothing to change');
-    const r = await run(`UPDATE canteen_items SET ${Object.keys(f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(f), req.params.id, req.tenantId);
-    if (!r.changes) throw notFound(); return { ok: true }; }));
+    return tx(async () => { await menuLock(req.tenantId);
+      const cur = await one('SELECT name, active FROM canteen_items WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!cur) throw notFound();
+      const name = f.name ?? cur.name, active = f.active ?? cur.active;
+      if (active && (nameKey(name) !== nameKey(cur.name) || !cur.active)) { const t = await nameTaken(req.tenantId, name, req.params.id); if (t) throw onMenu(t); }
+      await run(`UPDATE canteen_items SET ${Object.keys(f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(f), req.params.id, req.tenantId);
+      return { ok: true }; }); }));
   // counter and kitchen staff mark an item sold out / back in stock during the shift (only that; prices stay with the managers)
   S.post('/canteen/items/:id/stock', wrap(async req => { const a = await access(req); if (!a.tenant) throw bad('Pick a campus first'); if (!a.counter && !a.kitchen) throw forbid();
     const r = await run('UPDATE canteen_items SET sold_out=? WHERE id=? AND tenant_id=? AND active=1', req.body.sold_out ? 1 : 0, req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -496,7 +516,16 @@ export function canteen(d) {
   // ---- menu upload (CSV or Excel): read the file, then preview (dry run) and import the mapped rows ----
   // the template and the sample: UTF-8 with a BOM so Excel shows ₹ and Telugu; the sample is the file the tests import
   const csvOut = (res, name, body) => res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` }).send(body);
-  S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '\ufeff' + MENU_FIELDS.join(',') + '\r\n'); } catch (e) { next(e); } });
+  S.get('/canteen/menu-template.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-template.csv', '\ufeff' + MENU_FIELDS.join(',') + '\r\nSnacks,Samosa,15,Two pieces with chutney,1,0,1,1,,,\r\n'); } catch (e) { next(e); } });
+  // the menu as it is now, in the template's columns: edit it and upload it back (each name updates its item). Active items only,
+  // prices in rupees (12.5, 30), a deal only while it runs, in menu order (categories, then items; no category last)
+  S.get('/canteen/menu-export.csv', async (req, res, next) => { try { const a = await need(req);
+    const items = await all(`SELECT c.name cat, i.name, i.price_paise, i.description, i.is_veg, i.sold_out, i.sort_order, i.deal_pct, i.deal_kind, i.deal_until FROM canteen_items i
+      LEFT JOIN canteen_categories c ON c.id=i.category_id AND c.tenant_id=i.tenant_id WHERE i.tenant_id=? AND i.active=1 ORDER BY (c.id IS NULL), c.sort_order, c.name, c.id, i.sort_order, i.name, i.created_at, i.id`, req.tenantId);
+    const line = i => { const d = dealOf(i);
+      return [[i.cat, 1], [i.name, 1], [i.price_paise / 100], [i.description, 1], [i.is_veg === 0 ? 0 : 1], [i.sold_out ? 1 : 0], [1], [i.sort_order ?? 0],
+        [d ? d.pct : ''], [d ? d.kind : ''], [d?.until ? dealMinutesLeft(d.until) : '']].map(([v, text]) => csvCell(v, text)).join(','); };
+    csvOut(res, `canteen-menu-${a.tenant.slug}.csv`, '\ufeff' + [MENU_FIELDS.join(','), ...items.map(line)].join('\r\n') + '\r\n'); } catch (e) { next(e); } });
   S.get('/canteen/menu-sample.csv', async (req, res, next) => { try { await need(req); csvOut(res, 'canteen-menu-sample.csv', await fs.readFile(new URL('./samples/canteen-menu-sample.csv', import.meta.url))); } catch (e) { next(e); } });
   // read-excel-file is loaded only for an .xlsx (as qrcode is for QR codes): if it is missing, CSV uploads still work
   let xlsxOk = null;
@@ -547,21 +576,30 @@ export function canteen(d) {
     const pad = c => Array.from({ length: width }, (_, i) => c[i] ?? '');
     return { columns: pad(head.cells).map((c, i) => str(c, 80) || `Column ${i + 1}`), rows: body.map(r => pad(r.cells)), lines: body.map(r => r.line), total: body.length };
   }));
-  // Same rules as Add item, per row. An active item with the same name (any case) in the same category is updated, otherwise added;
-  // a missing category is created. Rejected rows are skipped and listed; nothing is saved unless dry_run is false, then all in one go.
+  // Same rules as Add item, per row. A name is one item across the whole menu (nameKey): an active item with that name, in any category,
+  // is updated and, when the file gives another category, moved there (an empty category cell leaves it where it is); otherwise the row
+  // adds an item. A name twice in one file is rejected the second time. A missing category is created. Names already on the menu twice
+  // (from before this rule) update the oldest and are listed in `duplicates`. Rejected rows are skipped and listed; nothing is saved
+  // unless dry_run is false, then all in one go.
   S.post('/canteen/menu/import', wrap(async req => { await need(req); const tid = req.tenantId, list = req.body.rows, dry = req.body.dry_run !== false;
     if (!Array.isArray(list) || !list.length) throw bad('No rows to import');
     if (list.length > MAX_UPLOAD_ROWS) throw bad(`Up to ${MAX_UPLOAD_ROWS} rows in one file`);
     return tx(async () => { await menuLock(tid); // one menu change at a time per campus: the caps and the name matching stay true
       const cats = await all('SELECT id, name FROM canteen_categories WHERE tenant_id=? ORDER BY sort_order, name', tid), catId = new Map();
-      for (const c of cats) if (!catId.has(c.name.trim().toLowerCase())) catId.set(c.name.trim().toLowerCase(), c.id);
-      const have = new Map(); for (const i of await all('SELECT id, name, category_id FROM canteen_items WHERE tenant_id=? AND active=1 ORDER BY created_at', tid)) { const k = `${i.category_id || ''}\n${i.name.trim().toLowerCase()}`; if (!have.has(k)) have.set(k, i.id); }
+      for (const c of cats) if (!catId.has(nameKey(c.name))) catId.set(nameKey(c.name), c.id);
+      const have = new Map(), twice = new Map(); // name key → the oldest active item; the names on the menu more than once
+      for (const i of await all('SELECT i.id, i.name, c.name cat, i.deal_pct, i.deal_kind, i.deal_until FROM canteen_items i LEFT JOIN canteen_categories c ON c.id=i.category_id AND c.tenant_id=i.tenant_id WHERE i.tenant_id=? AND i.active=1 ORDER BY i.created_at, i.id', tid)) {
+        const k = nameKey(i.name); if (!have.has(k)) have.set(k, i); else if (!twice.has(k)) twice.set(k, have.get(k).name); }
       const newCats = new Map(), seen = new Map(), rejected = [], adds = [], updates = [];
       list.forEach((r, i) => { const row = Number.isInteger(r?.row) ? r.row : i + 2, v = uploadRow(r); if (v.error) return rejected.push({ row, reason: v.error });
-        const cn = str(r.category, 60), ck = cn.toLowerCase(), cid = cn ? catId.get(ck) : null, key = `${cn ? cid || 'new:' + ck : ''}\n${v.f.name.toLowerCase()}`;
-        if (seen.has(key)) return rejected.push({ row, reason: `Same item as row ${seen.get(key)}` }); seen.set(key, row);
-        if (cn && !cid && !newCats.has(ck)) newCats.set(ck, cn);
-        const id = have.get(key); (id ? updates : adds).push({ id, cid, ck, f: v.f }); });
+        const nk = nameKey(v.f.name); if (seen.has(nk)) return rejected.push({ row, reason: `Same item as row ${seen.get(nk)}` }); seen.set(nk, row);
+        const cn = unq(str(r.category, 60)), ck = nameKey(cn), cid = cn ? catId.get(ck) : null, old = have.get(nk);
+        const move = !!old && !!cn && ck !== nameKey(old.cat); // the category it is in already (by name), or an empty cell: it stays put
+        if (cn && !cid && !newCats.has(ck) && (!old || move)) newCats.set(ck, cn);
+        if (!old) return adds.push({ cid, ck, f: v.f });
+        // the same deal still running (a downloaded menu uploaded back): it keeps its end time rather than restarting from now
+        if (dealOf(old) && old.deal_until && v.f.deal_until && v.f.deal_pct === old.deal_pct && v.f.deal_kind === old.deal_kind && Math.abs(Date.parse(v.f.deal_until) - Date.parse(old.deal_until)) < 120000) v.f.deal_until = old.deal_until;
+        updates.push({ id: old.id, move, cid, ck, f: v.f }); });
       const nItems = (await one('SELECT count(*) n FROM canteen_items WHERE tenant_id=?', tid)).n;
       if (nItems + adds.length > MAX_ITEMS) throw bad(`The menu holds up to ${MAX_ITEMS} items: it has ${nItems} and this file adds ${adds.length}. Remove old items or rows and try again`);
       if (cats.length + newCats.size > MAX_CATS) throw bad(`Up to ${MAX_CATS} categories: there are ${cats.length} and this file adds ${newCats.size}`);
@@ -569,9 +607,12 @@ export function canteen(d) {
         let so = cats.length; for (const [ck, name] of newCats) { const id = uid(); catId.set(ck, id); await run('INSERT INTO canteen_categories (id, tenant_id, name, sort_order, created_at) VALUES (?,?,?,?,?)', id, tid, name, so++, now()); }
         for (const a of adds) { const o = { id: uid(), tenant_id: tid, is_veg: 1, created_at: now(), category_id: a.cid === null ? null : a.cid || catId.get(a.ck), ...a.f };
           await run(`INSERT INTO canteen_items (${Object.keys(o).join(',')}) VALUES (${Object.keys(o).map(() => '?').join(',')})`, ...Object.values(o)); }
-        for (const u of updates) await run(`UPDATE canteen_items SET ${Object.keys(u.f).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(u.f), u.id, tid);
+        for (const u of updates) { const set = u.move ? { ...u.f, category_id: u.cid || catId.get(u.ck) } : u.f;
+          await run(`UPDATE canteen_items SET ${Object.keys(set).map(k => k + '=?').join(',')} WHERE id=? AND tenant_id=?`, ...Object.values(set), u.id, tid); }
       }
-      return { dry_run: dry, added: adds.length, updated: updates.length, categories_created: newCats.size, rejected };
+      // updated counts every matched item, moved the ones of them that change category
+      return { dry_run: dry, added: adds.length, updated: updates.length, moved: updates.filter(u => u.move).length, categories_created: newCats.size, rejected,
+        duplicates: { count: twice.size, names: [...twice.values()].slice(0, 5) } };
     });
   }));
 

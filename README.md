@@ -141,6 +141,10 @@ Set a service's **form type to Food** (Services → Edit). Tapping it then shows
 - **Reports** (feedback only) go to the food service's providers at 10:00 PM campus time: daily, weekly on Sunday, monthly on the last day. Charts are PNG images so Outlook shows them. ONE Desk sends them itself through the email connection; set `FOOD_REPORT_AUTOSEND=0` to send them from Power Automate instead.
 - **Report endpoints** for Power Automate: `GET /api/reports/food/daily|weekly|monthly?tenant=<slug>&format=json` with the header `X-Report-Key: <FOOD_REPORT_KEY>` return `{ to, subject, html }` (without `format=json`: the HTML itself). Set `FOOD_REPORT_KEY` (a long random value) in `.env`; without it the endpoints answer 503.
 
+## Canteen menu from a file
+
+In the Canteen desk, Menu → **Upload menu**: download the template or your current menu (CSV, the same columns: category, name, price, description, is_veg, sold_out, active, sort_order, deal_pct, deal_kind, deal_minutes), edit it in Excel or Google Sheets, and upload it back (.csv or .xlsx); the preview shows what will be added, updated and moved before anything is saved. An item name is unique across the whole menu (capitals and extra spaces ignored): a name that is already on the menu updates that item, and moves it when the file gives another category, instead of adding a second one. Add item and Edit item refuse a name that is already on the menu.
+
 ## Notice board
 
 Teams post notices for students (Notices in the staff menu): a title, a message, up to 3 files (photos, PDF, Word, Excel; 10 MB each), who it is for, an optional start and end, and an **Important** switch. Campus admins post for any team or the whole campus; a team's providers post for their own team (and its sub-teams). New teams appear in the team list as soon as they are created.

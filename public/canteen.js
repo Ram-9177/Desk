@@ -505,10 +505,12 @@ export async function canteenPage(main, { sa }) {
       const show = (html, label, ready = true) => { box.innerHTML = html; go.textContent = label; go.disabled = !ready; err.textContent = ''; };
       const pick = () => { step = 1; show(`<p class="muted small">A .csv or .xlsx file with one item per row and the column names in the first row. Next you match its columns, then see what will change before anything is saved.</p>
         <label class="mu-file">${I('file', 22)}<b>Choose a .csv or .xlsx file</b><span class="muted small">Up to 500 items, 5 MB</span><input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
-        <div class="mu-dl"><span class="muted small">Not sure of the layout?</span><button type="button" class="btn soft" data-dl="template">${I('download', 15)} Download template</button><button type="button" class="btn soft" data-dl="sample">${I('download', 15)} Download sample menu</button></div>`, 'Next', false);
+        <div class="mu-dl"><span class="muted small"><b>Download a file to fill in:</b> your current menu, an empty template or a sample. Edit it and upload it here; a name already on the menu updates that item.</span>
+          <button type="button" class="btn soft" data-dl="current">${I('download', 15)} Download my current menu</button><button type="button" class="btn soft" data-dl="template">${I('download', 15)} Download template</button><button type="button" class="btn soft" data-dl="sample">${I('download', 15)} Download sample menu</button></div>`, 'Next', false);
         const inp = box.querySelector('input[type=file]'); inp.onchange = () => { go.disabled = !inp.files.length; if (inp.files.length) act(read); };
         box.querySelector('[data-dl=template]').onclick = () => download('/canteen/menu-template.csv', 'canteen-menu-template.csv', err);
-        box.querySelector('[data-dl=sample]').onclick = () => download('/canteen/menu-sample.csv', 'canteen-menu-sample.csv', err); };
+        box.querySelector('[data-dl=sample]').onclick = () => download('/canteen/menu-sample.csv', 'canteen-menu-sample.csv', err);
+        box.querySelector('[data-dl=current]').onclick = () => download('/canteen/menu-export.csv', `canteen-menu-${m.slug}.csv`, err); };
       const read = async () => { const fl = box.querySelector('input[type=file]').files[0]; if (!fl) throw new Error('Choose a file first');
         if (/\.xls$/i.test(fl.name)) throw new Error('This is an old Excel file (.xls). Save it as .xlsx or .csv and upload that');
         if (fl.size > 5 * 1024 * 1024) throw new Error('The file is bigger than 5 MB: a menu file is usually a few KB');
@@ -524,13 +526,14 @@ export async function canteenPage(main, { sa }) {
       const preview = async () => { const map = chosen(); ls.set(muKey, Object.fromEntries(Object.entries(map).map(([k, i]) => [k, rd.columns[i]]))); // remembered by column name for the next upload
         rows = rd.rows.map((r, i) => ({ ...Object.fromEntries(Object.entries(map).map(([k, c]) => [k, r[c]])), row: rd.lines[i] }));
         go.textContent = 'Checking…'; const p = await api('/canteen/menu/import', { method: 'POST', body: { rows, dry_run: true } }); step = 3;
-        show(`<div class="mu-sum">${[[p.added, 'to add'], [p.updated, 'to update'], [p.categories_created, p.categories_created === 1 ? 'new category' : 'new categories'], [p.rejected.length, 'skipped']].map(([n, l], i) => `<div class="${i === 3 && n ? 'bad' : ''}"><b>${n}</b> ${l}</div>`).join('')}</div>
-          <p class="muted small">An item with the same name in the same category is updated (price, description, veg, sold out, order, deal); the rest are added. Nothing is removed, and nothing is saved until you press Import.</p>
+        const dup = p.duplicates?.count ? `<p class="mu-note small"><b>${p.duplicates.count} name${p.duplicates.count === 1 ? ' appears' : 's appear'} more than once on your menu already:</b> ${p.duplicates.names.map(esc).join(', ')}${p.duplicates.count > 5 ? '…' : ''}. A row with that name updates the oldest one; remove the extra copies from the menu when you can.</p>` : '';
+        show(`<div class="mu-sum">${[[p.added, 'to add'], [p.updated, 'to update', p.moved ? `${p.moved} of them move${p.moved === 1 ? 's' : ''} category` : ''], [p.categories_created, p.categories_created === 1 ? 'new category' : 'new categories'], [p.rejected.length, 'skipped']].map(([n, l, sub], i) => `<div class="${i === 3 && n ? 'bad' : ''}"><b>${n}</b> ${l}${sub ? `<small>${sub}</small>` : ''}</div>`).join('')}</div>
+          <p class="muted small">A name already on the menu, in any category and whatever the capitals or spaces, updates that item (price, description, veg, sold out, order, deal); a different category in the file moves it there, an empty one leaves it where it is. Other names are added. Each name once per file. Nothing is removed, and nothing is saved until you press Import.</p>${dup}
           ${p.rejected.length ? `<b class="small">Rows that will be skipped</b><ul class="mu-rej">${p.rejected.map(r => `<li><b>Row ${r.row}</b> ${esc(r.reason)}</li>`).join('')}</ul>` : ''}
           <p><button type="button" class="btn soft" id="muback">Back to the columns</button></p>`, 'Import', p.added + p.updated > 0);
         box.querySelector('#muback').onclick = () => mapping(map); };
       const importNow = async () => { go.textContent = 'Importing…'; const r = await api('/canteen/menu/import', { method: 'POST', body: { rows, dry_run: false } }); d.close();
-        toast(`Added ${r.added}, updated ${r.updated}, skipped ${r.rejected.length}`); draw(); };
+        toast(`Added ${r.added}, updated ${r.updated}${r.moved ? ` (${r.moved} moved)` : ''}, skipped ${r.rejected.length}`); draw(); };
       // one button walks the steps (Next → Preview → Import); a failed step stays put with its message
       const act = async fn => { const label = go.textContent; go.disabled = true; err.textContent = ''; try { await fn(); } catch (e) { err.textContent = e.message; go.textContent = label; go.disabled = false; } };
       f.onsubmit = e => { if (e.submitter?.value !== 'ok') return; e.preventDefault(); if (!go.disabled) act(step === 1 ? read : step === 2 ? preview : importNow); };
