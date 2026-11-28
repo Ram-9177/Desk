@@ -7,7 +7,7 @@ export const initCanteen = h => { H = h; };
 const rupees = p => '₹' + (p / 100).toFixed(p % 100 ? 2 : 0);
 const ls = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } } };
 const STEPS = [['placed', 'Placed'], ['accepted', 'Preparing'], ['ready', 'Ready'], ['collected', 'Collected']];
-let timer = null, S_find = '', kotSeen = null, posCart = {}, posLast = null, openDone = false, posCat = 'all';
+let timer = null, S_find = '', kotSeen = null, posCart = {}, posLast = null, openDone = false, posCat = 'all', invQ = '', invCat = '', invLow = false;
 const every = (ms, fn, hash) => { clearInterval(timer); timer = setInterval(() => { if (location.hash.split('?')[0] !== hash) return clearInterval(timer); if (!document.hidden) fn(); }, ms); };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const t12 = hm => { if (!hm) return ''; const [h, m] = hm.split(':').map(Number); return `${(h % 12) || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h < 12 ? 'AM' : 'PM'}`; };
@@ -301,16 +301,18 @@ async function minePage(slug) {
 let stateFor = null;
 export async function canteenPage(main, { sa }) {
   clearInterval(timer); // a poller from another campus or screen stops here
-  const tid = localStorage.getItem('tid') || ''; if (stateFor !== tid) { stateFor = tid; posCart = {}; posLast = null; kotSeen = null; S_find = ''; openDone = false; posCat = 'all'; }
+  const tid = localStorage.getItem('tid') || ''; if (stateFor !== tid) { stateFor = tid; posCart = {}; posLast = null; kotSeen = null; S_find = ''; openDone = false; posCat = 'all'; invQ = ''; invCat = ''; invLow = false; }
   const { I, esc, api, toast, dlg } = H, acc = await api('/canteen/access');
-  const tabKey = 'canteen-tab' + (acc.cashier ? '-counter' : acc.cook ? '-kitchen' : acc.owner ? '-owner' : ''), st = ls.get(tabKey, acc.cashier ? 'counter' : acc.owner ? 'report' : 'orders'), hash = '#/c/canteen';
-  const tabs = [acc.counter && ['counter', 'Counter (POS)'], acc.counter && ['orders', 'Orders'], acc.kitchen && ['kitchen', 'Kitchen (KOT)'], acc.manage && ['menu', 'Menu'], acc.reports && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
+  const can = acc.can || {}, want = sessionStorage.getItem('canteen-go'); sessionStorage.removeItem('canteen-go'); // #/c/inventory lands on the Inventory tab
+  const tabKey = 'canteen-tab' + (acc.job && acc.job !== 'manager' ? '-' + acc.job : ''), first = { counter: 'counter', owner: 'report', inventory: 'inventory', kitchen: 'kitchen' }[acc.job] || 'orders';
+  const st = want || ls.get(tabKey, first), hash = '#/c/canteen';
+  const tabs = [can.pos && ['counter', 'Counter (POS)'], can.orders && ['orders', 'Orders'], can.kitchen && ['kitchen', 'Kitchen (KOT)'], can.inventory && ['inventory', 'Inventory'], can.menu && ['menu', 'Menu'], can.reports && ['report', 'Reports'], acc.setup && ['setup', 'Set up']].filter(Boolean);
   let tab = tabs.some(t => t[0] === st) ? st : tabs[0]?.[0];
-  if (!tab) { main.innerHTML = '<div class="card empty"><span class="et">Canteen is not set up for you</span><span>The super admin switches the canteen on and picks the canteen managers.</span></div>'; return; }
-  const head = () => `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
+  if (!tab) { main.innerHTML = '<div class="card empty"><span class="et">Canteen is not set up for you</span><span>The super admin switches the canteen on and gives each person their canteen job and features.</span></div>'; return; }
+  const head = () => tabs.length < 2 ? '' : `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>`;
   const wire = () => main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; ls.set(tabKey, tab); clearInterval(timer); draw(); });
   // a screen that fails: say why in plain words; after an update the usual cause is a server that was not restarted
-  const draw = async () => { try { await ({ counter, orders, kitchen, menu, report, setup })[tab](); } catch (e) {
+  const draw = async () => { try { await ({ counter, orders, kitchen, inventory, menu, report, setup })[tab](); } catch (e) {
     const v = await fetch('/api/version', { cache: 'no-store' }).then(r => r.json()).catch(() => null), stale = v?.restart_needed || e instanceof TypeError;
     main.innerHTML = head() + (stale ? `<div class="card cn-warn" style="display:block"><b>This screen could not load.</b> ${v?.restart_needed ? `The server has new code (${esc(v.on_disk)}) but is still running the old version (${esc(v.commit)}).` : 'The server may be running an older version than this page.'}
       <div style="margin-top:6px">On the server, in the app folder, run <code>npm ci --omit=dev</code> and then <code>pm2 restart one-desk</code>, then reload this page.</div><div class="muted small" style="margin-top:4px">Details: ${esc(e.message)}</div></div>`
@@ -334,11 +336,11 @@ export async function canteenPage(main, { sa }) {
     const col = (t, list, empty) => `<section class="cn-col"><h3>${t} <span class="cnt">${list.length}</span></h3>${list.map(card).join('') || `<p class="muted small">${empty}</p>`}</section>`;
     const done = by(['collected', 'rejected', 'cancelled']), pend = by(['placed', 'accepted', 'ready', 'out']).length;
     main.innerHTML = `${head()}<div class="card cn-openbar ${d.open ? 'on' : ''}"><div>${I(d.open ? 'ccheck' : 'clock', 18)} ${d.today_check ? `<div class="cn-todayck" style="--ck:${d.today_check.hex}"><span>Today's receipt colour</span><b>${esc(d.today_check.color)}</b></div>` : ''}<b>${esc(d.name)}: ${d.open ? 'open for orders today' : 'closed'}</b><div class="muted small">${d.open && d.state && !d.state.accepting ? 'Opened, but outside the canteen timings: students can order once the timings allow. ' : ''}${d.state?.hours ? hoursText(d.state.hours) + ' · ' : ''}${d.open ? 'Students can order now. Mark items sold out with the Stock button.' : 'Open the canteen to start taking orders. Sold-out marks reset each new day.'}</div></div>
-      <input id="cnfind" class="cn-find" inputmode="numeric" placeholder="Find token, e.g. 47" aria-label="Find token"><button class="btn ${d.open ? '' : 'primary'}" id="cnopen">${d.open ? 'Close for today' : 'Open canteen for the day'}</button></div>
+      <input id="cnfind" class="cn-find" inputmode="numeric" placeholder="Find token, e.g. 47" aria-label="Find token">${can.openclose ? `<button class="btn ${d.open ? '' : 'primary'}" id="cnopen">${d.open ? 'Close for today' : 'Open canteen for the day'}</button>` : ''}</div>
       <div class="cn-board">${col('Waiting for payment', by(['placed']).reverse(), 'Nobody waiting to pay')}${col('In the kitchen', by(['accepted']).reverse(), 'Nothing being prepared')}${col('Ready', by(['ready']).reverse(), 'Nothing waiting')}${col('Out for delivery', by(['out']).reverse(), 'No deliveries on the way')}</div>
       <details class="card cn-done" ${openDone ? 'open' : ''}><summary><b>Done today</b> · ${done.length} (${by(['collected']).length} collected)</summary>${done.map(o => `<div class="cn-item"><span><span class="cn-tk sm s-${o.status}">${o.token}</span> ${esc(o.name)} · ${o.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span><span class="muted small">${o.status === 'rejected' ? (['paid', 'claimed'].includes(o.pay_status) ? 'Rejected · refund ' + o.total : 'Rejected') : o.status === 'cancelled' ? esc(o.reject_reason || 'Cancelled by student') : o.total + (o.fulfil === 'delivery' ? ' · delivered' : '')}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>`;
     wire();
-    document.getElementById('cnopen').onclick = async () => { try { if (d.open && !confirm(`Close the canteen? Students can no longer place orders.${pend ? ` ${pend} order${pend === 1 ? ' is' : 's are'} still in progress: you can still finish ${pend === 1 ? 'it' : 'them'}.` : ''}`)) return; await api(d.open ? '/canteen/close' : '/canteen/open', { method: 'POST' }); toast(d.open ? 'Canteen closed' : 'Canteen open for today'); } catch (e) { toast(e.message); } draw(); };
+    const cno = document.getElementById('cnopen'); if (cno) cno.onclick = async () => { try { if (d.open && !confirm(`Close the canteen? Students can no longer place orders.${pend ? ` ${pend} order${pend === 1 ? ' is' : 's are'} still in progress: you can still finish ${pend === 1 ? 'it' : 'them'}.` : ''}`)) return; await api(d.open ? '/canteen/close' : '/canteen/open', { method: 'POST' }); toast(d.open ? 'Canteen closed' : 'Canteen open for today'); } catch (e) { toast(e.message); } draw(); };
     const fi = document.getElementById('cnfind'); fi.value = S_find; fi.oninput = () => { S_find = fi.value.replace(/\D/g, ''); filt(); }; const filt = () => main.querySelectorAll('.cn-oc').forEach(c => { c.hidden = !!S_find && +c.dataset.tk !== +S_find; }); filt();
     main.querySelectorAll('.cn-done').forEach(x => x.ontoggle = () => { openDone = x.open; });
     const find = id => d.orders.find(x => x.id === id);
@@ -365,8 +367,8 @@ export async function canteenPage(main, { sa }) {
     if (posCat !== 'all' && !cats.some(c => c.id === posCat)) posCat = 'all';
     const by = new Map(list.map(i => [i.id, i])); for (const k of Object.keys(posCart)) if (!by.has(k) || by.get(k).sold_out) delete posCart[k];
     const tot = () => Object.entries(posCart).reduce((s, [k, n]) => s + by.get(k).price_now * n, 0), n = () => Object.values(posCart).reduce((s, x) => s + x, 0);
-    main.innerHTML = `${acc.cashier ? `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div>` : head()}
-      ${p.open ? '' : `<div class="card cn-warn" style="margin:8px 0">${I('alert', 16)} The canteen is closed. <button class="btn soft" id="posopen" style="margin-left:auto">Open for the day</button></div>`}
+    main.innerHTML = `${head()}
+      ${p.open ? '' : `<div class="card cn-warn" style="margin:8px 0">${I('alert', 16)} The canteen is closed.${can.openclose ? ' <button class="btn soft" id="posopen" style="margin-left:auto">Open for the day</button>' : ' Ask the manager to open it.'}</div>`}
       <div class="cn-pos3"><nav class="cn-poscats" aria-label="Categories">${[{ id: 'all', name: 'All items', n: list.length }, ...cats].map(c => `<button type="button" class="${posCat === c.id ? 'on' : ''}" data-cat="${esc(c.id)}"><span>${esc(c.name)}</span><b>${c.n}</b></button>`).join('')}</nav>
       <div class="cn-posm"><div class="cn-search">${I('search', 18)}<input id="posq" type="search" placeholder="Find an item" aria-label="Find an item" autocomplete="off"></div>
         <div id="posgrid"></div></div>
@@ -378,7 +380,7 @@ export async function canteenPage(main, { sa }) {
         <div id="posupi" hidden><p class="muted small">Charge shows a UPI QR for the exact bill. The customer scans and pays; you check the canteen's UPI app, then confirm. Nothing is billed until you confirm.</p></div>
         <details><summary class="muted small">Customer name / note</summary><label>Name</label><input name="name" maxlength="80" placeholder="Walk-in"><label>Note for the kitchen</label><input name="note" maxlength="200"></details>
         <div class="err" id="poserr"></div><button class="btn primary big" id="poscharge" disabled>Charge &amp; send to kitchen</button>
-        <button type="button" class="btn" id="posclear">Clear</button><button type="button" class="btn" id="posstock">Stock (sold out)</button>${posLast ? `<button type="button" class="btn" id="posreb">${I('file', 15)} Reprint last bill ${posLast.token}</button>` : ''}</form></div>
+        <button type="button" class="btn" id="posclear">Clear</button>${can.stock ? '<button type="button" class="btn" id="posstock">Stock (sold out)</button>' : ''}${posLast ? `<button type="button" class="btn" id="posreb">${I('file', 15)} Reprint last bill ${posLast.token}</button>` : ''}</form></div>
       <a href="#posf" class="cn-posbar" id="posbar" hidden onclick="document.getElementById('posf').scrollIntoView({behavior:'smooth'});return false"></a>
       <div class="card cn-shift"><b>My shift today</b><span>${sh.orders} paid order${sh.orders === 1 ? '' : 's'}</span><span>Cash <b>${rupees(sh.cash_paise)}</b></span><span>UPI <b>${rupees(sh.upi_paise)}</b></span>${sh.refunds_paise ? `<span>Refunds <b>${rupees(sh.refunds_paise)}</b></span>` : ''}</div>`;
     wire();
@@ -409,7 +411,7 @@ export async function canteenPage(main, { sa }) {
     f.onclick = e => { const i = e.target.closest('[data-pi]'), d = e.target.closest('[data-pd]'), q = e.target.closest('[data-tq]'); if (i) add(i.dataset.pi, 1); if (d) add(d.dataset.pd, -1); if (q) { f.tendered.value = q.dataset.tq; render(); } };
     f.oninput = render; f.onchange = render;
     document.getElementById('posq').oninput = grid;
-    document.getElementById('posstock').onclick = () => stockDialog(draw);
+    const pst = document.getElementById('posstock'); if (pst) pst.onclick = () => stockDialog(draw);
     document.getElementById('posclear').onclick = () => { posCart = {}; f.reset(); render(); };
     const rb = document.getElementById('posreb'); if (rb) rb.onclick = () => printOrder('bill', posLast, p.name, p.print);
     const po = document.getElementById('posopen'); if (po) po.onclick = async () => { try { await api('/canteen/open', { method: 'POST' }); toast('Canteen open for today'); } catch (e) { toast(e.message); } draw(); };
@@ -447,11 +449,11 @@ export async function canteenPage(main, { sa }) {
       <table class="cn-ktab"><tbody>${o.items.map(i => `<tr><td class="q">${i.qty}</td><td>${thumb(i.img, 'sm')}${esc(i.name)}${i.booked ? ' <span class="cn-oos">was out of stock</span>' : ''}</td></tr>`).join('')}</tbody></table>
       ${o.note ? `<div class="cn-note">${I('pencil', 13)} ${esc(o.note)}</div>` : ''}<div class="muted small">${esc(o.name)} · paid ${new Date(o.accepted_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}</div>
       <div class="fact">${o.kot_started_at ? `<button class="btn primary" data-k="ready" data-id="${o.id}">${I('bell', 16)} ${o.fulfil === 'delivery' ? 'Ready · packed' : 'Ready'}</button>` : `<button class="btn primary" data-k="start" data-id="${o.id}">${I('play', 16)} Start cooking</button>`}<button class="btn" data-print="${o.id}" aria-label="Print KOT ${o.token}">Print</button></div></div>`;
-    main.innerHTML = `${acc.cook ? '' : head()}<div class="cn-kh"><b>${esc(k.name)} · Kitchen</b><span class="muted small">${k.kots.length} KOT${k.kots.length === 1 ? '' : 's'} · refreshes by itself</span><button type="button" class="btn soft" id="kstock">Stock (sold out)</button></div>
+    main.innerHTML = `${head()}<div class="cn-kh"><b>${esc(k.name)} · Kitchen</b><span class="muted small">${k.kots.length} KOT${k.kots.length === 1 ? '' : 's'} · refreshes by itself</span>${can.stock ? '<button type="button" class="btn soft" id="kstock">Stock (sold out)</button>' : ''}</div>
       <div class="cn-kots">${k.kots.map(kot).join('') || '<div class="card empty" style="grid-column:1/-1"><span class="et">No KOTs right now</span><span>Paid orders appear here as soon as the counter confirms the payment.</span></div>'}</div>
       <details class="card cn-done" ${openDone ? 'open' : ''}><summary><b>Done in the last 2 hours</b> · ${k.done.length}</summary>${k.done.map(o => `<div class="cn-item"><span><span class="cn-tk sm s-${o.status}">${o.token}</span> ${o.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</span><span class="muted small">${esc(o.status_text)}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>`;
     main.querySelectorAll('.cn-done').forEach(x => x.ontoggle = () => { openDone = x.open; });
-    if (!acc.cook) wire(); document.getElementById('kstock').onclick = () => stockDialog(draw);
+    wire(); const ks = document.getElementById('kstock'); if (ks) ks.onclick = () => stockDialog(draw);
     main.querySelectorAll('[data-k]').forEach(b => b.onclick = async () => { b.disabled = true;
       try { await api(b.dataset.k === 'start' ? `/canteen/kitchen/${b.dataset.id}/start` : `/canteen/orders/${b.dataset.id}/ready`, { method: 'POST' }); toast(b.dataset.k === 'start' ? 'Cooking' : 'Marked ready'); } catch (e) { toast(e.message); } draw(); });
     main.querySelectorAll('[data-print]').forEach(b => b.onclick = () => printOrder('kot', k.kots.find(x => x.id === b.dataset.print), k.name, k.print));
@@ -578,18 +580,91 @@ export async function canteenPage(main, { sa }) {
   }
 
   async function setup() {
-    const s0 = await api('/canteen/setup'), arr = v => Array.isArray(v) ? v : [], s = { ...s0, managers: arr(s0.managers), kitchen: arr(s0.kitchen), counter: arr(s0.counter), owner: arr(s0.owner), providers: arr(s0.providers), max: s0.max || 2, max_kitchen: s0.max_kitchen || 10 };
-    main.innerHTML = `${head()}<form id="cnset" class="card" style="max-width:640px"><b>Canteen for this campus</b>
+    const s0 = await api('/canteen/setup'), arr = v => Array.isArray(v) ? v : [];
+    const s = { ...s0, managers: arr(s0.managers), kitchen: arr(s0.kitchen), counter: arr(s0.counter), owner: arr(s0.owner), inventory: arr(s0.inventory), providers: arr(s0.providers), custom: arr(s0.custom), max: s0.max || 2, features: arr(s0.features), jobs: s0.jobs || {}, perms: s0.perms || {} };
+    const JOBN = [['', 'No canteen job'], ['manager', 'Manager'], ['counter', 'Counter'], ['kitchen', 'Kitchen'], ['inventory', 'Inventory'], ['owner', 'Owner (reports)']];
+    const jobOf = id => s.managers.includes(id) ? 'manager' : s.kitchen.includes(id) ? 'kitchen' : s.counter.includes(id) ? 'counter' : s.owner.includes(id) ? 'owner' : s.inventory.includes(id) ? 'inventory' : '';
+    // each person: their job, and (open "Features") the features they get: the job's defaults, or their own set
+    const person = p => { const job = jobOf(p.id), mine = s.perms[p.id] || s.jobs[job] || [], cust = s.custom.includes(p.id);
+      return `<div class="cn-srow2" data-row="${p.id}" data-q="${esc((p.name + ' ' + p.email).toLowerCase())}"><div class="cn-srow"><span><b>${esc(p.name)}</b><span class="muted small">${esc(p.email)}</span></span>
+        <select name="job" data-u="${p.id}" aria-label="Canteen job for ${esc(p.name)}">${JOBN.map(([v, l]) => `<option value="${v}" ${job === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <details class="cn-feat" ${job ? '' : 'hidden'}><summary>Features <span class="muted small" data-fsum>${cust ? 'custom for this person' : 'the job\'s defaults'}</span></summary>
+          <div class="cn-fgrid">${s.features.map(([k, l]) => `<label class="chk"><input type="checkbox" data-f="${k}" ${mine.includes(k) ? 'checked' : ''}> ${esc(l)}</label>`).join('')}</div>
+          <button type="button" class="btn" data-reset>Back to the job's defaults</button></details></div>`; };
+    main.innerHTML = `${head()}<form id="cnset" class="card" style="max-width:760px"><b>Canteen for this campus</b>
       <label>Canteen name</label><input name="name" maxlength="60" value="${esc(s.name)}" placeholder="${esc(s.default_name)}">
       <label class="chk" style="margin:12px 0"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Canteen ordering is on</label>
-      <b>Canteen staff</b><div class="muted small">Give desk providers one canteen job each. <b>Manager</b> (1 or 2): menu, prices, timings, payments, reports, everything. <b>Counter</b>: sells to walk-in customers, takes cash / UPI, prints bills, confirms online payments, hands orders over. <b>Kitchen</b>: sees only the KOT screen (start cooking, ready). <b>Owner</b>: sees every report (sales, charts, cash drawer by staff, refunds, CSV) and can't change anything. Campus admins can do everything a manager can.</div>
-      <div class="cn-staff">${s.providers.map(p => { const job = s.managers.includes(p.id) ? 'manager' : s.kitchen.includes(p.id) ? 'kitchen' : s.counter.includes(p.id) ? 'counter' : s.owner.includes(p.id) ? 'owner' : ''; return `<label class="cn-srow"><span><b>${esc(p.name)}</b><span class="muted small">${esc(p.email)}</span></span><select name="job" data-u="${p.id}" aria-label="Canteen job for ${esc(p.name)}">${[['', 'No canteen job'], ['manager', 'Manager'], ['counter', 'Counter'], ['kitchen', 'Kitchen'], ['owner', 'Owner (reports)']].map(([v, l]) => `<option value="${v}" ${job === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`; }).join('') || '<p class="muted small">No active service providers on this campus yet. Add them under People.</p>'}</div>
+      <b>Canteen staff</b><div class="muted small">Give desk providers one canteen job each; open <b>Features</b> to change what one person can do.
+        <b>Manager</b> (1 or 2): everything. <b>Counter</b>: sell, take payments, orders, stock, open the day. <b>Kitchen</b>: KOT screen and stock. <b>Inventory</b>: stock of ingredients. <b>Owner</b>: every report, nothing to change. Campus admins can do everything.</div>
+      <div class="cn-search" style="margin-top:10px">${I('search', 18)}<input id="stq" type="search" placeholder="Search people by name or email" aria-label="Search people" autocomplete="off"></div>
+      <div class="cn-stf"><button type="button" class="tab on" data-sf="">Everyone</button><button type="button" class="tab" data-sf="job">With a canteen job</button>${JOBN.slice(1).map(([v, l]) => `<button type="button" class="tab" data-sf="${v}">${l}</button>`).join('')}</div>
+      <div class="cn-staff">${s.providers.map(person).join('') || '<p class="muted small">No active service providers on this campus yet. Add them under People.</p>'}</div><p class="muted small" id="stnone" hidden>Nobody matches.</p>
       <div class="err" id="cnserr"></div><p><button class="btn primary">Save</button></p>
       ${s.on ? `<p class="muted small">Student link: <code>${esc(location.origin + '/' + s.slug + '/cafeteria')}</code> · the QR code is on the Menu tab.</p>` : ''}</form>`;
     wire();
     const f = document.getElementById('cnset'), jobs = [...f.querySelectorAll('[name=job]')], pick = j => jobs.filter(x => x.value === j).map(x => x.dataset.u);
-    jobs.forEach(b => b.onchange = () => { if (pick('manager').length > s.max) { b.value = ''; toast(`At most ${s.max} canteen managers`); } });
-    f.onsubmit = async e => { e.preventDefault(); try { await api('/canteen/setup', { method: 'PUT', body: { name: f.name.value, on: f.on.checked, managers: pick('manager'), kitchen: pick('kitchen'), counter: pick('counter'), owner: pick('owner') } }); toast('Canteen settings saved'); location.reload(); }
+    let sf = ''; const filt = () => { const v = document.getElementById('stq').value.trim().toLowerCase(); let n = 0;
+      f.querySelectorAll('[data-row]').forEach(r => { const j = r.querySelector('[name=job]').value, hit = (!v || r.dataset.q.includes(v)) && (!sf || (sf === 'job' ? !!j : j === sf)); r.hidden = !hit; n += hit; });
+      document.getElementById('stnone').hidden = !!n || !s.providers.length; };
+    document.getElementById('stq').oninput = filt;
+    f.querySelectorAll('[data-sf]').forEach(b => b.onclick = () => { sf = b.dataset.sf; f.querySelectorAll('[data-sf]').forEach(x => x.classList.toggle('on', x === b)); filt(); });
+    const touched = new Set(), defaults = (row, job) => row.querySelectorAll('[data-f]').forEach(c => { c.checked = (s.jobs[job] || []).includes(c.dataset.f); });
+    jobs.forEach(b => b.onchange = () => { if (pick('manager').length > s.max) { b.value = ''; toast(`At most ${s.max} canteen managers`); }
+      const row = b.closest('[data-row]'), d = row.querySelector('.cn-feat'); d.hidden = !b.value; defaults(row, b.value); touched.delete(b.dataset.u); row.querySelector('[data-fsum]').textContent = 'the job\'s defaults'; });
+    f.querySelectorAll('[data-row]').forEach(row => { const u = row.dataset.row;
+      row.querySelectorAll('[data-f]').forEach(c => c.onchange = () => { touched.add(u); row.querySelector('[data-fsum]').textContent = 'custom for this person'; });
+      row.querySelector('[data-reset]').onclick = () => { defaults(row, row.querySelector('[name=job]').value); touched.add(u); row.querySelector('[data-fsum]').textContent = 'the job\'s defaults'; }; });
+    f.onsubmit = async e => { e.preventDefault(); const perms = {};
+      for (const u of touched) { const row = f.querySelector(`[data-row="${u}"]`), job = row.querySelector('[name=job]').value; if (!job) continue;
+        const l = [...row.querySelectorAll('[data-f]:checked')].map(c => c.dataset.f); perms[u] = l.slice().sort().join() === [...(s.jobs[job] || [])].sort().join() ? null : l; }
+      try { await api('/canteen/setup', { method: 'PUT', body: { name: f.name.value, on: f.on.checked, managers: pick('manager'), kitchen: pick('kitchen'), counter: pick('counter'), owner: pick('owner'), inventory: pick('inventory'), perms } }); toast('Canteen settings saved'); location.reload(); }
       catch (er) { document.getElementById('cnserr').textContent = er.message; } };
   }
+
+  // Inventory: raw stock (rice, oil, milk, gas …). Stock in with its cost, use, waste with a reason, and counts that set the level.
+  async function inventory() {
+    const v = await api('/canteen/inventory'), rr = ls.get('canteen-inv-range', 'week'), rep = can.reports || can.inventory ? await api(`/canteen/inventory/report?range=${rr}`).catch(() => null) : null;
+    const qty = n => (Math.round(n * 1000) / 1000).toLocaleString('en-IN'), K = { in: 'Stock in', use: 'Used', waste: 'Wasted', count: 'Count' };
+    const row = i => `<div class="cn-inv ${i.out ? 'out' : i.low ? 'low' : ''}" data-iq="${esc((i.name + ' ' + (i.category || '')).toLowerCase())}" data-icat="${esc(i.category || '')}" data-ilow="${i.low ? 1 : 0}">
+      <div class="cn-invn"><b>${esc(i.name)}</b><span class="muted small">${esc(i.category || 'No category')} · ${rupees(i.cost_paise)} / ${esc(i.unit)} · min ${qty(i.min_qty)}</span></div>
+      <div class="cn-invq"><b>${qty(i.qty)}</b> <span>${esc(i.unit)}</span>${i.out ? '<span class="cn-b unpaid">Out</span>' : i.low ? '<span class="cn-b unpaid">Low</span>' : ''}</div>
+      <div class="cn-inva"><button type="button" class="btn soft" data-mv="in" data-id="${i.id}">+ In</button><button type="button" class="btn" data-mv="use" data-id="${i.id}">− Use</button><button type="button" class="btn" data-mv="waste" data-id="${i.id}">Waste</button><button type="button" class="btn" data-mv="count" data-id="${i.id}">Count</button><button type="button" class="iconbtn" data-ied="${i.id}" aria-label="Edit ${esc(i.name)}">${I('pencil', 15)}</button></div></div>`;
+    const live = v.items.filter(i => i.active);
+    main.innerHTML = `${head()}<div class="cn-kpis">${[['Stock items', live.length], ['Low stock', v.low], ['Out of stock', v.out], ['Stock value', rupees(v.value_paise)], ...(rep ? [['Bought (' + ({ day: 'today', week: '7 days', month: '30 days' })[rr] + ')', rupees(rep.bought_paise)], ['Wasted', rupees(rep.waste_paise)]] : [])].map(([l, x]) => `<div class="card"><span class="muted small">${l}</span><b>${x}</b></div>`).join('')}</div>
+      ${v.low ? `<div class="card cn-warn" style="display:block;margin-top:10px">${I('alert', 16)} <b>${v.low} item${v.low === 1 ? ' is' : 's are'} at or below the minimum:</b> ${live.filter(i => i.low).map(i => `${esc(i.name)} (${qty(i.qty)} ${esc(i.unit)})`).join(', ')}</div>` : ''}
+      <p class="row"><button class="btn primary" id="invadd">${I('plus', 16)} Add stock item</button><button class="btn soft" id="invcsv">${I('download', 16)} Download history (CSV)</button></p>
+      <div class="cn-search">${I('search', 18)}<input id="invq" type="search" placeholder="Search stock, e.g. rice" aria-label="Search stock" value="${esc(invQ)}" autocomplete="off"></div>
+      <div class="cn-filters"><button type="button" class="tab ${invLow ? 'on' : ''}" id="invlow">Low / out only</button><button type="button" class="tab ${invCat ? '' : 'on'}" data-icf="">All</button>${v.categories.map(c => `<button type="button" class="tab ${invCat === c ? 'on' : ''}" data-icf="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+      <div class="card cn-invl">${live.map(row).join('') || '<div class="empty"><span class="et">No stock items yet</span><span>Add what the kitchen keeps: rice, oil, milk, vegetables, gas cylinders…</span></div>'}<p class="muted small" id="invnone" hidden>Nothing matches.</p></div>
+      ${rep ? `<div class="card"><div class="cn-ch"><b>Bought, used and wasted</b><div class="tabs" style="padding:0">${[['day', 'Today'], ['week', '7 days'], ['month', '30 days']].map(([k, l]) => `<button class="tab ${rr === k ? 'on' : ''}" data-ir="${k}">${l}</button>`).join('')}</div></div>
+        <table class="cn-itab"><thead><tr><th>Item</th><th>In</th><th>Used</th><th>Wasted</th><th>Bought</th></tr></thead><tbody>${rep.rows.map(r => `<tr><td>${esc(r.item)}</td><td>${qty(r.in)} ${esc(r.unit)}</td><td>${qty(r.use)}</td><td>${qty(r.waste)}</td><td>${rupees(r.bought_paise)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No stock changes in this period.</td></tr>'}</tbody></table></div>` : ''}
+      <details class="card"><summary><b>Recent changes</b> · ${v.moves.length}</summary>${v.moves.map(m => `<div class="cn-item"><span><b>${K[m.kind]}</b> ${esc(m.item)}: ${m.kind === 'count' ? (m.qty >= 0 ? '+' : '') : m.kind === 'in' ? '+' : '−'}${qty(Math.abs(m.qty))} ${esc(m.unit)} <span class="muted small">(${qty(m.before_qty)} → ${qty(m.after_qty)})${m.note ? ' · ' + esc(m.note) : ''}</span></span><span class="muted small">${esc(m.user_name || '')} · ${new Date(m.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span></div>`).join('') || '<p class="muted small">No changes yet.</p>'}</details>
+      ${v.items.some(i => !i.active) ? `<details class="card"><summary><b>Removed items</b></summary>${v.items.filter(i => !i.active).map(i => `<div class="cn-item"><span>${esc(i.name)}</span><button class="btn soft" data-iback="${i.id}">Put back</button></div>`).join('')}</details>` : ''}`;
+    wire();
+    const filt = () => { invQ = document.getElementById('invq').value.trim().toLowerCase(); let n = 0;
+      main.querySelectorAll('.cn-inv').forEach(r => { const hit = (!invQ || r.dataset.iq.includes(invQ)) && (!invCat || r.dataset.icat === invCat) && (!invLow || r.dataset.ilow === '1'); r.hidden = !hit; n += hit; });
+      const nn = document.getElementById('invnone'); if (nn) nn.hidden = !!n || !live.length; };
+    document.getElementById('invq').oninput = filt; filt();
+    document.getElementById('invlow').onclick = () => { invLow = !invLow; draw(); };
+    main.querySelectorAll('[data-icf]').forEach(b => b.onclick = () => { invCat = b.dataset.icf; draw(); });
+    main.querySelectorAll('[data-ir]').forEach(b => b.onclick = () => { ls.set('canteen-inv-range', b.dataset.ir); draw(); });
+    const form = (it = {}) => `<h3>${it.id ? 'Edit stock item' : 'New stock item'}</h3><label>Name</label><input name="name" required maxlength="80" value="${esc(it.name || '')}" placeholder="e.g. Rice (sona masoori)">
+      <div class="cn-hgrid2"><div><label>Unit</label><select name="unit">${v.units.map(u => `<option ${u === (it.unit || 'kg') ? 'selected' : ''}>${u}</option>`).join('')}</select></div><div><label>Category</label><input name="category" maxlength="40" list="invcats" value="${esc(it.category || '')}" placeholder="e.g. Grains"><datalist id="invcats">${v.categories.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div></div>
+      <div class="cn-hgrid2">${it.id ? '' : '<div><label>Stock now</label><input name="qty" inputmode="decimal" value="0"></div>'}<div><label>Minimum level (alert)</label><input name="min_qty" inputmode="decimal" value="${it.min_qty ?? 0}"></div><div><label>Cost per unit (₹)</label><input name="cost" inputmode="decimal" value="${it.cost_paise != null ? it.cost_paise / 100 : ''}"></div></div>
+      ${it.id ? '<p><button type="button" class="btn danger" id="invdel">Remove from the inventory</button></p>' : ''}`;
+    document.getElementById('invadd').onclick = () => dlg(form(), async f => { await api('/canteen/inventory', { method: 'POST', body: { name: f.name.value, unit: f.unit.value, category: f.category.value, qty: f.qty.value, min_qty: f.min_qty.value, cost: f.cost.value } }); toast('Stock item added'); draw(); });
+    main.querySelectorAll('[data-ied]').forEach(b => b.onclick = () => { const it = v.items.find(x => x.id === b.dataset.ied);
+      const d = dlg(form(it), async f => { await api('/canteen/inventory/' + it.id, { method: 'PATCH', body: { name: f.name.value, unit: f.unit.value, category: f.category.value, min_qty: f.min_qty.value, cost: f.cost.value } }); toast('Saved'); draw(); });
+      d.querySelector('#invdel').onclick = async () => { if (!confirm(`Remove ${it.name} from the inventory? Its history stays.`)) return; try { await api('/canteen/inventory/' + it.id, { method: 'DELETE' }); d.close(); draw(); } catch (e) { toast(e.message); } }; });
+    main.querySelectorAll('[data-iback]').forEach(b => b.onclick = async () => { try { await api('/canteen/inventory/' + b.dataset.iback, { method: 'PATCH', body: { active: true } }); } catch (e) { toast(e.message); } draw(); });
+    const T = { in: ['Stock in', 'How much came in?', true], use: ['Used', 'How much went to the kitchen?', false], waste: ['Wasted', 'How much was wasted?', false], count: ['Count', 'How much is actually there now? (sets the stock level)', false] };
+    main.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => { const it = v.items.find(x => x.id === b.dataset.id), [t, q, money] = T[b.dataset.mv];
+      dlg(`<h3>${t} · ${esc(it.name)}</h3><p class="muted small">In stock: <b>${qty(it.qty)} ${esc(it.unit)}</b></p><label>${q} (${esc(it.unit)})</label><input name="qty" inputmode="decimal" required autofocus>
+        ${money ? '<label>Total cost (₹) <span class="muted small">(optional: sets the cost per unit)</span></label><input name="cost" inputmode="decimal">' : ''}
+        <label>Note ${b.dataset.mv === 'waste' ? '(why)' : '<span class="muted small">(optional)</span>'}</label><input name="note" maxlength="200" ${b.dataset.mv === 'waste' ? 'required' : ''} placeholder="${b.dataset.mv === 'in' ? 'e.g. supplier, bill no.' : b.dataset.mv === 'waste' ? 'e.g. spoiled, spilt' : ''}">`,
+        async f => { const r = await api(`/canteen/inventory/${it.id}/move`, { method: 'POST', body: { kind: b.dataset.mv, qty: f.qty.value, cost: f.cost?.value, note: f.note.value } }); toast(`${it.name}: ${qty(r.qty)} ${r.unit} in stock${r.low ? ' · low' : ''}`); draw(); }); });
+    document.getElementById('invcsv').onclick = async () => { try { const res = await api('/canteen/inventory.csv', { raw: true }); if (!res.ok) throw new Error('Could not download');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = 'canteen-inventory.csv'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); } catch (e) { toast(e.message); } };
+  }
+
 }

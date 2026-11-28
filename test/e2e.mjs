@@ -1460,6 +1460,53 @@ try {
   await fails('…change prices', '/canteen/items/' + tea.id, { token: T.owner, method: 'PATCH', body: { price: '1' } }, 403);
   await fails('…or handle orders', '/canteen/orders', { token: T.owner }, 403);
   check('counter staff still cannot see reports', (await api('/canteen/report', { token: T.kavya })).status === 403);
+  // ---- custom permissions per person ----
+  const st0 = (await api('/canteen/setup', { token: T.sa, tenant: A2 })).data;
+  check('set up lists the features and each job\'s defaults', st0.features.length === 9 && st0.jobs.counter.join() === 'pos,orders,openclose,stock' && st0.jobs.owner.join() === 'reports');
+  const cbase = { on: true, managers: [pid], kitchen: [kid], counter: ['u-cashier'], owner: ['u-owner'], name: 'Hilltop Café' };
+  await fails('a person needs at least one feature', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': [] } } }, 400, 'at least one feature');
+  check('…and nothing was changed by the refused save', (await api('/canteen/access', { token: T.kavya })).data.can.pos === true);
+  await ok('super admin lets Kavya (counter) also see reports, but not open the day', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': ['pos', 'orders', 'stock', 'reports'] } } });
+  const kc = (await api('/canteen/access', { token: T.kavya })).data;
+  check('Kavya now has reports and not open/close', kc.can.reports && !kc.can.openclose && kc.can.pos);
+  check('…the report opens for her', (await api('/canteen/report', { token: T.kavya })).status === 200);
+  await fails('…open/close is refused', '/canteen/close', { token: T.kavya, method: 'POST' }, 403, 'job does not include');
+  await ok('a save that does not mention her features keeps them', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: cbase });
+  check('…still custom', (await api('/canteen/access', { token: T.kavya })).data.can.reports === true && (await api('/canteen/setup', { token: T.sa, tenant: A2 })).data.custom.includes('u-cashier'));
+  await ok('back to the job\'s defaults', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': null } } });
+  check('…reports gone again, open/close back', (await api('/canteen/access', { token: T.kavya })).data.can.reports === false && (await api('/canteen/access', { token: T.kavya })).data.can.openclose === true);
+  await ok('the kitchen can be given open/close', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['kitchen', 'stock', 'openclose'] } } });
+  check('…Lata can open the day now', (await api('/canteen/open', { token: T.lata, method: 'POST' })).status === 200);
+  await ok('(kitchen back to defaults)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: null } } });
+  await fails('a campus admin cannot change canteen staff', '/canteen/setup', { token: T.asha, method: 'PUT', body: cbase }, 403);
+  // ---- inventory ----
+  await run(`INSERT INTO users (id, tenant_id, name, email, role, password_hash, is_active, must_change_pw) SELECT 'u-store', tenant_id, 'Sita Store', 'store@example.com', 'provider', password_hash, 1, 0 FROM users WHERE email='pavan@example.com'`);
+  T.store = await login('store@example.com', 'Pavan2026ok');
+  await ok('super admin gives Sita the Inventory job', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, inventory: ['u-store'] } });
+  const sa2 = (await api('/canteen/access', { token: T.store })).data;
+  check('inventory staff: only the inventory, opening on the canteen', sa2.can.inventory && !sa2.can.pos && !sa2.can.menu && !sa2.can.reports && sa2.desk === false);
+  await fails('…cannot sell', '/canteen/pos', { token: T.store, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 403);
+  await fails('counter staff cannot touch the inventory', '/canteen/inventory', { token: T.kavya }, 403);
+  const rice = await ok('add rice: 25 kg, alert at 10, ₹48/kg', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Rice', unit: 'kg', category: 'Grains', qty: '25', min_qty: '10', cost: '48' } });
+  check('…stock and value', rice.qty === 25 && rice.value_paise === 25 * 4800 && !rice.low);
+  await fails('the same item twice is refused', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'rice', unit: 'kg' } }, 400, 'already');
+  const r1 = await ok('used 18 kg', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'use', qty: '18' } });
+  check('…7 kg left: low stock', r1.qty === 7 && r1.low === true);
+  await fails('cannot use more than is there', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'use', qty: '8' } }, 400, 'Only 7');
+  await fails('waste needs a reason', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'waste', qty: '1' } }, 400, 'why');
+  await ok('1 kg wasted (wet)', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'waste', qty: '1', note: 'got wet' } });
+  const r3 = await ok('bought 50 kg for ₹2,500', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'in', qty: '50', cost: '2500', note: 'Sri Ram Traders' } });
+  check('…56 kg, the new price ₹50/kg', r3.qty === 56 && r3.cost_paise === 5000 && !r3.low);
+  const r4 = await ok('a count finds 55 kg', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count', qty: '55' } });
+  check('…the level is set to the count', r4.qty === 55);
+  const inv = (await api('/canteen/inventory', { token: T.store })).data;
+  check('every change is kept with who did it', inv.moves.length === 5 && inv.moves.every(m => m.user_name === 'Sita Store') && inv.moves[0].kind === 'count' && inv.moves[0].qty === -1);
+  const ir = (await api('/canteen/inventory/report?range=day', { token: T.store })).data;
+  check('inventory report: bought, used, wasted', ir.bought_paise === 250000 && ir.rows[0].use === 18 && ir.rows[0].waste === 1 && ir.waste_paise === 4800);
+  check('the owner sees the inventory report too', (await api('/canteen/inventory/report', { token: T.owner })).status === 200 && (await api('/canteen/inventory', { token: T.owner })).status === 403);
+  const icsv = await fetch(API + '/canteen/inventory.csv', { headers: { authorization: 'Bearer ' + T.store } });
+  check('inventory history downloads as CSV', icsv.status === 200 && /Sri Ram Traders/.test(await icsv.text()));
+  check('managers have the inventory too', (await api('/canteen/inventory', { token: T.pavan })).status === 200);
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
@@ -1473,7 +1520,7 @@ try {
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya, owner: T.owner }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya, owner: T.owner, store: T.store }, { t1: ids.t1 });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1784,6 +1831,14 @@ async function uiSmoke(tok, id) {
     await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.owner)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/canteen` });
     let ownOk = false; for (let i = 0; i < 40 && !ownOk; i++) { await sleep(250); ownOk = await js(`return !!document.querySelector('.cn-donut') && !document.querySelector('[data-t=counter], [data-t=orders], [data-t=menu]')`).catch(() => false); }
     check('the owner lands on the reports, with no counter, orders or menu tabs', ownOk);
+    await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.store)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/inventory` });
+    let invOk = false; for (let i = 0; i < 40 && !invOk; i++) { await sleep(250); invOk = await js(`return !!document.querySelector('.cn-inv') && !document.querySelector('[data-t]')`).catch(() => false); }
+    check('#/c/inventory: inventory staff see only the inventory', invOk);
+    check('…searching finds rice', await js(`const q = document.querySelector('#invq'); q.value = 'ric'; q.dispatchEvent(new Event('input')); return [...document.querySelectorAll('.cn-inv')].filter(r => !r.hidden).length === 1`));
+    await visit('super admin: Set up with search and features', '/c/canteen', tok.sa, '[data-t]');
+    check('…searching people and opening a person\'s features', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#stq'); i++) await new Promise(r => setTimeout(r, 200));
+      const q = document.querySelector('#stq'); q.value = 'kavya'; q.dispatchEvent(new Event('input')); const shown = [...document.querySelectorAll('[data-row]')].filter(r => !r.hidden);
+      return shown.length === 1 && shown[0].querySelectorAll('.cn-feat [data-f]').length === 9`));
     await visit('kitchen staff land straight on the KOT screen', '/c/canteen', tok.lata, '.cn-kh');
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));

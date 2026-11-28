@@ -560,7 +560,7 @@ async function shell(active, render, title) {
   else if (!S.tenant || !S.me.tenants.find(t => t.id === S.tenant)) S.tenant = S.me.tenants[0]?.id;
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
-  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter || c.owner); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
+  if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter || c.owner || c.inventory || c.reports); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
   const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
@@ -1819,6 +1819,7 @@ async function route() {
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
       const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage, 'c/canteen': canteenPage };
+      if (page === 'c/inventory') { sessionStorage.setItem('canteen-go', 'inventory'); return location.replace('#/c/canteen'); } // the canteen's Inventory tab
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }
