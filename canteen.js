@@ -13,7 +13,7 @@ import { kindOf, heicToJpeg, SHOWN } from './images.js';
 let qrLib = null;
 const qrSvg = async text => { if (!qrLib) { try { qrLib = (await import('qrcode')).default; } catch { console.error('QR code: the "qrcode" package is not installed. Run: npm ci --omit=dev'); const e = new Error('QR codes need the qrcode package. Run npm ci on the server.'); e.status = 503; e.code = 'QR_MISSING'; throw e; } }
   return qrLib.toString(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0F172A', light: '#FFFFFF' } }); };
-import { pool, one, all, run, uid, now } from './db.js';
+import { pool, one, all, run, tx, uid, now } from './db.js';
 
 await pool.query(`
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS canteen_on INT DEFAULT 0;
@@ -61,6 +61,7 @@ ALTER TABLE canteen_managers ADD COLUMN IF NOT EXISTS perms TEXT;
 CREATE TABLE IF NOT EXISTS canteen_inv_items (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL, unit TEXT NOT NULL, category TEXT,
   qty DOUBLE PRECISION NOT NULL DEFAULT 0, min_qty DOUBLE PRECISION NOT NULL DEFAULT 0, cost_paise INT NOT NULL DEFAULT 0, active INT DEFAULT 1, created_at TEXT, updated_at TEXT);
 CREATE INDEX IF NOT EXISTS cinv_t ON canteen_inv_items(tenant_id, active);
+ALTER TABLE canteen_inv_items ALTER COLUMN cost_paise TYPE DOUBLE PRECISION; -- per gram or ml the cost is a fraction of a paisa
 CREATE TABLE IF NOT EXISTS canteen_inv_moves (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, item_id TEXT NOT NULL REFERENCES canteen_inv_items(id), kind TEXT NOT NULL CHECK (kind IN ('in','use','waste','count')),
   qty DOUBLE PRECISION NOT NULL, before_qty DOUBLE PRECISION, after_qty DOUBLE PRECISION, cost_paise INT DEFAULT 0, note TEXT, user_id TEXT, user_name TEXT, created_at TEXT);
 CREATE INDEX IF NOT EXISTS cinvm_t ON canteen_inv_moves(tenant_id, created_at);
@@ -413,14 +414,23 @@ export function canteen(d) {
     const sent = req.body.perms && typeof req.body.perms === 'object' ? req.body.perms : {};
     const permsFor = (id, kind) => { if (Object.hasOwn(sent, id)) { const l = Array.isArray(sent[id]) ? [...new Set(sent[id].filter(f => FKEYS.includes(f)))] : null;
         if (!l) return null; if (!l.length) throw bad('Give each person at least one feature, or remove their canteen job');
+        // every feature must have a screen to use it on
+        if (!l.some(f => ['pos', 'orders', 'kitchen', 'inventory', 'menu', 'reports'].includes(f))) throw bad('Give at least one screen too: Counter, Orders, Kitchen, Inventory, Menu or Reports');
+        if (l.includes('settings') && !l.includes('menu')) throw bad('Name, timings and payments are on the Menu tab: give Menu too');
+        if (l.includes('openclose') && !l.some(f => f === 'orders' || f === 'pos')) throw bad('Open / close is on the Orders and Counter screens: give one of them too');
+        if (l.includes('stock') && !l.some(f => ['pos', 'kitchen', 'menu'].includes(f))) throw bad('Sold out is marked on the Counter, Kitchen or Menu screens: give one of them too');
         return [...l].sort().join() === [...JOBS[kind]].sort().join() ? null : JSON.stringify(l); }
       return before[id] && (before[id].kind || 'manager') === kind ? before[id].perms : null; };
     const rowsIn = [[ids, 'manager'], [kit || [], 'kitchen'], [ctr || [], 'counter'], [own || [], 'owner'], [inv || [], 'inventory']].flatMap(([l, k]) => l.map(id => [id, k, permsFor(id, k)])); // checked before anything is changed
+    const fullSets = rowsIn.filter(([, k, pp]) => k === 'manager' || (pp && FKEYS.every(f => JSON.parse(pp).includes(f)))).length; // anyone with every feature counts as a manager
+    if (fullSets > MAX_MANAGERS) throw bad(`At most ${MAX_MANAGERS} people can have every canteen feature (managers)`);
+    await tx(async () => { // all or nothing
     await run('UPDATE tenants SET canteen_on=?, canteen_name=? WHERE id=?', on ? 1 : 0, str(req.body.name, 60) || null, req.tenantId);
     if (!on) await run('UPDATE tenants SET canteen_open_day=NULL WHERE id=?', req.tenantId); // switched off: closed too
     await run(`DELETE FROM canteen_managers WHERE tenant_id=? AND coalesce(kind,'manager') = ANY(?::text[])`, req.tenantId, kinds);
     await run('DELETE FROM canteen_managers WHERE tenant_id=? AND user_id = ANY(?::text[])', req.tenantId, all3); // one job each: a new job replaces the old
     for (const [l, k] of [[ids, 'manager'], [kit || [], 'kitchen'], [ctr || [], 'counter'], [own || [], 'owner'], [inv || [], 'inventory']]) for (const id of l) await run('INSERT INTO canteen_managers (tenant_id, user_id, created_at, kind, perms) VALUES (?,?,?,?,?)', req.tenantId, id, now(), k, rowsIn.find(r => r[0] === id)[2]);
+    });
     return { on, managers: ids, kitchen: kit, counter: ctr, owner: own, inventory: inv };
   }));
 
@@ -617,7 +627,7 @@ export function canteen(d) {
 
   // ---- inventory: raw stock (rice, oil, milk, gas …), every change kept with who and why ----
   const UNITS = ['kg', 'g', 'litre', 'ml', 'pcs', 'packet', 'dozen', 'tray', 'bottle', 'can', 'box', 'cylinder', 'bag'];
-  const num = (v, what, min = 0) => { const n = Number(String(v ?? '').replace(/,/g, '')); if (!Number.isFinite(n) || n < min || n > 1e7) throw bad(`Enter a valid ${what}`); return Math.round(n * 1000) / 1000; };
+  const num = (v, what, min = 0) => { if (v === undefined || v === null || String(v).trim() === '') throw bad(`Enter the ${what}`); const n = Number(String(v).replace(/,/g, '')); if (!Number.isFinite(n) || n < min || n > 1e7) throw bad(`Enter a valid ${what}`); return Math.round(n * 1000) / 1000; };
   const invRow = r => ({ id: r.id, name: r.name, unit: r.unit, category: r.category, qty: r.qty, min_qty: r.min_qty, cost_paise: r.cost_paise, active: !!r.active, low: r.active && r.qty <= r.min_qty, out: r.active && r.qty <= 0, value_paise: Math.round(Math.max(0, r.qty) * r.cost_paise), updated_at: r.updated_at });
   S.get('/canteen/inventory', wrap(async req => { await needCan(req, 'inventory');
     const items = (await all('SELECT * FROM canteen_inv_items WHERE tenant_id=? ORDER BY active DESC, category NULLS LAST, name', req.tenantId)).map(invRow), live = items.filter(i => i.active);
@@ -625,10 +635,10 @@ export function canteen(d) {
     return { units: UNITS, items, low: live.filter(i => i.low).length, out: live.filter(i => i.out).length, value_paise: live.reduce((s, i) => s + i.value_paise, 0), categories: [...new Set(live.map(i => i.category).filter(Boolean))].sort(), moves }; }));
   const invFields = (b, partial) => { const f = {};
     if (!partial || b.name !== undefined) { f.name = str(b.name, 80); if (!f.name) throw bad('Name required'); }
-    if (!partial || b.unit !== undefined) { f.unit = str(b.unit, 20).toLowerCase(); if (!f.unit) throw bad('Pick a unit'); }
+    if (!partial || b.unit !== undefined) { f.unit = str(b.unit, 20).toLowerCase(); if (!UNITS.includes(f.unit)) throw bad('Pick a unit from the list'); }
     if (b.category !== undefined) f.category = str(b.category, 40) || null;
-    if (b.min_qty !== undefined) f.min_qty = num(b.min_qty, 'minimum level');
-    if (b.cost !== undefined) f.cost_paise = Math.round(num(b.cost, 'cost per unit') * 100);
+    if (b.min_qty !== undefined) f.min_qty = String(b.min_qty).trim() === '' ? 0 : num(b.min_qty, 'minimum level');
+    if (b.cost !== undefined) f.cost_paise = String(b.cost).trim() === '' ? 0 : num(b.cost, 'cost per unit') * 100;
     if (b.active !== undefined) f.active = b.active ? 1 : 0;
     return f; };
   S.post('/canteen/inventory', wrap(async req => { const a = await needCan(req, 'inventory'), f = invFields(req.body, false), qty = num(req.body.qty ?? 0, 'opening stock');
@@ -639,6 +649,8 @@ export function canteen(d) {
     if (qty) await run(`INSERT INTO canteen_inv_moves (id, tenant_id, item_id, kind, qty, before_qty, after_qty, cost_paise, note, user_id, user_name, created_at) VALUES (?,?,?,'count',?,0,?,0,'Opening stock',?,?,?)`, uid(), req.tenantId, id, qty, qty, req.user.id, req.user.name, t);
     return invRow(await one('SELECT * FROM canteen_inv_items WHERE id=?', id)); }));
   S.patch('/canteen/inventory/:id', wrap(async req => { await needCan(req, 'inventory'); const f = invFields(req.body, true); if (!Object.keys(f).length) throw bad('Nothing to change');
+    const cur = await one('SELECT name, active FROM canteen_inv_items WHERE id=? AND tenant_id=?', req.params.id, req.tenantId); if (!cur) throw notFound();
+    if ((f.active ?? cur.active) && await one('SELECT 1 FROM canteen_inv_items WHERE tenant_id=? AND lower(name)=lower(?) AND active=1 AND id<>?', req.tenantId, f.name ?? cur.name, req.params.id)) throw bad('Another stock item already has that name');
     const r = await run(`UPDATE canteen_inv_items SET ${Object.keys(f).map(k => k + '=?').join(',')}, updated_at=? WHERE id=? AND tenant_id=?`, ...Object.values(f), now(), req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
   // a stock change: in (bought, with its cost), use (to the kitchen), waste (spoiled, spilt), count (the physical count: sets the level)
   S.post('/canteen/inventory/:id/move', wrap(async req => { await needCan(req, 'inventory'); const b = req.body, kind = ['in', 'use', 'waste', 'count'].includes(b.kind) ? b.kind : null; if (!kind) throw bad('Pick in, use, waste or count');
@@ -648,11 +660,12 @@ export function canteen(d) {
     for (let i = 0; i < 3; i++) { const it = await one('SELECT * FROM canteen_inv_items WHERE id=? AND tenant_id=? AND active=1', req.params.id, req.tenantId); if (!it) throw notFound();
       const after = Math.round((kind === 'count' ? qty : kind === 'in' ? it.qty + qty : it.qty - qty) * 1000) / 1000;
       if (after < 0) throw bad(`Only ${it.qty} ${it.unit} in stock: you can't take out ${qty}. Do a count if the stock is wrong.`);
-      const unitCost = kind === 'in' && cost ? Math.round(cost / qty) : null; // the latest purchase price becomes the cost per unit
-      const r = await run(`UPDATE canteen_inv_items SET qty=?, updated_at=?${unitCost != null ? ', cost_paise=?' : ''} WHERE id=? AND qty=?`, after, now(), ...(unitCost != null ? [unitCost] : []), it.id, it.qty);
-      if (!r.changes) continue; // someone changed it at the same moment: read again
+      const unitCost = kind === 'in' && cost ? cost / qty : null; // the latest purchase price becomes the cost per unit
+      const done = await tx(async () => { const r = await run(`UPDATE canteen_inv_items SET qty=?, updated_at=?${unitCost != null ? ', cost_paise=?' : ''} WHERE id=? AND qty=?`, after, now(), ...(unitCost != null ? [unitCost] : []), it.id, it.qty);
+      if (!r.changes) return false; // someone changed it at the same moment: read again
       await run(`INSERT INTO canteen_inv_moves (id, tenant_id, item_id, kind, qty, before_qty, after_qty, cost_paise, note, user_id, user_name, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-        uid(), req.tenantId, it.id, kind, kind === 'count' ? Math.round((after - it.qty) * 1000) / 1000 : qty, it.qty, after, cost || (kind !== 'in' ? Math.round(qty * it.cost_paise) : 0), note, req.user.id, req.user.name, now());
+        uid(), req.tenantId, it.id, kind, kind === 'count' ? Math.round((after - it.qty) * 1000) / 1000 : qty, it.qty, after, cost || (kind !== 'in' ? Math.round(Math.abs(after - it.qty) * it.cost_paise) : 0), note, req.user.id, req.user.name, now()); return true; });
+      if (!done) continue;
       return invRow(await one('SELECT * FROM canteen_inv_items WHERE id=?', it.id)); }
     throw new HttpErr(409, 'BUSY', 'The stock just changed. Please try again.'); }));
   S.delete('/canteen/inventory/:id', wrap(async req => { await needCan(req, 'inventory'); const r = await run('UPDATE canteen_inv_items SET active=0, updated_at=? WHERE id=? AND tenant_id=?', now(), req.params.id, req.tenantId); if (!r.changes) throw notFound(); return { ok: true }; }));
@@ -666,12 +679,12 @@ export function canteen(d) {
     const rows = Object.values(by).sort((x, y) => y.bought_paise - x.bought_paise || x.item.localeCompare(y.item));
     return { from, to: today, rows, bought_paise: rows.reduce((s, r) => s + r.bought_paise, 0), waste_paise: rows.reduce((s, r) => s + r.waste_paise, 0), moves: moves.length,
       by_person: Object.values(moves.reduce((m, x) => { const e = m[x.user_id] ||= { name: x.user_name || 'Someone', changes: 0 }; e.changes++; return m; }, {})) }; }));
-  S.get('/canteen/inventory.csv', async (req, res, next) => { try { await needCan(req, 'inventory', 'reports');
+  S.get('/canteen/inventory.csv', async (req, res, next) => { try { const a = await needCan(req, 'inventory', 'reports'), tzc = a.tenant.timezone || 'Asia/Kolkata';
     const rows = await all(`SELECT m.*, i.name item, i.unit FROM canteen_inv_moves m JOIN canteen_inv_items i ON i.id=m.item_id WHERE m.tenant_id=? ORDER BY m.created_at DESC LIMIT 20000`, req.tenantId);
-    const q = v => { const t = String(v ?? ''); return /[",\n]/.test(t) || /^[=+\-@]/.test(t) ? `"${t.replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"` : t; };
+    const q = v => { if (typeof v === 'number') return String(v); const t = String(v ?? ''); return /[",\r\n]/.test(t) || /^[=+\-@\t\r]/.test(t) ? `"${t.replace(/^([=+\-@\t\r])/, "'$1").replace(/"/g, '""')}"` : t; };
     const K = { in: 'Stock in', use: 'Used', waste: 'Wasted', count: 'Count correction' };
     res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="canteen-inventory.csv"' }).send('﻿' + [['When', 'Item', 'Change', 'Quantity', 'Unit', 'Before', 'After', 'Cost (₹)', 'Note', 'By'].join(','),
-      ...rows.map(m => [new Date(m.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), m.item, K[m.kind], m.qty, m.unit, m.before_qty, m.after_qty, (m.cost_paise / 100).toFixed(2), m.note, m.user_name].map(q).join(','))].join('\r\n'));
+      ...rows.map(m => [new Date(m.created_at).toLocaleString('en-IN', { timeZone: tzc }), m.item, K[m.kind], m.qty, m.unit, m.before_qty, m.after_qty, (m.cost_paise / 100).toFixed(2), m.note, m.user_name].map(q).join(','))].join('\r\n'));
   } catch (e) { next(e); } });
 
   // ---- reports: collected orders ----

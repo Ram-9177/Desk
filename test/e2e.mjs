@@ -1475,8 +1475,11 @@ try {
   check('…still custom', (await api('/canteen/access', { token: T.kavya })).data.can.reports === true && (await api('/canteen/setup', { token: T.sa, tenant: A2 })).data.custom.includes('u-cashier'));
   await ok('back to the job\'s defaults', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { 'u-cashier': null } } });
   check('…reports gone again, open/close back', (await api('/canteen/access', { token: T.kavya })).data.can.reports === false && (await api('/canteen/access', { token: T.kavya })).data.can.openclose === true);
-  await ok('the kitchen can be given open/close', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['kitchen', 'stock', 'openclose'] } } });
+  await ok('the kitchen can be given open/close', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['kitchen', 'stock', 'openclose', 'orders'] } } });
   check('…Lata can open the day now', (await api('/canteen/open', { token: T.lata, method: 'POST' })).status === 200);
+  await fails('a set with no screen to use it on is refused', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['stock', 'openclose'] } } }, 400, 'at least one screen');
+  await fails('settings need the Menu tab', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: ['kitchen', 'settings'] } } }, 400, 'Menu');
+  await fails('no more than 2 people with every feature (a counter person given everything counts)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, managers: [pid, 'u-owner'], owner: [], perms: { 'u-cashier': ['pos', 'orders', 'openclose', 'stock', 'kitchen', 'menu', 'settings', 'reports', 'inventory'] } } }, 400, 'every canteen feature');
   await ok('(kitchen back to defaults)', '/canteen/setup', { token: T.sa, tenant: A2, method: 'PUT', body: { ...cbase, perms: { [kid]: null } } });
   await fails('a campus admin cannot change canteen staff', '/canteen/setup', { token: T.asha, method: 'PUT', body: cbase }, 403);
   // ---- inventory ----
@@ -1499,6 +1502,8 @@ try {
   check('…56 kg, the new price ₹50/kg', r3.qty === 56 && r3.cost_paise === 5000 && !r3.low);
   const r4 = await ok('a count finds 55 kg', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count', qty: '55' } });
   check('…the level is set to the count', r4.qty === 55);
+  await fails('a count with no number is refused (not taken as zero)', `/canteen/inventory/${rice.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count' } }, 400, 'Enter the quantity');
+  await fails('an unknown unit is refused', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Salt', unit: 'bucket' } }, 400, 'unit');
   const inv = (await api('/canteen/inventory', { token: T.store })).data;
   check('every change is kept with who did it', inv.moves.length === 5 && inv.moves.every(m => m.user_name === 'Sita Store') && inv.moves[0].kind === 'count' && inv.moves[0].qty === -1);
   const ir = (await api('/canteen/inventory/report?range=day', { token: T.store })).data;
@@ -1507,6 +1512,13 @@ try {
   const icsv = await fetch(API + '/canteen/inventory.csv', { headers: { authorization: 'Bearer ' + T.store } });
   check('inventory history downloads as CSV', icsv.status === 200 && /Sri Ram Traders/.test(await icsv.text()));
   check('managers have the inventory too', (await api('/canteen/inventory', { token: T.pavan })).status === 200);
+  const tur = await ok('turmeric in grams at ₹0.45 a gram', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Turmeric', unit: 'g', qty: '1000', cost: '0.45' } });
+  check('…its value is exact (₹450, not rounded per gram)', tur.value_paise === 45000);
+  await ok('…a count finds 990 g', `/canteen/inventory/${tur.id}/move`, { token: T.store, method: 'POST', body: { kind: 'count', qty: '990' } });
+  check("…the count's cost is the 10 g difference (₹4.50), not the whole stock", (await q("SELECT cost_paise FROM canteen_inv_moves WHERE item_id=? AND kind='count' ORDER BY created_at DESC LIMIT 1", tur.id))[0].cost_paise === 450);
+  await ok('remove turmeric', '/canteen/inventory/' + tur.id, { token: T.store, method: 'DELETE' });
+  await ok('add a new Turmeric', '/canteen/inventory', { token: T.store, method: 'POST', body: { name: 'Turmeric', unit: 'g' } });
+  await fails('putting the old one back would make two with the same name', '/canteen/inventory/' + tur.id, { token: T.store, method: 'PATCH', body: { active: true } }, 400, 'already has that name');
   await ok('campus admin can also sell at the counter', '/canteen/pos', { token: T.asha, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } });
   await api('/canteen/close', { token: T.pavan, method: 'POST' });
   await fails('nothing is sold while the canteen is closed', '/canteen/pos', { token: T.kavya, method: 'POST', body: { items: [{ id: tea.id, qty: 1 }] } }, 400, 'Open the canteen');
@@ -1834,7 +1846,7 @@ async function uiSmoke(tok, id) {
     await js(`localStorage.clear(); localStorage.setItem('tok', ${JSON.stringify(tok.store)});`); await send('Page.navigate', { url: `${APP}/?t=${Date.now()}#/c/inventory` });
     let invOk = false; for (let i = 0; i < 40 && !invOk; i++) { await sleep(250); invOk = await js(`return !!document.querySelector('.cn-inv') && !document.querySelector('[data-t]')`).catch(() => false); }
     check('#/c/inventory: inventory staff see only the inventory', invOk);
-    check('…searching finds rice', await js(`const q = document.querySelector('#invq'); q.value = 'ric'; q.dispatchEvent(new Event('input')); return [...document.querySelectorAll('.cn-inv')].filter(r => !r.hidden).length === 1`));
+    check('…searching finds rice', await js(`const q = document.querySelector('#invq'); q.value = 'rice'; q.dispatchEvent(new Event('input')); return [...document.querySelectorAll('.cn-inv')].filter(r => !r.hidden).length === 1`));
     await visit('super admin: Set up with search and features', '/c/canteen', tok.sa, '[data-t]');
     check('…searching people and opening a person\'s features', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 30 && !document.querySelector('#stq'); i++) await new Promise(r => setTimeout(r, 200));
       const q = document.querySelector('#stq'); q.value = 'kavya'; q.dispatchEvent(new Event('input')); const shown = [...document.querySelectorAll('[data-row]')].filter(r => !r.hidden);
