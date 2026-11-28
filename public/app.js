@@ -290,10 +290,10 @@ async function portal(slug, q, view, code) {
       <h1>Need help?<br><span>We're</span> on it.</h1><p class="muted">${esc(tenant.name)} service desk. No login needed to raise or track a ticket.</p>
       ${seen ? '' : guideCard('guide/requestor.html', 'New here?', 'Watch the full guide', '2 minutes, step by step, with voice in English or తెలుగు.')}
       <div id="nboard"></div>
-      <div id="cboard"></div>
       ${opt(`#/d/${slug}/raise`, 'plus', 'c0', 'Raise a ticket', 'Report a problem and get a ticket number instantly')}
       ${opt(`#/d/${slug}/track`, 'search', 'c2', 'Track ticket', 'Check status with your ticket number')}
-      ${seen ? opt('guide/requestor.html', 'book', 'c4', 'Full guide', 'How to raise and track a ticket, step by step with voice') : ''}${iosHintHtml()}</div>${installBtn()}`;
+      <div id="cboard"></div>
+      ${seen ? `<a class="guidelink" href="guide/requestor.html">${I('book', 16)}<span>Full guide: how to raise and track a ticket, with voice</span>${I('chev', 14)}</a>` : ''}${iosHintHtml()}</div>${installBtn()}`;
     wireGuide('guide-seen', route); noticeBoard(slug, $('#nboard')); canteenCard(slug, $('#cboard'));
     return;
   }
