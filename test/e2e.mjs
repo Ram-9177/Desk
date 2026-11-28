@@ -702,6 +702,11 @@ try {
   const s2 = (await raise('alpha', { ...base('Strb'), form_data: { [qHelp]: 'Other: projector not turning on!!' } })).data;
   const s3 = (await raise('alpha', { ...base('Strc'), form_data: { [qHelp]: 'Other: projector remote missing' } })).data;
   check('nearly identical "Other" text joins; a different problem in the same place does not', s2.merged && !s3.merged, JSON.stringify([s1, s2, s3]));
+  const cols = (await q("SELECT column_name c FROM information_schema.columns WHERE table_name='ticket_requestors'")).map(x => x.c);
+  check('ticket_requestors carries number, token and complaint', ['tenant_id','ticket_no','tracking_token','subject','description','form_data','detached_at','detached_to'].every(c => cols.includes(c)));
+  await stop(); await start(); // the migration backfills the reports raised above (until the server writes these itself)
+  const firstRows = await q("SELECT count(*)::int n FROM ticket_requestors WHERE is_first=1 AND (ticket_no IS NULL OR tenant_id IS NULL)");
+  check('every first requestor row was backfilled with its ticket number', firstRows[0].n === 0);
   }
 
   sec('Team daily queue, provider phone and priority for requestors');

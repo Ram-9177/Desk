@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS ticket_requestors (id TEXT PRIMARY KEY, ticket_id TEX
 INSERT INTO ticket_requestors (id, ticket_id, requestor_id, name, contact, raised_at, is_first)
   SELECT md5(t.id || ':first'), t.id, r.id, r.name, coalesce(lower(r.email), r.phone), t.created_at, 1 FROM tickets t JOIN requestors r ON r.id = t.requestor_id
   WHERE NOT EXISTS (SELECT 1 FROM ticket_requestors x WHERE x.ticket_id = t.id) ON CONFLICT DO NOTHING;
+-- each report on a ticket can carry its own number, token and complaint; a ticket can be joined into another
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS ticket_no TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS tracking_token TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS subject TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS form_data TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_at TEXT;
+ALTER TABLE ticket_requestors ADD COLUMN IF NOT EXISTS detached_to TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS joined_into TEXT;
+-- the first report of each ticket owns that ticket's number, token and complaint; later reports keep working under the shared number
+UPDATE ticket_requestors r SET tenant_id = t.tenant_id, ticket_no = t.ticket_no, tracking_token = t.tracking_token, subject = t.subject, description = t.description, form_data = t.form_data
+  FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 1 AND r.ticket_no IS NULL;
+UPDATE ticket_requestors r SET tenant_id = t.tenant_id FROM tickets t WHERE t.id = r.ticket_id AND r.is_first = 0 AND r.tenant_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS tr_no ON ticket_requestors(tenant_id, ticket_no) WHERE ticket_no IS NOT NULL;
+CREATE INDEX IF NOT EXISTS t_joined ON tickets(joined_into) WHERE joined_into IS NOT NULL;
 -- Food & catering: rate a meal (feedback, never a ticket) or report a serious problem (a normal ticket)
 CREATE TABLE IF NOT EXISTS food_locations (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL,
   active INT DEFAULT 1, sort_order INT DEFAULT 0, UNIQUE (tenant_id, name));
