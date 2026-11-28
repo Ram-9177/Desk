@@ -7,9 +7,10 @@ Date: 2026-11-28. Status: reviewed, awaiting approval.
 ONE Desk gets one Claude API connection, set up and controlled entirely from the web app by a super admin, with a
 separate monthly spend limit for each of the three places that use it:
 
-1. **Replies.** In "Check before sending", the provider's note is rewritten by Claude (spelling, grammar, sentence
-   form, same meaning) instead of the dictionary polisher. The provider still sees the rewrite next to their original,
-   can edit it, and nothing is saved or sent until they tap Send.
+1. **Replies.** In "Check before sending", the provider's short note becomes a full reply written by Claude from the
+   ticket (what the requester described and said since) and the provider's note, in the step's tone. The provider sees
+   the suggested reply next to their own note, can edit it or ask for another, and nothing is saved or sent until they
+   tap Send.
 2. **Reports.** A short written summary, in plain words, on the desk Reports page and at the top of the daily, weekly
    and monthly food feedback emails.
 3. **Bot.** The ONE Desk Bot (students without login, and staff) understands natural questions and answers in natural
@@ -41,8 +42,8 @@ and capped per area, and with everything configured in the app's own settings ra
 - A student or provider seeing an error, a blank screen or a slower screen because the API was slow or down.
 - A bill above the limits. A limit is a hard stop for that area until the next month.
 - The bot inventing a ticket status, a date or a rule that is not in the data it was given.
-- A reply rewrite that changes the meaning, adds information, drops a name, place, code or link, or adds a greeting
-  or sign-off (the email template already supplies those).
+- A suggested reply that promises or claims anything the provider's note and the ticket do not say (a date, a part, a
+  cause), drops a name, place, code or link, or adds a greeting or sign-off (the email template supplies those).
 - Sending more personal data than needed. Emails and phone numbers are stripped from text before it is sent.
 
 ## Constraints
@@ -142,28 +143,41 @@ New **AI** item in the admin navigation (super admins only, next to Tenants), ro
 
 ### Module `ai.js`
 
-One module exports: `aiReady(feature)` (key present, switch on, under limit), `aiRewriteNote`, `aiBotIntent`,
+One module exports: `aiReady(feature)` (key present, switch on, under limit), `aiWriteReply`, `aiBotIntent`,
 `aiBotPhrase`, `aiReportSummary`, `aiTest`, plus `aiConfig` / `aiUsage` for the settings endpoints. It owns the SDK
 client (rebuilt when the key changes), the price table, the usage rows and the limit check. No other file touches
 the SDK. Text sent to the API passes through one `scrub()` that removes emails and phone numbers.
 
 ### Replies
 
-- In `POST /tickets/:id/preview`, when `aiReady('replies')` and `text_as_is` is not set: call `aiRewriteNote(raw,
-  { keep, context })` where `keep` is today's keep-word list (subject, location, requester name, service, campus) and
-  `context` is the step (work started, on hold, closed…). On any failure or when not ready, the dictionary polisher
-  runs exactly as today.
-- Instructions to Claude: tidy spelling, grammar and sentence form in British English; keep the meaning and roughly
-  the length; keep every name, place, code, number, email and link exactly; do not add information, greetings or
-  sign-offs; return the note only, as plain text. `max_tokens` about 400.
-- Response to the client gains `by: 'ai' | 'rules'`. The preview sheet shows "Rewritten by AI, meaning kept" with the
-  Corrected / My original tabs as today (the rules path keeps its word-by-word list). Editing in the sheet still
-  re-renders with `text_as_is`, so the provider's final text is never rewritten again.
+The provider often types a short note ("bulb replaced, done", "part not available, 2 days"). With the AI on, the
+preview shows a proper reply written **from the ticket and that note together**: what the requester reported, what the
+provider says now, and what happens next, in the step's tone (work started, on hold, resumed, closed, rejected, update).
+
+- In `POST /tickets/:id/preview`, when `aiReady('replies')` and `text_as_is` is not set: call `aiWriteReply({ note,
+  step, ticket })`. The ticket context sent is: subject, description, problem label, location, the requester's first
+  name, the requester's public notes on this ticket (latest 3, as written), the provider's earlier public replies
+  (latest 2), the hold reason and resume-by date when the step is "on hold", and the service and campus names.
+  Emails and phone numbers are scrubbed. On any failure or when not ready, the dictionary polisher runs as today.
+- Instructions to Claude: write the body of a reply to the requester, 2 to 4 sentences, British English, warm and
+  direct, in the language the provider wrote in (Telugu or mixed stays Telugu or mixed). Say what was reported in the
+  requester's terms, what the provider's note says was done or is happening, and what the requester should expect or
+  do next. **Only** what the provider's note and the ticket say: no promised dates, times, parts or causes the note
+  does not give; no apologies the note does not make. Keep every name, place, code, number and link exactly. No
+  greeting, no sign-off, no subject line, no markdown: the email template adds those. Return the reply text only.
+  `max_tokens` large enough for thinking plus the answer (see Usage and limits).
+- Response to the client gains `by: 'ai' | 'rules'` and keeps `original`. The preview sheet, for the AI path, shows
+  "Written from the ticket and your note. Check it says what you mean." with two tabs, **Suggested reply** and **My
+  note**, above the editable text and the exact email, as today. The rules path keeps its word-by-word fixes list.
+  Editing re-renders with `text_as_is`, so the provider's final text is never rewritten again.
+- The provider can also tap **Write again** in the sheet to get a fresh suggestion (a new call, counted). At most 3
+  per preview.
 - Send time is unchanged for notes that went through the preview: the text saved is what the provider approved.
+  The provider's own short note is kept in the event's `meta.original`, as the polisher does today, so staff can see
+  what was typed.
 - **Notes with no preview (my call).** The transfer note and the reopen-request accept/decline note are sent without a
-  preview today and are tidied by the dictionary polisher at send time. They stay that way: Claude rewrites only what
+  preview today and are tidied by the dictionary polisher at send time. They stay that way: Claude writes only what
   the provider can see and edit before sending. Any API client that omits `approved` also gets the dictionary polisher.
-- Notes typed in Telugu, Hindi or mixed language are tidied in that language, never translated.
 
 ### Reports
 
@@ -211,7 +225,8 @@ removed." Plus a short section on the AI page and the limits.
 - New section in `test/e2e.mjs`: a tiny stub HTTP server playing the Messages API (returns a fixed message with a
   `usage` block; can be told to fail or to sleep). The app is started with `ANTHROPIC_BASE_URL` pointing at it (the SDK
   reads that variable). Checks: config saves and masks the key; test connection reports OK and failure; preview
-  returns `by: 'ai'` with the stub text and the rules path when the switch is off; a typed bot question goes through
+  returns `by: 'ai'` with the stub text, and the request to the stub carries the ticket's description and the
+  requester's note; the rules path when the switch is off; "Write again" makes a new call and stops at 3; a typed bot question goes through
   intent and phrase and keeps items and chips; a chip tap makes no API call; report summary is cached (second request,
   no new usage row); a reached limit falls back and the usage row count stops growing; a stub failure falls back.
 
