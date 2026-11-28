@@ -116,6 +116,11 @@ const stub = http.createServer((req, res) => { let b = ''; req.on('data', c => b
   if (u.pathname === '/app' || u.pathname === '/app-down') { (G.app ||= []).push({ path: u.pathname, headers: req.headers, body: b }); return u.pathname === '/app' ? send(200, { ok: true }) : send(503, { error: 'busy' }); }
   if (u.pathname.endsWith('/oauth2/v2.0/token')) return send(200, { access_token: 'tok', expires_in: 3600 });
   if (u.pathname === '/ai-down/chat/completions') { AI.calls++; return send(500, { error: { message: 'no credit' } }); }
+  if (u.pathname === '/ai/chat/completions' && /^You draft/.test(JSON.parse(b).messages[0].content)) { AI.calls++; AI.lastDraft = JSON.parse(b).messages[1].content;
+    return send(200, { choices: [{ message: { content: JSON.stringify({ reply: 'Dear Ria,\nThe B.Tech fee is [fee amount] a year. The hostel has rooms for girls.\nRegards', missing: ['fee amount'] }) } }], usage: { prompt_tokens: 900, completion_tokens: 120 } }); }
+  if (u.pathname === '/ai/chat/completions' && /^You check/.test(JSON.parse(b).messages[0].content)) { AI.calls++; const r = JSON.parse(b).messages[1].content.replace(/<\/?reply>/g, '').trim();
+    const out = r.includes('DROP') ? r.replace(/⟦\d+⟧/g, '') : r.replace('recieve', 'receive').replace('ur ', 'your ');
+    return send(200, { choices: [{ message: { content: JSON.stringify({ text: out, notes: ['Spelling'] }) } }], usage: { prompt_tokens: 300, completion_tokens: 200 } }); }
   if (u.pathname === '/ai/chat/completions') { AI.calls++; const txt = JSON.parse(b).messages[1].content;
     return send(200, { choices: [{ message: { content: JSON.stringify({ lane: /urgent/i.test(txt) ? 'important' : 'needs_reply', category: /hostel/i.test(txt) ? 'Hostel' : 'Admissions', name: null, course: null, campus: null, post: null, urgency: 'normal', summary: 'Asks about admissions', confidence: 0.9, masked: txt.includes('[PHONE]') }) } }], usage: { prompt_tokens: 50, completion_tokens: 20 } }); }
   if (req.headers.authorization !== 'Bearer tok') return send(401, { error: { message: 'no token' } });
@@ -333,6 +338,39 @@ try {
   const mx = mkMsg({ from: 'stranger@gmail.com', subject: `Question about ${t1.ref}`, conv: 'conv-STRANGER', body: 'I saw this number somewhere' }); await notifyGraph('sub-1', mx);
   const tx_ = await waitFor(async () => (await q('SELECT thread_id FROM mail.inbound_emails WHERE provider_message_id=?', mx))[0]?.thread_id);
   check('someone else quoting a number gets their own mail, not that thread', !!tx_ && tx_ !== t1.id);
+
+  sec('Reply preview, AI drafts and checks, and the monthly AI budget');
+  const gq = (await q("SELECT id FROM mail.integrations WHERE kind='ai' AND name='Groq'"))[0];
+  await fails('a price out of range is refused', `/maildesk/integrations/${gq.id}`, { ...A, method: 'PATCH', body: { priceIn: -1 } }, 400);
+  await ok('Groq priced: $2 in, $8 out per 1M tokens', `/maildesk/integrations/${gq.id}`, { ...A, method: 'PATCH', body: { priceIn: 2, priceOut: 8 } });
+  const pv = await ok('preview a reply', `/maildesk/threads/${t1.ref}/preview`, { token: n1.token, method: 'POST', body: { body: 'Dear Ria, we recieve ur mail. pls call 98765 43210', cc: ['dean@smru.test'] } });
+  check('the preview shows from, to, cc, the subject with the number, and fixes the spelling (names and numbers kept)', pv.from === 'Admissions <reach@smru.test>' && pv.to === 'ria@gmail.com' && pv.cc[0] === 'dean@smru.test'
+    && pv.subject === `RE: [${t1.ref}] Fees for B.Tech` && pv.corrected.includes('receive your mail') && pv.corrected.includes('98765 43210') && pv.corrected.startsWith('Dear Ria') && pv.changes.some(c => c.from === 'recieve'), JSON.stringify(pv));
+  await fails('a preview to someone outside the thread is refused', `/maildesk/threads/${t1.ref}/preview`, { token: n1.token, method: 'POST', body: { body: 'x', to: 'x@evil.com' } }, 400);
+  const dr = await ok('Suggest a reply', `/maildesk/threads/${t1.ref}/draft`, { token: n1.token, method: 'POST' });
+  check('…a draft starting "Dear Ria", with what to fill in, made from the mail with contact details masked', dr.text.startsWith('Dear Ria') && dr.missing[0] === 'fee amount' && !/ria@gmail\.com|98765/.test(AI.lastDraft) && /Fees/.test(AI.lastDraft));
+  const ck = await ok('Check with AI', `/maildesk/threads/${t1.ref}/check`, { token: n1.token, method: 'POST', body: { body: 'We recieve ur mail; call 98765 43210 or see https://smru.edu.in/fees' } });
+  check('…wording fixed; the phone number and link come back exactly', ck.changed && ck.text === 'We receive your mail; call 98765 43210 or see https://smru.edu.in/fees', ck.text);
+  const ck2 = await ok('an AI check that loses a detail', `/maildesk/threads/${t1.ref}/check`, { token: n1.token, method: 'POST', body: { body: 'DROP call 98765 43210' } });
+  check('…is not used: your text is kept', ck2.kept && ck2.text === 'DROP call 98765 43210');
+  const sp = await q("SELECT purpose, calls, cost_usd::float c FROM mail.ai_spend WHERE channel_id=? AND purpose IN ('draft','check')", ch.id);
+  check('each use is counted for the mailbox, priced from the provider\'s prices', Math.abs(sp.find(r => r.purpose === 'draft').c - (900 * 2 + 120 * 8) / 1e6) < 1e-9 && sp.find(r => r.purpose === 'check').calls === 2, JSON.stringify(sp));
+  await fails('the budget screen is for the super admin', '/maildesk/ai-budget', { token: cadmin.token }, 403);
+  await fails('shares that add up to more than the total are refused', '/maildesk/ai-budget', { ...A, method: 'PUT', body: { monthly_usd: 1, split: 'custom', shares: { [ch.id]: 2 } } }, 400);
+  const used = (await q("SELECT sum(cost_usd)::float s FROM mail.ai_spend WHERE channel_id=?", ch.id))[0].s;
+  await ok('budget: $25 a month, reach@ gets just over what it has used', '/maildesk/ai-budget', { ...A, method: 'PUT', body: { monthly_usd: 25, split: 'custom', shares: { [ch.id]: Math.ceil((used + 0.0005) * 100) / 100 }, warn_pct: 80 } });
+  let bd = await ok('read the budget', '/maildesk/ai-budget', A);
+  check('the screen shows the month, the spending per mailbox and per use', bd.monthly_usd === 25 && bd.mailboxes.find(m => m.id === ch.id).uses.draft === 1 && Math.abs(bd.mailboxes.find(m => m.id === ch.id).spent - used) < 1e-9 && bd.providers.find(x => x.name === 'Groq').priced);
+  let r429 = null; for (let i = 0; i < 20 && !r429; i++) { const r = await api(`/maildesk/threads/${t1.ref}/draft`, { token: n1.token, method: 'POST' }); if (r.status === 409) r429 = r; }
+  check('when reach@\'s share is used up, drafts stop with a plain reason', /share of the AI budget/.test(r429?.error?.message || ''), r429?.error?.message);
+  check('…the mail page says AI drafts are off', (await api(`/maildesk/threads/${t1.ref}`, { token: n1.token })).data.ai.draft === false);
+  check('…and the super admin got one warning email', await waitFor(async () => (await q("SELECT count(*)::int n FROM notifications WHERE template_key='mail_ai_budget' AND recipient='super@example.com'"))[0].n === 1));
+  const aiCalls = AI.calls, mb = mkMsg({ from: 'neha@gmail.com', subject: 'Fees again', conv: 'conv-BUDGET' }); await notifyGraph('sub-1', mb);
+  const tb = await waitFor(async () => (await q("SELECT * FROM mail.threads WHERE conversation_id='conv-BUDGET'"))[0]);
+  check('…new mail is still read, sorted by the rules (Review) without calling the AI', tb?.lane === 'review' && AI.calls === aiCalls);
+  await ok('budget: no limit, drafts switched off', '/maildesk/ai-budget', { ...A, method: 'PUT', body: { monthly_usd: 0, split: 'equal', features: { sort: true, draft: false, check: true } } });
+  await fails('a draft when drafts are switched off', `/maildesk/threads/${t1.ref}/draft`, { token: n1.token, method: 'POST' }, 409);
+  await ok('budget back to no limit, everything on', '/maildesk/ai-budget', { ...A, method: 'PUT', body: { monthly_usd: 0, split: 'equal' } });
 
   sec('Rules and loop guards on live mail');
   const nz = mkMsg({ from: 'offers@mail.news.com', subject: 'Big sale', conv: 'conv-N' }); const aiBefore = AI.calls; await notifyGraph('sub-1', nz);

@@ -146,6 +146,34 @@ Go to **Mail → Settings → AI providers → Add AI provider**, once per provi
 - Press **Test** on each one.
 - Without any provider, mail is sorted by your rules only, and anything else waits in **Review**.
 
+### 7a. AI budget: one subscription, a monthly total, shared across the mailboxes
+
+One AI subscription (e.g. US$25 a month) serves every mailbox, for three uses:
+
+| Use | Where | When |
+|---|---|---|
+| Sorting new mail | Automatic, on arrival | Lane, category and a one-line summary |
+| Suggest a reply | Button under the reply box | A draft from the mail and the mailbox's quick answers. Unknown facts become `[placeholders]` for the officer to fill. |
+| Check with AI | Inside the reply preview | Wording and tone. Phone numbers, emails and links are shielded and come back exactly, or the AI's version is not used. |
+
+Every reply also goes through **Preview and send**:
+- It shows From, To, Cc, the subject with the mail number, and how the mail will look with the signature.
+- It runs the desk's own spelling check, with "Use mine as written" to undo it. This check is **free**: it runs on the server, with no AI.
+
+Set-up:
+1. **Mail → Settings → AI providers → Edit:** fill in **Price in** and **Price out** (US$ per 1 million tokens) from the provider's price list for that model. Without prices, tokens are counted but cost cannot be.
+2. **Mail → Settings → AI budget:**
+   - **Monthly total**, e.g. `25`.
+   - **Shared:** *equally* between the mailboxes that are on, or *as set for each mailbox*. A blank share means that mailbox is limited only by the total.
+   - **Warn at**, e.g. `80` %.
+   - Tick which uses are on.
+3. The card shows this month's spending, per mailbox and per use, the cost per 1,000 mails, and roughly how many more mails the budget can sort.
+
+At the warning mark, the super admins get one email a month: one for the total, and one for each mailbox's share. At 100 %:
+- The AI pauses for that mailbox (or for all, if the total is used up) until the next month.
+- Mail is still read, and sorted by the rules (the rest waits in **Review**).
+- Replies are written without drafts. The free spelling check still works.
+
 ### 7b. Connected apps: plug in any API you buy (optional)
 
 Go to **Mail → Settings → Connected apps → Connect an app**, or start from the **WhatsApp**, **SMS** or **CRM example** buttons.
@@ -282,6 +310,9 @@ The mail desk API lives under `https://<site>/api/maildesk/…`. It uses the sam
 | `GET /maildesk/threads/:ref` | members | | `{ thread, channel, messages: [{ dir: 'in'\|'out', … }], notes, events, desk, suggested_service, templates, others, can: { work, forward, reply } }` |
 | `POST /maildesk/threads/:ref/claim` | officers, repliers | `{ take?: true }` (`take` takes it over from someone else) | `{ ok }`. 409 if someone else has it. |
 | `POST /maildesk/threads/:ref/reply` | officers, repliers | `{ body, to?, cc?: [emails], close?: true }`. `to` must be someone who wrote in the mail (default: the sender). | `{ id, send_after, undo_seconds: 10 }` |
+| `POST /maildesk/threads/:ref/preview` | officers, repliers | `{ body, to?, cc? }` | `{ from, to, cc, subject, text, corrected, changes: [{ from, to }], html, html_as_written, signature, ai: { draft, check, why } }`. The spelling check runs on this server, with no AI and no cost. Nothing is sent. |
+| `POST /maildesk/threads/:ref/draft` | officers, repliers | | `{ text, missing: [...], provider }`, or 409 with the reason (switched off, budget used up, no provider). Counted against the mailbox's AI budget. |
+| `POST /maildesk/threads/:ref/check` | officers, repliers | `{ body }` | `{ text, notes, changed }`. `kept: true` if the AI lost a phone number, email or link (your text is returned). Counted against the budget. |
 | `POST /maildesk/outbound/:id/cancel` | officers, repliers | | Undo within 10 s, or drop a waiting auto-reply. 409 if it has already gone. |
 | `POST /maildesk/threads/:ref/status` | officers, repliers | `{ status: 'open'\|'in_progress'\|'hold'\|'closed'\|'rejected', note? }` | `{ ok }` |
 | `POST /maildesk/threads/:ref/lane` | officers, repliers | `{ lane: 'important'\|'needs_reply'\|'auto'\|'noise' }` | `{ ok }`. The reply target is worked out again. |
@@ -321,8 +352,10 @@ The mail desk API lives under `https://<site>/api/maildesk/…`. It uses the sam
 | `PUT /maildesk/connections/onedrive` | `{ account, folder? }` | Folder `Resumes` by default. |
 | `POST /maildesk/connections/onedrive/test` | | Opens the drive, makes the folder, saves and removes a test file. |
 | `DELETE /maildesk/connections/onedrive` | | Files already saved stay in OneDrive. |
-| `POST /maildesk/integrations` · `PATCH`/`DELETE /maildesk/integrations/:id` | `{ name, baseURL, model, apiKey?, priority?, active?, reasoningEffort?, noTemperature? }` | Any OpenAI-compatible API. Tried in `priority` order. |
+| `POST /maildesk/integrations` · `PATCH`/`DELETE /maildesk/integrations/:id` | `{ name, baseURL, model, apiKey?, priority?, active?, reasoningEffort?, noTemperature?, priceIn?, priceOut? }` (prices in US$ per 1 million tokens) | Any OpenAI-compatible API. Tried in `priority` order. |
 | `POST /maildesk/integrations/:id/test` | | `{ ok, message }` |
+| `GET /maildesk/ai-budget` | | `{ monthly_usd, split: 'equal'\|'custom', shares: { mailbox id: usd }, warn_pct, features: { sort, draft, check }, month, spent, providers: [{ name, model, active, priced }], avg_cost: { sort, draft, check }, mailboxes: [{ id, address, campus, mode, limit, spent, uses: { sort, draft, check } }] }` |
+| `PUT /maildesk/ai-budget` | `{ monthly_usd, split, shares?, warn_pct?, features? }` | `monthly_usd: 0` means no limit. Shares may not add up to more than the total. |
 | `PUT /maildesk/switches` | `{ auto_reply_paused: true\|false }` | Pauses every auto-reply in all mailboxes. |
 
 ### HR candidates (people of a job-applications mailbox: HR members, its officers, managers)

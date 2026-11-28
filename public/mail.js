@@ -122,8 +122,8 @@ async function thread(main, ref, me) {
       ${d.templates.length ? sel('tpl', [['', 'Quick answer…'], ...d.templates.map(x => [x.id, x.name])], '', 'id="tpl" aria-label="Quick answer"') : ''}
       <textarea id="rb" name="body" rows="7" required maxlength="20000" placeholder="Write the reply. The mailbox signature is added below it."></textarea>
       <label for="rcc">Copy (cc) <small>(optional, comma-separated)</small></label><input id="rcc" name="cc" placeholder="name@smru.edu.in">
-      <p class="mbar"><button class="btn primary" value="send">${H.I('send', 16)}Send</button><button class="btn" value="close">Send and close</button></p>
-      <p class="muted small">You have ${10} seconds to undo after pressing Send.</p></form>` : ''}
+      <p class="mbar"><button class="btn primary" value="preview">${H.I('eye', 16)}Preview and send</button>${d.ai?.draft ? `<button type="button" class="btn" id="aidraft">${H.I('idea', 16)}Suggest a reply</button>` : ''}</p>
+      <p class="muted small">You see exactly what goes out (with a spelling check) before it is sent, then have 10 seconds to undo.${d.ai && !d.ai.draft && d.ai.why ? ` AI drafts are off: ${e(d.ai.why)}.` : ''}</p></form>` : ''}
     <section class="card"><div class="chead">${H.I('pencil', 16)}<span>Internal notes</span><span class="muted small">never mailed</span></div>
       ${d.notes.map(n => `<div class="mnote"><b>${e(n.author || 'ONE Desk')}</b> <span class="muted small">${H.shortDate(n.created_at)}</span><div>${e(n.body).replace(/\n/g, '<br>')}</div></div>`).join('') || '<p class="muted small">No notes yet.</p>'}
       ${can.work ? '<form id="nf" class="mbar"><input name="body" required maxlength="4000" placeholder="Add a note for the team" aria-label="Note"><button class="btn">Add</button></form>' : ''}</section>
@@ -141,9 +141,14 @@ async function thread(main, ref, me) {
     act(() => H.api(`/maildesk/threads/${ref}/status`, { method: 'POST', body: { status: s } }), STATUS[s]);
   });
   const tpl = main.querySelector('#tpl'); if (tpl) tpl.onchange = () => { const x = d.templates.find(y => y.id === tpl.value); if (x) { const rb = main.querySelector('#rb'); rb.value = (rb.value ? rb.value + '\n\n' : '') + x.body.replace(/\{\{\s*first_name\s*\}\}/g, (t.requester_name || '').split(/\s+/)[0] || 'Sir/Madam').replace(/\{\{\s*ref\s*\}\}/g, t.ref).replace(/\{\{\s*\w+\s*\}\}/g, ''); } tpl.value = ''; };
-  const rf = main.querySelector('#rf'); if (rf) rf.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; if (sb.disabled) return; sb.disabled = true;
-    try { const r = await H.api(`/maildesk/threads/${ref}/reply`, { method: 'POST', body: { body: rf.body.value, to: rf.to?.value || undefined, cc: rf.cc.value.split(/[,;\s]+/).filter(Boolean), close: sb.value === 'close' } });
-      undoToast(r.id, redraw); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
+  const rf = main.querySelector('#rf');
+  if (rf) rf.onsubmit = ev => { ev.preventDefault(); previewDlg(ref, rf, d, redraw); };
+  main.querySelector('#aidraft')?.addEventListener('click', async ev => { const b = ev.currentTarget, rb = rf.body;
+    if (rb.value.trim() && !confirm('Replace what you wrote with a suggested reply?')) return;
+    b.disabled = true; b.textContent = 'Writing…';
+    try { const r = await H.api(`/maildesk/threads/${ref}/draft`, { method: 'POST' }); rb.value = r.text; rb.focus();
+      H.toast(r.missing?.length ? `Draft ready. Fill in: ${r.missing.join(', ')}` : 'Draft ready: read it and change what is needed'); }
+    catch (er) { H.toast(er.message); } finally { b.disabled = false; b.innerHTML = `${H.I('idea', 16)}Suggest a reply`; } });
   const nf = main.querySelector('#nf'); if (nf) nf.onsubmit = ev => { ev.preventDefault(); act(() => H.api(`/maildesk/threads/${ref}/notes`, { method: 'POST', body: { body: nf.body.value } }), 'Note added'); };
   main.querySelector('#fwd')?.addEventListener('click', () => forwardDlg(d, ref));
   if (d.messages.some(m => m.state === 'queued' || m.state === 'sending')) every(4000, redraw, location.hash.split('?')[0]); else clearInterval(pollT);
@@ -198,7 +203,7 @@ async function confirmPage(main, me) {
 
 /* ================= Settings ================= */
 async function settings(main, me) {
-  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, apps = d.admin ? await H.api('/maildesk/apps').catch(() => null) : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
+  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, apps = d.admin ? await H.api('/maildesk/apps').catch(() => null) : null, aib = d.admin ? await H.api('/maildesk/ai-budget').catch(() => null) : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
   const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
   // a deactivated officer or backup is no longer in the staff list: kept in their own row (marked) so a save does not drop them
   const withPerson = (id, name) => id && !people.some(p => p.id === id) ? [...pOpts, [id, `${name || 'Someone'} (deactivated)`]] : pOpts;
@@ -257,8 +262,9 @@ async function settings(main, me) {
     <section class="card"><div class="chead">${H.I('users', 16)}<span>Mail managers</span></div><p class="muted small">See every mailbox of the campus and get the second escalation. Campus admins are managers already.</p>
       ${d.roles.map(r => `<div class="mbar"><b>${e(r.name)}</b><span class="sp"></span><button type="button" class="btn" data-delrole="${r.user_id}">Remove</button></div>`).join('')}
       <form id="newrole" class="mbar">${sel('user_id', pOpts, '')}<button class="btn">Add manager</button></form></section>
+    ${aib ? budgetCard(aib) : ''}
     ${d.admin ? `<section class="card"><div class="chead">${H.I('bolt', 16)}<span>AI providers</span></div><p class="muted small">Tried in order; if one fails (no credit, too busy, a bad answer) the next one is tried, and with none the rules decide or the mail waits in Review. Names, phone numbers and emails are masked before any text is sent. Keys are stored encrypted and never shown again.</p>
-      ${d.integrations.map(i => `<div class="mbar"><b>${i.priority}. ${e(i.name)}</b><span class="muted small">${e(i.config.model || '')} · ${e(i.config.baseURL || '')} · ${i.active ? 'on' : 'off'}${i.has_key ? '' : ' · no key'}${i.last_test_result ? ` · ${e(i.last_test_result)}` : ''}</span><span class="sp"></span>
+      ${d.integrations.map(i => `<div class="mbar"><b>${i.priority}. ${e(i.name)}</b><span class="muted small">${e(i.config.model || '')} · ${e(i.config.baseURL || '')}${i.config.priceIn != null ? ` · $${e(i.config.priceIn)} / $${e(i.config.priceOut)} per 1M` : ' · no prices'} · ${i.active ? 'on' : 'off'}${i.has_key ? '' : ' · no key'}${i.last_test_result ? ` · ${e(i.last_test_result)}` : ''}</span><span class="sp"></span>
         <button type="button" class="btn" data-ai="${i.id}">Edit</button><button type="button" class="btn" data-aitest="${i.id}">Test</button></div>`).join('') || '<p class="muted small">None yet: every mail goes by the rules, else to Review.</p>'}
       <p><button type="button" class="btn" data-ai="">Add AI provider</button></p></section>` : ''}
     ${apps ? appsCard(apps) : ''}`;
@@ -266,6 +272,7 @@ async function settings(main, me) {
   const redraw = () => settings(main, me), go = async (fn, m) => { try { await fn(); H.toast(m); redraw(); } catch (er) { H.toast(er.message); } };
   if (cx) wireConn(main, cx, go, redraw);
   if (apps) wireApps(main, apps, redraw);
+  if (aib) wireBudget(main, aib, redraw);
   main.querySelectorAll('.mset').forEach(sec => { const id = sec.dataset.ch, c = d.channels.find(x => x.id === id);
     sec.querySelector('[data-test]').onclick = async () => { try { const r = await H.api(`/maildesk/channels/${id}/test`, { method: 'POST' }); H.toast(r.message); } catch (er) { H.toast(er.message); } };
     sec.querySelector('[data-sync]')?.addEventListener('click', () => go(() => H.api(`/maildesk/channels/${id}/sync`, { method: 'POST' }), 'Checking the inbox'));
@@ -313,9 +320,12 @@ async function settings(main, me) {
       <label>Name</label><input name="name" required maxlength="120" value="${e(i.name || '')}" placeholder="OpenAI nano"><label>API address</label><input name="baseURL" required value="${e(i.config.baseURL || '')}" placeholder="https://api.openai.com/v1">
       <label>Model</label><input name="model" required value="${e(i.config.model || '')}" placeholder="gpt-5-nano"><label>Key ${i.has_key ? '<small>(leave empty to keep the saved key)</small>' : ''}</label><input name="apiKey" type="password" autocomplete="off" ${i.id ? '' : 'required'}>
       <div class="row"><div><label>Order</label><input name="priority" type="number" min="1" max="99" value="${i.priority}"></div><div><label>Reasoning effort <small>(optional)</small></label><input name="reasoningEffort" value="${e(i.config.reasoningEffort || '')}" placeholder="minimal"></div></div>
+      <div class="row"><div><label>Price in <small>(US$ per 1 million input tokens)</small></label><input name="priceIn" type="number" min="0" step="0.001" value="${e(i.config.priceIn ?? '')}" placeholder="from the provider's price list"></div>
+        <div><label>Price out <small>(US$ per 1 million output tokens)</small></label><input name="priceOut" type="number" min="0" step="0.001" value="${e(i.config.priceOut ?? '')}"></div></div>
+      <p class="muted small">The prices let ONE Desk count spending against the monthly AI budget. Copy them from the provider's pricing page for this model.</p>
       <label class="small"><input type="checkbox" name="noTemperature" ${i.config.noTemperature ? 'checked' : ''}> The model takes no temperature setting</label><label class="small"><input type="checkbox" name="active" ${i.active || !i.id ? 'checked' : ''}> On</label>
       ${i.id ? '<p><button type="button" class="btn" id="aidel">Delete provider</button></p>' : ''}`,
-      async f => { const body = { name: f.name.value, baseURL: f.baseURL.value, model: f.model.value, priority: Number(f.priority.value), reasoningEffort: f.reasoningEffort.value, noTemperature: f.noTemperature.checked, active: f.active.checked, ...(f.apiKey.value ? { apiKey: f.apiKey.value } : {}) };
+      async f => { const body = { name: f.name.value, baseURL: f.baseURL.value, model: f.model.value, priority: Number(f.priority.value), reasoningEffort: f.reasoningEffort.value, noTemperature: f.noTemperature.checked, priceIn: f.priceIn.value, priceOut: f.priceOut.value, active: f.active.checked, ...(f.apiKey.value ? { apiKey: f.apiKey.value } : {}) };
         await H.api(i.id ? '/maildesk/integrations/' + i.id : '/maildesk/integrations', { method: i.id ? 'PATCH' : 'POST', body }); H.toast('Saved'); redraw(); });
     dl.querySelector('#aidel')?.addEventListener('click', async () => { if (!confirm('Delete this AI provider?')) return; try { await H.api('/maildesk/integrations/' + i.id, { method: 'DELETE' }); dl.close(); redraw(); } catch (er) { H.toast(er.message); } }); });
   main.querySelectorAll('[data-aitest]').forEach(b => b.onclick = async () => { b.disabled = true; try { const r = await H.api(`/maildesk/integrations/${b.dataset.aitest}/test`, { method: 'POST' }); H.toast(r.message); redraw(); } catch (er) { H.toast(er.message); b.disabled = false; } });
@@ -483,4 +493,63 @@ async function candidatePage(main, id, me) {
   main.querySelector('#fdl')?.addEventListener('click', async () => { try { const r = await H.api(`/maildesk/hr/${id}/files/${cur.id}?download=1`, { raw: true }); if (!r.ok) throw new Error('Could not download');
     const a2 = document.createElement('a'); a2.href = URL.createObjectURL(await r.blob()); a2.download = cur.file_name; a2.click(); } catch (er) { H.toast(er.message); } });
   if (file) show(file);
+}
+
+/* ================= Reply preview: exactly what goes out, the spelling check, an optional AI check, then Send ================= */
+const esc2 = x => String(x ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const bodyHtml = (text, sig) => `${String(text || '').trim().split(/\n{2,}/).map(p => `<p>${esc2(p).replace(/\n/g, '<br>')}</p>`).join('')}${sig ? `<p class="muted">${esc2(sig).replace(/\n/g, '<br>')}</p>` : ''}`;
+async function previewDlg(ref, rf, d, redraw) {
+  const body = { body: rf.body.value, to: rf.to?.value || undefined, cc: rf.cc.value.split(/[,;\s]+/).filter(Boolean) };
+  let p; try { p = await H.api(`/maildesk/threads/${ref}/preview`, { method: 'POST', body }); } catch (er) { return H.toast(er.message); }
+  const fixes = p.changes.filter(c => c.from !== 'sentences');
+  const dl = H.dlg(`<h2>Check before sending</h2>
+    <table class="mprev small"><tr><th>From</th><td>${e(p.from)}</td></tr><tr><th>To</th><td>${e(p.to)}</td></tr>${p.cc.length ? `<tr><th>Cc</th><td>${e(p.cc.join(', '))}</td></tr>` : ''}<tr><th>Subject</th><td>${e(p.subject)}</td></tr></table>
+    ${p.corrected !== p.text ? `<div class="queuebar small" style="margin:8px 0">${H.I('check', 16)}<span><b>Spelling checked${fixes.length ? ':' : ''}</b>${fixes.length ? ` ${fixes.slice(0, 6).map(c => `${e(c.from)} → ${e(c.to)}`).join(', ')}${fixes.length > 6 ? ' …' : ''}` : ' sentences tidied'}</span>
+      <button type="button" class="btn" id="pkeep">Use mine as written</button></div>` : ''}
+    <label for="ptext">Text <small>(change it here if needed)</small></label><textarea id="ptext" name="text" rows="9" maxlength="20000">${e(p.corrected)}</textarea>
+    ${p.ai?.check ? `<p class="mbar"><button type="button" class="btn" id="pai">${H.I('idea', 16)}Check with AI</button><span class="muted small" id="pnotes"></span></p>` : ''}
+    <label>How it will look</label><div class="mprevbody" id="pbody">${bodyHtml(p.corrected, p.signature)}</div>
+    <label class="small"><input type="checkbox" name="close"> Close the mail after sending</label>`,
+    async f => { const r = await H.api(`/maildesk/threads/${ref}/reply`, { method: 'POST', body: { ...body, body: f.text.value, close: f.close.checked } });
+      rf.body.value = ''; undoToast(r.id, redraw); redraw(); });
+  const okb = dl.querySelector('button[value=ok]'); okb.innerHTML = `${H.I('send', 16)}Send`;
+  const ta = dl.querySelector('#ptext'), show = () => { dl.querySelector('#pbody').innerHTML = bodyHtml(ta.value, p.signature); };
+  ta.oninput = show;
+  dl.querySelector('#pkeep')?.addEventListener('click', ev => { ta.value = p.text; show(); ev.currentTarget.closest('.queuebar').remove(); });
+  dl.querySelector('#pai')?.addEventListener('click', async ev => { const b = ev.currentTarget; b.disabled = true; b.textContent = 'Checking…';
+    try { const r = await H.api(`/maildesk/threads/${ref}/check`, { method: 'POST', body: { body: ta.value } });
+      if (r.changed) { ta.value = r.text; show(); }
+      dl.querySelector('#pnotes').textContent = r.changed ? `Changed: ${r.notes.join('; ') || 'wording'}` : r.notes.join('; ') || 'Nothing to change'; }
+    catch (er) { dl.querySelector('#pnotes').textContent = er.message; } finally { b.disabled = false; b.innerHTML = `${H.I('idea', 16)}Check with AI`; } });
+}
+
+/* ================= AI budget (super admin): one monthly total, split across the mailboxes ================= */
+const usd = n => n == null ? '—' : `$${Number(n).toFixed(Number(n) < 1 ? 3 : 2)}`;
+function budgetCard(b) {
+  const pct = (s2, l) => l ? Math.min(100, Math.round(100 * s2 / l)) : null, bar = (s2, l) => l ? `<span class="mbudget"><i style="width:${pct(s2, l)}%" class="${pct(s2, l) >= 100 ? 'full' : pct(s2, l) >= (b.warn_pct || 80) ? 'warn' : ''}"></i></span>` : '';
+  const unpriced = b.providers.filter(x => x.active && !x.priced);
+  const perMail = b.avg_cost.sort, left = b.monthly_usd > 0 && perMail ? Math.max(0, Math.floor((b.monthly_usd - b.spent) / perMail)) : null;
+  return `<section class="card" id="aib"><div class="chead">${H.I('chart', 16)}<span>AI budget</span><span class="muted small">${e(b.month)}</span></div>
+    <p class="muted small">One AI subscription serves every mailbox. Set the monthly total and how it is shared. When a mailbox's share (or the total) is used up, the AI pauses for it until next month: mail is still sorted by the rules (the rest waits in Review) and replies are written without drafts. Spelling checks in the preview are free (on this server).</p>
+    ${unpriced.length ? `<p class="err small">Enter the prices of ${e(unpriced.map(x => x.name).join(', '))} (AI providers → Edit), or spending cannot be counted.</p>` : ''}
+    <p><b>${usd(b.spent)}</b> used of ${b.monthly_usd > 0 ? `<b>$${b.monthly_usd}</b> this month ${bar(b.spent, b.monthly_usd)}` : 'no set total'}
+      ${perMail ? `<span class="muted small"> · per 1,000: sorting ≈ ${usd(perMail * 1000)}${b.avg_cost.draft ? `, drafts ≈ ${usd(b.avg_cost.draft * 1000)}` : ''}${b.avg_cost.check ? `, checks ≈ ${usd(b.avg_cost.check * 1000)}` : ''}${left !== null ? ` · about ${left.toLocaleString('en-IN')} more mails can be sorted` : ''}</span>` : ''}</p>
+    <form id="aibf"><div class="row"><div><label>Monthly total (US$; 0 = no limit)</label><input name="monthly_usd" type="number" min="0" step="0.01" value="${e(b.monthly_usd)}"></div>
+      <div><label>Shared</label>${sel('split', [['equal', 'Equally between the mailboxes that are on'], ['custom', 'As set below for each mailbox']], b.split)}</div>
+      <div><label>Warn at (%)</label><input name="warn_pct" type="number" min="10" max="100" value="${e(b.warn_pct)}"></div></div>
+      <label>Use the AI for</label><div class="mbar"><label class="small"><input type="checkbox" name="f_sort" ${b.features.sort !== false ? 'checked' : ''}> Sorting new mail</label>
+        <label class="small"><input type="checkbox" name="f_draft" ${b.features.draft !== false ? 'checked' : ''}> Suggest a reply</label><label class="small"><input type="checkbox" name="f_check" ${b.features.check !== false ? 'checked' : ''}> Check with AI</label></div>
+      <div class="tblbox"><table class="ttable"><thead><tr><th>Mailbox</th><th>Share (US$)</th><th>Used</th><th>Sorted · drafts · checks</th></tr></thead><tbody>
+        ${b.mailboxes.map(m => `<tr><td><b>${e(m.address)}</b><div class="muted small">${e(m.campus)} · ${e(MODE[m.mode] || m.mode)}</div></td>
+          <td>${b.split === 'custom' ? `<input name="share_${e(m.id)}" type="number" min="0" step="0.01" value="${e(b.shares[m.id] ?? '')}" placeholder="total only" style="max-width:120px">` : m.limit != null ? usd(m.limit) : '—'}</td>
+          <td>${usd(m.spent)} ${bar(m.spent, m.limit)}</td><td class="small">${m.uses.sort} · ${m.uses.draft} · ${m.uses.check}</td></tr>`).join('')}</tbody></table></div>
+      <p><button class="btn primary">Save budget</button></p></form></section>`;
+}
+function wireBudget(main, b, redraw) {
+  const f = main.querySelector('#aibf'); if (!f) return;
+  f.split.onchange = () => { b.split = f.split.value; main.querySelector('#aib').outerHTML = budgetCard(b); wireBudget(main, b, redraw); };
+  f.onsubmit = async ev => { ev.preventDefault();
+    const shares = Object.fromEntries([...f.querySelectorAll('[name^=share_]')].map(i => [i.name.slice(6), i.value]));
+    try { await H.api('/maildesk/ai-budget', { method: 'PUT', body: { monthly_usd: f.monthly_usd.value, split: f.split.value, warn_pct: f.warn_pct.value, shares,
+      features: { sort: f.f_sort.checked, draft: f.f_draft.checked, check: f.f_check.checked } } }); H.toast('Budget saved'); redraw(); } catch (er) { H.toast(er.message); } };
 }

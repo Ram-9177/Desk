@@ -970,3 +970,7 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .mresume{margin-top:10px}.mresume iframe{width:100%;height:75vh;border:1px solid var(--border);border-radius:10px;background:#fff}
 .mchip.stage-new{color:#175CD3}.mchip.stage-shortlisted,.mchip.stage-interview{color:#6938EF;border-color:#D9D6FE}.mchip.stage-offered,.mchip.stage-hired{color:#067647;background:#ECFDF3;border-color:#ABEFC6}
 .mchip.stage-rejected{color:#B42318}.mchip.stage-on_hold{color:#B54708}
+.mprev{width:100%;border-collapse:collapse;margin:4px 0 8px}.mprev th{text-align:left;color:var(--text-2);font-weight:600;width:70px;padding:3px 8px 3px 0;vertical-align:top}.mprev td{padding:3px 0;overflow-wrap:anywhere}
+.mprevbody{border:1px solid var(--border);border-radius:10px;padding:10px 14px;background:#fff;max-height:240px;overflow:auto;font-family:Calibri,Arial,sans-serif;line-height:1.5}
+.mbudget{display:inline-block;vertical-align:middle;width:90px;height:7px;border-radius:9px;background:#EEF0F3;overflow:hidden;margin-left:6px}.mbudget i{display:block;height:100%;background:var(--accent)}
+.mbudget i.warn{background:var(--st-hold)}.mbudget i.full{background:var(--st-overdue)}

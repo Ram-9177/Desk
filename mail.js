@@ -12,6 +12,7 @@
 //  • Microsoft Graph and the AI providers are called with fetch: no new packages.
 import crypto from 'node:crypto';
 import { pool, one, all, run, uid, now, tx, insert } from './db.js';
+import { polish } from './polish.js'; // the desk's own spelling check (on this server, no AI, no cost)
 import * as L from './mail-logic.js';
 
 const SCHEMA = `
@@ -126,6 +127,10 @@ CREATE TABLE IF NOT EXISTS mail.candidate_files (application_id TEXT NOT NULL RE
   file_id TEXT NOT NULL REFERENCES mail.stored_files(id) ON DELETE CASCADE, created_at TEXT, PRIMARY KEY (application_id, file_id));
 CREATE TABLE IF NOT EXISTS mail.candidate_notes (id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES mail.candidate_applications(id) ON DELETE CASCADE,
   author_user_id TEXT, author_name TEXT, body TEXT NOT NULL, created_at TEXT NOT NULL);
+-- AI spending per month, mailbox, provider and use (sorting, reply drafts, reply checks), against the monthly budget
+CREATE TABLE IF NOT EXISTS mail.ai_spend (month TEXT NOT NULL, channel_id TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL, purpose TEXT NOT NULL,
+  calls INT NOT NULL DEFAULT 0, tokens_in BIGINT NOT NULL DEFAULT 0, tokens_out BIGINT NOT NULL DEFAULT 0, cost_usd NUMERIC(12,6) NOT NULL DEFAULT 0,
+  PRIMARY KEY (month, channel_id, provider, purpose));
 -- a reply's effects wait until it has really gone (Undo leaves the thread as it was)
 ALTER TABLE mail.outbound_emails ADD COLUMN IF NOT EXISTS close_after INT NOT NULL DEFAULT 0;
 ALTER TABLE mail.outbound_emails ADD COLUMN IF NOT EXISTS started_at TEXT;
@@ -311,27 +316,76 @@ export async function mail(d) {
       ON CONFLICT (day, provider) DO UPDATE SET calls=mail.ai_usage.calls+1, tokens_in=mail.ai_usage.tokens_in+excluded.tokens_in, tokens_out=mail.ai_usage.tokens_out+excluded.tokens_out, failures=mail.ai_usage.failures+excluded.failures`,
       now().slice(0, 10), provider, tin, tout, fail);
   }
-  async function askAi(row, subject, text) {
+  // ---- one call to an OpenAI-compatible API (OpenAI, Groq, xAI, a local Ollama …) ----
+  async function aiCall(row, system, user, maxTokens) {
     const cfg = json(row.config, {}), sec = L.unseal(KEY, row.secret_enc);
     if (!cfg.baseURL || !cfg.model || !sec.apiKey) throw new Error('Not set up: address, model and key are needed');
-    const r = await fetch(String(cfg.baseURL).replace(/\/$/, '') + '/chat/completions', { method: 'POST', signal: AbortSignal.timeout(20000),
+    const r = await fetch(String(cfg.baseURL).replace(/\/$/, '') + '/chat/completions', { method: 'POST', signal: AbortSignal.timeout(30000),
       headers: { authorization: 'Bearer ' + sec.apiKey, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: cfg.model, ...(cfg.reasoningEffort ? { reasoning_effort: cfg.reasoningEffort } : {}), ...(cfg.noTemperature ? {} : { temperature: 0 }),
-        max_completion_tokens: 300, response_format: { type: 'json_object' },
-        messages: [{ role: 'system', content: L.MAIL_SYSTEM }, { role: 'user', content: `<mail>\nSubject: ${L.maskPII(subject)}\n${L.maskPII(text).slice(0, 1500)}\n</mail>` }] }) });
+      body: JSON.stringify({ model: cfg.model, ...(cfg.reasoningEffort ? { reasoning_effort: cfg.reasoningEffort } : {}), ...(cfg.noTemperature ? {} : { temperature: 0.2 }),
+        max_completion_tokens: maxTokens, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error?.message || `HTTP ${r.status}`);
-    const reading = L.parseReading(j.choices?.[0]?.message?.content);
-    if (!reading) throw new Error('The answer was not in the expected shape');
-    return { reading, tin: j.usage?.prompt_tokens || 0, tout: j.usage?.completion_tokens || 0 };
+    return { content: j.choices?.[0]?.message?.content, tin: j.usage?.prompt_tokens || 0, tout: j.usage?.completion_tokens || 0 };
   }
-  async function readMail(subject, text) {
-    for (const row of await all("SELECT * FROM mail.integrations WHERE kind='ai' AND active=1 ORDER BY priority, created_at")) {
-      try { const o = await askAi(row, subject, text); await usage(row.name, o); return { reading: o.reading, provider: row.name }; }
-      catch (e) { console.warn(`mail ai: ${row.name} failed, trying the next one:`, e.message); await usage(row.name, { fail: 1 }).catch(() => {}); }
+  const askAi = async (row, subject, text) => { const o = await aiCall(row, L.MAIL_SYSTEM, `<mail>\nSubject: ${L.maskPII(subject)}\n${L.maskPII(text).slice(0, 1500)}\n</mail>`, 300);
+    const reading = L.parseReading(o.content); if (!reading) throw new Error('The answer was not in the expected shape'); return { reading, tin: o.tin, tout: o.tout }; };
+
+  // ---- the monthly AI budget (Settings → AI budget): a total, split across the mailboxes; each use is priced and counted ----
+  const month = () => now().slice(0, 7);
+  const budget = async () => ({ monthly_usd: 0, split: 'equal', shares: {}, warn_pct: 80, features: { sort: true, draft: true, check: true }, ...json(await getSet('ai_budget') || '{}', {}) });
+  const costOf = (row, tin, tout) => { const c = json(row.config, {}); return (Number(c.priceIn) || 0) * tin / 1e6 + (Number(c.priceOut) || 0) * tout / 1e6; };
+  const spentMonth = async chId => Number((await one(`SELECT coalesce(sum(cost_usd),0) s FROM mail.ai_spend WHERE month=?${chId === undefined ? '' : ' AND channel_id=?'}`, month(), ...(chId === undefined ? [] : [chId]))).s);
+  async function boxLimit(b, chId) {
+    if (!(b.monthly_usd > 0)) return null; // no total set: no limit
+    if (b.split === 'custom') { const v = b.shares?.[chId]; return v === undefined || v === null || v === '' ? null : Number(v); } // blank: only the total applies
+    const n = (await one("SELECT count(*)::int n FROM mail.channels WHERE mode IN ('shadow','live')")).n; return b.monthly_usd / Math.max(1, n);
+  }
+  async function budgetState(chId) {
+    const b = await budget(), total = await spentMonth(), lim = await boxLimit(b, chId), mine = chId ? await spentMonth(chId) : 0;
+    if (b.monthly_usd > 0 && total >= b.monthly_usd) return { allowed: false, why: `This month's AI budget ($${b.monthly_usd}) is used up; it starts again next month` };
+    if (lim !== null && chId && mine >= lim) return { allowed: false, why: `This mailbox's share of the AI budget ($${lim.toFixed(2)}) is used up this month` };
+    return { allowed: true, total: { limit: b.monthly_usd || null, spent: total }, box: { limit: lim, spent: mine } };
+  }
+  async function spend(chId, row, purpose, tin, tout) {
+    const cost = costOf(row, tin, tout);
+    await run(`INSERT INTO mail.ai_spend (month, channel_id, provider, purpose, calls, tokens_in, tokens_out, cost_usd) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT (month, channel_id, provider, purpose) DO UPDATE SET calls=mail.ai_spend.calls+1, tokens_in=mail.ai_spend.tokens_in+excluded.tokens_in,
+      tokens_out=mail.ai_spend.tokens_out+excluded.tokens_out, cost_usd=mail.ai_spend.cost_usd+excluded.cost_usd`, month(), chId || '', row.name, purpose, tin, tout, cost);
+    await usage(row.name, { tin, tout });
+    budgetWarn(chId).catch(e => console.error('mail ai budget warn', e.message));
+    return cost;
+  }
+  // once a month each: a note to the super admins when the total, or a mailbox's share, passes the warning mark
+  async function budgetWarn(chId) {
+    const b = await budget(); if (!(b.monthly_usd > 0)) return;
+    const total = await spentMonth(), lim = await boxLimit(b, chId), mine = chId ? await spentMonth(chId) : 0, pct = (b.warn_pct || 80) / 100;
+    const ch = chId && await one('SELECT address, tenant_id FROM mail.channels WHERE id=?', chId), admins = (await all("SELECT id FROM users WHERE role='super_admin' AND is_active=1")).map(r => r.id);
+    const once = async (key, lines) => { if (await getSet(key)) return; await putSet(key, now());
+      await alert(ch?.tenant_id || null, admins, 'mail_ai_budget', `[ONE Desk] AI budget: ${lines[0]}`, lines, `${base()}/#/c/mail/settings`); };
+    if (total >= b.monthly_usd * pct) await once(`ai_warned:${month()}:total`, [`$${total.toFixed(2)} of this month's $${b.monthly_usd} is used (${Math.round(100 * total / b.monthly_usd)} %).`,
+      'At 100 % the AI pauses until next month: mail is still sorted by the rules (the rest waits in Review) and replies are written without drafts.']);
+    if (lim && ch && mine >= lim * pct) await once(`ai_warned:${month()}:${chId}`, [`${ch.address} has used $${mine.toFixed(2)} of its $${lim.toFixed(2)} share this month.`, 'Raise its share on Mail → Settings → AI budget if needed.']);
+  }
+  // every AI use goes through here: is it switched on, is there budget, then the providers in order; the cost is counted per mailbox
+  async function aiRun(chId, purpose, system, user, maxTokens, parse) {
+    const b = await budget(); if (b.features?.[purpose] === false) return { off: 'Switched off on Mail → Settings → AI budget' };
+    const st = await budgetState(chId); if (!st.allowed) return { off: st.why };
+    const rows = await all("SELECT * FROM mail.integrations WHERE kind='ai' AND active=1 ORDER BY priority, created_at");
+    if (!rows.length) return { off: 'No AI provider is set up' };
+    for (const row of rows) {
+      try { const o = await aiCall(row, system, user, maxTokens), value = parse(o.content); if (!value) throw new Error('The answer was not in the expected shape');
+        const cost = await spend(chId, row, purpose, o.tin, o.tout); return { value, provider: row.name, cost }; }
+      catch (e) { console.warn(`mail ai (${purpose}): ${row.name} failed, trying the next one:`, e.message); await usage(row.name, { fail: 1 }).catch(() => {}); }
     }
-    return null; // every provider failed or none is set up: the rules decide, else Review
+    return { off: 'The AI providers did not answer' };
   }
+  async function readMail(ch, subject, text) {
+    const r = await aiRun(ch.id, 'sort', L.MAIL_SYSTEM, `<mail>\nSubject: ${L.maskPII(subject)}\n${L.maskPII(text).slice(0, 1500)}\n</mail>`, 300, L.parseReading);
+    return r.value ? { reading: r.value, provider: r.provider } : null; // switched off, over budget or failed: the rules decide, else Review
+  }
+  const aiReady = async chId => { const b = await budget(), st = await budgetState(chId), any = !!(await one("SELECT 1 x FROM mail.integrations WHERE kind='ai' AND active=1 LIMIT 1"));
+    return { draft: any && st.allowed && b.features?.draft !== false, check: any && st.allowed && b.features?.check !== false, why: !any ? 'No AI provider is set up' : st.allowed ? null : st.why }; };
 
   /* ================= reading new mail ================= */
   const SELECT = '$select=id,internetMessageId,conversationId,from,sender,toRecipients,ccRecipients,subject,body,receivedDateTime,hasAttachments,internetMessageHeaders';
@@ -343,7 +397,7 @@ export async function mail(d) {
     const headers = Object.fromEntries((m.internetMessageHeaders || []).map(h => [h.name, h.value]));
     const text = L.cleanText(m.body?.content), subject = str(m.subject, 998), ts = now();
     const rules = L.applyRules(await all('SELECT * FROM mail.rules WHERE tenant_id=? AND (channel_id=? OR channel_id IS NULL)', ch.tenant_id, ch.id), { from_email: fromEmail, subject, headers });
-    const ai = rules.skipAi ? null : await readMail(subject, text);
+    const ai = rules.skipAi ? null : await readMail(ch, subject, text);
     const lane = rules.lane || L.laneFrom(ai?.reading);
     const refs = L.refsIn(subject, (await tenantRow(ch.tenant_id))?.code); // mail numbers of this campus quoted by the sender
     const res = await tx(async () => {
@@ -636,7 +690,7 @@ export async function mail(d) {
       messages: [...inbound.map(m => ({ dir: 'in', ...m, to_list: json(m.to_list, []), cc_list: json(m.cc_list, []), ai: json(m.ai_json || 'null', null), ai_json: undefined, at: m.received_at })),
         ...outbound.map(m => ({ dir: 'out', ...m, to_list: json(m.to_list, []), cc_list: json(m.cc_list, []), at: m.sent_at || m.send_after || m.created_at }))].sort((x, y) => String(x.at).localeCompare(String(y.at))),
       notes, events, desk, suggested_service: route ? { id: route.service_id, name: route.name } : null, templates, others,
-      can: { work: canWork(a, ch), forward: canWork(a, ch) && ACTIVE.includes(t.status), reply: canWork(a, ch) && ch.mode === 'live' && t.status !== 'forwarded' } };
+      can: { work: canWork(a, ch), forward: canWork(a, ch) && ACTIVE.includes(t.status), reply: canWork(a, ch) && ch.mode === 'live' && t.status !== 'forwarded' }, ai: await aiReady(ch.id) };
   }));
 
   /* ================= API: working a thread ================= */
@@ -670,6 +724,64 @@ export async function mail(d) {
       state: 'queued', send_after: new Date(Date.now() + L.UNDO_SECONDS * 1000).toISOString(), created_at: ts });
     await run(`UPDATE mail.threads SET owner_user_id=coalesce(owner_user_id, ?), status=CASE WHEN status='open' THEN 'in_progress' ELSE status END, updated_at=? WHERE id=?`, req.user.id, ts, t.id);
     audit(req, 'reply', 'thread', t.id, { outbound_id: o.id }); return { id: o.id, send_after: o.send_after, undo_seconds: L.UNDO_SECONDS };
+  }));
+  // ---- before sending: a draft from the AI, a check by the AI, and the exact preview (with the free spelling check) ----
+  const keepWords = (t, ch, tn) => [t.requester_name, ch.display_name, tn?.name, tn?.code].filter(Boolean).join(' ').split(/[^\p{L}\p{N}]+/u).filter(w => w.length > 1);
+  S.post('/maildesk/threads/:ref/draft', wrap(async req => {
+    const { t, ch } = await threadFor(req, req.params.ref, { work: true }); limit('mail-ai:' + req.user.id, 60, 3600e3);
+    const tn = await tenantRow(ch.tenant_id), first = (t.requester_name || '').trim().split(/\s+/)[0] || 'Sir/Madam';
+    const msgs = [...(await all('SELECT from_name, body_text, received_at at FROM mail.inbound_emails WHERE thread_id=? ORDER BY received_at DESC LIMIT 3', t.id)).map(m => ({ ...m, who: 'Sender' })),
+      ...(await all("SELECT body_text, sent_at at FROM mail.outbound_emails WHERE thread_id=? AND state='sent' ORDER BY sent_at DESC LIMIT 2", t.id)).map(m => ({ ...m, who: 'Us' }))].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const known = (await all("SELECT name, body FROM mail.reply_templates WHERE kind='manual' AND active=1 AND (tenant_id=? OR tenant_id IS NULL) AND (channel_id=? OR channel_id IS NULL) ORDER BY name LIMIT 15", ch.tenant_id, ch.id))
+      .map(x => `- ${x.name}: ${x.body.replace(/\{\{\s*\w+\s*\}\}/g, '').slice(0, 600)}`).join('\n');
+    const user = `<mail>\nSubject: ${L.maskPII(t.subject || '')}\nSender's first name: ${first}\n${msgs.map(m => `--- ${m.who}:\n${L.maskPII(m.body_text || '').slice(0, 1500)}`).join('\n')}\n</mail>\n<known>\n${known || '(nothing)'}\n</known>`;
+    const r = await aiRun(ch.id, 'draft', L.DRAFT_SYSTEM(ch.display_name || ch.address, tn.name), user, 700, L.parseDraft);
+    if (!r.value) throw new HttpErr(409, 'AI_OFF', `No AI draft: ${r.off}. Write the reply yourself.`);
+    audit(req, 'ai_draft', 'thread', t.id, { provider: r.provider, cost: r.cost });
+    return { text: r.value.reply, missing: r.value.missing, provider: r.provider };
+  }));
+  S.post('/maildesk/threads/:ref/check', wrap(async req => {
+    const { ch } = await threadFor(req, req.params.ref, { work: true }); limit('mail-ai:' + req.user.id, 60, 3600e3);
+    const text = str(req.body.body, 20000); if (!text) throw bad('Write the reply first');
+    const sh = L.shield(text), r = await aiRun(ch.id, 'check', L.CHECK_SYSTEM, `<reply>\n${sh.masked}\n</reply>`, 1200, L.parseCheck);
+    if (!r.value) throw new HttpErr(409, 'AI_OFF', `No AI check: ${r.off}.`);
+    const back = L.unshield(r.value.text, sh.map);
+    if (back === null) return { text, notes: ['The AI changed a phone number, email or link, so your text is kept as it was.'], kept: true };
+    return { text: back, notes: r.value.notes, changed: back !== text };
+  }));
+  // exactly what will go out: from, to, cc, subject with the mail number, the text (spelling-checked on this server) and the signature
+  S.post('/maildesk/threads/:ref/preview', wrap(async req => {
+    const { t, ch } = await threadFor(req, req.params.ref, { work: true }), text = str(req.body.body, 20000); if (!text) throw bad('Write the reply first');
+    const to = req.body.to ? String(req.body.to).trim().toLowerCase() : t.requester_email.toLowerCase();
+    if (to !== t.requester_email.toLowerCase() && !(await one('SELECT 1 x FROM mail.inbound_emails WHERE thread_id=? AND lower(from_email)=?', t.id, to))) throw bad('A reply goes only to someone who wrote in this thread');
+    const cc = (Array.isArray(req.body.cc) ? req.body.cc : []).map(x => String(x).trim().toLowerCase()).filter(Boolean);
+    if (cc.length > 10 || cc.some(x => !L.isEmail(x))) throw bad('Copy (cc): up to 10 valid email addresses');
+    const tn = await tenantRow(ch.tenant_id), fixed = polish(text, { keep: keepWords(t, ch, tn) });
+    return { from: ch.display_name ? `${ch.display_name} <${ch.address}>` : ch.address, to, cc, subject: L.subjectWith(t.ref, t.subject, true),
+      text, corrected: fixed.text, changes: fixed.changes || [], html: L.textToHtml(fixed.text, ch.signature), html_as_written: L.textToHtml(text, ch.signature), signature: ch.signature || '', ai: await aiReady(ch.id) };
+  }));
+  // the budget screen (super admin): this month, per mailbox (all campuses: one AI key serves them all), per use
+  S.get('/maildesk/ai-budget', wrap(async req => {
+    await needAdmin(req); const b = await budget(), m = month();
+    const boxes = await all(`SELECT c.id, c.address, c.display_name, c.mode, n.code campus FROM mail.channels c JOIN tenants n ON n.id=c.tenant_id ORDER BY n.code, c.address`);
+    const rows = await all('SELECT channel_id, purpose, sum(calls)::int calls, sum(cost_usd)::float cost, sum(tokens_in)::bigint tin, sum(tokens_out)::bigint tout FROM mail.ai_spend WHERE month=? GROUP BY channel_id, purpose', m);
+    const by = (id, p) => rows.filter(r => r.channel_id === id && (!p || r.purpose === p));
+    const providers = (await all("SELECT name, config, active FROM mail.integrations WHERE kind='ai' ORDER BY priority")).map(r => { const c = json(r.config, {}); return { name: r.name, model: c.model, active: !!r.active, priced: c.priceIn != null && c.priceOut != null }; });
+    const avg = p => { const x = rows.filter(r => r.purpose === p), calls = x.reduce((a, r) => a + r.calls, 0); return calls ? x.reduce((a, r) => a + Number(r.cost), 0) / calls : null; };
+    return { ...b, month: m, spent: await spentMonth(), providers, avg_cost: { sort: avg('sort'), draft: avg('draft'), check: avg('check') },
+      mailboxes: await Promise.all(boxes.map(async c => ({ ...c, limit: await boxLimit(b, c.id), spent: by(c.id).reduce((a, r) => a + Number(r.cost), 0),
+        uses: Object.fromEntries(['sort', 'draft', 'check'].map(p => [p, by(c.id, p).reduce((a, r) => a + r.calls, 0)])) }))) };
+  }));
+  S.put('/maildesk/ai-budget', wrap(async req => {
+    await needAdmin(req); const b = req.body || {}, money = (v, m) => { if (v === '' || v == null) return null; const n = Number(v); if (!(n >= 0 && n <= 100000)) throw bad(m); return Math.round(n * 100) / 100; };
+    const ids = new Set((await all('SELECT id FROM mail.channels')).map(r => r.id)), shares = {};
+    for (const [k, v] of Object.entries(b.shares || {})) { if (!ids.has(k)) continue; const x = money(v, 'Each share: US$ 0 or more'); if (x !== null) shares[k] = x; }
+    const total = money(b.monthly_usd, 'Monthly budget: US$ 0 or more (0 = no limit)') || 0, warn = Number(b.warn_pct ?? 80);
+    if (!(warn >= 10 && warn <= 100)) throw bad('Warn at: 10 to 100 %');
+    if (b.split === 'custom' && total > 0 && Object.values(shares).reduce((a, x) => a + x, 0) > total + 0.001) throw bad(`The shares add up to more than the monthly budget ($${total})`);
+    const v = { monthly_usd: total, split: b.split === 'custom' ? 'custom' : 'equal', shares, warn_pct: warn,
+      features: { sort: b.features?.sort !== false, draft: b.features?.draft !== false, check: b.features?.check !== false } };
+    await putSet('ai_budget', JSON.stringify(v)); audit(req, 'setting_change', 'ai_budget', null, v); return v;
   }));
   S.post('/maildesk/outbound/:id/cancel', wrap(async req => {
     const o = await one('SELECT * FROM mail.outbound_emails WHERE id=?', req.params.id); if (!o) throw notFound();
@@ -926,9 +1038,10 @@ export async function mail(d) {
   const aiFields = (b, partial) => {
     const f = {};
     if (!partial || 'name' in b) { f.name = str(b.name, 120); if (!f.name) throw bad('Name required'); }
-    if (!partial || 'baseURL' in b || 'model' in b || 'reasoningEffort' in b || 'noTemperature' in b) {
+    if (!partial || 'baseURL' in b || 'model' in b || 'reasoningEffort' in b || 'noTemperature' in b || 'priceIn' in b || 'priceOut' in b) {
       const u = str(b.baseURL, 300); if (!/^https?:\/\/\S+$/.test(u)) throw bad('API address, e.g. https://api.openai.com/v1'); const m = str(b.model, 120); if (!m) throw bad('Model required');
-      f.config = JSON.stringify({ baseURL: u, model: m, reasoningEffort: str(b.reasoningEffort, 20) || undefined, noTemperature: !!b.noTemperature }); }
+      const price = v => { if (v === '' || v == null) return undefined; const n = Number(v); if (!(n >= 0 && n <= 1000)) throw bad('Price: US$ per 1 million tokens, 0 to 1000'); return n; };
+      f.config = JSON.stringify({ baseURL: u, model: m, reasoningEffort: str(b.reasoningEffort, 20) || undefined, noTemperature: !!b.noTemperature, priceIn: price(b.priceIn), priceOut: price(b.priceOut) }); }
     if ('priority' in b) { f.priority = Number(b.priority); if (!Number.isInteger(f.priority) || f.priority < 1 || f.priority > 99) throw bad('Order: 1 to 99'); }
     if ('active' in b) f.active = b.active ? 1 : 0;
     if (b.apiKey) f.secret_enc = L.seal(KEY, { apiKey: String(b.apiKey).trim() });
@@ -938,7 +1051,7 @@ export async function mail(d) {
     const r = await insert('mail.integrations', { id: uid(), kind: 'ai', provider: 'openai-compatible', priority: 1, active: 0, ...f, created_at: now(), updated_at: now() });
     audit(req, 'key_replace', 'integration', r.id, { name: r.name }); return { id: r.id }; }));
   S.patch('/maildesk/integrations/:id', wrap(async req => { await needAdmin(req); const i = await one('SELECT * FROM mail.integrations WHERE id=?', req.params.id); if (!i) throw notFound();
-    const f = aiFields({ ...json(i.config, {}), ...req.body }, true); if (!('baseURL' in req.body || 'model' in req.body || 'reasoningEffort' in req.body || 'noTemperature' in req.body)) delete f.config;
+    const f = aiFields({ ...json(i.config, {}), ...req.body }, true); if (!['baseURL', 'model', 'reasoningEffort', 'noTemperature', 'priceIn', 'priceOut'].some(k => k in req.body)) delete f.config;
     if (!Object.keys(f).length) throw bad('Nothing to change');
     await run(`UPDATE mail.integrations SET ${Object.keys(f).map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...Object.values(f), now(), i.id);
     audit(req, f.secret_enc ? 'key_replace' : 'setting_change', 'integration', i.id); return { ok: true }; }));
