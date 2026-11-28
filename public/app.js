@@ -809,6 +809,7 @@ async function workspace(main, id, { admin }) {
   const fd = Object.entries(fdRaw).filter(([k, v]) => v !== '' && v != null && !/_label$/.test(k) && k !== 'food_location').map(([k, v]) => [schema.find(f => f.key === k)?.label || cap(k.replace(/^(loc|stu|food)_/, '').replace(/_/g, ' ')),
     k === 'food_category' ? fdRaw.food_category_label || v : k === 'meal' ? fdRaw.meal_label || MEAL_NAMES[v] || v : Array.isArray(v) ? v.join(', ') : v]);
   const live = [...ACTIVE, 'hold'].includes(t.status), r = t.requestor, shown = ticketStatus(t);
+  const work = live && !t.joined_into_no; // a joined ticket is worked on the one it went into: its banner stays, the form, Join and Transfer go
   const dl = rows => rows.map(([k, v]) => `<div class="dli"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
   // SLA: the tag, the big value, and how much of the window is used (by the clock, from when the ticket reached the team)
   const start = new Date(t.lands_at || t.created_at).getTime(), due = new Date(t.due_at).getTime(), used = Math.max(0, Math.min(100, Math.round(100 * (Date.now() - start) / Math.max(1, due - start))));
@@ -848,7 +849,7 @@ async function workspace(main, id, { admin }) {
   const details = `<div class="issue"><div class="eyebrow up ic">${tile('file', 14)}Issue</div><p>${esc(t.description || t.subject)}</p></div>
     ${t.location ? `<div class="locrow m-only">${I('pin', 16)}<div><dt>Location</dt><dd>${esc(t.location)}</dd></div></div>` : ''}
     <dl class="dlist">${t.location ? `<div class="dli dli-loc"><dt>Location</dt><dd>${esc(t.location)}</dd></div>` : ''}${dl([...fd, ['Created', fmt(t.created_at)], ['Channel', cap(String(t.channel).replace('_', ' '))], ...(t.is_internal ? [['Kind', 'Internal request']] : [])])}</dl>`;
-  const updateForm = `<form id="act" class="upd" aria-labelledby="updT">
+  const updateForm = `<form id="act" class="upd" aria-labelledby="updT"${t.joined_into_no ? ' hidden' : ''}>
       <div class="upd-h"><div class="chead" id="updT">${tile('pencil')}<span>Update this ticket</span></div><button type="button" class="msheet-x m-only" id="updX" aria-label="Close">${I('x', 20)}</button></div>
       <label for="to">Status<span class="m-only"> · now ${stName(t.status)}</span></label><select name="to" id="to">${STATUSES.map(s2 => `<option value="${s2}" ${s2 === t.status ? 'selected' : ''} ${s2 !== t.status && !targets.includes(s2) ? 'disabled' : ''}>${STATUS_INFO[s2][0]}${s2 === t.status ? ' (current)' : ''}</option>`).join('')}</select>
       <div class="helper" id="tohint"></div>
@@ -869,7 +870,7 @@ async function workspace(main, id, { admin }) {
     <a href="#/c" class="backlink d-only" data-back>${I('back', 16)}Back to my tickets</a>
     <div class="tk-title"><div><div class="tk-ids"><span class="mono d-only">#${t.ticket_no}</span>${pill(shown)}${priorityTag(t.priority, true)}${flags}</div>
         <h1>${esc(t.subject)}</h1><div class="tk-sub"><span>${esc(t.service.name)}</span><span class="d-only"> · Raised via ${esc(String(t.channel).replace('_', ' '))} by</span><span class="m-only"> ·</span> <span>${esc(r.name)}</span></div></div>
-      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${live ? `<button type="button" class="btn" id="joinbtn">${I('users', 16)}Join ticket…</button><button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
+      <div class="tk-acts d-only"><a class="btn" href="${t.tracking_url}" target="_blank" rel="noopener">${I('eye', 16)}Requester's view</a>${work ? `<button type="button" class="btn" id="joinbtn">${I('users', 16)}Join ticket…</button><button type="button" class="btn" id="tr">${I('swap', 16)}Transfer</button>` : ''}</div></div>
     ${t.joined_into_no ? `<div class="helper joinedto">${I('users', 14)}<span>Joined into <a href="#/c/t/${esc(t.joined_into)}">#${esc(t.joined_into_no)}</a>. Its students and updates are there now.</span></div>` : ''}
     <div class="tk-cols">
       <div class="segs m-only" role="tablist" aria-label="Ticket sections">${[['activity', `Activity <span class="cnt">${evs.length}</span>`], ['details', 'Details'], ['people', 'People']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${seg === k}" data-seg="${k}">${l}</button>`).join('')}</div>
@@ -881,7 +882,7 @@ async function workspace(main, id, { admin }) {
       <div class="tk-main"><section class="card sec-details">${details}</section>
         <section class="card sec-activity"><div class="act-h">${cardHeading('history', 'Activity')}<span class="act-n">${evs.length} event${evs.length === 1 ? '' : 's'}<span class="m-only"> · Newest first</span></span></div>${timeline}${updateForm}</section></div>
       <aside class="tk-side">${slaCard}${remCard}<div class="sec-people">${people}</div></aside></div>
-    <div class="tk-bar m-only">${live ? `<button type="button" class="btn" id="joinbtnm">${I('users', 16)}Join</button><button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen">${I('pencil', 16)}Update ticket</button></div>
+    <div class="tk-bar m-only">${work ? `<button type="button" class="btn" id="joinbtnm">${I('users', 16)}Join</button><button type="button" class="btn" id="trm">${I('swap', 16)}Transfer</button>` : ''}<button type="button" class="btn primary" id="updOpen"${t.joined_into_no ? ' hidden' : ''}>${I('pencil', 16)}Update ticket</button></div>
     <div class="msheet-back upd-back" hidden></div></div>`;
   wireFiles('act');
   const reload = () => workspace(main, id, { admin });

@@ -809,6 +809,7 @@ try {
   const j6 = await own('Joinf', { form_data: { loc_block: 'Science block', loc_floor: '1st floor', loc_room: '202', issue: 'Light' } }), t6 = await tk(j6.ticket_no);
   await run("UPDATE tickets SET created_date=created_date - 1 WHERE id=?", t6.id); // raised yesterday: a provider may join across days
   const jr6 = await ok('a ticket from another day joins too', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j6.ticket_no } });
+  ids.joinedId = t2.id; // the Chrome screens' joined ticket: banner, no update form
   check('…its student moves', jr6.moved === 1 && (await tk(j6.ticket_no)).joined_into === t1.id);
   await fails('a ticket already joined cannot be joined again', `/tickets/${t1.id}/join`, { token: T.pavan, method: 'POST', body: { ticket_no: j2.ticket_no } }, 400, `already joined into #${j1.ticket_no}`);
   check('the joined ticket is out of the list, the CSV and the reports', !(await api('/tickets?status=closed', { token: T.pavan })).data.some(x => x.id === t2.id) && !(await (await fetch(`${API}/tickets.csv?status=all`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()).includes(`"${j2.ticket_no}"`) && (await api('/reports?days=1', { token: T.asha })).data.counts.closed_period === closedBefore);
@@ -901,6 +902,14 @@ try {
     && l2.ticket_no === String(before + 1).padStart(4, '0') && after === before + 1 && l2.tracking_token?.length >= 32 && l2.tracking_token !== tB.tracking_token, JSON.stringify({ before, after, l2 }));
   check('C1 backfill: …and their number opens the shared ticket as them', (p => p.ticket_no === l2.ticket_no && !!p.mine && !/Legback/.test(JSON.stringify(p)))((await api(`/public/alpha/tickets/${l2.ticket_no}`)).data || {}));
   check('M3: a restart keeps the tr_no index (no drop and rebuild)', (await idx()) === idx0);
+  // I1: a joined ticket is worked on the ticket it went into
+  const ha = await fx('Histy', 'F4', 'Fan'), hb = await fx('Histy', 'F4', 'Light'), tHa = await tk(ha.ticket_no), tHb = await tk(hb.ticket_no);
+  await join(tHa.id, hb.ticket_no);
+  const help = (await q("SELECT id FROM services WHERE code='HELP'"))[0].id, w = (p, body, token = T.pavan) => api(`/tickets/${tHb.id}/${p}`, { token, method: 'POST', body });
+  const rs = [await w('status', { to: 'open', note: 'Reopening it', approved: true }), await w('notes', { body: 'A note', approved: true }), await w('transfer', { service_id: help, note: 'Moving it', approved: true }),
+    await w('priority', { priority: 'low' }), await w('reminders', { in: 'day', note: 'Check it' }), await w('extend', { hours: 2, reason: 'More time' }, T.asha)];
+  check('I1: a joined ticket answers 409 "Joined into #X; work it there" to every staff write', rs.every(r => r.status === 409 && r.error.message.includes(`Joined into #${ha.ticket_no}; work it there`)) && (await tk(hb.ticket_no)).status === 'closed', JSON.stringify(rs.map(r => [r.status, r.error?.message])));
+  check('I1: "Previous tickets" leaves out a ticket joined away', !(await api(`/tickets/${tHa.id}`, { token: T.pavan })).data.requestor_history.some(h => h.id === tHb.id));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1659,7 +1668,7 @@ try {
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1, joinerNo: ids.joinerNo, sharedId: ids.sharedId, closedId: ids.closedId });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1, joinerNo: ids.joinerNo, sharedId: ids.sharedId, closedId: ids.closedId, joinedId: ids.joinedId });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1730,6 +1739,8 @@ async function uiSmoke(tok, id) {
     check('…and offers no Split out on a closed ticket', await js("return !document.querySelector('[data-split]')"));
     await visit('workspace: Join ticket dialog', '/c/t/' + id.sharedId, tok.pavan, '#joinbtn'); await js("document.querySelector('#joinbtn').click()"); check('…opens with a number field', await js("return !!document.querySelector('dialog[open] input[name=ticket_no]')"));
     await visit('workspace: Split out dialog', '/c/t/' + id.sharedId, tok.pavan, '.rqrow [data-split]'); await js("document.querySelector('.rqrow [data-split]').click()"); check('…asks for confirmation', await js("return !!document.querySelector('dialog[open]')"));
+    await visit('I1: workspace of a joined ticket shows the banner', '/c/t/' + id.joinedId, tok.pavan, '.joinedto');
+    check('I1: …and no update form, Join or Transfer', await js("return document.querySelector('#act').hidden && document.querySelector('#updOpen').hidden && !document.querySelector('#joinbtn') && !document.querySelector('#tr')"));
     await visit('new ticket form', '/c/new', tok.pavan, '#f [name=channel]');
     await visit('provider profile', '/c/me', tok.pavan, '.profile');
     await visit('admin services', '/c/services', tok.asha, 'div.svc [data-e]');

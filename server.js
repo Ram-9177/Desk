@@ -391,7 +391,7 @@ async function escalate(t) {
 async function runEscalations() {
   const n = now();
   for (const tn of await all('SELECT * FROM tenants WHERE is_active=1')) {
-    const due = await all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND ((status IN ('open','in_progress') AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
+    const due = await all(`SELECT * FROM tickets WHERE tenant_id=? AND escalated_at IS NULL AND joined_into IS NULL AND ((status IN ('open','in_progress') AND due_at<?) OR (status='hold' AND hold_due_at<?))`, tn.id, n, n);
     const teams = Object.fromEntries((await all(`SELECT s.id, coalesce(s.escalate_after_hours, p.escalate_after_hours) h, coalesce(s.escalate_holds, p.escalate_holds) holds,
       s.work_start, s.work_end, s.work_days, p.work_start p_work_start, p.work_end p_work_end, p.work_days p_work_days FROM services s LEFT JOIN services p ON p.id=s.parent_id WHERE s.tenant_id=?`, tn.id))
       .map(r => [r.id, { hours: r.h, holds: r.holds, row: r }]));
@@ -419,7 +419,7 @@ async function queueSlot(tn, svc, today) {
   throw new HttpErr(429, 'QUEUE_FULL', 'This team\'s queue is full for the coming months. Please contact the help desk.');
 }
 async function releaseQueued() {
-  for (const t of await all('SELECT * FROM tickets WHERE queued=1 AND lands_at<=? ORDER BY queue_day, created_at LIMIT 1000', now())) {
+  for (const t of await all('SELECT * FROM tickets WHERE queued=1 AND joined_into IS NULL AND lands_at<=? ORDER BY queue_day, created_at LIMIT 1000', now())) {
     const svc = await one('SELECT name FROM services WHERE id=?', t.service_id);
     const done = await tx(async () => {
       if (!(await run('UPDATE tickets SET queued=0, updated_at=? WHERE id=? AND queued=1', now(), t.id)).changes) return false;
@@ -1381,6 +1381,12 @@ async function loadTicket(req) {
     || (t.escalated_at && await one('SELECT 1 AS x FROM service_escalations e LEFT JOIN services s ON s.id=? WHERE e.user_id=? AND e.service_id IN (s.id, s.parent_id)', t.service_id, req.user.id)))) throw notFound();
   return t;
 }
+// A ticket joined into another is that one now: it is worked there. Reopened or changed here it would count, escalate and score the problem twice.
+async function loadWork(req) {
+  const t = await loadTicket(req);
+  if (t.joined_into) throw new HttpErr(409, 'JOINED', `Joined into #${(await one('SELECT ticket_no FROM tickets WHERE id=?', t.joined_into))?.ticket_no || '?'}; work it there`);
+  return t;
+}
 const actorOf = req => ({ type: 'user', id: req.user.id, name: req.user.name });
 // A note the requester will see: tidied on this server (spelling, short-forms, sentences) unless the provider already
 // approved the exact text in the preview. Returns { body, meta } where meta keeps the provider's original wording for staff.
@@ -1473,7 +1479,7 @@ S.get('/tickets/:id', wrap(async req => {
     requestor: await one('SELECT * FROM requestors WHERE id=?', t.requestor_id),
     requestors: await all(`SELECT tr.id, tr.name, tr.contact, tr.raised_at, tr.is_first, tr.event_id, tr.photo_url, tr.ticket_no, tr.description, tr.detached_at, tr.detached_to, r.identifier, r.department
       FROM ticket_requestors tr LEFT JOIN requestors r ON r.id = tr.requestor_id WHERE tr.ticket_id=? ORDER BY tr.raised_at`, t.id),
-    requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
+    requestor_history: await all('SELECT id,ticket_no,subject,status,created_at FROM tickets WHERE requestor_id=? AND id!=? AND joined_into IS NULL ORDER BY created_at DESC LIMIT 5', t.requestor_id, t.id),
     events: await all('SELECT * FROM ticket_events WHERE ticket_id=? ORDER BY id', t.id),
     attachments: await all('SELECT * FROM attachments WHERE ticket_id=?', t.id),
     reminders: await all('SELECT id, remind_at, note, fired_at FROM ticket_reminders WHERE ticket_id=? AND user_id=? AND done_at IS NULL ORDER BY remind_at', t.id, req.user.id),
@@ -1510,7 +1516,7 @@ const sharedVars = items => ({ shared: items.map(x => ({ title: x.title, url: x.
 const countShared = items => Promise.all(items.map(x => run('UPDATE notices SET shared=coalesce(shared,0)+1 WHERE id=?', x.id)));
 S.get('/tickets/:id/shareable', wrap(async req => shareable(await loadTicket(req))));
 S.post('/tickets/:id/status', wrap(async req => {
-  const t = await loadTicket(req), to = req.body.to;
+  const t = await loadWork(req), to = req.body.to;
   let note = req_(req.body.note, 'Please write a note'), meta = {};
   if (!req.body.is_internal) { const pub = await requesterNote(t, note, req.body.approved, req.body.typed); note = pub.body; meta = { ...pub.meta }; }
   const shared = req.body.is_internal ? [] : await sharedItems(t, req.body.shared); if (shared.length) meta = { ...meta, shared };
@@ -1552,7 +1558,7 @@ S.post('/tickets/:id/status', wrap(async req => {
   return { ok: true, points: meta.points, closed_earlier: closedEarlier };
 }));
 S.post('/tickets/:id/notes', wrap(async req => {
-  const t = await loadTicket(req), raw = req_(req.body.body, 'Write a note');
+  const t = await loadWork(req), raw = req_(req.body.body, 'Write a note');
   const pub = req.body.is_internal ? { body: raw, meta: {} } : await requesterNote(t, raw, req.body.approved, req.body.typed), body = pub.body;
   const shared = req.body.is_internal ? [] : await sharedItems(t, req.body.shared);
   await tx(async () => { const ev = await addEvent(t, actorOf(req), 'note', { body, internal: req.body.is_internal, meta: shared.length ? { ...pub.meta, shared } : pub.meta }); await saveFiles(t, ev, req.body.files, 'user');
@@ -1561,7 +1567,7 @@ S.post('/tickets/:id/notes', wrap(async req => {
   return { ok: true };
 }));
 S.post('/tickets/:id/transfer', wrap(async req => {
-  const t = await loadTicket(req), note = (await requesterNote(t, req_(req.body.note, 'Please write a note'), req.body.approved)).body;
+  const t = await loadWork(req), note = (await requesterNote(t, req_(req.body.note, 'Please write a note'), req.body.approved)).body;
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Only active or on-hold tickets can be transferred', { current: t.status });
   const ns = await one('SELECT * FROM services WHERE id=? AND tenant_id=? AND is_active=1', req.body.service_id, req.tenantId);
   if (!ns || ns.id === t.service_id) throw notFound();
@@ -1577,7 +1583,7 @@ S.post('/tickets/:id/transfer', wrap(async req => {
 // (someone already here keeps their one row); the joined ticket closes through no close path (no closer, no points, no closed email)
 // and points here, so the problem counts once. Its history stays on it: this ticket gets one internal summary of its complaint and its photos.
 S.post('/tickets/:id/join', wrap(async req => {
-  const t = await loadTicket(req), raw = String(req.body.ticket_no ?? '').trim().replace(/^#/, '');
+  const t = await loadWork(req), raw = String(req.body.ticket_no ?? '').trim().replace(/^#/, '');
   if (!raw) throw bad('Pick the ticket number to join');
   const no = normNo(raw), row = await one('SELECT ticket_id FROM ticket_requestors WHERE tenant_id=? AND ticket_no=? AND detached_at IS NULL', t.tenant_id, no);
   const o = await one('SELECT * FROM tickets WHERE tenant_id=? AND ticket_no=?', t.tenant_id, no) || (row && await one('SELECT * FROM tickets WHERE id=?', row.ticket_id)); // a student's own number finds their ticket
@@ -1627,7 +1633,7 @@ S.post('/tickets/:id/join', wrap(async req => {
 // follows the count down as well as up unless a provider set it by hand. The student's email and page carry their own number only.
 // A student who first reported on a ticket that was later joined here gets that ticket back (it still holds their number): a wrong join undone.
 S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
-  const t0 = await loadTicket(req), note = String(req.body.note ?? '').trim().slice(0, 2000);
+  const t0 = await loadWork(req), note = String(req.body.note ?? '').trim().slice(0, 2000);
   const row0 = await one('SELECT * FROM ticket_requestors WHERE id=? AND ticket_id=?', req.params.rid, t0.id);
   if (!row0) throw notFound();
   if (row0.is_first) throw bad('That is the first requester; split the others instead');
@@ -1687,7 +1693,7 @@ S.post('/tickets/:id/requestors/:rid/split', wrap(async req => {
 }));
 // A requestor asked to reopen: the provider who closed it (or an admin) accepts (it reopens, with a fresh target) or declines (it stays closed)
 S.post('/tickets/:id/reopen-request', wrap(async req => {
-  const t = await loadTicket(req), decision = req.body.decision, note = (await requesterNote(t, req_(req.body.note, 'Please write a note for the requester'), req.body.approved)).body;
+  const t = await loadWork(req), decision = req.body.decision, note = (await requesterNote(t, req_(req.body.note, 'Please write a note for the requester'), req.body.approved)).body;
   if (!t.reopen_requested_at || t.status !== 'closed') throw new HttpErr(409, 'BAD_TRANSITION', 'There is no reopen request on this ticket');
   const deciders = await reopenDeciders(t);
   if (!isAdmin(req.user) && !deciders.some(x => x.id === req.user.id)) throw new HttpErr(403, 'FORBIDDEN', `Only ${deciders.map(x => x.name).join(' or ') || 'the provider who closed it'} or an admin can decide`);
@@ -1705,7 +1711,7 @@ S.post('/tickets/:id/reopen-request', wrap(async req => {
 // ---------- reminders: a provider asks to be reminded about a ticket later; the ticket itself does not change ----------
 const REMIND_IN = { day: 1, '3days': 3, week: 7, month: 30 };
 S.post('/tickets/:id/reminders', wrap(async req => {
-  const t = await loadTicket(req), note = req_(req.body.note, 'Write what to remind you about').slice(0, 500), b = req.body;
+  const t = await loadWork(req), note = req_(req.body.note, 'Write what to remind you about').slice(0, 500), b = req.body;
   let at = REMIND_IN[b.in] ? new Date(Date.now() + REMIND_IN[b.in] * 864e5) : new Date(b.at || '');
   if (isNaN(at)) throw bad('Pick when to remind you');
   if (at.getTime() < Date.now() + 60e3) throw bad('Pick a time in the future');
@@ -1833,7 +1839,7 @@ S.delete('/notices/:id/files/:key', wrap(async req => { const x = await loadNoti
 // Send this campus's morning brief now (both kinds, even on a quiet day), e.g. to check how it looks
 S.post('/digest/send', role('super_admin', 'tenant_admin'), wrap(async req => ({ ok: true, sent: await sendBriefs(await tenantRow(req.tenantId), { force: true }) })));
 S.post('/tickets/:id/priority', wrap(async req => {
-  const t = await loadTicket(req), p = req.body.priority;
+  const t = await loadWork(req), p = req.body.priority;
   if (!PRIORITIES.includes(p) || p === t.priority) throw bad('Pick a different priority');
   if (![...ACTIVE, 'hold'].includes(t.status)) throw new HttpErr(409, 'BAD_TRANSITION', 'Ticket is not active');
   const due = t.kind === 'suggestion' ? null : await dueFrom(t.tenant_id, t.lands_at || t.created_at, await targetHours(t.tenant_id, t.service_id, p) * 60 + t.held_minutes, t.service_id);
@@ -1842,7 +1848,7 @@ S.post('/tickets/:id/priority', wrap(async req => {
   return { ok: true };
 }));
 S.post('/tickets/:id/extend', role('super_admin', 'tenant_admin'), wrap(async req => {
-  const t = await loadTicket(req), h = Number(req.body.hours), reason = req_(req.body.reason, 'Give a reason');
+  const t = await loadWork(req), h = Number(req.body.hours), reason = req_(req.body.reason, 'Give a reason');
   if (!(h > 0)) throw bad('Hours must be positive');
   if (!t.due_at) throw bad('A suggestion has no due time to extend');
   const due = await dueFrom(t.tenant_id, t.due_at, h * 60, t.service_id);
