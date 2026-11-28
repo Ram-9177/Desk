@@ -3,6 +3,9 @@ import { initCanteen, canteenCard, studentCanteen, canteenPage } from './canteen
 import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
+// Mail desk screens: loaded only for people with a mail role, and only when the server has the mail desk on (MAIL_ENABLED)
+let mailMod = null;
+const mailJs = () => mailMod ||= import('./mail.js').then(m => { m.initMail({ api, esc, toast, I, dlg, pill, avatar, emptyState, shortDate, cardHeading, customFields, typeFields, collectForm, isGeneral }); return m; }).catch(e => { mailMod = null; throw e; }); // a failed load is tried again next time, never cached
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = iso => iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '—';
 const toast = (m, ms = 3500) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms); };
@@ -564,15 +567,16 @@ async function shell(active, render, title) {
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
   if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter || c.owner || c.inventory || c.reports); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
+  if (S.mailFor !== S.tenant) { S.mailFor = S.tenant; const m = S.tenant ? await api('/maildesk/me').catch(() => ({})) : {}; S.mailOk = !!m?.role; S.mailOpen = m?.open || 0; } // mail desk: nodal officers, mail managers, admins (only when it is on)
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
-  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], S.mailOk && ['c/mail', 'Mail', 'mail'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
   if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (!['c/canteen', 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
   // a screen typed into the address bar that this role does not have (Tenants for a campus admin, People for a provider) goes Home instead of showing a half-page
   if (!all.some(n => n[0] === active) && !['c/me', 'c/food', 'c/canteen'].includes(active) && title !== 'Ticket') return location.replace('#/c');
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
-  const MAIN = ['c', 'c/canteen', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
+  const MAIN = ['c', 'c/canteen', 'c/mail', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
   const cur = h => active === h ? 'class="on" aria-current="page"' : '';
   // the bell: admins open Attention; providers their overdue tickets (they have no Attention page)
   const bellHref = admin ? '#/c/attention' : '#/c', bellAttr = admin ? '' : 'data-overdue';
@@ -590,7 +594,7 @@ async function shell(active, render, title) {
     <nav class="bnav" aria-label="Primary" ${S.canteenOnly ? 'hidden' : ''}>${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
-      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
+      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/mail', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
   app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
   if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
     mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
@@ -652,14 +656,14 @@ function ticketCard(r) {
     <span class="tc-r2"><b class="tc-title">${esc(r.subject)}</b><span class="tc-loc">${esc([r.service, r.location, r.problem_label].filter(Boolean).join(' · '))}</span></span>
     <span class="tc-r3">${avatar(r.requestor, 24)}<span class="tc-who">${ticketPeople(r)}</span><span class="tc-when ${w[3] ? 'done' : ''}">${I(w[2] === 'xmark' ? 'x' : w[2], 14)}${w[0]} ${shortDate(w[1])}</span></span></a>`;
 }
-function ticketTable(rows) {
+function ticketTable(rows, extra = '') { // extra: rows of another kind in the same table (mail threads on the Home)
   return `<div class="tblbox"><table class="ttable"><thead><tr><th>Ticket</th><th>Requester</th><th>Location</th><th>Priority</th><th>Status</th><th>Due / closed</th></tr></thead><tbody>
     ${rows.map(r => { const w = ticketWhen(r); return `<tr data-id="${r.id}" class="${r.status === 'rejected' ? 'dim' : ''}">
       <td><a href="#/c/t/${r.id}" class="tt-main"><span class="mono tt-no">#${r.ticket_no}</span><b>${esc(r.subject)}</b><span class="tt-svc">${esc(r.service)}</span></a></td>
       <td><span class="tt-req">${avatar(r.requestor, 28)}<span>${ticketPeople(r)}</span></span></td>
       <td class="tt-loc">${esc([r.location, r.problem_label].filter(Boolean).join(' · ')) || '—'}</td>
       <td>${priorityTag(r.priority)}</td><td><span class="tt-st">${pill(ticketStatus(r))}${ticketFlags(r)}</span></td>
-      <td><span class="tt-when ${w[3] ? 'done' : ''}"><small>${w[0]}</small>${shortDate(w[1])}</span></td></tr>`; }).join('')}</tbody></table></div>`;
+      <td><span class="tt-when ${w[3] ? 'done' : ''}"><small>${w[0]}</small>${shortDate(w[1])}</span></td></tr>`; }).join('')}${extra}</tbody></table></div>`;
 }
 // progress ring: starts at 12 o'clock, round caps
 const ringSvg = (pct, size, stroke) => { const r = (size - stroke) / 2, c = 2 * Math.PI * r;
@@ -673,8 +677,11 @@ async function queue(main) {
   const draw = async () => {
     const keep = document.activeElement?.id === 'fq' ? [$('#fq').selectionStart, true] : null, more = $('.mt-more')?.classList.contains('open');
     const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString();
-    const [rows, rep, fair, rem] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] }))]), fm = fair.me;
-    const c = rep.counts || {};
+    const [rows, rep, fair, rem, mw] = await Promise.all([api('/tickets?' + qs), api('/reports?days=7'), api('/fair').catch(() => ({ me: null })), api('/reminders').catch(() => ({ due: [], upcoming: [] })),
+      S.mailOk ? Promise.all([mailJs(), api('/maildesk/my-work')]).catch(() => null) : null]), fm = fair.me;
+    // a nodal officer's mail threads sit in the same table and counts as the tickets (marked Mail); off, the Home is as before
+    const M = mw?.[0], mailAll = mw?.[1] || [], mailIn = M ? M.mailFilter(mailAll, st) : [], mc = M ? M.mailCounts(mailAll) : {};
+    const c = { ...(rep.counts || {}) }; for (const k of ['open', 'in_progress', 'hold', 'overdue']) if (mc[k]) c[k] = (c[k] || 0) + mc[k];
     const done = c.closed_period || 0, total = done + (c.open || 0) + (c.in_progress || 0) + (c.hold || 0), pct = total ? Math.round(100 * done / total) : 0;
     const now = new Date(), h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now)), greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
     const day = o => now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', ...o }), tn = tenantObj();
@@ -696,14 +703,14 @@ async function queue(main) {
           <button type="button" class="btn" data-remdone="${m.id}">${I('check', 16)}Done</button></div>`).join('')}</section>` : ''}
       ${c.reopen_requests ? `<button type="button" class="queuebar reobar" data-s="reopen">${I('history', 20)}<span><b>${c.reopen_requests} reopen request${c.reopen_requests === 1 ? '' : 's'} waiting for you</b><span class="small">A requester says it is not fixed. Open the ticket to accept or decline; you can reply with a note first.</span></span>${I('chev', 18)}</button>` : ''}
       ${c.queued ? `<button type="button" class="queuebar" data-s="queued">${I('clock', 20)}<span><b>${c.queued} ticket${c.queued === 1 ? '' : 's'} waiting in the queue</b><span class="small">Your team's tickets for today are full. These reach you on the next working days, a day's worth at a time.</span></span>${I('chev', 18)}</button>` : ''}
-      <div class="card mt"><div class="mt-h"><div class="mt-t"><h2>My tickets</h2><span class="mt-n">${rows.length} ticket${rows.length === 1 ? '' : 's'}</span>
+      <div class="card mt"><div class="mt-h"><div class="mt-t"><h2>My tickets</h2><span class="mt-n">${rows.length} ticket${rows.length === 1 ? '' : 's'}${mailIn.length ? ` · ${mailIn.length} mail${mailIn.length === 1 ? '' : 's'}` : ''}</span>
           <button type="button" class="iconbtn m-only" id="fsvb" aria-label="Filter by service" aria-expanded="${!!more}">${I('filter', 20)}</button></div>
         <div class="mt-tools"><label class="search">${I('search', 18)}<input id="fq" type="search" aria-label="Search tickets" placeholder="Search by ID, subject or person" value="${esc(st.q || '')}"></label>
           <div class="mt-more ${more ? 'open' : ''}"><select id="fsv" aria-label="Service"><option value="">All my services</option>${services.map(s => `<option value="${s.id}" ${st.service === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
           <a href="/api/tickets.csv?${qs}" id="csv" class="btn">${I('download', 16)}Export CSV</a></div></div></div>
         <div class="tabs mt-tabs">${tabs.map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-s="${k}"><span>${l}</span>${counts[k] ? `<span class="cnt">${counts[k]}</span>` : ''}</button>`).join('')}</div>
-        ${rows.length ? `${ticketTable(rows)}<div class="tcards">${rows.map(ticketCard).join('')}</div>` : `<div class="mt-empty">${emptyState('No tickets here', 'Nothing matches this filter. Try another status or clear the search.')}</div>`}</div></div>`;
-    main.querySelectorAll('.ttable tbody tr').forEach(tr => { tr.onclick = e => { if (!e.target.closest('a')) location.hash = '#/c/t/' + tr.dataset.id; }; });
+        ${rows.length || mailIn.length ? `${ticketTable(rows, M ? M.mailRows(mailIn) : '')}<div class="tcards">${rows.map(ticketCard).join('')}${M ? M.mailCards(mailIn) : ''}</div>` : `<div class="mt-empty">${emptyState('No tickets here', 'Nothing matches this filter. Try another status or clear the search.')}</div>`}</div></div>`;
+    main.querySelectorAll('.ttable tbody tr').forEach(tr => { tr.onclick = e => { if (!e.target.closest('a')) location.hash = tr.dataset.href || '#/c/t/' + tr.dataset.id; }; });
     const set = (k, v) => { st[k] = v; sessionStorage.setItem('qf', JSON.stringify(st)); draw(); };
     main.querySelectorAll('[data-s]').forEach(b => b.onclick = () => set('status', b.dataset.s)); $('#fsv').onchange = e => set('service', e.target.value);
     main.querySelectorAll('[data-remdone]').forEach(b => b.onclick = async () => { try { await api(`/reminders/${b.dataset.remdone}/done`, { method: 'POST' }); S.bell = null; toast('Reminder done'); draw(); bellDot(S.me.user.role !== 'provider'); } catch (er) { toast(er.message); } });
@@ -1843,6 +1850,7 @@ async function route() {
       const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage, 'c/canteen': canteenPage };
       if (page === 'c/inventory') { sessionStorage.setItem('canteen-go', 'inventory'); return location.replace('#/c/canteen'); } // the canteen's Inventory tab
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
+      if (seg[1] === 'mail') return await shell('c/mail', async m => (await mailJs()).mailPage(m, seg.slice(2), q), seg[2] === 't' ? 'Mail' : undefined);
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }
     document.body.className = '';

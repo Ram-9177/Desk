@@ -1,0 +1,588 @@
+// Mail desk screens (#/c/mail…): the shared mailboxes handled inside ONE Desk. Shown only when the server has the
+// mail desk on (MAIL_ENABLED=true) and the person has a mail role; otherwise nothing here is ever drawn.
+//   #/c/mail              mail list by lane (Important, Needs reply, Review, Auto, Noise) with SLA chips
+//   #/c/mail/t/1001       one thread (MAIL-1001): the messages, reply box (sent from the mailbox), notes, status, Forward to service
+//   #/c/mail/confirm      auto-replies waiting for a click
+//   #/c/mail/settings     mailboxes, officers, response targets, templates, rules, AI providers
+// Nodal officers also see their mail rows on the desk Home, in the same table as their tickets (mailRows / mailCards below).
+// app.js hands in its helpers so this file looks and behaves like the rest of ONE Desk.
+let H; // { api, esc, toast, I, dlg, pill, avatar, emptyState, shortDate, cardHeading, customFields, typeFields, collectForm, isGeneral }
+export const initMail = h => { H = h; };
+const LANES = [['important', 'Important'], ['needs_reply', 'Needs reply'], ['review', 'Review'], ['auto', 'Auto-handled'], ['noise', 'Noise']];
+const LANE = Object.fromEntries(LANES);
+const SLA = { on_track: ['On track', 'open'], warning: ['Reply soon', 'hold'], escalated: ['Escalated', 'overdue'], escalated_2: ['Escalated ×2', 'overdue'], met: ['Replied', 'closed'], breached_met: ['Replied late', 'rejected'] };
+const STATUS = { open: 'Open', in_progress: 'In progress', hold: 'On hold', closed: 'Closed', rejected: 'Rejected', forwarded: 'Forwarded' };
+const ROLE = { nodal: 'Nodal officer', escalation: 'Escalation officer' };
+const MODE = { off: 'Off', shadow: 'Shadow (read and sort only)', live: 'Live' };
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const e = v => H.esc(v);
+const left = iso => { if (!iso) return ''; const m = Math.round((Date.parse(iso) - Date.now()) / 6e4), a = Math.abs(m), t = a >= 1440 ? `${Math.round(a / 1440)}d` : a >= 60 ? `${Math.floor(a / 60)}h ${a % 60 ? (a % 60) + 'm' : ''}`.trim() : `${a}m`; return m >= 0 ? `${t} left` : `${t} late`; };
+export const slaChip = (w, due, responded) => { if (!w) return ''; const [l, s] = SLA[w] || [w, 'open']; return `<span class="mchip sla-${s}" title="${e(l)}">${e(l)}${due && !responded && !['met', 'breached_met'].includes(w) ? ` · ${e(left(due))}` : ''}</span>`; };
+export const mailTag = '<span class="mchip mail">Mail</span>';
+const statusPill = s => s === 'forwarded' ? '<span class="pill st"><i class="sdot" style="background:var(--accent)"></i>Forwarded</span>' : H.pill(s);
+const laneChip = l => `<span class="mchip lane-${e(l)}">${e(LANE[l] || l)}</span>`;
+const sel = (name, opts, cur, extra = '') => `<select name="${name}" ${extra}>${opts.map(([v, l]) => `<option value="${e(v)}" ${String(v) === String(cur ?? '') ? 'selected' : ''}>${e(l)}</option>`).join('')}</select>`;
+let pollT = null;
+const every = (ms, fn, hash) => { clearInterval(pollT); pollT = setInterval(() => { if (location.hash.split('?')[0] !== hash) return clearInterval(pollT); if (!document.hidden) fn(); }, ms); };
+
+/* ================= the desk Home: mail rows in the same table ================= */
+// items come from GET /mail/my-work (desk row shape). The status tab in view decides which show.
+export const mailFilter = (items, st) => items.filter(w => {
+  const s = st.status || 'open', overdue = !w.responded && (['escalated', 'escalated_2'].includes(w.sla) || (w.due_at && Date.parse(w.due_at) < Date.now()));
+  if (st.service) return false; // a service filter is for desk tickets
+  if (st.q && !`${w.ref} ${w.title} ${w.requester} ${w.requester_email}`.toLowerCase().includes(String(st.q).toLowerCase())) return false;
+  return s === 'all' ? true : s === 'overdue' ? overdue : s === 'escalated' ? ['escalated', 'escalated_2'].includes(w.sla) : ['open', 'in_progress', 'hold'].includes(s) ? w.status === s : false;
+});
+export const mailCounts = items => ({ open: items.filter(w => w.status === 'open').length, in_progress: items.filter(w => w.status === 'in_progress').length, hold: items.filter(w => w.status === 'hold').length,
+  overdue: items.filter(w => !w.responded && (['escalated', 'escalated_2'].includes(w.sla) || (w.due_at && Date.parse(w.due_at) < Date.now()))).length });
+export const mailRows = items => items.map(w => `<tr data-href="${e(w.link)}" class="mrow">
+  <td><a href="${e(w.link)}" class="tt-main"><span class="mono tt-no">${e(w.ref)}</span><b>${e(w.title)}</b><span class="tt-svc">${mailTag} ${e(w.where)}</span></a></td>
+  <td><span class="tt-req">${H.avatar(w.requester, 28)}<span>${e(w.requester)}</span></span></td>
+  <td class="tt-loc">${laneChip(w.lane)}</td><td>${slaChip(w.sla, w.due_at, w.responded)}</td><td><span class="tt-st">${statusPill(w.status)}</span></td>
+  <td><span class="tt-when"><small>${w.responded ? 'Updated' : 'Reply by'}</small>${H.shortDate(w.responded ? w.updated_at : w.due_at)}</span></td></tr>`).join('');
+export const mailCards = items => items.map(w => `<a class="tcard" href="${e(w.link)}"><span class="tc-r1"><span class="mono tc-no">${e(w.ref)}</span>${mailTag}<span class="sp"></span>${slaChip(w.sla, w.due_at, w.responded)}${statusPill(w.status)}</span>
+  <span class="tc-r2"><b class="tc-title">${e(w.title)}</b><span class="tc-loc">${e(w.where)} · ${e(LANE[w.lane] || w.lane)}</span></span>
+  <span class="tc-r3">${H.avatar(w.requester, 24)}<span class="tc-who">${e(w.requester)}</span><span class="tc-when">${w.responded ? 'Updated' : 'Reply by'} ${H.shortDate(w.responded ? w.updated_at : w.due_at)}</span></span></a>`).join('');
+
+/* ================= routing ================= */
+export async function mailPage(main, seg, q) {
+  const me = await H.api('/maildesk/me');
+  if (!me.role) { main.innerHTML = `<div class="card">${H.emptyState('No mailboxes for you', 'Ask your admin to add you as a nodal officer of a mailbox.')}</div>`; return; }
+  if (seg[0] === 't') return thread(main, seg[1], me);
+  if (seg[0] === 'confirm') return confirmPage(main, me);
+  if (seg[0] === 'hr' && seg[1]) return candidatePage(main, seg[1], me);
+  if (seg[0] === 'hr') return hrList(main, me);
+  if (seg[0] === 'settings') return me.setup ? settings(main, me) : list(main, me, q);
+  return list(main, me, q);
+}
+const subnav = (me, on) => `<div class="tabs mt-tabs" style="margin-bottom:12px"><a class="tab ${on === 'list' ? 'on' : ''}" href="#/c/mail">Mail</a>
+  <a class="tab ${on === 'confirm' ? 'on' : ''}" href="#/c/mail/confirm"><span>Confirm auto-replies</span>${me.confirm ? `<span class="cnt">${me.confirm}</span>` : ''}</a>
+  ${me.hr ? `<a class="tab ${on === 'hr' ? 'on' : ''}" href="#/c/mail/hr">HR candidates</a>` : ''}
+  ${me.setup ? `<a class="tab ${on === 'settings' ? 'on' : ''}" href="#/c/mail/settings">Settings</a>` : ''}</div>`;
+
+/* ================= the mail list ================= */
+async function list(main, me) {
+  const st = (() => { try { return JSON.parse(sessionStorage.getItem('mailf') || '{}'); } catch { return {}; } })();
+  st.lane ||= 'needs_reply'; st.status ||= 'active';
+  const draw = async () => {
+    const qs = new URLSearchParams(Object.entries(st).filter(([, v]) => v)).toString(), d = await H.api('/maildesk/threads?' + qs), c = d.counts || {};
+    const shadow = me.channels.filter(x => x.mode !== 'live');
+    main.innerHTML = `${subnav(me, 'list')}
+      ${shadow.length && me.role !== 'officer' ? `<p class="muted small">${shadow.map(x => `${e(x.address)}: ${e(MODE[x.mode])}`).join(' · ')}. Mail of a mailbox in shadow mode is read and sorted here, but no reply is sent and officers do not see it yet.</p>` : ''}
+      <div class="card mt"><div class="mt-h"><div class="mt-t"><h2>Mail</h2><span class="mt-n">${d.threads.length} mail${d.threads.length === 1 ? '' : 's'}</span></div>
+        <div class="mt-tools"><label class="search">${H.I('search', 18)}<input id="mq" type="search" aria-label="Search mail" placeholder="Search by MAIL-…, subject or sender" value="${e(st.q || '')}"></label>
+          ${me.channels.length > 1 ? sel('channel', [['', 'All mailboxes'], ...me.channels.map(x => [x.id, x.address])], st.channel, 'id="mch" aria-label="Mailbox"') : ''}
+          ${sel('status', [['active', 'Open, in progress, on hold'], ['closed', 'Closed'], ['rejected', 'Rejected'], ['forwarded', 'Forwarded to a service'], ['all', 'All']], st.status, 'id="mst" aria-label="Status"')}</div></div>
+        <div class="tabs mt-tabs">${[['', 'All lanes'], ...LANES].map(([k, l]) => `<button class="tab ${st.lane === k || (!k && st.lane === 'all') ? 'on' : ''}" data-lane="${k || 'all'}"><span>${l}</span>${k && c[k] ? `<span class="cnt">${c[k]}</span>` : ''}</button>`).join('')}</div>
+        ${d.threads.length ? `<div class="tblbox"><table class="ttable"><thead><tr><th>Mail</th><th>From</th><th>Lane</th><th>Reply target</th><th>Status</th><th>Received</th></tr></thead><tbody>
+          ${d.threads.map(t => `<tr data-href="#/c/mail/t/${e(t.ref)}"><td><a href="#/c/mail/t/${e(t.ref)}" class="tt-main"><span class="mono tt-no">${e(t.ref)}</span><b>${e(t.subject || '(no subject)')}</b><span class="tt-svc">${e(t.address)}${t.n_in > 1 ? ` · ${t.n_in} messages` : ''}${t.mode !== 'live' ? ' · shadow' : ''}</span><span class="muted small">${e(t.preview)}</span></a></td>
+            <td><span class="tt-req">${H.avatar(t.requester_name || t.requester_email, 28)}<span>${e(t.requester_name || t.requester_email)}</span></span></td><td>${laneChip(t.lane)}</td>
+            <td>${slaChip(t.sla_state, t.first_response_due_at, !!t.first_responded_at)}</td><td>${statusPill(t.status)}</td><td><span class="tt-when">${H.shortDate(t.created_at)}</span></td></tr>`).join('')}</tbody></table></div>
+          <div class="tcards">${d.threads.map(t => `<a class="tcard" href="#/c/mail/t/${e(t.ref)}"><span class="tc-r1"><span class="mono tc-no">${e(t.ref)}</span>${laneChip(t.lane)}<span class="sp"></span>${slaChip(t.sla_state, t.first_response_due_at, !!t.first_responded_at)}${statusPill(t.status)}</span>
+            <span class="tc-r2"><b class="tc-title">${e(t.subject || '(no subject)')}</b><span class="tc-loc">${e(t.requester_name || t.requester_email)} · ${e(t.address)}</span></span></a>`).join('')}</div>`
+          : `<div class="mt-empty">${H.emptyState('No mail here', 'Nothing matches this lane and filter.')}</div>`}</div>`;
+    const set = (k, v) => { st[k] = v; sessionStorage.setItem('mailf', JSON.stringify(st)); draw(); };
+    main.querySelectorAll('[data-lane]').forEach(b => b.onclick = () => set('lane', b.dataset.lane));
+    main.querySelectorAll('tr[data-href]').forEach(tr => tr.onclick = ev => { if (!ev.target.closest('a')) location.hash = tr.dataset.href; });
+    main.querySelector('#mq').onchange = ev => set('q', ev.target.value.trim());
+    main.querySelector('#mst').onchange = ev => set('status', ev.target.value);
+    if (main.querySelector('#mch')) main.querySelector('#mch').onchange = ev => set('channel', ev.target.value);
+  };
+  await draw(); every(30000, draw, '#/c/mail');
+}
+
+/* ================= one thread ================= */
+async function thread(main, ref, me) {
+  const d = await H.api('/maildesk/threads/' + encodeURIComponent(ref)), t = d.thread, can = d.can;
+  // everyone who wrote in this thread (a reply-all can bring in a third person); the latest writer is picked first
+  const who = [...new Set([t.requester_email.toLowerCase(), ...d.messages.filter(m => m.dir === 'in').map(m => m.from_email.toLowerCase())])];
+  document.title = `${t.ref} · ONE Desk`;
+  const msg = m => m.dir === 'in'
+    ? `<article class="card mmsg in"><div class="mm-h">${H.avatar(m.from_name || m.from_email, 32)}<div><b>${e(m.from_name || m.from_email)}</b> <span class="muted small">&lt;${e(m.from_email)}&gt;${m.cc_list.length ? ` · cc ${e(m.cc_list.join(', '))}` : ''}</span><div class="muted small">${H.shortDate(m.received_at)}${m.has_attachments && !m.files?.length ? ' · has attachments (in Outlook)' : ''}${m.ai ? ` · read by ${e(m.ai_provider)}: ${e(m.ai.summary)}` : ''}</div></div></div>
+        <div class="mm-b">${e(m.body_text || '').replace(/\n/g, '<br>')}</div>
+        ${m.files?.length ? `<div class="mbar mfiles">${m.files.map(f => `<span class="mfile">${H.I('file', 14)} ${e(f.file_name)} <span class="muted small">${f.size_bytes >= 1048576 ? (f.size_bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size_bytes / 1024)) + ' KB'}</span>
+          ${/^(application\/pdf|image\/)/.test(f.mime) ? `<button type="button" class="btn" data-fopen="${e(f.id)}">Open</button>` : ''}<button type="button" class="btn" data-fget="${e(f.id)}" data-fname="${e(f.file_name)}">Download</button></span>`).join('')}</div>` : ''}</article>`
+    : `<article class="card mmsg out ${m.state}"><div class="mm-h"><span class="mchip mail">${m.origin === 'auto_ack' ? 'Auto-reply' : 'Reply'}</span><div><b>${e(m.sent_by || d.channel.display_name || d.channel.address)}</b> <span class="muted small">to ${e(m.to_list.join(', '))}${m.cc_list.length ? ` · cc ${e(m.cc_list.join(', '))}` : ''}</span>
+        <div class="muted small">${{ pending_approval: 'Waiting for Confirm', queued: `Sending ${H.shortDate(m.send_after)}`, sending: 'Sending…', sent: `Sent ${H.shortDate(m.sent_at)}`, cancelled: 'Cancelled', failed: `Not sent: ${e(m.error || '')}` }[m.state]}</div></div>
+        ${['queued', 'pending_approval'].includes(m.state) && can.work ? `<button type="button" class="btn" data-undo="${m.id}">${m.state === 'queued' ? 'Undo' : 'Cancel'}</button>` : ''}</div>
+        <div class="mm-b">${e(m.body_text).replace(/\n/g, '<br>')}</div></article>`;
+  main.innerHTML = `<div class="mthread">
+    <div class="card"><div class="mt-h"><div><div class="eyebrow"><span class="mono">${e(t.ref)}</span> · ${e(d.channel.address)}${d.channel.mode !== 'live' ? ' · shadow mode: nothing is sent' : ''}</div><h2 style="margin:4px 0">${e(t.subject || '(no subject)')}</h2>
+        <div class="mbar">${statusPill(t.status)}${laneChip(t.lane)}${slaChip(t.sla_state, t.first_response_due_at, !!t.first_responded_at)}
+          <span class="muted small">${t.owner ? `Taken by ${e(t.owner)}` : 'Not taken yet'}${t.category ? ` · ${e(t.category)}` : ''}${t.first_response_due_at && !t.first_responded_at ? ` · reply by ${H.shortDate(t.first_response_due_at)}` : ''}</span></div></div></div>
+      ${can.work && t.status !== 'forwarded' ? `<div class="mbar" style="margin-top:10px">
+        ${['open', 'in_progress', 'hold'].includes(t.status) && t.owner_user_id !== undefined ? `<button type="button" class="btn" id="claim">${H.I('user', 16)}Take it</button>` : ''}
+        <label class="small mbar">Lane ${sel('lane', LANES.filter(([k]) => k !== 'review'), t.lane === 'review' ? '' : t.lane, 'id="lane"')}</label>
+        ${t.status !== 'hold' && ['open', 'in_progress'].includes(t.status) ? '<button type="button" class="btn" data-st="hold">Hold</button>' : ''}
+        ${t.status === 'hold' ? '<button type="button" class="btn" data-st="in_progress">Resume</button>' : ''}
+        ${['open', 'in_progress', 'hold'].includes(t.status) ? '<button type="button" class="btn" data-st="closed">Close</button><button type="button" class="btn" data-st="rejected">Reject</button>' : '<button type="button" class="btn" data-st="open">Open again</button>'}
+        ${can.forward ? `<button type="button" class="btn primary" id="fwd">${H.I('swap', 16)}Forward to service${d.suggested_service ? `: ${e(d.suggested_service.name)}` : ''}</button>` : ''}</div>` : ''}
+      ${d.desk ? `<div class="queuebar" style="margin-top:10px">${H.I('ticket', 20)}<span><b>Desk ticket #${e(d.desk.ticket_no)} · ${e(d.desk.service)}</b><span class="small">Status: ${e(STATUS[d.desk.status] || d.desk.status)} (from the desk, updated ${H.shortDate(d.desk.updated_at)}). The desk handles it from here.</span></span><a class="btn" href="#/c/t/${e(d.desk.id)}">Open ticket</a></div>` : ''}</div>
+    ${d.messages.map(msg).join('')}
+    ${can.reply ? `<form class="card" id="rf">${who.length > 1 ? `<label for="rto" style="margin-top:0">Reply from ${e(d.channel.address)} to</label>${sel('to', who.map(x => [x, x]), who[who.length - 1], 'id="rto"')}<label for="rb">Reply</label>`
+      : `<label for="rb" style="margin-top:0">Reply from ${e(d.channel.address)} to ${e(t.requester_email)}</label>`}
+      ${d.templates.length ? sel('tpl', [['', 'Quick answer…'], ...d.templates.map(x => [x.id, x.name])], '', 'id="tpl" aria-label="Quick answer"') : ''}
+      <textarea id="rb" name="body" rows="7" required maxlength="20000" placeholder="Write the reply. The mailbox signature is added below it."></textarea>
+      <label for="rcc">Copy (cc) <small>(optional, comma-separated)</small></label><input id="rcc" name="cc" placeholder="name@smru.edu.in">
+      <p class="mbar"><button class="btn primary" value="preview">${H.I('eye', 16)}Preview and send</button>${d.ai?.draft ? `<button type="button" class="btn" id="aidraft">${H.I('idea', 16)}Suggest a reply</button>` : ''}</p>
+      <p class="muted small">You see exactly what goes out (with a spelling check) before it is sent, then have 10 seconds to undo.${d.ai && !d.ai.draft && d.ai.why ? ` AI drafts are off: ${e(d.ai.why)}.` : ''}</p></form>` : ''}
+    <section class="card"><div class="chead">${H.I('pencil', 16)}<span>Internal notes</span><span class="muted small">never mailed</span></div>
+      ${d.notes.map(n => `<div class="mnote"><b>${e(n.author || 'ONE Desk')}</b> <span class="muted small">${H.shortDate(n.created_at)}</span><div>${e(n.body).replace(/\n/g, '<br>')}</div></div>`).join('') || '<p class="muted small">No notes yet.</p>'}
+      ${can.work ? '<form id="nf" class="mbar"><input name="body" required maxlength="4000" placeholder="Add a note for the team" aria-label="Note"><button class="btn">Add</button></form>' : ''}</section>
+    ${d.others.length ? `<section class="card"><div class="chead">${H.I('history', 16)}<span>Earlier mail from this sender</span></div>${d.others.map(o => `<p><a href="#/c/mail/t/${e(o.ref)}"><span class="mono">${e(o.ref)}</span> ${e(o.subject || '(no subject)')}</a> <span class="muted small">${e(STATUS[o.status] || o.status)} · ${H.shortDate(o.created_at)}</span></p>`).join('')}</section>` : ''}</div>`;
+  const redraw = () => thread(main, ref, me);
+  const act = async (fn, okMsg) => { try { await fn(); if (okMsg) H.toast(okMsg); redraw(); } catch (er) { H.toast(er.message); } };
+  main.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => act(() => H.api(`/maildesk/outbound/${b.dataset.undo}/cancel`, { method: 'POST' }), 'Not sent'));
+  main.querySelector('#claim')?.addEventListener('click', () => act(async () => { try { await H.api(`/maildesk/threads/${ref}/claim`, { method: 'POST' }); }
+    catch (er) { if (/already on this mail/.test(er.message) && confirm(`${er.message}. Take it over?`)) await H.api(`/maildesk/threads/${ref}/claim`, { method: 'POST', body: { take: true } }); else throw er; } }, 'It is yours'));
+  main.querySelector('#lane')?.addEventListener('change', ev => act(() => H.api(`/maildesk/threads/${ref}/lane`, { method: 'POST', body: { lane: ev.target.value } }), 'Lane changed'));
+  main.querySelectorAll('[data-st]').forEach(b => b.onclick = () => {
+    const s = b.dataset.st;
+    if (['hold', 'rejected'].includes(s)) { H.dlg(`<h2>${s === 'hold' ? 'Put on hold' : 'Reject'}</h2><label>Why? <small>(an internal note)</small></label><textarea name="note" rows="3" ${s === 'rejected' ? 'required' : ''} maxlength="2000"></textarea>`,
+      async f => { await H.api(`/maildesk/threads/${ref}/status`, { method: 'POST', body: { status: s, note: f.note.value } }); H.toast(STATUS[s]); redraw(); }); return; }
+    act(() => H.api(`/maildesk/threads/${ref}/status`, { method: 'POST', body: { status: s } }), STATUS[s]);
+  });
+  const tpl = main.querySelector('#tpl'); if (tpl) tpl.onchange = () => { const x = d.templates.find(y => y.id === tpl.value); if (x) { const rb = main.querySelector('#rb'); rb.value = (rb.value ? rb.value + '\n\n' : '') + x.body.replace(/\{\{\s*first_name\s*\}\}/g, (t.requester_name || '').split(/\s+/)[0] || 'Sir/Madam').replace(/\{\{\s*ref\s*\}\}/g, t.ref).replace(/\{\{\s*\w+\s*\}\}/g, ''); } tpl.value = ''; };
+  const rf = main.querySelector('#rf');
+  if (rf) rf.onsubmit = ev => { ev.preventDefault(); previewDlg(ref, rf, d, redraw); };
+  main.querySelector('#aidraft')?.addEventListener('click', async ev => { const b = ev.currentTarget, rb = rf.body;
+    if (rb.value.trim() && !confirm('Replace what you wrote with a suggested reply?')) return;
+    b.disabled = true; b.textContent = 'Writing…';
+    try { const r = await H.api(`/maildesk/threads/${ref}/draft`, { method: 'POST' }); rb.value = r.text; rb.focus();
+      H.toast(r.missing?.length ? `Draft ready. Fill in: ${r.missing.join(', ')}` : 'Draft ready: read it and change what is needed'); }
+    catch (er) { H.toast(er.message); } finally { b.disabled = false; b.innerHTML = `${H.I('idea', 16)}Suggest a reply`; } });
+  const nf = main.querySelector('#nf'); if (nf) nf.onsubmit = ev => { ev.preventDefault(); act(() => H.api(`/maildesk/threads/${ref}/notes`, { method: 'POST', body: { body: nf.body.value } }), 'Note added'); };
+  main.querySelector('#fwd')?.addEventListener('click', () => forwardDlg(d, ref));
+  // a kept attachment: fetched through ONE Desk (signed in), opened in a new tab or saved
+  const fileBlob = async (id, dl) => { const r = await H.api(`/maildesk/threads/${ref}/files/${id}${dl ? '?download=1' : ''}`, { raw: true });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || 'Could not open the file'); return URL.createObjectURL(await r.blob()); };
+  main.querySelectorAll('[data-fopen]').forEach(b => b.onclick = async () => { const w = window.open('', '_blank'); try { const u = await fileBlob(b.dataset.fopen); if (w) w.location = u; else location.href = u; } catch (er) { w?.close(); H.toast(er.message); } });
+  main.querySelectorAll('[data-fget]').forEach(b => b.onclick = async () => { try { const a = document.createElement('a'); a.href = await fileBlob(b.dataset.fget, true); a.download = b.dataset.fname; a.click(); } catch (er) { H.toast(er.message); } });
+  if (d.messages.some(m => m.state === 'queued' || m.state === 'sending')) every(4000, redraw, location.hash.split('?')[0]); else clearInterval(pollT);
+}
+function undoToast(id, after0) {
+  const here = location.hash.split('?')[0], after = () => { if (location.hash.split('?')[0] === here) after0(); }; // left the thread: nothing is redrawn
+  const el = document.createElement('div'); el.className = 'mundo'; el.setAttribute('role', 'status');
+  let n = 10; const paint = () => { el.innerHTML = `<span>Sending in ${n} s</span><button type="button" class="btn">Undo</button>`; el.querySelector('button').onclick = async () => {
+    try { await H.api(`/maildesk/outbound/${id}/cancel`, { method: 'POST' }); H.toast('Not sent'); } catch (er) { H.toast(er.message); } el.remove(); clearInterval(tm); after(); }; };
+  paint(); document.body.append(el); const tm = setInterval(() => { if (--n <= 0) { clearInterval(tm); el.remove(); after(); } else paint(); }, 1000);
+}
+// Forward to service: the desk's own ticket form (the service's questions), filled from the mail; the desk makes the ticket
+async function forwardDlg(d, ref) {
+  const services = (await H.api('/services')).filter(s => s.is_active), t = d.thread, first = d.messages.find(m => m.dir === 'in');
+  if (!services.length) return H.toast('This campus has no services yet');
+  const pick = d.suggested_service?.id || d.channel.default_service_id || services[0].id;
+  const dl = H.dlg(`<h2>Forward to a service</h2><p class="muted small">This makes a normal desk ticket for ${e(t.requester_email)}. The desk sends its usual mails and the service handles it from there. This mail leaves the mail list.</p>
+    <label>Service</label>${sel('service_id', services.map(s => [s.id, s.name]), pick, 'id="fsvc"')}
+    <label>Name</label><input name="name" value="${e(t.requester_name || '')}" required maxlength="120">
+    <label>Subject</label><input name="subject" value="${e(t.subject || '')}" required maxlength="200">
+    <div id="floc"><label>Location</label><input name="location" maxlength="200"></div><div id="ftf"></div><div id="fcf"></div>
+    <label>Description</label><textarea name="description" rows="5" maxlength="8000">${e(first?.body_text || '')}</textarea>
+    ${d.messages.some(m => m.files?.length) ? '<label class="small"><input type="checkbox" name="attach_files" checked> Send the mail\'s photos and PDFs with the ticket (the desk takes up to 4, 5 MB each)</label>' : ''}`,
+    async f => { const svc = services.find(s => s.id === f.service_id.value), fd = H.collectForm(f, svc);
+      const r = await H.api(`/maildesk/threads/${ref}/forward`, { method: 'POST', body: { service_id: svc.id, name: f.name.value, subject: f.subject.value, location: f.location.value || undefined, description: f.description.value, form_data: fd, attach_files: !!f.attach_files?.checked } });
+      H.toast(`Desk ticket #${r.ticket_no} made${r.files ? ` with ${r.files} file${r.files === 1 ? '' : 's'}` : ''}${r.files_skipped?.length ? ` (not sent: ${r.files_skipped.join(', ')})` : ''}`); location.hash = '#/c/t/' + r.ticket_id; });
+  dl.querySelector('button[value=ok]').textContent = 'Forward';
+  const draw = () => { const svc = services.find(s => s.id === dl.querySelector('#fsvc').value), gen = H.isGeneral(svc.form_schema || {});
+    dl.querySelector('#ftf').innerHTML = H.typeFields(svc); dl.querySelector('#fcf').innerHTML = H.customFields(svc);
+    dl.querySelector('#floc').style.display = gen ? '' : 'none'; dl.querySelector('[name=location]').required = gen; };
+  draw(); dl.querySelector('#fsvc').onchange = draw;
+}
+
+/* ================= Confirm queue ================= */
+async function confirmPage(main, me) {
+  const rows = await H.api('/maildesk/confirm');
+  main.innerHTML = `${subnav(me, 'confirm')}<div class="card"><div class="mt-h"><div class="mt-t"><h2>Auto-replies waiting for you</h2><span class="mt-n">${rows.length}</span></div>
+    ${rows.length > 1 ? '<button type="button" class="btn primary" id="call">Confirm all ticked</button>' : ''}</div>
+    <p class="muted small">Each new mail gets a "we received it" reply. Check it, change the words if needed, then Confirm. Nothing goes out without a click. Red: waiting over a day.</p>
+    ${rows.map(r => `<div class="card mconf ${r.stale ? 'stale' : ''}" data-id="${r.id}"><div class="mbar"><input type="checkbox" aria-label="Tick ${e(r.ref)}" checked>
+      <a href="#/c/mail/t/${e(r.ref)}"><span class="mono">${e(r.ref)}</span> ${e(r.subject || '(no subject)')}</a><span class="muted small">to ${e(r.requester_name || r.requester_email)} · ${e(r.address)} · ${H.shortDate(r.created_at)}</span></div>
+      <details><summary class="small">Their mail</summary><div class="mm-b small">${e(r.their_text || '').replace(/\n/g, '<br>')}</div></details>
+      <textarea rows="6" aria-label="Reply for ${e(r.ref)}">${e(r.body_text)}</textarea>
+      <p class="mbar"><button type="button" class="btn primary" data-ok>Confirm</button><button type="button" class="btn" data-no>Don't send</button></p></div>`).join('') || H.emptyState('All clear', 'No auto-reply is waiting.')}</div>`;
+  const redraw = () => confirmPage(main, { ...me, confirm: Math.max(0, me.confirm - 1) });
+  main.querySelectorAll('.mconf').forEach(c => { const id = c.dataset.id, orig = rows.find(r => r.id === id).body_text, ta = c.querySelector('textarea');
+    c.querySelector('[data-ok]').onclick = async () => { try { await H.api(`/maildesk/outbound/${id}/confirm`, { method: 'POST', body: ta.value !== orig ? { body: ta.value } : {} }); H.toast('Confirmed: sending'); redraw(); } catch (er) { H.toast(er.message); } };
+    c.querySelector('[data-no]').onclick = async () => { try { await H.api(`/maildesk/outbound/${id}/cancel`, { method: 'POST' }); H.toast('Not sent'); redraw(); } catch (er) { H.toast(er.message); } }; });
+  main.querySelector('#call')?.addEventListener('click', async () => { const ids = [...main.querySelectorAll('.mconf')].filter(c => c.querySelector('input[type=checkbox]').checked && c.querySelector('textarea').value === rows.find(r => r.id === c.dataset.id).body_text).map(c => c.dataset.id);
+    if (!ids.length) return H.toast('Tick the replies to send (an edited reply is confirmed on its own)');
+    try { const r = await H.api('/maildesk/confirm-bulk', { method: 'POST', body: { ids } }); H.toast(`${r.confirmed} confirmed${r.skipped?.length ? `; ${r.skipped.length} could not go: ${r.skipped[0].why}` : ''}`); redraw(); } catch (er) { H.toast(er.message); } });
+}
+
+/* ================= Settings ================= */
+async function settings(main, me) {
+  const d = await H.api('/maildesk/settings'), cx = d.admin ? await H.api('/maildesk/connections') : null, apps = d.admin ? await H.api('/maildesk/apps').catch(() => null) : null, bk = d.admin ? await H.api('/maildesk/backup').catch(() => null) : null, aib = d.admin ? await H.api('/maildesk/ai-budget').catch(() => null) : null, people = d.people, pOpts = [['', '—'], ...people.map(p => [p.id, `${p.name} (${p.email})`])];
+  const hoursTxt = h => h ? `${h.days.map(x => DAYS[x]).join(', ')} · ${h.from}–${h.to}` : 'Same as the campus';
+  // a deactivated officer or backup is no longer in the staff list: kept in their own row (marked) so a save does not drop them
+  const withPerson = (id, name) => id && !people.some(p => p.id === id) ? [...pOpts, [id, `${name || 'Someone'} (deactivated)`]] : pOpts;
+  const offRow = (o = {}) => `<div data-o><div class="row"><div><label>Person</label>${sel('u', withPerson(o.user_id, o.name), o.user_id)}</div><div><label>Role</label>${sel('r', Object.entries(ROLE), o.role || 'nodal')}</div>
+    <div><label>Backup while on leave</label>${sel('b', withPerson(o.backup_user_id, o.backup_name), o.backup_user_id)}</div><div style="flex:none;align-self:flex-end"><button type="button" class="btn" data-rmo aria-label="Remove officer">Remove</button></div></div>
+    ${o.is_active === 0 ? '<div class="err small">This person is deactivated: their backup covers for them. Remove them, or pick someone else.</div>' : ''}</div>`;
+  const chCard = c => {
+    const def = c.sla.find(p => !p.lane), imp = c.sla.find(p => p.lane === 'important');
+    return `<section class="card mset" data-ch="${c.id}"><div class="mt-h"><div><h2 style="margin:0">${e(c.address)}</h2><div class="muted small">${e(c.display_name || '')} · ${e(MODE[c.mode])}${c.subscribed ? ' · receiving mail' : c.mode !== 'off' ? ' · not subscribed yet' : ''}${c.last_synced_at ? ` · last sync ${H.shortDate(c.last_synced_at)}` : ''}</div>
+        ${c.last_error ? `<div class="err small">${e(c.last_error)}</div>` : ''}</div><div class="mbar"><button type="button" class="btn" data-test>Test connection</button>${c.mode !== 'off' ? '<button type="button" class="btn" data-sync>Check for new mail</button>' : ''}
+          ${d.admin ? `<button type="button" class="btn" data-addr ${c.mode !== 'off' ? 'disabled title="Switch the mailbox off first"' : ''}>Change address</button><button type="button" class="btn" data-del>Delete</button>` : ''}</div></div>
+      <form data-f="box"><div class="row"><div><label>Mode</label>${sel('mode', Object.entries(MODE), c.mode)}</div><div><label>"We received it" reply</label>${sel('ack_mode', [['approve', 'Wait for Confirm (recommended)'], ['auto', 'Send by itself']], c.ack_mode)}</div></div>
+        <div class="row"><div><label>Display name</label><input name="display_name" value="${e(c.display_name || '')}" maxlength="120" placeholder="Admissions, St. Mary's"></div><div><label>Usual service for Forward</label>${sel('default_service_id', [['', '—'], ...d.services.map(s => [s.id, s.name])], c.default_service_id)}</div></div>
+        <label>Signature <small>(added under every reply)</small></label><textarea name="signature" rows="3" maxlength="1000">${e(c.signature || '')}</textarea>
+        <label class="small"><input type="checkbox" name="is_files" ${c.is_files ? 'checked' : ''}> Keep this mailbox's attachments in OneDrive (they open from the mail page)</label>
+        <label class="small"><input type="checkbox" name="is_hr" ${c.is_hr ? 'checked' : ''}> Job applications mailbox: each sender becomes an HR candidate, and resumes/CVs are saved to OneDrive</label>
+        <label>Office hours <small>(the reply clock counts only these)</small></label><div class="muted small">${e(hoursTxt(c.office_hours))}</div>
+        <div class="mbar"><label class="small"><input type="checkbox" name="own_hours" ${c.office_hours ? 'checked' : ''}> Own hours:</label>
+          ${DAYS.map((x, i) => `<label class="small"><input type="checkbox" name="d${i}" ${(c.office_hours?.days || [1, 2, 3, 4, 5, 6]).includes(i) ? 'checked' : ''}>${x}</label>`).join('')}
+          <input type="time" name="from" value="${e(c.office_hours?.from || '09:30')}" aria-label="From"><input type="time" name="to" value="${e(c.office_hours?.to || '17:00')}" aria-label="To"></div>
+        <p><button class="btn primary">Save mailbox</button></p></form>
+      <form data-f="off"><b>Officers</b> <span class="muted small">(${c.officers.filter(o => o.role === 'nodal').length} nodal, ${c.officers.filter(o => o.role === 'escalation').length} escalation)</span>
+        <div class="muted small">Every nodal officer gets this mailbox's mail on their Home and its reminders. No reply in time: the escalation officers, then the campus mail managers. A backup takes over while the officer is on leave.</div>
+        <div data-olist>${c.officers.map(o => offRow(o)).join('')}</div>
+        <p class="mbar"><button type="button" class="btn" data-addo="nodal">${H.I('plus', 16)}Nodal officer</button><button type="button" class="btn" data-addo="escalation">${H.I('plus', 16)}Escalation officer</button><button class="btn primary">Save officers</button></p></form>
+      <form data-f="sla"><b>Reply targets</b> <span class="muted small">(working minutes; 450 = one office day of 7½ h)</span>
+        ${[['', 'Needs reply / Review', def], ['important', 'Important', imp]].map(([lane, l, p]) => `<div class="row" data-lane="${lane}"><div><label>${l}: reply within (min)</label><input type="number" name="m" min="5" max="20000" value="${p?.first_response_mins || (lane ? 240 : 450)}"></div>
+          <div><label>Reminder at %</label><input type="number" name="w" min="10" max="99" value="${p?.warn_at_pct || 75}"></div><div><label>Escalate at %</label><input type="number" name="x" min="50" max="500" value="${p?.escalate_at_pct || 100}"></div>
+          <div><label>Again at % <small>(empty: no)</small></label><input type="number" name="x2" min="101" max="1000" value="${p?.second_escalate_at_pct || ''}"></div></div>`).join('')}
+        <p><button class="btn primary">Save targets</button></p></form>
+      <form data-f="mem"><b>Other people on this mailbox</b> <span class="muted small">(e.g. the HR team on hr@)</span>
+        <div data-list>${c.members.map(m => `<div class="row" data-m><div>${sel('u', pOpts, m.user_id)}</div><div>${sel('r', [['replier', 'Can reply'], ['viewer', 'Can read'], ['hr', 'HR']], m.role)}</div><button type="button" class="btn" data-rm>Remove</button></div>`).join('')}</div>
+        <p class="mbar"><button type="button" class="btn" data-addm>Add person</button><button class="btn primary">Save people</button></p></form></section>`;
+  };
+  main.innerHTML = `${subnav(me, 'settings')}
+    ${cx ? connCards(cx) : `<section class="card"><div class="chead">${H.I('settings', 16)}<span>Connections</span></div><p class="small">Microsoft 365: <b>${d.graph.ready ? 'connected' : 'not connected yet'}</b>. A super admin connects Microsoft 365 and OneDrive here.</p></section>`}
+    <section class="card"><div class="chead">${H.I('clock', 16)}<span>Work in the background</span></div>
+      <p class="small">Jobs waiting: ${d.jobs?.queued || 0} · failed: ${d.jobs?.failed || 0}${d.ai_today.length ? ` · AI today: ${d.ai_today.map(a => `${e(a.provider)} ${a.calls} calls${a.failures ? `, ${a.failures} failed` : ''}`).join('; ')}` : ''}</p>
+      ${d.admin ? `<label class="small"><input type="checkbox" id="kill" ${d.auto_reply_paused ? 'checked' : ''}> Pause every auto-reply (all mailboxes)</label>` : ''}</section>
+    ${d.channels.map(chCard).join('')}
+    ${d.admin ? `<form class="card" id="newch"><div class="chead">${H.I('plus', 16)}<span>Add a mailbox</span></div><div class="row"><div><label>Address</label><input name="address" type="email" required placeholder="reach@smru.edu.in"></div><div><label>Display name</label><input name="display_name" maxlength="120"></div></div>
+      <p class="muted small">A new mailbox starts Off. Pick the officers, then switch it to Shadow for a week (mail is read and sorted, nothing is sent), then Live.</p><p><button class="btn primary">Add mailbox</button></p></form>` : '<p class="muted small card">A super admin adds mailboxes (the Microsoft app can open any mailbox of the organisation, so that choice stays with them).</p>'}
+    <section class="card"><div class="chead">${H.I('mail', 16)}<span>Reply templates</span></div><p class="muted small">Fill-ins: {{first_name}}, {{name}}, {{ref}}, {{campus}}, {{team}}, {{eta}}, {{mailbox_name}}, {{post}}, {{subject}}. "Received" templates are the auto-reply; "Quick answer" templates appear in the reply box.</p>
+      ${d.templates.map(t => `<div class="mbar mtpl"><b>${e(t.name)}</b><span class="mchip">${e({ auto_ack: 'Received', status: 'Status', manual: 'Quick answer' }[t.kind])}</span><span class="muted small">${t.channel_id ? e(d.channels.find(c => c.id === t.channel_id)?.address || '') : 'all mailboxes'}${t.category ? ` · ${e(t.category)}` : ''}${t.active ? '' : ' · off'}${t.tenant_id ? '' : ' · default'}</span><span class="sp"></span>
+        ${t.tenant_id || d.admin ? `<button type="button" class="btn" data-tpl="${t.id}">Edit</button>` : ''}</div>`).join('')}
+      <p><button type="button" class="btn" data-tpl="">Add template</button></p></section>
+    <section class="card"><div class="chead">${H.I('filter', 16)}<span>Sorting rules</span></div><p class="muted small">Checked before the AI. Noise wins over Important, Important over Auto.</p>
+      ${d.rules.map(r => `<div class="mbar"><span>${e({ sender: 'Sender is', domain: 'Domain is', subject_contains: 'Subject has', header: 'Header' }[r.match])} <b>${e(r.value)}</b> → ${e({ noise: 'Noise', important: 'Important', auto: 'Auto-handled', skip_ai: 'Do not send to the AI' }[r.action])}</span><span class="muted small">${r.channel_id ? e(d.channels.find(c => c.id === r.channel_id)?.address || '') : 'all mailboxes'}</span><span class="sp"></span><button type="button" class="btn" data-delrule="${r.id}">Remove</button></div>`).join('') || '<p class="muted small">No rules yet.</p>'}
+      <form id="newrule" class="mbar">${sel('match', [['sender', 'Sender is'], ['domain', 'Domain is'], ['subject_contains', 'Subject has'], ['header', 'Header (name:value)']], 'domain')}<input name="value" required maxlength="255" placeholder="e.g. newsletter.com">
+        ${sel('action', [['noise', 'Noise'], ['important', 'Important'], ['auto', 'Auto-handled'], ['skip_ai', 'Do not send to the AI']], 'noise')}${sel('channel_id', [['', 'All mailboxes'], ...d.channels.map(c => [c.id, c.address])], '')}<button class="btn">Add rule</button></form></section>
+    <section class="card"><div class="chead">${H.I('swap', 16)}<span>Suggested service by category</span></div><p class="muted small">When the AI reads a mail's category, Forward suggests this service. An officer always presses Forward.</p>
+      ${d.routes.map(r => `<div class="mbar"><span><b>${e(r.category)}</b> → ${e(r.service)}</span><span class="sp"></span><button type="button" class="btn" data-delroute="${r.id}">Remove</button></div>`).join('')}
+      <form id="newroute" class="mbar"><input name="category" required maxlength="80" placeholder="e.g. Hostel">${sel('service_id', d.services.map(s => [s.id, s.name]), '')}<button class="btn">Add</button></form></section>
+    <section class="card"><div class="chead">${H.I('clock', 16)}<span>Officers on leave</span></div><p class="muted small">While on leave, an officer's backup gets the mail and the alerts.</p>
+      ${d.leave.map(l => `<div class="mbar"><span><b>${e(l.name)}</b> ${e(l.from_day)} to ${e(l.to_day)}</span><span class="sp"></span><button type="button" class="btn" data-delleave="${l.id}">Remove</button></div>`).join('')}
+      <form id="newleave" class="mbar">${sel('user_id', pOpts, '')}<input type="date" name="from_day" required aria-label="From"><input type="date" name="to_day" required aria-label="To"><button class="btn">Add leave</button></form></section>
+    <section class="card"><div class="chead">${H.I('users', 16)}<span>Mail managers</span></div><p class="muted small">See every mailbox of the campus and get the second escalation. Campus admins are managers already.</p>
+      ${d.roles.map(r => `<div class="mbar"><b>${e(r.name)}</b><span class="sp"></span><button type="button" class="btn" data-delrole="${r.user_id}">Remove</button></div>`).join('')}
+      <form id="newrole" class="mbar">${sel('user_id', pOpts, '')}<button class="btn">Add manager</button></form></section>
+    ${bk ? backupCard(bk) : ''}
+    ${aib ? budgetCard(aib) : ''}
+    ${d.admin ? `<section class="card"><div class="chead">${H.I('bolt', 16)}<span>AI providers</span></div><p class="muted small">Tried in order; if one fails (no credit, too busy, a bad answer) the next one is tried, and with none the rules decide or the mail waits in Review. Names, phone numbers and emails are masked before any text is sent. Keys are stored encrypted and never shown again.</p>
+      ${d.integrations.map(i => `<div class="mbar"><b>${i.priority}. ${e(i.name)}</b><span class="muted small">${e(i.config.model || '')} · ${e(i.config.baseURL || '')}${i.config.priceIn != null ? ` · $${e(i.config.priceIn)} / $${e(i.config.priceOut)} per 1M` : ' · no prices'} · ${i.active ? 'on' : 'off'}${i.has_key ? '' : ' · no key'}${i.last_test_result ? ` · ${e(i.last_test_result)}` : ''}</span><span class="sp"></span>
+        <button type="button" class="btn" data-ai="${i.id}">Edit</button><button type="button" class="btn" data-aitest="${i.id}">Test</button></div>`).join('') || '<p class="muted small">None yet: every mail goes by the rules, else to Review.</p>'}
+      <p><button type="button" class="btn" data-ai="">Add AI provider</button></p></section>` : ''}
+    ${apps ? appsCard(apps) : ''}`;
+
+  const redraw = () => settings(main, me), go = async (fn, m) => { try { await fn(); H.toast(m); redraw(); } catch (er) { H.toast(er.message); } };
+  if (cx) wireConn(main, cx, go, redraw);
+  if (apps) wireApps(main, apps, redraw);
+  if (aib) wireBudget(main, aib, redraw);
+  if (bk) wireBackup(main, bk, redraw);
+  main.querySelectorAll('.mset').forEach(sec => { const id = sec.dataset.ch, c = d.channels.find(x => x.id === id);
+    sec.querySelector('[data-test]').onclick = async () => { try { const r = await H.api(`/maildesk/channels/${id}/test`, { method: 'POST' }); H.toast(r.message); } catch (er) { H.toast(er.message); } };
+    sec.querySelector('[data-sync]')?.addEventListener('click', () => go(() => H.api(`/maildesk/channels/${id}/sync`, { method: 'POST' }), 'Checking the inbox'));
+    sec.querySelector('[data-f=box]').onsubmit = ev => { ev.preventDefault(); const f = ev.target, days = DAYS.map((_, i) => i).filter(i => f['d' + i].checked);
+      go(() => H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { mode: f.mode.value, ack_mode: f.ack_mode.value, display_name: f.display_name.value, signature: f.signature.value, default_service_id: f.default_service_id.value, is_hr: f.is_hr.checked, is_files: f.is_files.checked,
+        office_hours: f.own_hours.checked ? { days, from: f.from.value, to: f.to.value } : null } }), 'Mailbox saved'); };
+    const of = sec.querySelector('[data-f=off]'), wireO = () => of.querySelectorAll('[data-rmo]').forEach(b => b.onclick = () => b.closest('[data-o]').remove());
+    of.querySelectorAll('[data-addo]').forEach(b => b.onclick = () => { of.querySelector('[data-olist]').insertAdjacentHTML('beforeend', offRow({ role: b.dataset.addo })); wireO(); });
+    wireO(); of.onsubmit = ev => { ev.preventDefault();
+      const officers = [...of.querySelectorAll('[data-o]')].map(r => ({ user_id: r.querySelector('[name=u]').value, role: r.querySelector('[name=r]').value, backup_user_id: r.querySelector('[name=b]').value || null })).filter(o => o.user_id);
+      go(() => H.api(`/maildesk/channels/${id}/officers`, { method: 'PUT', body: { officers } }), 'Officers saved'); };
+    sec.querySelector('[data-addr]')?.addEventListener('click', () => { const dl = H.dlg(`<h2>Change the address</h2><label>New address</label><input name="address" type="email" required value="${e(c.address)}">`,
+      async f => { await H.api(`/maildesk/channels/${id}`, { method: 'PATCH', body: { address: f.address.value } }); H.toast('Address changed'); redraw(); }); void dl; });
+    sec.querySelector('[data-del]')?.addEventListener('click', () => { if (confirm(`Delete ${c.address} from ONE Desk? The mailbox itself stays in Outlook.`)) go(() => H.api(`/maildesk/channels/${id}`, { method: 'DELETE' }), 'Mailbox deleted'); });
+    sec.querySelector('[data-f=sla]').onsubmit = ev => { ev.preventDefault();
+      const policies = [...ev.target.querySelectorAll('[data-lane]')].map(r => ({ lane: r.dataset.lane || null, first_response_mins: Number(r.querySelector('[name=m]').value), warn_at_pct: Number(r.querySelector('[name=w]').value),
+        escalate_at_pct: Number(r.querySelector('[name=x]').value), second_escalate_at_pct: r.querySelector('[name=x2]').value ? Number(r.querySelector('[name=x2]').value) : null }));
+      go(() => H.api(`/maildesk/channels/${id}/sla`, { method: 'PUT', body: { policies } }), 'Targets saved'); };
+    const mf = sec.querySelector('[data-f=mem]'), wireRm = () => mf.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => b.closest('[data-m]').remove());
+    mf.querySelector('[data-addm]').onclick = () => { mf.querySelector('[data-list]').insertAdjacentHTML('beforeend', `<div class="row" data-m><div>${sel('u', pOpts, '')}</div><div>${sel('r', [['replier', 'Can reply'], ['viewer', 'Can read'], ['hr', 'HR']], 'replier')}</div><button type="button" class="btn" data-rm>Remove</button></div>`); wireRm(); };
+    wireRm(); mf.onsubmit = ev => { ev.preventDefault(); const members = [...mf.querySelectorAll('[data-m]')].map(r => ({ user_id: r.querySelector('[name=u]').value, role: r.querySelector('[name=r]').value })).filter(m => m.user_id);
+      go(() => H.api(`/maildesk/channels/${id}/members`, { method: 'PUT', body: { members } }), 'People saved'); };
+    void c; });
+  if (main.querySelector('#newch')) main.querySelector('#newch').onsubmit = ev => { ev.preventDefault(); go(() => H.api('/maildesk/channels', { method: 'POST', body: { address: ev.target.address.value, display_name: ev.target.display_name.value } }), 'Mailbox added'); };
+  main.querySelector('#kill')?.addEventListener('change', ev => go(() => H.api('/maildesk/switches', { method: 'PUT', body: { auto_reply_paused: ev.target.checked } }), ev.target.checked ? 'Auto-replies paused' : 'Auto-replies on'));
+  main.querySelector('#newrule').onsubmit = ev => { ev.preventDefault(); const f = ev.target; go(() => H.api('/maildesk/rules', { method: 'POST', body: { match: f.match.value, value: f.value.value, action: f.action.value, channel_id: f.channel_id.value || null } }), 'Rule added'); };
+  main.querySelectorAll('[data-delrule]').forEach(b => b.onclick = () => go(() => H.api('/maildesk/rules/' + b.dataset.delrule, { method: 'DELETE' }), 'Rule removed'));
+  main.querySelector('#newroute').onsubmit = ev => { ev.preventDefault(); go(() => H.api('/maildesk/routes', { method: 'POST', body: { category: ev.target.category.value, service_id: ev.target.service_id.value } }), 'Saved'); };
+  main.querySelectorAll('[data-delroute]').forEach(b => b.onclick = () => go(() => H.api('/maildesk/routes/' + b.dataset.delroute, { method: 'DELETE' }), 'Removed'));
+  main.querySelector('#newleave').onsubmit = ev => { ev.preventDefault(); const f = ev.target; go(() => H.api('/maildesk/leave', { method: 'POST', body: { user_id: f.user_id.value, from_day: f.from_day.value, to_day: f.to_day.value } }), 'Leave added'); };
+  main.querySelectorAll('[data-delleave]').forEach(b => b.onclick = () => go(() => H.api('/maildesk/leave/' + b.dataset.delleave, { method: 'DELETE' }), 'Removed'));
+  main.querySelector('#newrole').onsubmit = ev => { ev.preventDefault(); go(() => H.api('/maildesk/roles', { method: 'PUT', body: { user_id: ev.target.user_id.value, role: 'manager' } }), 'Manager added'); };
+  main.querySelectorAll('[data-delrole]').forEach(b => b.onclick = () => go(() => H.api('/maildesk/roles', { method: 'PUT', body: { user_id: b.dataset.delrole, role: null } }), 'Removed'));
+  main.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => { const t = d.templates.find(x => x.id === b.dataset.tpl) || { kind: 'manual', active: 1 };
+    const dl = H.dlg(`<h2>${t.id ? 'Edit template' : 'New template'}</h2><label>Kind</label>${sel('kind', [['auto_ack', 'Received (auto-reply)'], ['manual', 'Quick answer'], ['status', 'Status']], t.kind)}
+      <label>Name</label><input name="name" required maxlength="120" value="${e(t.name || '')}"><label>Mailbox</label>${sel('channel_id', [['', 'All mailboxes'], ...d.channels.map(c => [c.id, c.address])], t.channel_id)}
+      <label>Only for category <small>(optional, as the AI names it)</small></label><input name="category" maxlength="80" value="${e(t.category || '')}">
+      <label>Text</label><textarea name="body" rows="9" required maxlength="8000">${e(t.body || '')}</textarea><label class="small"><input type="checkbox" name="active" ${t.active ? 'checked' : ''}> On</label>
+      ${t.id ? '<p><button type="button" class="btn" id="tdel">Delete template</button></p>' : ''}`,
+      async f => { const body = { kind: f.kind.value, name: f.name.value, channel_id: f.channel_id.value || null, category: f.category.value || null, body: f.body.value, active: f.active.checked };
+        await H.api(t.id ? '/maildesk/templates/' + t.id : '/maildesk/templates', { method: t.id ? 'PATCH' : 'POST', body }); H.toast('Template saved'); redraw(); });
+    dl.querySelector('#tdel')?.addEventListener('click', async () => { if (!confirm('Delete this template?')) return; try { await H.api('/maildesk/templates/' + t.id, { method: 'DELETE' }); dl.close(); H.toast('Deleted'); redraw(); } catch (er) { H.toast(er.message); } }); });
+  main.querySelectorAll('[data-ai]').forEach(b => b.onclick = () => { const i = d.integrations.find(x => x.id === b.dataset.ai) || { config: {}, priority: d.integrations.length + 1 };
+    const dl = H.dlg(`<h2>${i.id ? 'Edit AI provider' : 'Add AI provider'}</h2><p class="muted small">Any OpenAI-compatible API: OpenAI, Groq, xAI, a local Ollama.</p>
+      <label>Name</label><input name="name" required maxlength="120" value="${e(i.name || '')}" placeholder="OpenAI nano"><label>API address</label><input name="baseURL" required value="${e(i.config.baseURL || '')}" placeholder="https://api.openai.com/v1">
+      <label>Model</label><input name="model" required value="${e(i.config.model || '')}" placeholder="gpt-5-nano"><label>Key ${i.has_key ? '<small>(leave empty to keep the saved key)</small>' : ''}</label><input name="apiKey" type="password" autocomplete="off" ${i.id ? '' : 'required'}>
+      <div class="row"><div><label>Order</label><input name="priority" type="number" min="1" max="99" value="${i.priority}"></div><div><label>Reasoning effort <small>(optional)</small></label><input name="reasoningEffort" value="${e(i.config.reasoningEffort || '')}" placeholder="minimal"></div></div>
+      <div class="row"><div><label>Price in <small>(US$ per 1 million input tokens)</small></label><input name="priceIn" type="number" min="0" step="0.001" value="${e(i.config.priceIn ?? '')}" placeholder="from the provider's price list"></div>
+        <div><label>Price out <small>(US$ per 1 million output tokens)</small></label><input name="priceOut" type="number" min="0" step="0.001" value="${e(i.config.priceOut ?? '')}"></div></div>
+      <p class="muted small">The prices let ONE Desk count spending against the monthly AI budget. Copy them from the provider's pricing page for this model.</p>
+      <label class="small"><input type="checkbox" name="noTemperature" ${i.config.noTemperature ? 'checked' : ''}> The model takes no temperature setting</label><label class="small"><input type="checkbox" name="active" ${i.active || !i.id ? 'checked' : ''}> On</label>
+      ${i.id ? '<p><button type="button" class="btn" id="aidel">Delete provider</button></p>' : ''}`,
+      async f => { const body = { name: f.name.value, baseURL: f.baseURL.value, model: f.model.value, priority: Number(f.priority.value), reasoningEffort: f.reasoningEffort.value, noTemperature: f.noTemperature.checked, priceIn: f.priceIn.value, priceOut: f.priceOut.value, active: f.active.checked, ...(f.apiKey.value ? { apiKey: f.apiKey.value } : {}) };
+        await H.api(i.id ? '/maildesk/integrations/' + i.id : '/maildesk/integrations', { method: i.id ? 'PATCH' : 'POST', body }); H.toast('Saved'); redraw(); });
+    dl.querySelector('#aidel')?.addEventListener('click', async () => { if (!confirm('Delete this AI provider?')) return; try { await H.api('/maildesk/integrations/' + i.id, { method: 'DELETE' }); dl.close(); redraw(); } catch (er) { H.toast(er.message); } }); });
+  main.querySelectorAll('[data-aitest]').forEach(b => b.onclick = async () => { b.disabled = true; try { const r = await H.api(`/maildesk/integrations/${b.dataset.aitest}/test`, { method: 'POST' }); H.toast(r.message); redraw(); } catch (er) { H.toast(er.message); b.disabled = false; } });
+}
+
+/* ================= Connections: Microsoft 365 (mailboxes) and OneDrive (resumes and CVs) ================= */
+const steps = t => t ? `<ul class="msteps">${t.steps.map(x => `<li class="${x.ok ? 'ok' : 'bad'}">${H.I(x.ok ? 'check' : 'x', 14)}<span>${e(x.text)}</span></li>`).join('')}</ul><div class="muted small">Tested ${H.shortDate(t.at)}</div>` : '';
+const stateChip = (on, tested) => !on ? '<span class="mchip">Not connected</span>' : tested?.ok ? '<span class="mchip sla-closed">Connected · tested</span>' : tested ? '<span class="mchip sla-overdue">Connected · test failed</span>' : '<span class="mchip sla-hold">Saved · not tested yet</span>';
+function connCards(cx) {
+  const m = cx.ms365, o = cx.onedrive;
+  return `<section class="card mconn" id="c365"><div class="mt-h"><div class="chead">${H.I('mail', 16)}<span>Microsoft 365 (the mailboxes)</span></div>${stateChip(m.connected, m.last_test)}</div>
+    <details ${m.connected ? '' : 'open'}><summary class="small">How to get these (Entra admin centre, once)</summary><ol class="small">
+      <li>entra.microsoft.com → App registrations → New registration → name it <b>ONE Desk</b> → Register.</li>
+      <li>Copy the <b>Application (client) ID</b> and <b>Directory (tenant) ID</b> from its Overview page.</li>
+      <li>Certificates &amp; secrets → New client secret → copy its <b>Value</b> (shown once).</li>
+      <li>API permissions → Add → Microsoft Graph → <b>Application permissions</b> → ${cx.permissions.mail.map(x => `<b>${e(x)}</b>`).join(', ')}, and for OneDrive <b>${e(cx.permissions.onedrive.join(', '))}</b> → <b>Grant admin consent</b>.</li>
+      <li>Microsoft sends new-mail notices to <span class="mono">${e(m.notify_url)}</span> (must be the site's https address).</li></ol></details>
+    ${m.source === 'env' ? '<p class="muted small">Now using the keys in the server\'s .env file. Saving here replaces them.</p>' : ''}
+    <form id="f365"><div class="row"><div><label>Directory (tenant) ID</label><input name="tenant_id" required value="${e(m.tenant_id)}" placeholder="0206568c-1515-49fd-90d4-f6dad0784500" autocomplete="off"></div>
+      <div><label>Application (client) ID</label><input name="client_id" required value="${e(m.client_id)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off"></div></div>
+      <label>Client secret ${m.has_secret && m.source === 'app' ? '<small>(saved; leave empty to keep it)</small>' : ''}</label><input name="client_secret" type="password" autocomplete="new-password" ${m.has_secret && m.source === 'app' ? '' : 'required'}>
+      <label>Mailbox to test with <small>(optional)</small></label><input name="mailbox" type="email" placeholder="reach@smru.edu.in">
+      <p class="mbar"><button class="btn primary">Save and test</button>${m.connected ? '<button type="button" class="btn" id="t365">Test again</button>' : ''}${m.source === 'app' ? '<button type="button" class="btn" id="d365">Disconnect</button>' : ''}</p></form>
+    <div id="r365">${steps(m.last_test)}</div></section>
+  <section class="card mconn" id="cod"><div class="mt-h"><div class="chead">${H.I('file', 16)}<span>OneDrive (resumes and CVs)</span></div>${stateChip(o.connected, o.last_test)}</div>
+    <p class="muted small">Resumes and CVs that arrive by mail are kept in one account's OneDrive, in this folder. Use a shared account such as hr@, not a person's own, so the files stay when people move on. Files open only through ONE Desk; no public link is made.${m.connected ? '' : ' Connect Microsoft 365 first: OneDrive uses the same app.'}</p>
+    <form id="fod"><div class="row"><div><label>OneDrive of</label><input name="account" type="email" required value="${e(o.account || '')}" placeholder="hr@smru.edu.in"></div>
+      <div><label>Resumes folder</label><input name="folder" value="${e(o.folder || 'Resumes')}" maxlength="200"></div><div><label>Mail files folder</label><input name="files_folder" value="${e(o.files_folder || 'Mail files')}" maxlength="200"></div></div>
+      <p class="mbar"><button class="btn primary" ${m.connected ? '' : 'disabled'}>Save and test</button>${o.connected ? '<button type="button" class="btn" id="tod">Test again</button><button type="button" class="btn" id="dod">Disconnect</button>' : ''}
+      ${o.web_url ? `<a class="btn" href="${e(o.web_url)}" target="_blank" rel="noopener">Open the folder</a>` : ''}</p></form>
+    <div id="rod">${steps(o.last_test)}</div></section>`;
+}
+function wireConn(main, cx, go, redraw) {
+  const show = (id, r) => { main.querySelector(id).innerHTML = steps(r); };
+  const test365 = async mailbox => { const r = await H.api('/maildesk/connections/ms365/test', { method: 'POST', body: { mailbox } }); H.toast(r.ok ? 'Microsoft 365 works' : 'Test failed: see the steps'); return r; };
+  const f = main.querySelector('#f365');
+  f.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; sb.disabled = true;
+    try { await H.api('/maildesk/connections/ms365', { method: 'PUT', body: { tenant_id: f.tenant_id.value.trim(), client_id: f.client_id.value.trim(), client_secret: f.client_secret.value.trim() || undefined } });
+      await test365(f.mailbox.value.trim()); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
+  main.querySelector('#t365')?.addEventListener('click', async ev => { ev.target.disabled = true; try { show('#r365', await test365(f.mailbox.value.trim())); } catch (er) { H.toast(er.message); } ev.target.disabled = false; });
+  main.querySelector('#d365')?.addEventListener('click', () => { if (confirm('Disconnect Microsoft 365? Mail stops coming in until it is connected again.')) go(() => H.api('/maildesk/connections/ms365', { method: 'DELETE' }), 'Disconnected'); });
+  const fo = main.querySelector('#fod'), testOd = async () => { const r = await H.api('/maildesk/connections/onedrive/test', { method: 'POST' }); H.toast(r.ok ? 'OneDrive works' : 'Test failed: see the steps'); return r; };
+  fo.onsubmit = async ev => { ev.preventDefault(); const sb = ev.submitter; sb.disabled = true;
+    try { await H.api('/maildesk/connections/onedrive', { method: 'PUT', body: { account: fo.account.value.trim(), folder: fo.folder.value.trim(), files_folder: fo.files_folder.value.trim() } }); await testOd(); redraw(); } catch (er) { H.toast(er.message); sb.disabled = false; } };
+  main.querySelector('#tod')?.addEventListener('click', async ev => { ev.target.disabled = true; try { show('#rod', await testOd()); } catch (er) { H.toast(er.message); } ev.target.disabled = false; });
+  main.querySelector('#dod')?.addEventListener('click', () => { if (confirm('Disconnect OneDrive? Files already saved stay in OneDrive.')) go(() => H.api('/maildesk/connections/onedrive', { method: 'DELETE' }), 'Disconnected'); });
+}
+
+/* ================= Connected apps: plug in any API you buy (super admin) ================= */
+const EXAMPLES = {
+  whatsapp: { name: 'WhatsApp: escalations to the manager', events: ['mail.escalated'], content_type: 'json', auth_header: 'Authorization',
+    template: '{\n  "to": "91XXXXXXXXXX",\n  "type": "text",\n  "text": { "body": "{{ref}} escalated ({{mailbox}}): {{subject}} from {{from_name}}. Open: {{link}}" }\n}' },
+  sms: { name: 'SMS: new important mail', events: ['mail.received'], content_type: 'form', auth_header: 'Authorization', template: 'to=91XXXXXXXXXX&message=New mail {{ref}} in {{mailbox}}: {{subject}}' },
+  crm: { name: 'CRM / lead sheet: every new mail', events: ['mail.received'], format: 'standard' } };
+function appsCard(a) {
+  return `<section class="card"><div class="chead">${H.I('swap', 16)}<span>Connected apps</span></div>
+    <p class="muted small">Plug in any API you buy (WhatsApp, SMS, CRM, a lead sheet…): it is told about mail events, with its own key. Nothing to code: set the address, the key and what it should receive. Each call is signed (header X-OneDesk-Signature) and tried again if the app is down.</p>
+    ${a.apps.map(x => `<div class="mbar mapp"><b>${e(x.name)}</b><span class="mchip ${x.active ? 'sla-closed' : ''}">${x.active ? 'On' : 'Off'}</span>
+      <span class="muted small">${e(x.events.map(v => v.replace('mail.', '')).join(', '))} · ${x.tenant_id ? e(a.campuses.find(c => c.id === x.tenant_id)?.code || '') : 'all campuses'}${x.has_key ? ' · key saved' : ''}</span>
+      <span class="sp"></span><button type="button" class="btn" data-apptest="${x.id}">Test</button><button type="button" class="btn" data-app="${x.id}">Edit</button>
+      ${x.last_result ? `<div class="small ${/^Delivered/.test(x.last_result) ? 'muted' : 'err'}" style="flex-basis:100%">${e(x.last_result)} · ${H.shortDate(x.last_at)}</div>` : ''}</div>`).join('') || '<p class="muted small">No app connected yet.</p>'}
+    <p class="mbar"><button type="button" class="btn" data-app="">${H.I('plus', 16)}Connect an app</button>${Object.entries(EXAMPLES).map(([k, x]) => `<button type="button" class="btn" data-app="" data-ex="${k}">${e(x.name.split(':')[0])} example</button>`).join('')}</p></section>`;
+}
+function wireApps(main, a, redraw) {
+  main.querySelectorAll('[data-apptest]').forEach(b => b.onclick = async () => { b.disabled = true; try { const r = await H.api(`/maildesk/apps/${b.dataset.apptest}/test`, { method: 'POST' }); H.toast(r.message); redraw(); } catch (er) { H.toast(er.message); b.disabled = false; } });
+  main.querySelectorAll('[data-app]').forEach(b => b.onclick = () => {
+    const x = a.apps.find(y => y.id === b.dataset.app) || { format: 'template', content_type: 'json', method: 'POST', auth_header: 'Authorization', active: true, events: [], ...(EXAMPLES[b.dataset.ex] || {}) };
+    if (!x.format) x.format = 'template';
+    const dl = H.dlg(`<h2>${x.id ? 'Edit app' : 'Connect an app'}</h2>
+      <label>Name</label><input name="name" required maxlength="120" value="${e(x.name || '')}" placeholder="WhatsApp alerts">
+      <div class="row"><div><label>Address (from the app's API guide)</label><input name="url" required value="${e(x.url || '')}" placeholder="https://api.provider.com/v1/messages"></div><div style="flex:0 0 110px"><label>Method</label>${sel('method', [['POST', 'POST'], ['PUT', 'PUT']], x.method)}</div></div>
+      <div class="row"><div><label>Key header</label><input name="auth_header" value="${e(x.auth_header || 'Authorization')}" placeholder="Authorization or X-Api-Key"></div>
+        <div><label>Key ${x.has_key ? '<small>(saved; empty keeps it)</small>' : '<small>(e.g. Bearer abc123, as the app wants it)</small>'}</label><input name="auth_value" type="password" autocomplete="new-password"></div></div>
+      <label>Send it when</label><div class="mbar">${Object.entries(a.events).map(([k, l]) => `<label class="small"><input type="checkbox" name="ev" value="${k}" ${x.events.includes(k) ? 'checked' : ''}> ${e(l)}</label>`).join('')}</div>
+      <label>For</label>${sel('tenant_id', [['', 'All campuses'], ...a.campuses.map(c => [c.id, `${c.code}: ${c.name}`])], x.tenant_id)}
+      <label>What to send</label>${sel('format', [['template', "The app's own format (write it below)"], ['standard', "ONE Desk's standard JSON (for apps built for it)"]], x.format, 'id="afmt"')}
+      <div id="atpl"><div class="row"><div><label>Body type</label>${sel('content_type', [['json', 'JSON'], ['form', 'Form (a=1&b=2)'], ['text', 'Plain text']], x.content_type)}</div></div>
+        <label>Body <small>(fill-ins: ${a.fill_ins.map(v => `{{${v}}}`).join(' ')})</small></label><textarea name="template" rows="7" class="mono">${e(x.template || '')}</textarea></div>
+      <details id="astd"><summary class="small">What the standard JSON looks like</summary><pre class="small mono" style="white-space:pre-wrap">${e(JSON.stringify(JSON.parse(a.sample), null, 2))}</pre></details>
+      <label class="small"><input type="checkbox" name="active" ${x.active ? 'checked' : ''}> On</label>
+      ${x.id ? '<p class="mbar"><label class="small"><input type="checkbox" name="newsig"> Make a new signing secret</label><button type="button" class="btn" id="appdel">Delete app</button></p>' : ''}`,
+      async f => { const body = { name: f.name.value, url: f.url.value.trim(), method: f.method.value, auth_header: f.auth_header.value.trim(), events: [...f.querySelectorAll('[name=ev]:checked')].map(i => i.value),
+          tenant_id: f.tenant_id.value || null, format: f.format.value, content_type: f.content_type.value, template: f.template.value, active: f.active.checked,
+          ...(f.auth_value.value ? { auth_value: f.auth_value.value } : {}), ...(f.newsig?.checked ? { new_signing_secret: true } : {}) };
+        const r = await H.api(x.id ? '/maildesk/apps/' + x.id : '/maildesk/apps', { method: x.id ? 'PATCH' : 'POST', body });
+        if (r.signing_secret) H.dlg(`<h2>Signing secret</h2><p class="small">Give this to whoever set up the app, if it checks the X-OneDesk-Signature header (HMAC-SHA256 of "timestamp.body"). It is shown only now.</p><input class="mono" readonly value="${e(r.signing_secret)}" onclick="this.select()">`, async () => {});
+        H.toast('App saved: press Test to try it'); redraw(); });
+    dl.querySelector('button[value=ok]').textContent = 'Save';
+    const shown = () => { const t = dl.querySelector('#afmt').value === 'template'; dl.querySelector('#atpl').hidden = !t; dl.querySelector('#astd').open = !t; };
+    shown(); dl.querySelector('#afmt').onchange = shown;
+    dl.querySelector('#appdel')?.addEventListener('click', async () => { if (!confirm('Delete this app? It stops getting events.')) return; try { await H.api('/maildesk/apps/' + x.id, { method: 'DELETE' }); dl.close(); H.toast('App deleted'); redraw(); } catch (er) { H.toast(er.message); } });
+  });
+}
+
+/* ================= HR: candidates from the job-applications mailbox, resumes from OneDrive ================= */
+const STAGES = [['new', 'New'], ['shortlisted', 'Shortlisted'], ['interview', 'Interview'], ['offered', 'Offered'], ['hired', 'Hired'], ['rejected', 'Rejected'], ['on_hold', 'On hold']];
+const STAGE = Object.fromEntries(STAGES);
+const stageChip = st => `<span class="mchip stage-${e(st)}">${e(STAGE[st] || st)}</span>`;
+const stars = n => n ? '★'.repeat(n) + '☆'.repeat(5 - n) : '';
+async function hrList(main, me) {
+  const st = (() => { try { return JSON.parse(sessionStorage.getItem('hrf') || '{}'); } catch { return {}; } })();
+  const draw = async () => {
+    const d = await H.api('/maildesk/hr?' + new URLSearchParams(Object.entries(st).filter(([, v]) => v)));
+    main.innerHTML = `${subnav(me, 'hr')}<div class="card mt"><div class="mt-h"><div class="mt-t"><h2>Candidates</h2><span class="mt-n">${d.applications.length}</span></div>
+      <div class="mt-tools"><label class="search">${H.I('search', 18)}<input id="hq" type="search" aria-label="Search candidates" placeholder="Name, email, post, skill or organisation" value="${e(st.q || '')}"></label>
+        ${sel('post', [['', 'All posts'], ...d.posts.map(p => [p.post, `${p.post} (${p.n}${p.new ? `, ${p.new} new` : ''})`])], st.post, 'id="hpost" aria-label="Post"')}</div></div>
+      <div class="tabs mt-tabs">${[['', 'In progress'], ...STAGES, ['all', 'All']].map(([k, l]) => `<button class="tab ${(st.stage || '') === k ? 'on' : ''}" data-stage="${k}"><span>${l}</span>${k && k !== 'all' && d.stages[k] ? `<span class="cnt">${d.stages[k]}</span>` : ''}</button>`).join('')}</div>
+      ${d.applications.length ? `<div class="tblbox"><table class="ttable"><thead><tr><th>Candidate</th><th>Post</th><th>Experience</th><th>Stage</th><th>Resume</th><th>Applied</th></tr></thead><tbody>
+        ${d.applications.map(a => `<tr data-href="#/c/mail/hr/${e(a.id)}"><td><a href="#/c/mail/hr/${e(a.id)}" class="tt-main"><b>${e(a.full_name || a.email)}</b><span class="tt-svc">${e(a.email)}${a.current_org ? ` · ${e(a.current_org)}` : ''}</span></a></td>
+          <td>${e(a.post)}${a.department ? `<div class="muted small">${e(a.department)}</div>` : ''}</td><td>${a.experience_years != null ? `${e(a.experience_years)} ${Number(a.experience_years) === 1 ? "yr" : "yrs"}` : "—"}${a.highest_qualification ? `<div class="muted small">${e(a.highest_qualification)}</div>` : ''}</td>
+          <td>${stageChip(a.stage)}${a.rating ? `<div class="small">${stars(a.rating)}</div>` : ''}${a.interview_at ? `<div class="muted small">Interview ${H.shortDate(a.interview_at)}</div>` : ''}</td>
+          <td>${a.resume_id ? `<span class="small">${H.I('file', 14)} ${e(a.resume_name)}</span>` : '<span class="muted small">No resume</span>'}</td><td><span class="tt-when">${H.shortDate(a.created_at)}</span></td></tr>`).join('')}</tbody></table></div>
+        <div class="tcards">${d.applications.map(a => `<a class="tcard" href="#/c/mail/hr/${e(a.id)}"><span class="tc-r1"><b>${e(a.full_name || a.email)}</b><span class="sp"></span>${stageChip(a.stage)}</span>
+          <span class="tc-r2"><span class="tc-loc">${e(a.post)}${a.experience_years != null ? ` · ${e(a.experience_years)} yrs` : ''}</span></span><span class="tc-r3"><span class="tc-who">${a.resume_id ? 'Resume ✓' : 'No resume'}</span><span class="tc-when">${H.shortDate(a.created_at)}</span></span></a>`).join('')}</div>`
+        : `<div class="mt-empty">${H.emptyState('No candidates here', 'Applications to the job-applications mailbox appear here, with their resumes.')}</div>`}</div>`;
+    const set = (k, v) => { st[k] = v; sessionStorage.setItem('hrf', JSON.stringify(st)); draw(); };
+    main.querySelectorAll('[data-stage]').forEach(b => b.onclick = () => set('stage', b.dataset.stage));
+    main.querySelector('#hq').onchange = ev => set('q', ev.target.value.trim());
+    main.querySelector('#hpost').onchange = ev => set('post', ev.target.value);
+    main.querySelectorAll('tr[data-href]').forEach(tr => tr.onclick = ev => { if (!ev.target.closest('a')) location.hash = tr.dataset.href; });
+  };
+  await draw();
+}
+let blobUrl = null;
+async function candidatePage(main, id, me) {
+  const d = await H.api('/maildesk/hr/' + encodeURIComponent(id)), a = d.application, c = d.candidate, ro = d.can_edit ? '' : 'disabled';
+  const file = d.files.find(f => f.id === a.resume_file_id) || d.files[0];
+  main.innerHTML = `${subnav(me, 'hr')}<div class="mthread">
+    <div class="card"><div class="mt-h"><div><div class="eyebrow">${e(a.post)}${a.department ? ` · ${e(a.department)}` : ''}</div><h2 style="margin:4px 0">${e(c.full_name || c.email)}</h2>
+      <div class="mbar">${stageChip(a.stage)}${a.rating ? `<span>${stars(a.rating)}</span>` : ''}<span class="muted small">${e(c.email)}${c.phone ? ` · ${e(c.phone)}` : ''} · applied ${H.shortDate(a.created_at)}${a.stage_by_name ? ` · ${e(STAGE[a.stage])} by ${e(a.stage_by_name)} ${H.shortDate(a.stage_at)}` : ''}</span></div></div>
+      ${d.thread ? `<a class="btn" href="#/c/mail/t/${e(d.thread.ref)}">${H.I('mail', 16)}Open the mail ${e(d.thread.ref)} (reply from here)</a>` : ''}</div>
+      ${d.can_edit ? `<div class="mbar" style="margin-top:10px">${STAGES.map(([k, l]) => `<button type="button" class="btn ${a.stage === k ? 'primary' : ''}" data-st="${k}">${l}</button>`).join('')}</div>` : ''}</div>
+    <section class="card"><div class="chead">${H.I('file', 16)}<span>Resume</span>${d.files.length > 1 ? `<span class="muted small">${d.files.length} files</span>` : ''}</div>
+      ${file ? `<div class="mbar">${d.files.map(f => `<button type="button" class="btn ${f.id === file.id ? 'primary' : ''}" data-file="${e(f.id)}">${e(f.file_name)} <span class="muted small">${Math.max(1, Math.round(f.size_bytes / 1024))} KB</span></button>`).join('')}
+        <button type="button" class="btn" id="fdl">${H.I('download', 16)}Download</button></div><div id="fview" class="mresume"><p class="muted small">Opening…</p></div>`
+        : '<p class="muted small">No resume came with the mail. Ask for one from the mail, or check OneDrive is connected.</p>'}</section>
+    <form class="card" id="cf"><div class="chead">${H.I('user', 16)}<span>Profile</span><span class="muted small">${d.can_edit ? 'HR fills this in from the resume' : 'read only'}</span></div>
+      <div class="row"><div><label>Full name</label><input name="full_name" value="${e(c.full_name || '')}" ${ro}></div><div><label>Phone</label><input name="phone" value="${e(c.phone || '')}" ${ro}></div></div>
+      <div class="row"><div><label>Highest qualification</label><input name="highest_qualification" value="${e(c.highest_qualification || '')}" ${ro}></div><div><label>Experience (years)</label><input name="experience_years" type="number" min="0" max="60" step="0.5" value="${e(c.experience_years ?? '')}" ${ro}></div></div>
+      <div class="row"><div><label>Current organisation</label><input name="current_org" value="${e(c.current_org || '')}" ${ro}></div><div><label>Location</label><input name="location" value="${e(c.location || '')}" ${ro}></div></div>
+      <label>Skills <small>(comma-separated)</small></label><input name="skills" value="${e(c.skills.join(', '))}" ${ro}>
+      <label>Summary</label><textarea name="summary" rows="3" maxlength="2000" ${ro}>${e(c.summary || '')}</textarea>
+      <div class="row"><div><label>Post</label><input name="post" value="${e(a.post)}" ${ro}></div><div><label>Department</label><input name="department" value="${e(a.department || '')}" ${ro}></div></div>
+      <div class="row"><div><label>Rating</label>${sel('rating', [['', '—'], ...[1, 2, 3, 4, 5].map(n => [n, stars(n)])], a.rating, ro)}</div><div><label>Interview</label><input type="datetime-local" name="interview_at" value="${a.interview_at ? new Date(new Date(a.interview_at).getTime() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : ''}" ${ro}></div></div>
+      ${d.can_edit ? '<p class="mbar"><button class="btn primary">Save profile</button><span class="sp"></span><button type="button" class="btn" id="cdel">Delete candidate</button></p>' : ''}</form>
+    <section class="card"><div class="chead">${H.I('pencil', 16)}<span>Notes</span><span class="muted small">HR only, never mailed</span></div>
+      ${d.notes.map(n => `<div class="mnote"><b>${e(n.author || '')}</b> <span class="muted small">${H.shortDate(n.created_at)}</span><div>${e(n.body).replace(/\n/g, '<br>')}</div></div>`).join('') || '<p class="muted small">No notes yet.</p>'}
+      ${d.can_edit ? '<form id="hn" class="mbar"><input name="body" required maxlength="4000" placeholder="e.g. Good teaching demo; check references" aria-label="Note"><button class="btn">Add</button></form>' : ''}</section>
+    ${d.others.length ? `<section class="card"><div class="chead">${H.I('history', 16)}<span>Other applications</span></div>${d.others.map(o => `<p><a href="#/c/mail/hr/${e(o.id)}">${e(o.post)}</a> ${stageChip(o.stage)} <span class="muted small">${H.shortDate(o.created_at)}</span></p>`).join('')}</section>` : ''}</div>`;
+  const redraw = () => candidatePage(main, id, me), go = async (fn, m) => { try { await fn(); H.toast(m); redraw(); } catch (er) { H.toast(er.message); } };
+  main.querySelectorAll('[data-st]').forEach(b => b.onclick = () => go(() => H.api(`/maildesk/hr/${id}`, { method: 'PATCH', body: { stage: b.dataset.st } }), `Stage: ${STAGE[b.dataset.st]}`));
+  const cf = main.querySelector('#cf'); if (d.can_edit) cf.onsubmit = ev => { ev.preventDefault(); const v = Object.fromEntries(new FormData(cf));
+    go(() => H.api(`/maildesk/hr/${id}`, { method: 'PATCH', body: { ...v, interview_at: v.interview_at ? new Date(v.interview_at).toISOString() : null } }), 'Profile saved'); };
+  const hn = main.querySelector('#hn'); if (hn) hn.onsubmit = ev => { ev.preventDefault(); go(() => H.api(`/maildesk/hr/${id}/notes`, { method: 'POST', body: { body: hn.body.value } }), 'Note added'); };
+  main.querySelector('#cdel')?.addEventListener('click', () => { if (confirm(`Delete ${c.full_name || c.email} and all their applications, notes and resumes (also from OneDrive)? This cannot be undone.`))
+    H.api(`/maildesk/hr/${id}/candidate`, { method: 'DELETE' }).then(() => { H.toast('Candidate deleted'); location.hash = '#/c/mail/hr'; }, er => H.toast(er.message)); });
+  // the resume: fetched through ONE Desk (signed in), shown as a PDF in the page or offered as a download
+  let cur = file;
+  const show = async f => { cur = f; const box = main.querySelector('#fview'); if (!box) return;
+    if (f.mime !== 'application/pdf') { box.innerHTML = `<p class="muted small">${e(f.file_name)} is a Word document: press Download to open it.</p>`; return; }
+    try { const r = await H.api(`/maildesk/hr/${id}/files/${f.id}`, { raw: true }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || 'Could not open the resume');
+      if (blobUrl) URL.revokeObjectURL(blobUrl); blobUrl = URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: 'application/pdf' }));
+      box.innerHTML = `<iframe title="Resume of ${e(c.full_name || c.email)}" src="${blobUrl}"></iframe>`; } catch (er) { box.innerHTML = `<p class="err small">${e(er.message)}</p>`; } };
+  main.querySelectorAll('[data-file]').forEach(b => b.onclick = () => { main.querySelectorAll('[data-file]').forEach(x => x.classList.toggle('primary', x === b)); show(d.files.find(f => f.id === b.dataset.file)); });
+  main.querySelector('#fdl')?.addEventListener('click', async () => { try { const r = await H.api(`/maildesk/hr/${id}/files/${cur.id}?download=1`, { raw: true }); if (!r.ok) throw new Error('Could not download');
+    const a2 = document.createElement('a'); a2.href = URL.createObjectURL(await r.blob()); a2.download = cur.file_name; a2.click(); } catch (er) { H.toast(er.message); } });
+  if (file) show(file);
+}
+
+/* ================= Reply preview: exactly what goes out, the spelling check, an optional AI check, then Send ================= */
+const esc2 = x => String(x ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const bodyHtml = (text, sig) => `${String(text || '').trim().split(/\n{2,}/).map(p => `<p>${esc2(p).replace(/\n/g, '<br>')}</p>`).join('')}${sig ? `<p class="muted">${esc2(sig).replace(/\n/g, '<br>')}</p>` : ''}`;
+async function previewDlg(ref, rf, d, redraw) {
+  const body = { body: rf.body.value, to: rf.to?.value || undefined, cc: rf.cc.value.split(/[,;\s]+/).filter(Boolean) };
+  let p; try { p = await H.api(`/maildesk/threads/${ref}/preview`, { method: 'POST', body }); } catch (er) { return H.toast(er.message); }
+  const fixes = p.changes.filter(c => c.from !== 'sentences');
+  const dl = H.dlg(`<h2>Check before sending</h2>
+    <table class="mprev small"><tr><th>From</th><td>${e(p.from)}</td></tr><tr><th>To</th><td>${e(p.to)}</td></tr>${p.cc.length ? `<tr><th>Cc</th><td>${e(p.cc.join(', '))}</td></tr>` : ''}<tr><th>Subject</th><td>${e(p.subject)}</td></tr></table>
+    ${p.corrected !== p.text ? `<div class="queuebar small" style="margin:8px 0">${H.I('check', 16)}<span><b>Spelling checked${fixes.length ? ':' : ''}</b>${fixes.length ? ` ${fixes.slice(0, 6).map(c => `${e(c.from)} → ${e(c.to)}`).join(', ')}${fixes.length > 6 ? ' …' : ''}` : ' sentences tidied'}</span>
+      <button type="button" class="btn" id="pkeep">Use mine as written</button></div>` : ''}
+    <label for="ptext">Text <small>(change it here if needed)</small></label><textarea id="ptext" name="text" rows="9" maxlength="20000">${e(p.corrected)}</textarea>
+    ${p.ai?.check ? `<p class="mbar"><button type="button" class="btn" id="pai">${H.I('idea', 16)}Check with AI</button><span class="muted small" id="pnotes"></span></p>` : ''}
+    <label>How it will look</label><div class="mprevbody" id="pbody">${bodyHtml(p.corrected, p.signature)}</div>
+    <label class="small"><input type="checkbox" name="close"> Close the mail after sending</label>`,
+    async f => { const r = await H.api(`/maildesk/threads/${ref}/reply`, { method: 'POST', body: { ...body, body: f.text.value, close: f.close.checked } });
+      rf.body.value = ''; undoToast(r.id, redraw); redraw(); });
+  const okb = dl.querySelector('button[value=ok]'); okb.innerHTML = `${H.I('send', 16)}Send`;
+  const ta = dl.querySelector('#ptext'), show = () => { dl.querySelector('#pbody').innerHTML = bodyHtml(ta.value, p.signature); };
+  ta.oninput = show;
+  dl.querySelector('#pkeep')?.addEventListener('click', ev => { ta.value = p.text; show(); ev.currentTarget.closest('.queuebar').remove(); });
+  dl.querySelector('#pai')?.addEventListener('click', async ev => { const b = ev.currentTarget; b.disabled = true; b.textContent = 'Checking…';
+    try { const r = await H.api(`/maildesk/threads/${ref}/check`, { method: 'POST', body: { body: ta.value } });
+      if (r.changed) { ta.value = r.text; show(); }
+      dl.querySelector('#pnotes').textContent = r.changed ? `Changed: ${r.notes.join('; ') || 'wording'}` : r.notes.join('; ') || 'Nothing to change'; }
+    catch (er) { dl.querySelector('#pnotes').textContent = er.message; } finally { b.disabled = false; b.innerHTML = `${H.I('idea', 16)}Check with AI`; } });
+}
+
+/* ================= AI budget (super admin): one monthly total, split across the mailboxes ================= */
+const usd = n => n == null ? '—' : `$${Number(n).toFixed(Number(n) < 1 ? 3 : 2)}`;
+function budgetCard(b) {
+  const pct = (s2, l) => l ? Math.min(100, Math.round(100 * s2 / l)) : null, bar = (s2, l) => l ? `<span class="mbudget"><i style="width:${pct(s2, l)}%" class="${pct(s2, l) >= 100 ? 'full' : pct(s2, l) >= (b.warn_pct || 80) ? 'warn' : ''}"></i></span>` : '';
+  const unpriced = b.providers.filter(x => x.active && !x.priced);
+  const perMail = b.avg_cost.sort, left = b.monthly_usd > 0 && perMail ? Math.max(0, Math.floor((b.monthly_usd - b.spent) / perMail)) : null;
+  return `<section class="card" id="aib"><div class="chead">${H.I('chart', 16)}<span>AI budget</span><span class="muted small">${e(b.month)}</span></div>
+    <p class="muted small">One AI subscription serves every mailbox. Set the monthly total and how it is shared. When a mailbox's share (or the total) is used up, the AI pauses for it until next month: mail is still sorted by the rules (the rest waits in Review) and replies are written without drafts. Spelling checks in the preview are free (on this server).</p>
+    ${unpriced.length ? `<p class="err small">Enter the prices of ${e(unpriced.map(x => x.name).join(', '))} (AI providers → Edit), or spending cannot be counted.</p>` : ''}
+    <p><b>${usd(b.spent)}</b> used of ${b.monthly_usd > 0 ? `<b>$${b.monthly_usd}</b> this month ${bar(b.spent, b.monthly_usd)}` : 'no set total'}
+      ${perMail ? `<span class="muted small"> · per 1,000: sorting ≈ ${usd(perMail * 1000)}${b.avg_cost.draft ? `, drafts ≈ ${usd(b.avg_cost.draft * 1000)}` : ''}${b.avg_cost.check ? `, checks ≈ ${usd(b.avg_cost.check * 1000)}` : ''}${left !== null ? ` · about ${left.toLocaleString('en-IN')} more mails can be sorted` : ''}</span>` : ''}</p>
+    <form id="aibf"><div class="row"><div><label>Monthly total (US$; 0 = no limit)</label><input name="monthly_usd" type="number" min="0" step="0.01" value="${e(b.monthly_usd)}"></div>
+      <div><label>Shared</label>${sel('split', [['equal', 'Equally between the mailboxes that are on'], ['custom', 'As set below for each mailbox']], b.split)}</div>
+      <div><label>Warn at (%)</label><input name="warn_pct" type="number" min="10" max="100" value="${e(b.warn_pct)}"></div></div>
+      <label>Use the AI for</label><div class="mbar"><label class="small"><input type="checkbox" name="f_sort" ${b.features.sort !== false ? 'checked' : ''}> Sorting new mail</label>
+        <label class="small"><input type="checkbox" name="f_draft" ${b.features.draft !== false ? 'checked' : ''}> Suggest a reply</label><label class="small"><input type="checkbox" name="f_check" ${b.features.check !== false ? 'checked' : ''}> Check with AI</label></div>
+      <div class="tblbox"><table class="ttable"><thead><tr><th>Mailbox</th><th>Share (US$)</th><th>Used</th><th>Sorted · drafts · checks</th></tr></thead><tbody>
+        ${b.mailboxes.map(m => `<tr><td><b>${e(m.address)}</b><div class="muted small">${e(m.campus)} · ${e(MODE[m.mode] || m.mode)}</div></td>
+          <td>${b.split === 'custom' ? `<input name="share_${e(m.id)}" type="number" min="0" step="0.01" value="${e(b.shares[m.id] ?? '')}" placeholder="total only" style="max-width:120px">` : m.limit != null ? usd(m.limit) : '—'}</td>
+          <td>${usd(m.spent)} ${bar(m.spent, m.limit)}</td><td class="small">${m.uses.sort} · ${m.uses.draft} · ${m.uses.check}</td></tr>`).join('')}</tbody></table></div>
+      <p><button class="btn primary">Save budget</button></p></form></section>`;
+}
+function wireBudget(main, b, redraw) {
+  const f = main.querySelector('#aibf'); if (!f) return;
+  f.split.onchange = () => { b.split = f.split.value; main.querySelector('#aib').outerHTML = budgetCard(b); wireBudget(main, b, redraw); };
+  f.onsubmit = async ev => { ev.preventDefault();
+    const shares = Object.fromEntries([...f.querySelectorAll('[name^=share_]')].map(i => [i.name.slice(6), i.value]));
+    try { await H.api('/maildesk/ai-budget', { method: 'PUT', body: { monthly_usd: f.monthly_usd.value, split: f.split.value, warn_pct: f.warn_pct.value, shares,
+      features: { sort: f.f_sort.checked, draft: f.f_draft.checked, check: f.f_check.checked } } }); H.toast('Budget saved'); redraw(); } catch (er) { H.toast(er.message); } };
+}
+
+/* ================= Backups to OneDrive (super admin): the database and the desk's photos, every night ================= */
+function backupCard(b) {
+  const l = b.last;
+  return `<section class="card" id="bkc"><div class="mt-h"><div class="chead">${H.I('download', 16)}<span>Backups to OneDrive</span></div>${!b.on ? '<span class="mchip">Off</span>' : l?.ok ? '<span class="mchip sla-closed">On · last one fine</span>' : l ? '<span class="mchip sla-overdue">On · last one failed</span>' : '<span class="mchip sla-hold">On · none yet</span>'}</div>
+    <p class="muted small">Every night a copy of the whole ONE Desk database (tickets, mail, settings) and the desk's photos go to the connected OneDrive, off this server, so a lost server loses nothing. Database copies are kept for the days set below; each photo is sent once.${b.drive ? '' : ' Connect OneDrive first (the card above).'}</p>
+    <form id="bkf"><div class="row"><div><label>Every night at (India time)</label><input name="at" type="time" value="${e(b.at)}"></div><div><label>Keep copies (days)</label><input name="keep_days" type="number" min="1" max="365" value="${e(b.keep_days)}"></div>
+      <div><label>Folder in OneDrive</label><input name="folder" value="${e(b.folder)}" maxlength="100"></div></div>
+      <div class="mbar"><label class="small"><input type="checkbox" name="on" ${b.on ? 'checked' : ''} ${b.drive ? '' : 'disabled'}> On</label><label class="small"><input type="checkbox" name="photos" ${b.photos ? 'checked' : ''}> Include the photos</label></div>
+      <p class="mbar"><button class="btn primary">Save</button><button type="button" class="btn" id="bknow" ${b.drive && !b.running ? '' : 'disabled'}>${b.running ? 'Backing up…' : 'Back up now'}</button></p></form>
+    ${l ? `<ul class="msteps">${l.steps.map(x => `<li class="${x.ok ? 'ok' : 'bad'}">${H.I(x.ok ? 'check' : 'x', 14)}<span>${e(x.text)}</span></li>`).join('')}</ul><div class="muted small">Last: ${H.shortDate(l.at)} (${e(l.reason)})</div>` : ''}
+    <details><summary class="small">How to bring a copy back</summary><p class="small">Download <span class="mono">onedesk-YYYY-MM-DD.dump</span> from OneDrive to the server, then: <span class="mono">pg_restore --clean -d "$DATABASE_URL" onedesk-YYYY-MM-DD.dump</span>, and copy the <span class="mono">uploads</span> folder back to <span class="mono">data/uploads</span>. Then <span class="mono">pm2 restart one-desk</span>.</p></details></section>`;
+}
+function wireBackup(main, b, redraw) {
+  const f = main.querySelector('#bkf'); if (!f) return;
+  f.onsubmit = async ev => { ev.preventDefault();
+    try { await H.api('/maildesk/backup', { method: 'PUT', body: { on: f.on.checked, at: f.at.value, keep_days: Number(f.keep_days.value), photos: f.photos.checked, folder: f.folder.value } }); H.toast('Backups saved'); redraw(); } catch (er) { H.toast(er.message); } };
+  main.querySelector('#bknow')?.addEventListener('click', async ev => { ev.target.disabled = true; ev.target.textContent = 'Backing up…';
+    try { await H.api('/maildesk/backup/run', { method: 'POST' });
+      for (let i = 0; i < 120; i++) { await new Promise(r => setTimeout(r, 2000)); const x = await H.api('/maildesk/backup'); if (!x.running) { H.toast(x.last?.ok ? 'Backup done' : 'Backup failed: see the steps'); break; } }
+      redraw(); } catch (er) { H.toast(er.message); ev.target.disabled = false; } });
+}

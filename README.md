@@ -166,10 +166,44 @@ Every public reply (a note, work started, on hold, resumed, closed, rejected) is
 - **Morning brief** (08:30 campus time, working days): campus admins get the whole campus's counts and open tickets; each provider gets their own team's. "Send this campus's brief now" is on the Email page.
 - **Fair Score** (SLA & points): providers are ranked against their own team's usual pace, on-time rate, reopens and load, so busy and quiet teams compare fairly. Weights, the minimum number of tickets and the windows are set per campus.
 
+## Mail desk (shared mailboxes: reach@, apply@, hr@ …)
+
+Off unless `MAIL_ENABLED=true`. Off, `mail.js` is not even loaded and ONE Desk is exactly as before. On, it adds:
+
+- **Mail** in the header (`#/c/mail`) for nodal officers, mail managers and admins. Each mail gets a number per campus, like `SMRU-0001`. Every mail the sender gets carries it in the subject (`RE: [SMRU-0001] …`), so both sides quote the same number, and a mail quoting it joins the same thread. Mail is sorted into a lane (Important, Needs reply, Review, Auto-handled, Noise) by your rules first, then the AI. It has a reply target, and replies are sent from the mailbox itself, with 10 seconds to undo.
+- **The same Home**: a nodal officer's open mail sits in the same table and counts as their tickets, marked **Mail**.
+- **Mailboxes per campus** (5–6 is typical): a super admin adds, re-addresses and deletes them; a campus admin sets each one up. Each mailbox has **any number of nodal officers** (all of them get its mail on their Home and its reminders) and any number of escalation officers, each with an optional backup for leave.
+- **Reply targets**: at 75 % the nodal officers get a reminder, at 100 % the escalation officers are told, at 200 % the campus mail managers (or the campus admins). Targets count office hours only and pause on hold.
+- **"We received it" replies**: these wait in **Confirm** until someone clicks, unless a mailbox is set to send them by itself. They never go to no-reply senders, auto-responders or mailing lists, and at most one goes to each sender a day.
+- **Forward to service**: makes a normal desk ticket with the desk's own form and rules (channel "mail"). The desk sends its usual mails, and the thread shows the ticket's status.
+
+Kept apart from the desk: every mail table is in its own Postgres schema `mail`, and no desk table is changed. The jobs (reading mail, sending, the reply-target tick, renewing the Graph subscription, catch-up every 5 min) run inside the same single process, from a job table in Postgres. There is no Redis and no second process.
+
+`.env` (then `pm2 restart one-desk`):
+
+```bash
+MAIL_ENABLED=true
+INTEGRATIONS_KEY=<64 hex characters: encrypts the saved Microsoft secret and AI keys; openssl rand -hex 32; keep it, or they must be entered again>
+```
+
+**Connections are made on screen** (super admin, Mail → Settings):
+
+- **Microsoft 365 (the mailboxes)**: the Directory (tenant) ID, Application (client) ID and client secret of an Entra app with the Application permissions Mail.ReadWrite and Mail.Send, plus admin consent. **Save and test** signs in and reads a mailbox's inbox, showing each step. The secret is stored encrypted and never shown again. `MS_TENANT_ID`, `MS_CLIENT_ID` and `MS_CLIENT_SECRET` in `.env` still work; details saved on screen take their place.
+- **OneDrive (resumes and CVs)**: the account whose OneDrive keeps the files (a shared one such as hr@) and a folder (default `Resumes`). It uses the same app, which also needs Files.ReadWrite.All. **Save and test** opens the drive, makes the folder, and saves and removes a test file.
+
+Microsoft posts new-mail notices to `https://<site>/api/inbound/graph`, which must be reachable over HTTPS (nginx already passes `/api`). The check value for those notices is made automatically (or set `GRAPH_CLIENT_STATE`). AI keys are entered in Mail → Settings → AI providers (super admin) and stored encrypted. Names, phone numbers and emails are masked before any text goes to an AI.
+
+Step-by-step connection (Entra app, permissions, limiting it to the shared mailboxes, first mailbox live) and the full API: [docs/mail-desk.md](docs/mail-desk.md).
+
+Rollout per mailbox: add it (it starts **Off**) → pick the officers → **Shadow** for a week (mail is read and sorted, nothing is sent, officers do not see it yet) → **Live**. On going live, the shadow week's mail is closed, since it was answered in Outlook.
+
+Rollback: set `MAIL_ENABLED=false` and restart. To remove the data too: `psql onedesk -c 'DROP SCHEMA mail CASCADE'`. Desk tickets already made by Forward stay as normal tickets.
+
 ## Tests
 
 ```bash
 npm test
+npm run test:mail   # the mail desk, with stand-ins for Microsoft 365 and an AI provider
 ```
 
 Needs a local Postgres where you can create databases (default `postgres://localhost/postgres`; override with `TEST_DATABASE_URL`). Starts ONE Desk on a throwaway database, dropped afterwards (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors.
