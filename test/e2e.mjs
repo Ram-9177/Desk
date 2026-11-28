@@ -1444,8 +1444,175 @@ try {
   await ok('a kitchen person is deactivated…', '/users/u-temp', { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
   check('…their canteen job ends too (not back if reactivated)', !(await q("SELECT 1 FROM canteen_managers WHERE user_id='u-temp'")).length);
 
+  // ======================= Leads (WhatsApp bot → tele-callers) =======================
+  {
+  sec('Leads: set up and the WhatsApp leads link');
+  const mkCaller = async (name, email, pw) => { const r = await ok(`add tele-caller ${name}`, '/users', { token: T.asha, method: 'POST', body: { name, email, role: 'provider' } });
+    const t0 = await login(email, r.temp_password); await api('/me/password', { token: t0, method: 'POST', body: { current: r.temp_password, password: pw } }); return { id: r.id, tok: await login(email, pw) }; };
+  const ravi = await mkCaller('Ravi Caller', 'ravi@example.com', 'Ravi2026ok'), uma = await mkCaller('Uma Caller', 'uma@example.com', 'Uma2026ok'); T.ravi = ravi.tok; T.uma = uma.tok;
+  const ashaId = (await q("SELECT id FROM users WHERE email='asha@example.com'"))[0].id, pavanId = (await q("SELECT id FROM users WHERE email='pavan@example.com'"))[0].id;
+  { const a0 = (await api('/leads/access', { token: T.ravi })).data, a1 = (await api('/leads/access', { token: T.asha })).data;
+    check('Leads are off at first: a provider cannot use them, the campus admin can set them up', a0.use === false && a1.admin === true && a1.on === false); }
+  await fails('a provider cannot open the Leads set up', '/leads/setup', { token: T.ravi }, 403);
+  await fails('a provider cannot use Leads that are off', '/leads?view=tocall', { token: T.ravi }, 403);
+  await fails('switching on needs at least one tele-caller', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: true, callers: [] } }, 400, 'at least one');
+  await fails('a campus admin cannot be a tele-caller (desk providers only)', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: true, callers: [ashaId] } }, 400, 'service providers');
+  await fails('…nor someone from another campus', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: true, callers: [(await q("SELECT id FROM users WHERE email='bina@example.com'"))[0].id] } }, 400);
+  await fails('first-call target is checked', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: true, callers: [ravi.id], first_call_min: 1 } }, 400, 'First call');
+  await ok('campus admin switches Leads on with Ravi and Uma as tele-callers', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: true, callers: [ravi.id, uma.id], first_call_min: 60, retry_min: 120 } });
+  const su = await ok('set up shows the leads link and key', '/leads/setup', { token: T.asha });
+  check('…a link for this campus and a long random key; both tele-callers saved', su.link.endsWith('/api/leads/in/alpha') && su.key.length >= 30 && su.callers.length === 2 && su.on === true);
+  const KEY = su.key, IN = API + '/leads/in/alpha';
+  const push = async (body, { key = KEY, query = '', headers = {}, form } = {}) => { const r = await fetch(IN + query, { method: 'POST', headers: { 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json', ...(key ? { 'x-leads-key': key } : {}), ...headers },
+    body: form ? new URLSearchParams(body).toString() : JSON.stringify(body) }); const j = await r.json().catch(() => ({})); return { status: r.status, data: j.data, error: j.error }; };
+  check('the link refuses a missing or wrong key', (await push({ phone: '9876500001' }, { key: '' })).status === 401 && (await push({ phone: '9876500001' }, { key: 'wrong-key' })).status === 401);
+  check("…and another campus's link does not take this campus's key", [401, 404].includes((await fetch(API + '/leads/in/beta', { method: 'POST', headers: { 'content-type': 'application/json', 'x-leads-key': KEY }, body: '{"phone":"9876500001"}' })).status)); // Beta is switched off by now
+  const dry = await push({ phone: '98765 00001', name: 'Ravi Kumar' }, { query: '?dry=1' });
+  check('a dry run shows what is read and saves nothing', dry.status === 200 && dry.data.leads[0].phone === '919876500001' && !(await q("SELECT 1 FROM leads")).length);
+  const p1 = await push({ phone: '98765 00001', name: 'Sita Devi', message: 'Hi, fees for BPT?', course: 'BPT', city: 'Guntur', id: 'msg-1', source_page: 'Instagram ad' });
+  check('a lead from the bot (any JSON with a phone number) becomes lead L0001', p1.status === 200 && p1.data.created === 1 && p1.data.results[0].lead === 'L0001', JSON.stringify(p1));
+  const L1 = (await q("SELECT * FROM leads WHERE lead_no=1"))[0];
+  check('…with the number in full (country code), name, course, city, message and the other answers', L1.phone === '919876500001' && L1.name === 'Sita Devi' && L1.course === 'BPT' && L1.city === 'Guntur' && L1.message === 'Hi, fees for BPT?' && JSON.parse(L1.extra)['source_page'] === 'Instagram ad');
+  check('…given to a tele-caller, due within the first-call target', [ravi.id, uma.id].includes(L1.assigned_to) && L1.status === 'new' && !!L1.due_at && L1.source === 'whatsapp');
+  const p2 = await push({ mobile: '+91 98765 00002', full_name: 'Kiran' });
+  const L2 = (await q("SELECT * FROM leads WHERE lead_no=2"))[0];
+  check('the next lead goes to the other tele-caller (fewest open leads)', p2.data.created === 1 && L2.assigned_to && L2.assigned_to !== L1.assigned_to);
+  const again = await push({ phone: '9876500001', message: 'Also hostel?', id: 'msg-2' });
+  check('the same number again joins its lead (no second lead), marked as a new message', again.data.added === 1 && (await q("SELECT count(*)::int n FROM leads"))[0].n === 2 && (await q("SELECT unread FROM leads WHERE lead_no=1"))[0].unread === 1);
+  { const dup = await push({ phone: '9876500001', message: 'Also hostel?', id: 'msg-2' }), ev = await q('SELECT kind, ext_id FROM lead_events WHERE body=?', 'Also hostel?'); // (a ? inside the SQL text would be read as a parameter)
+    check('the same message sent twice (bot retry) is saved once', dup.data?.duplicate === 1 && ev.length === 1, JSON.stringify({ dup, ev })); }
+  const meta = { object: 'whatsapp_business_account', entry: [{ id: 'WABA', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', contacts: [{ wa_id: '919876500003', profile: { name: 'Meta Person' } }],
+    messages: [{ from: '919876500003', id: 'wamid.ABC', timestamp: String(Math.floor(Date.now() / 1000)), type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'b1', title: 'Admissions 2027' } } }] } }] }] };
+  const pm = await push(meta, { key: '', query: '?key=' + encodeURIComponent(KEY) });
+  check("Meta's WhatsApp Cloud API format, with the key in the link (?key=)", pm.status === 200 && pm.data.created === 1 && (await q("SELECT name, message FROM leads WHERE phone='919876500003'"))[0]?.message === 'Admissions 2027' && (await q("SELECT name FROM leads WHERE phone='919876500003'"))[0].name === 'Meta Person');
+  check('…a delivery with only read/sent statuses adds nothing', (await push({ object: 'whatsapp_business_account', entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.ABC', status: 'read' }] } }] }] })).data.received === 0);
+  const tw = await push({ From: 'whatsapp:+919876500004', Body: 'hello from twilio', ProfileName: 'Twilio Person', MessageSid: 'SM123' }, { form: true, key: '', headers: { authorization: 'Bearer ' + KEY } });
+  check('a form post (Twilio) with the key as a Bearer token', tw.status === 200 && tw.data.created === 1 && (await q("SELECT name FROM leads WHERE phone='919876500004'"))[0]?.name === 'Twilio Person', JSON.stringify(tw));
+  const nested = await push({ type: 'message_received', data: { customer: { id: 'cust-1', phone_number: '9876500005', traits: { name: 'Nested Name' } }, message: { id: 'm-55', message: 'BBA details' } } });
+  check('nested formats (Interakt-style) are read too', nested.data.created === 1 && (await q("SELECT name, message FROM leads WHERE phone='919876500005'"))[0]?.message === 'BBA details');
+  const np = await push({ name: 'No Number', message: 'hi' });
+  check('no phone number: skipped, with the reason', np.data.skipped === 1 && /phone/.test(np.data.results[0].why));
+  { const v = await fetch(`${IN}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(KEY)}&hub.challenge=8641`), w = await fetch(`${IN}?hub.mode=subscribe&hub.verify_token=nope&hub.challenge=8641`);
+    check("Meta's \"Verify and save\" gets its challenge back with the right verify token, and 403 without", v.status === 200 && (await v.text()) === '8641' && w.status === 403); }
+  await ok('admin saves a Meta app secret', '/leads/setup', { token: T.asha, method: 'PUT', body: { app_secret: 'meta-app-secret-1' } });
+  { const body = JSON.stringify({ ...meta, entry: [{ changes: [{ value: { ...meta.entry[0].changes[0].value, messages: [{ ...meta.entry[0].changes[0].value.messages[0], id: 'wamid.SIG' }] } }] }] });
+    const sig = 'sha256=' + crypto.createHmac('sha256', 'meta-app-secret-1').update(body).digest('hex');
+    const bad1 = await fetch(IN + '?key=' + encodeURIComponent(KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    const good = await fetch(IN + '?key=' + encodeURIComponent(KEY), { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature-256': sig }, body });
+    check("with an app secret, Meta deliveries need Meta's signature", bad1.status === 401 && good.status === 200); }
+  check('…other bots (no signature) still work with the key', (await push({ phone: '9876500006', name: 'Plain Bot' })).data.created === 1);
+  await ok('(app secret removed)', '/leads/setup', { token: T.asha, method: 'PUT', body: { app_secret: '' } });
+  const parsed = await ok('admin checks a sample from the bot (nothing saved)', '/leads/parse', { token: T.asha, method: 'POST', body: { sample: '{"waId":"919876599999","senderName":"Sample","text":"Fees?"}' } });
+  check('…and sees the number, name and message read from it', parsed.leads[0].phone_text === '+91 98765 99999' && parsed.leads[0].name === 'Sample' && !(await q("SELECT 1 FROM leads WHERE phone='919876599999'")).length);
+  await fails('…a sample that is not JSON says so', '/leads/parse', { token: T.asha, method: 'POST', body: { sample: 'hello' } }, 400, 'not JSON');
+  const oldKey = KEY, nk = await ok('a new key can be made', '/leads/setup/key', { token: T.asha, method: 'POST' });
+  check('…the old key stops working at once', (await push({ phone: '9876500007' }, { key: oldKey })).status === 401 && (await push({ phone: '9876500007' }, { key: nk.key })).status === 200);
+  const KEY2 = nk.key;
+
+  sec("Leads: the tele-caller's day");
+  { const a = (await api('/leads/access', { token: T.ravi })).data;
+    check('a tele-caller in no ticket team opens straight on Leads (no desk)', a.use === true && a.caller === true && a.desk === false && a.due >= 1); }
+  check("Pavan (in a ticket team, not a tele-caller) has no Leads", (await api('/leads/access', { token: T.pavan })).data.use === false);
+  const mine = (await ok("Ravi's To call list", '/leads?view=tocall', { token: T.ravi })).rows, theirs = (await api('/leads?view=tocall', { token: T.uma })).data.rows;
+  check('…only his own leads; Uma has hers; none is on both lists', mine.length >= 1 && mine.every(l => l.assigned_to === ravi.id) && theirs.every(l => l.assigned_to === uma.id) && !mine.some(l => theirs.find(x => x.id === l.id)));
+  const ul = theirs[0], rl = mine[0];
+  await fails("a tele-caller cannot open another tele-caller's lead", '/leads/' + ul.id, { token: T.ravi }, 403);
+  const sita = (await q("SELECT id, assigned_to FROM leads WHERE lead_no=1"))[0], sitaTok = sita.assigned_to === ravi.id ? T.ravi : T.uma, sitaOther = sita.assigned_to === ravi.id ? T.uma : T.ravi;
+  const det = await ok('the tele-caller opens Sita\'s lead', '/leads/' + sita.id, { token: sitaTok });
+  check('…with every message and the bot\'s answers; opening it clears "new message"', det.events.filter(e => ['created', 'message'].includes(e.kind)).length === 2 && det.lead.extra.source_page === 'Instagram ad'
+    && (await q("SELECT unread FROM leads WHERE id=?", sita.id))[0].unread === 0);
+  const CALL = id => `/leads/${id}/call`, inH = h => new Date(Date.now() + h * 3600e3).toISOString();
+  await fails('a call needs what happened', CALL(sita.id), { token: sitaTok, method: 'POST', body: {} }, 400, 'Pick what happened');
+  await fails('"call back" needs a time', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'callback' } }, 400, 'call back');
+  await fails('…in the future', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'callback', next_call_at: inH(-3) } }, 400, 'future');
+  const c1 = await ok('no answer: saved, tried again later by itself', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'no_answer' } });
+  check('…status "not reached yet", a next try set, one call counted', c1.status === 'trying' && !!c1.next_call_at && c1.next_call_at > new Date().toISOString() && c1.attempts === 1 && !!c1.first_call_at);
+  const cb = await ok('she asks to be called back tomorrow', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'callback', next_call_at: inH(24), note: 'Busy in class, call after 4' } });
+  check('…call back at that time; the note is in the history', cb.status === 'callback' && Math.abs(Date.parse(cb.next_call_at) - Date.parse(inH(24))) < 5000 && (await q("SELECT body FROM lead_events WHERE lead_id=? AND kind='call' ORDER BY created_at DESC LIMIT 1", sita.id))[0].body === 'Busy in class, call after 4');
+  check('…and leaves today\'s list (it is for tomorrow)', !(await api('/leads?view=tocall', { token: sitaTok })).data.rows.some(l => l.id === sita.id));
+  await fails('"interested" needs a follow-up time', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'interested' } }, 400, 'follow up');
+  await ok('interested, follow up in 2 days', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'interested', next_call_at: inH(48) } });
+  const won = await ok('she joins: converted', CALL(sita.id), { token: sitaTok, method: 'POST', body: { outcome: 'won', note: 'Paid the BPT fee' } });
+  check('…closed, no next call, 4 calls counted', won.status === 'won' && !won.open && !won.next_call_at && !!won.closed_at && won.attempts === 4);
+  await fails('a note must have words', `/leads/${sita.id}/note`, { token: sitaTok, method: 'POST', body: { note: ' ' } }, 400);
+  await ok('a note on the lead', `/leads/${sita.id}/note`, { token: sitaTok, method: 'POST', body: { note: 'Sent the hostel brochure' } });
+  await fails('details: a bad email is refused', '/leads/' + sita.id, { token: sitaTok, method: 'PATCH', body: { email: 'not-an-email' } }, 400);
+  const ed = await ok('details learnt on the call are saved', '/leads/' + sita.id, { token: sitaTok, method: 'PATCH', body: { email: 'sita@example.com', course: 'BPT (2027)' } });
+  check('…and shown', ed.email === 'sita@example.com' && ed.course === 'BPT (2027)');
+  const kiran = (await q("SELECT id, assigned_to FROM leads WHERE lead_no=2"))[0], kTok = kiran.assigned_to === ravi.id ? T.ravi : T.uma;
+  await ok('Kiran is not interested (reason: fees)', CALL(kiran.id), { token: kTok, method: 'POST', body: { outcome: 'lost', reason: 'Fees too high' } });
+  check('…closed as not interested, with the reason', (await q("SELECT status, close_reason FROM leads WHERE id=?", kiran.id))[0].close_reason === 'Fees too high');
+  const back = await push({ phone: '9876500002', message: 'Is there a scholarship?' }, { key: KEY2 });
+  check('when someone closed as "not interested" writes again, the lead opens again as new', back.data.added === 1 && (await q("SELECT status FROM leads WHERE id=?", kiran.id))[0].status === 'new'
+    && (await q("SELECT 1 FROM lead_events WHERE lead_id=? AND kind='reopened'", kiran.id)).length === 1);
+  const m1 = await ok('a tele-caller adds a lead from a phone call', '/leads', { token: T.ravi, method: 'POST', body: { phone: '9876500010', name: 'Walk In', course: 'MBA' } });
+  check('…it is theirs, marked "added by hand"', m1.result === 'created' && m1.lead.assigned_to === ravi.id && m1.lead.source === 'manual');
+  await fails('…a phone number is needed', '/leads', { token: T.ravi, method: 'POST', body: { phone: '12', name: 'X' } }, 400, 'phone');
+  const m2 = await ok('adding a number that is already a lead', '/leads', { token: T.uma, method: 'POST', body: { phone: '09876500010', message: 'Called the office too' } });
+  check('…joins that lead instead of making a second one', m2.result === 'added' && m2.lead.id === m1.lead.id);
+  await fails('a tele-caller cannot move leads to someone else', `/leads/${m1.lead.id}/assign`, { token: T.ravi, method: 'POST', body: { user_id: uma.id } }, 403);
+  await ok('the admin moves a lead from Ravi to Uma', `/leads/${m1.lead.id}/assign`, { token: T.asha, method: 'POST', body: { user_id: uma.id } });
+  check('…Uma has it now, Ravi no longer sees it', (await api('/leads/' + m1.lead.id, { token: T.uma })).status === 200 && (await api('/leads/' + m1.lead.id, { token: T.ravi })).status === 403);
+  await fails('…only to a tele-caller', `/leads/${m1.lead.id}/assign`, { token: T.asha, method: 'POST', body: { user_id: pavanId } }, 400, 'tele-callers');
+  await ok('the admin puts it in the pool (nobody has it)', `/leads/${m1.lead.id}/assign`, { token: T.asha, method: 'POST', body: { user_id: null } });
+  const pool1 = (await api('/leads?view=tocall', { token: T.ravi })).data.pool;
+  check('…both tele-callers see it in the pool', pool1.some(l => l.id === m1.lead.id) && (await api('/leads?view=tocall', { token: T.uma })).data.pool.some(l => l.id === m1.lead.id));
+  await ok('Ravi takes it', `/leads/${m1.lead.id}/assign`, { token: T.ravi, method: 'POST', body: { user_id: 'me' } });
+  await fails('…and Uma cannot take it from him', `/leads/${m1.lead.id}/assign`, { token: T.uma, method: 'POST', body: { user_id: 'me' } }, 403);
+  await run("UPDATE leads SET due_at=? WHERE id=?", new Date(Date.now() - 2 * 3600e3).toISOString(), m1.lead.id);
+  const late = (await api('/leads?view=tocall', { token: T.ravi })).data;
+  check('a first call past its target is late, and late leads come first', late.rows[0].id === m1.lead.id && late.rows[0].late === true && late.counts.late >= 1);
+  check('the "late" filter finds it', (await api('/leads?view=all&status=late', { token: T.asha })).data.rows.some(l => l.id === m1.lead.id));
+  check('search finds leads by phone digits, name and lead number', (await api('/leads?view=all&q=500010', { token: T.asha })).data.rows[0]?.id === m1.lead.id
+    && (await api('/leads?view=all&q=walk', { token: T.asha })).data.total === 1 && (await api('/leads?view=all&q=L0001', { token: T.asha })).data.rows[0]?.id === sita.id);
+  check("a tele-caller's search covers only their own leads (and the pool)", (await api('/leads?view=all&q=Sita', { token: sitaOther })).data.total === 0);
+  check("another campus cannot see this campus's leads", (await api('/leads/' + sita.id, { token: T.bina })).status !== 200 && (await api('/leads?view=all', { token: T.bina })).status === 403);
+  { const fsc = (await api('/fair', { token: T.asha })).data, lb = (await api('/points', { token: T.pavan })).data;
+    check('tele-callers with no ticket team are not in the desk Fair Score or the points board', !JSON.stringify(fsc || {}).includes('Ravi Caller') && !JSON.stringify(lb || {}).includes('Uma Caller')); }
+
+  sec('Leads: tele-callers leaving, old leads from a spreadsheet, reports');
+  const umaOpen = (await q("SELECT count(*)::int n FROM leads WHERE assigned_to=? AND status IN ('new','trying','callback','interested')", uma.id))[0].n;
+  await ok('Uma is deactivated', '/users/' + uma.id, { token: T.asha, method: 'PATCH', body: { is_active: 0 } });
+  check('…her open leads move to Ravi, and she is no longer a tele-caller', umaOpen > 0 && (await q("SELECT count(*)::int n FROM leads WHERE assigned_to=? AND status IN ('new','trying','callback','interested')", uma.id))[0].n === 0
+    && !(await q("SELECT 1 FROM lead_callers WHERE user_id=?", uma.id)).length && (await q("SELECT 1 FROM lead_events WHERE kind='assigned' AND body LIKE 'Moved from Uma Caller to Ravi Caller%'")).length > 0);
+  const swap = await ok('the admin swaps Ravi for Pavan', '/leads/setup', { token: T.asha, method: 'PUT', body: { callers: [pavanId] } });
+  check("…Ravi's open leads go to Pavan", swap.moved > 0 && (await q("SELECT count(*)::int n FROM leads WHERE assigned_to=? AND status IN ('new','trying','callback','interested')", ravi.id))[0].n === 0);
+  check('Pavan (also in a ticket team) keeps his desk and gets Leads', (await api('/leads/access', { token: T.pavan })).data.use === true && (await api('/leads/access', { token: T.pavan })).data.desk === true);
+  await ok('(Ravi back as a tele-caller with Pavan)', '/leads/setup', { token: T.asha, method: 'PUT', body: { callers: [ravi.id, pavanId] } });
+  await fails('import needs a file', '/leads/import', { token: T.asha, method: 'POST', body: { csv: '' } }, 400, 'CSV');
+  await fails('…with a phone column', '/leads/import', { token: T.asha, method: 'POST', body: { csv: 'Name,Course\nA,B\n' } }, 400, 'Phone');
+  await fails('a tele-caller cannot import', '/leads/import', { token: T.ravi, method: 'POST', body: { csv: 'Phone\n9876500020\n' } }, 403);
+  const csv = '﻿Name,Phone Number,Course,Date,Remarks\r\n"Rao, K",+91 98765 00020,BSc Nursing,15/10/2026 2:05 pm,"said ""call in Dec"""\r\nSita again,9876500001,,,\r\nNo Number,,MBA,,\r\nLatha,98765-00021,BPT,2026-10-20,\r\n';
+  const imp = await ok('old leads come in from a CSV export', '/leads/import', { token: T.asha, method: 'POST', body: { csv, mode: 'spread' } });
+  check('…2 new, 1 joined its lead, 1 skipped (row 4: no number)', imp.created === 2 && imp.merged === 1 && imp.skipped === 1 && imp.skipped_rows[0].row === 4, JSON.stringify(imp));
+  const rao = (await q("SELECT * FROM leads WHERE phone='919876500020'"))[0];
+  check('…an imported lead keeps the date it first came in, its answers and is shared to a tele-caller', rao.source === 'import' && rao.created_at.startsWith('2026-10-15T08:35') && rao.name === 'Rao, K' && JSON.parse(rao.extra).Remarks === 'said "call in Dec"' && [ravi.id, pavanId].includes(rao.assigned_to), JSON.stringify(rao));
+  check('…each went to the tele-caller with the fewest open leads (Ravi, just added back with none)', (await q("SELECT assigned_to FROM leads WHERE source='import'")).every(r => r.assigned_to === ravi.id));
+  check('importing the same file again adds no new leads', (await api('/leads/import', { token: T.asha, method: 'POST', body: { csv, mode: 'spread' } })).data.created === 0);
+  const imp2 = await ok('a CSV kept in the pool', '/leads/import', { token: T.asha, method: 'POST', body: { csv: 'Mobile;Name\n9876500030;Pool One\n9876500031;Pool Two\n', mode: 'pool' } });
+  check('…(semicolons work too) nobody has them yet', imp2.created === 2 && (await q("SELECT count(*)::int n FROM leads WHERE phone IN ('919876500030','919876500031') AND assigned_to IS NULL"))[0].n === 2);
+  const sp = await ok('the admin shares the pool among the tele-callers', '/leads/spread', { token: T.asha, method: 'POST' });
+  check('…both given out', sp.given >= 2 && !(await q("SELECT 1 FROM leads WHERE assigned_to IS NULL AND status IN ('new','trying','callback','interested')")).length);
+  const rep = await ok('campus Leads report', '/leads-report', { token: T.asha });
+  check('…counts the leads in, the converted one and the calls; a row per tele-caller', rep.received >= 9 && rep.won === 1 && rep.calls >= 5 && rep.status.won === 1 && rep.callers.some(c => c.name === 'Ravi Caller') && rep.first_call.called >= 1 && rep.lost_reasons.length === 0, JSON.stringify({ r: rep.received, w: rep.won, c: rep.calls }));
+  check('…by course and by source', rep.courses.some(c => c.course === 'BPT (2027)' && c.won === 1) && rep.by_source.whatsapp >= 6 && rep.by_source.manual === 1);
+  const rr = await ok("a tele-caller's report: only their own numbers", '/leads-report', { token: T.ravi });
+  check('…scope mine, one row (theirs)', rr.scope === 'mine' && rr.callers.length === 1 && rr.callers[0].name === 'Ravi Caller');
+  const old = await ok('report for October (the imported leads)', '/leads-report?from=2026-10-01&to=2026-10-31', { token: T.asha });
+  check('…imported leads count on their own dates, not in the first-call timing', old.received === 2 && old.by_source.import === 2 && old.first_call.of === 0 && old.days.length === 31);
+  await fails('a period that ends before it starts', '/leads-report?from=2026-10-31&to=2026-10-01', { token: T.asha }, 400);
+  const cr = await fetch(API + '/leads.csv?from=2026-10-01&to=2026-12-31', { headers: { authorization: 'Bearer ' + T.asha } }), ct = await cr.text();
+  check('leads download as a spreadsheet (CSV), one row per lead', cr.status === 200 && /text\/csv/.test(cr.headers.get('content-type')) && ct.split('\r\n')[0].includes('Tele-caller') && ct.includes('"Rao, K"') && ct.includes(',91 98765 00020,'));
+  const rc = await (await fetch(API + '/leads.csv?from=2026-10-01&to=2026-12-31', { headers: { authorization: 'Bearer ' + T.ravi } })).text();
+  check("…a tele-caller's download has only their own leads", rc.split('\r\n').length - 1 === (await q("SELECT count(*)::int n FROM leads WHERE assigned_to=? AND created_at>='2026-10-01'", ravi.id))[0].n);
+  await ok('Leads can be switched off', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: false } });
+  check('…the link then refuses leads, and the tele-callers lose the screens; the leads stay', (await push({ phone: '9876500099' }, { key: KEY2 })).status === 403 && (await api('/leads?view=tocall', { token: T.ravi })).status === 403 && (await q("SELECT count(*)::int n FROM leads"))[0].n > 5);
+  await ok('(Leads on again for the screens below)', '/leads/setup', { token: T.asha, method: 'PUT', body: { on: true } });
+  await run("UPDATE users SET is_active=1 WHERE id=?", uma.id); // back for the screens: not a tele-caller any more
+  }
+
   // ======================= H. UI smoke test =======================
-  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya }, { t1: ids.t1 });
+  await uiSmoke({ pavan: T.pavan, asha: T.asha, sa: T.sa, lata: T.lata, kavya: T.kavya, ravi: T.ravi }, { t1: ids.t1 });
 } catch (e) {
   failed++; failures.push(`${section}: test crashed — ${e.stack || e}`); console.error('\nTest crashed:', e);
 } finally {
@@ -1749,6 +1916,32 @@ async function uiSmoke(tok, id) {
     check('…with no other canteen tabs', await js(`return !document.querySelector('[data-t=orders]') && !document.querySelector('[data-t=menu]')`));
     check('the Kitchen (KOT) tab opens for the manager', await js(`document.querySelector('[data-t=kitchen]').click(); for (let i = 0; i < 20 && !document.querySelector('.cn-kh'); i++) await new Promise(r => setTimeout(r, 200)); const ok = !!document.querySelector('.cn-kh'); document.querySelector('[data-t=orders]')?.click(); return ok`));
     check('the Canteen tab is in the desk header', await js(`return !!document.querySelector('header nav a[href="#/c/canteen"]')`));
+    // Leads: a tele-caller lands on To call, opens a lead, logs a call; the admin's team view, set up, reports, search; a phone
+    await visit('a tele-caller (no ticket team) lands straight on Leads: To call', '/c', tok.ravi, '.ld-card');
+    check('…only Leads in the header, no ticket tabs or tab bar', await js(`const n = [...document.querySelectorAll('header nav a')].map(a => a.getAttribute('href')); return n.length === 1 && n[0] === '#/c/leads' && document.querySelector('.bnav').hidden`));
+    check('…a lead opens with Call, WhatsApp and the six ways a call can go', await js(`document.querySelector('.ld-card .ld-sub').click(); for (let i = 0; i < 20 && !document.querySelector('dialog .ld-oc'); i++) await new Promise(r => setTimeout(r, 200));
+      const d = document.querySelector('dialog'), ok = !!d?.querySelector('a[href^="tel:+91"]') && !!d.querySelector('a[href^="https://wa.me/91"]') && d.querySelectorAll('[name=outcome]').length === 6; d?.close(); return ok`));
+    check('…"Asked to call back" with a quick time, saved from the screen', await js(`await new Promise(r => setTimeout(r, 300)); document.querySelector('.ld-card [data-log]').click(); for (let i = 0; i < 20 && !document.querySelector('dialog .ld-oc'); i++) await new Promise(r => setTimeout(r, 200));
+      const d = document.querySelector('dialog'); d.querySelector('[name=outcome][value=callback]').click(); d.querySelector('[data-qk]').click(); d.querySelector('#ldnote').value = 'from the screen'; d.querySelector('button[value=ok]').click();
+      for (let i = 0; i < 25 && document.querySelector('dialog'); i++) await new Promise(r => setTimeout(r, 200)); return !document.querySelector('dialog') && /Call saved/.test(document.querySelector('#toast').textContent)`)
+      && (await q("SELECT count(*)::int n FROM lead_events WHERE kind='call' AND body='from the screen'"))[0].n === 1);
+    check('…no script errors on the Leads screens', !errors.length, errors.join(' | ').slice(0, 200));
+    await visit('campus admin: Leads with every tele-caller', '/c/leads', tok.asha, '.ld-bar #ldcf');
+    check('…Leads is in the desk header while it is on', await js(`return !!document.querySelector('header nav a[href="#/c/leads"]')`));
+    check('…Set up shows the link, the key (hidden until Show), the tele-callers and the CSV import', await js(`document.querySelector('[data-t=setup]').click(); for (let i = 0; i < 25 && !document.querySelector('#ldimp'); i++) await new Promise(r => setTimeout(r, 200));
+      return /\\/api\\/leads\\/in\\/alpha$/.test(document.querySelector('#ldlink')?.textContent || '') && document.querySelector('#ldkey').classList.contains('ld-mask') && !!document.querySelector('#ldset [name=caller]:checked')`));
+    check('…the key is not shown in plain in the example command or the Meta link, but Copy copies it whole', await js(`const k = document.querySelector('#ldkey').textContent, c = document.querySelector('#ldcurl'), m = document.querySelector('#ldmeta');
+      return k.length > 20 && !c.textContent.includes(k) && !m.textContent.includes(k) && c.dataset.full.includes(k) && m.dataset.full.endsWith(k)`));
+    check('…the sample checker reads a bot delivery', await js(`document.querySelector('#ldsample').value = '{"waId":"919811111111","senderName":"Screen Test","text":"hi"}'; document.querySelector('#ldparse').click();
+      for (let i = 0; i < 20 && !document.querySelector('#ldparsed table'); i++) await new Promise(r => setTimeout(r, 200)); return /\\+91 98111 11111/.test(document.querySelector('#ldparsed').textContent)`));
+    check('…Reports show the numbers and a row per tele-caller', await js(`document.querySelector('[data-t=report]').click(); for (let i = 0; i < 25 && !document.querySelector('.ld-tab'); i++) await new Promise(r => setTimeout(r, 200)); return !!document.querySelector('.kpis2 .kpi2') && !!document.querySelector('.ld-tab .rtable tbody tr')`));
+    check('…All leads lists and searches', await js(`document.querySelector('[data-t=all]').click(); for (let i = 0; i < 25 && !document.querySelector('.ld-row'); i++) await new Promise(r => setTimeout(r, 200));
+      const s = document.querySelector('#ldq'); s.value = 'Rao'; s.dispatchEvent(new Event('input')); await new Promise(r => setTimeout(r, 1200)); return document.querySelectorAll('.ld-row').length === 1`));
+    check('…no script errors on the admin Leads screens', !errors.length, errors.join(' | ').slice(0, 200));
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await visit('a tele-caller on a phone', '/c/leads', tok.ravi, '.ld-card');
+    check('…the list fits the phone (no sideways scrolling)', await js(`return document.documentElement.scrollWidth <= innerWidth + 1`));
+    await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await api('/notices/' + uiN.id, { token: tok.asha, method: 'DELETE' });
     ws.close();
   } finally { chrome.kill(); await sleep(400); fs.rmSync(prof, { recursive: true, force: true }); }

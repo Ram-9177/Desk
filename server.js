@@ -9,6 +9,7 @@ import { SIMILARITY, MERGE_MODES, MERGEABLE, RANK, locationKey, problemOf, dayIn
 import { polish } from './polish.js';
 import { food, foodService, feedbackIn, summarize, mealsFor } from './food.js';
 import { canteen } from './canteen.js';
+import { leads, dropCaller } from './leads.js';
 import { kindOf, heicToJpeg, SHOWN, MIME, docKindOf, DOC_MIME } from './images.js';
 import { BRAND_DEFAULTS, brandOf, PROVIDER_GUIDE, getSettings, MAIL_EVENTS, loadSettings, mailConfig, eventOn, renderEmail, postToFlow, setSetting, renderTemplate, toText, eventByKey, VARS, sampleVars, unknownVars, templateFor, BLOCKS, forRequestor } from './mailer.js';
 import { calendar, addWorking, workingBetween, closePoints, POINTS, POINT_RULES, DEFAULT_HOLD_REASONS, localDay, dateStart } from './sla.js';
@@ -30,7 +31,8 @@ const app = express();
 app.set('trust proxy', 'loopback');
 app.disable('x-powered-by');
 app.use((_q, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' }); next(); });
-app.use(express.json({ limit: '40mb' }));
+// the leads link keeps the body as it came, to check Meta's X-Hub-Signature-256 (leads.js)
+app.use(express.json({ limit: '40mb', verify: (req, _res, buf) => { if (req.originalUrl.startsWith('/api/leads/in/')) req.rawBody = buf; } }));
 // Email buttons need the site's public address. Until someone sets it on the Email page, learn it from the first real
 // (non-local) visit, e.g. https://stmarys-desk.supercxo.ai behind nginx, so links never point at the server's own localhost.
 app.use((req, _res, next) => {
@@ -916,6 +918,7 @@ S.patch('/users/:id', role('super_admin', 'tenant_admin'), wrap(async req => {
   await run('UPDATE users SET name=?, email=?, phone=?, role=?, is_active=? WHERE id=?', String(b.name ?? u.name).trim() || u.name, email, b.phone ?? u.phone, b.role || u.role, b.is_active ?? u.is_active, u.id);
   if (b.is_active === 0) await run('DELETE FROM service_members WHERE user_id=?', u.id);
   if (b.is_active === 0 || (b.role && b.role !== 'provider')) await run('DELETE FROM canteen_managers WHERE user_id=?', u.id); // a canteen job ends with the account or when they stop being a provider
+  if (b.is_active === 0 || (b.role && b.role !== 'provider')) await dropCaller(u.id, b.is_active === 0 ? 'account switched off' : 'no longer a service provider'); // so does a tele-caller's: their open leads go to the others
   await audit(req, 'user.update', 'user', u.id, b); return { ok: true };
 }));
 S.post('/users/:id/reset-password', role('super_admin', 'tenant_admin'), wrap(async req => {
@@ -1201,7 +1204,7 @@ async function fairScores(tid) {
   for (const t of win) { t.pace = Math.min(3, t.work / usualOf(t)); t.on = t.due_at ? t.closed_at <= t.due_at : null; }
   // misses: accepted reopens and holds past their limit, in the window
   const bad = Object.fromEntries((await all(`SELECT user_id, count(*)::int n FROM provider_points WHERE tenant_id=? AND created_at>=? AND reason IN ('Requestor reopened the ticket','Hold ran past its hold SLA') GROUP BY user_id`, tid, since(cfg.window_days))).map(r => [r.user_id, r.n]));
-  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c JOIN tenants ct ON ct.id=c.tenant_id WHERE c.user_id=u.id AND c.tenant_id=u.tenant_id AND ct.canteen_on=1)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
+  const people = await all(`SELECT u.id, u.name FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c JOIN tenants ct ON ct.id=c.tenant_id WHERE c.user_id=u.id AND c.tenant_id=u.tenant_id AND ct.canteen_on=1) AND NOT EXISTS (SELECT 1 FROM lead_callers lc JOIN tenants lt ON lt.id=lc.tenant_id WHERE lc.user_id=u.id AND lc.tenant_id=u.tenant_id AND lt.leads_on=1)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id)) ORDER BY u.name`, tid);
   const mine = Object.fromEntries(people.map(p => [p.id, win.filter(t => t.closed_by === p.id)]));
   // a provider's team: the service they closed most tickets in (else their first service)
   const firstSvc = Object.fromEntries((await all(`SELECT m.user_id, min(s.name) name, min(s.id) id FROM service_members m JOIN services s ON s.id=m.service_id WHERE m.tenant_id=? GROUP BY m.user_id`, tid)).map(r => [r.user_id, r]));
@@ -1292,7 +1295,7 @@ S.get('/points', wrap(async req => ({
   leaderboard: await all(`SELECT u.id, u.name, coalesce((SELECT sum(points) FROM provider_points p WHERE p.user_id=u.id AND p.tenant_id=u.tenant_id),0) points,
       (SELECT count(*) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed') closed,
       (SELECT round(100.0*count(*) FILTER (WHERE t.closed_at<=t.due_at)/greatest(1,count(*))) FROM tickets t WHERE t.closed_by=u.id AND t.status='closed' AND t.due_at IS NOT NULL) on_time
-    FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c JOIN tenants ct ON ct.id=c.tenant_id WHERE c.user_id=u.id AND c.tenant_id=u.tenant_id AND ct.canteen_on=1)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
+    FROM users u WHERE u.tenant_id=? AND u.is_active=1 AND ((u.role='provider' AND NOT EXISTS (SELECT 1 FROM canteen_managers c JOIN tenants ct ON ct.id=c.tenant_id WHERE c.user_id=u.id AND c.tenant_id=u.tenant_id AND ct.canteen_on=1) AND NOT EXISTS (SELECT 1 FROM lead_callers lc JOIN tenants lt ON lt.id=lc.tenant_id WHERE lc.user_id=u.id AND lc.tenant_id=u.tenant_id AND lt.leads_on=1)) OR EXISTS (SELECT 1 FROM service_members m WHERE m.user_id=u.id))
     ORDER BY points DESC, closed DESC`, req.tenantId),
 })));
 
@@ -1812,6 +1815,8 @@ food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicke
 canteen({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, tenantRow, base, SECRET,
   sendMail: async (tenant_id, to, key, subject, html, text) => { for (const r of [...new Set(to)]) { const id = uid();
     await insert('notifications', { id, tenant_id, recipient: r, template_key: key, subject, body: text, html, text_body: text, status: 'queued', created_at: now() }); queue.push(id); } } });
+// Leads: enquiries from the campus WhatsApp bot (and old ones imported) for tele-callers to call back (leads.js)
+leads({ app, S, wrap, bad, notFound, HttpErr, limit, tenantRow, base });
 app.use('/api', S);
 
 app.use('/api', (_q, _r, next) => next(notFound()));

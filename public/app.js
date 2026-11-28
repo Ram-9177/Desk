@@ -1,5 +1,6 @@
 import { allowedTargets, STATUS_WORDS, PRIORITIES, REQUESTOR_TYPES, WHO_FIELDS, otherOf, MAX_FILES, FIELD_TYPES, FORM_TYPES, DEFAULT_LISTS, builtinFields, fieldsOf, hasLocation, hasStudent, isGeneral, STATUSES, STATUS_INFO, ACTIVE, isFood, MEALS, MEAL_NAMES, MEAL_COLORS, FOOD_CHIPS, FOOD_CATEGORIES, CATEGORY_CHIPS, mealAt } from './shared.js';
 import { initCanteen, canteenCard, studentCanteen, canteenPage } from './canteen.js';
+import { initLeads, leadsPage } from './leads.js';
 import { installBtnHtml, iosHintHtml, mountGuide, stickyInstall, canInstall } from './install.js';
 
 const $ = s => document.querySelector(s), app = $('#app');
@@ -561,13 +562,15 @@ async function shell(active, render, title) {
   if (S.tenant) localStorage.setItem('tid', S.tenant);
   if (S.foodFor !== S.tenant) { S.foodFor = S.tenant; S.foodOk = S.tenant ? (await api('/food/access').catch(() => ({ ok: false }))).ok : false; } // food team or admin, and a food service here
   if (S.canteenFor !== S.tenant) { S.canteenFor = S.tenant; const c = S.tenant ? await api('/canteen/access').catch(() => ({})) : {}; S.canteenOk = !!(c.manage || c.setup || c.kitchen || c.counter); S.canteenOnly = S.canteenOk && c.desk === false; } // canteen managers, admins of a campus with the canteen on, super admins
+  if (S.leadsFor !== S.tenant) { S.leadsFor = S.tenant; const c = S.tenant ? await api('/leads/access').catch(() => ({})) : {}; S.leadsOk = !!(c.use || c.admin); S.leadsOn = !!c.on; S.leadsOnly = !!(c.use && c.caller && c.desk === false); } // tele-callers; admins (to set it up)
   // every screen a person may open; the header shows `nav`, the phone's More sheet the ones not on the tab bar
-  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
+  const all = [['c', 'Home', 'home'], ['c/new', 'New ticket', 'plus'], S.foodOk && ['c/food', 'Food scores', 'utensils'], S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], S.leadsOk && ['c/leads', 'Leads', 'phone'], admin && ['c/attention', 'Attention', 'bell'], ['c/reports', 'Reports', 'chart'], ['c/notices', 'Notices', 'notice'], admin && ['c/services', 'Services', 'grid'],
     admin && ['c/sla', 'SLA & points', 'clock'], admin && ['c/email', 'Email', 'mail'], admin && ['c/users', 'People', 'users'], admin && ['c/audit', 'Audit', 'shield'], sa && ['c/tenants', 'Tenants', 'building']].filter(Boolean);
-  if (S.canteenOnly) { all.splice(0, all.length, ['c/canteen', 'Canteen', 'utensils']); if (!['c/canteen', 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/c/canteen'); } // canteen staff with no ticket team: the canteen is their desk
+  if (S.canteenOnly || S.leadsOnly) { const only = [S.canteenOk && ['c/canteen', 'Canteen', 'utensils'], S.leadsOk && ['c/leads', 'Leads', 'phone']].filter(Boolean); all.splice(0, all.length, ...only);
+    if (![...only.map(n => n[0]), 'c/me'].includes(active) || title === 'Ticket') return location.replace('#/' + only[0][0]); } // canteen staff and tele-callers with no ticket team: that is their desk
   const nav = all.filter(n => n[0] !== 'c/new'); // New ticket is the Home header's primary button and the phone's centre tab
   // desktop header: the everyday screens; set-up screens (SLA, Email, People, Audit, Tenants) sit under More so the header never overflows
-  const MAIN = ['c', 'c/canteen', 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
+  const MAIN = ['c', 'c/canteen', ...(S.leadsOn ? ['c/leads'] : []), 'c/food', 'c/attention', 'c/reports', 'c/services'], navMain = nav.filter(n => MAIN.includes(n[0])), navMore = nav.filter(n => !MAIN.includes(n[0]));
   const cur = h => active === h ? 'class="on" aria-current="page"' : '';
   // the bell: admins open Attention; providers their overdue tickets (they have no Attention page)
   const bellHref = admin ? '#/c/attention' : '#/c', bellAttr = admin ? '' : 'data-overdue';
@@ -582,10 +585,10 @@ async function shell(active, render, title) {
       <a class="ibtn gear" href="#/settings" aria-label="Settings">${I('settings', 20)}</a><span class="vdiv"></span>
       <a class="melink" href="#/c/me" aria-label="Profile: ${esc(u.name)}">${avatar(u.name, 36, 'dark')}<span class="who"><b>${esc(u.name)}</b><span>${esc(cap(u.role.replace('_', ' ')))}</span></span></a></div></div></header>
     <div class="cwrap">${active !== 'c' || title ? `<div class="head"><a class="iconbtn" href="#/c" id="bk" aria-label="Back">${I('back')}</a><h1>${esc(title || (all.find(n => n[0] === active) || [])[1] || '')}</h1></div>` : ''}<div id="main">Loading…</div></div>
-    <nav class="bnav" aria-label="Primary" ${S.canteenOnly ? 'hidden' : ''}>${bn('c', 'Home', 'home')}
+    <nav class="bnav" aria-label="Primary" ${S.canteenOnly || S.leadsOnly ? 'hidden' : ''}>${bn('c', 'Home', 'home')}
       <a href="${bellHref}" ${bellAttr} ${active === 'c/attention' ? 'class="on" aria-current="page"' : ''}>${I('bell', 22)}<span>Attention</span><i class="ndot" hidden></i></a>
       <a href="#/c/new" class="newt" aria-label="New ticket">${I('plus', 24)}</a>
-      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
+      ${bn('c/reports', 'Reports', 'chart')}<button type="button" id="moreb" aria-haspopup="dialog" ${['c/services', 'c/sla', 'c/email', 'c/users', 'c/audit', 'c/tenants', 'c/food', 'c/canteen', 'c/leads', 'c/notices'].includes(active) ? 'class="on"' : ''}>${I('more', 22)}<span>More</span></button></nav>`;
   app.querySelectorAll('[data-overdue]').forEach(a => a.onclick = () => { sessionStorage.setItem('qf', JSON.stringify({ status: 'overdue' })); if (location.hash === '#/c') route(); });
   if ($('#navmb')) { const mb = $('#navmb'), mm = $('#navmm'), shut = () => { mm.hidden = true; mb.setAttribute('aria-expanded', 'false'); };
     mb.onclick = e => { e.stopPropagation(); mm.hidden = !mm.hidden; mb.setAttribute('aria-expanded', String(!mm.hidden)); if (!mm.hidden) mm.querySelector('a')?.focus(); };
@@ -1818,7 +1821,7 @@ async function route() {
     if (seg[0] === 'install' || seg[0] === 'settings') return installPage();
     if (seg[0] === 'c') {
       const page = seg.slice(0, 2).join('/');
-      const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage, 'c/canteen': canteenPage };
+      const map = { 'c/notices': noticesAdmin, c: queue, 'c/new': newTicket, 'c/attention': attention, 'c/services': services, 'c/users': users, 'c/reports': reports, 'c/sla': slaPage, 'c/email': emailPage, 'c/audit': auditPage, 'c/tenants': tenants, 'c/me': profile, 'c/food': foodPage, 'c/canteen': canteenPage, 'c/leads': leadsPage };
       if (seg[1] === 't') return await shell('c', (m, ctx) => workspace(m, seg[2], ctx), 'Ticket');
       return await shell(page, map[page] || queue, page === 'c/me' ? 'Profile' : undefined);
     }
@@ -1856,6 +1859,7 @@ function cornerMenu(hash) {
 document.addEventListener('click', e => { const c = document.querySelector('.corner'); if (!c) return;
   if (e.target.closest('.corner-btn')) c.classList.toggle('open'); else c.classList.remove('open'); });
 initCanteen({ api, esc, toast, I, dlg, app });
+initLeads({ api, esc, toast, I, dlg, app, reroute: () => { S.leadsFor = null; route(); } });
 addEventListener('hashchange', route);
 route();
 // Installable app (PWA): the service worker caches the screens for offline opening; install.js handles the Install button and the guide.

@@ -5,6 +5,7 @@ Service desk for the St. Mary's Group campuses. Requestors raise and track ticke
 - **Requestors**: raise a ticket (email required), service-specific questions (Location: Block · Floor · Room; Student: Branch · Student ID · Department), photos, track by ticket number, add notes, reopen within 7 days.
 - **Service providers**: ticket cards, hold / resume / close / reject / transfer with notes, SLA clock on working hours (09:00–17:00, Mon–Sat by default), hold reasons with their own limits, points.
 - **Admins**: campuses, services with form types and question builder, people (add, reset password, deactivate), SLA & points, attention list, reports, audit log.
+- **Tele-callers (Leads)**: enquiries from the campus WhatsApp bot (and old ones from a CSV export) on a To call list. Call, WhatsApp, log how it went and the next call; reports per tele-caller. See [Leads from the WhatsApp bot](#leads-from-the-whatsapp-bot-tele-callers).
 - **Email**: sent through a Power Automate HTTP flow from the Digital Services mailbox, with editable templates per step (progress tracker, ticket details, latest updates).
 
 Stack: Node.js 24, Express, PostgreSQL (`pg`), plain JavaScript front end. The database holds everything except uploaded photos, which live in `data/uploads/`. Photos are kept as JPEG, PNG, GIF or WebP so every browser and email app shows them: the app shrinks photos to JPEG (at most 1920 px) on the phone before upload, and the server turns HEIC photos (iPhone and many Android cameras) into JPEG with `heic-decode`, which needs nothing installed on the server. The schema is created automatically on start.
@@ -149,6 +150,84 @@ Teams post notices for students (Notices in the staff menu): a title, a message,
 - **Before a ticket**: when a student picks a team that has a live notice, the notice pops up first with **This answers my question** (no ticket) and **I still need to raise a ticket** (the form). A ticket raised after that carries an internal line "The requester read the notice …".
 - Each notice counts how often it was seen, how many found their answer, and how many raised a ticket anyway.
 
+## Leads from the WhatsApp bot (tele-callers)
+
+Enquiries that come in on the campus WhatsApp bot land in **Leads** (staff menu). Tele-callers call each one back, write down how the call went and when to call next. Campus admins see the whole team. It is kept apart from the ticket desk, with its own tables (`leads.js`, `public/leads.js`).
+
+**Turn it on** (campus admin or super admin): Leads → **Set up**. Tick the tele-callers (desk service providers), tick **Leads on** and save. The defaults are a first call within 60 minutes and, after no answer, another try 2 hours later. Both count working time only (the campus working hours), so a lead that comes in at night is due the next morning. A new lead goes to the tele-caller with the fewest open leads. Tele-callers who are in no ticket team open straight on Leads and are left out of the desk's points and Fair Score.
+
+**Connect the bot.** Set up shows the campus's **leads link** (`https://<site>/api/leads/in/<campus>`) and its **leads key**. In the bot's settings (WATI, Interakt, AiSensy, Gupshup, Twilio or any other), add a webhook that POSTs each new lead or message to the link. Send the key in one of three ways:
+
+- the header `X-Leads-Key: <key>`
+- `Authorization: Bearer <key>`
+- `?key=<key>` at the end of the link, if the bot cannot add headers
+
+**What the bot must send.** JSON (or a form post) with the person's **phone number**. Common names all work: `phone`, `mobile`, `waId`, `wa_id`, `from`, `phone_number`, and nested ones such as `customer.phone_number`. Also read when present:
+
+- `name`
+- `message` or `text`
+- `course`
+- `city`
+- `email`
+- the message `id`, so a delivery sent twice is saved once
+- a time
+
+Any other answer the bot collected is kept and shown on the lead under "What they told the bot". A 10-digit number gets the country code from Set up (91). One delivery can carry a single lead, a list of leads, or `{ "leads": [...] }` (at most 500).
+
+```bash
+curl -X POST 'https://stmarys-desk.supercxo.ai/api/leads/in/<campus>' -H 'Content-Type: application/json' -H 'X-Leads-Key: <key>' \
+  -d '{"phone":"9876543210","name":"Ravi Kumar","message":"Fees for BPT?","course":"BPT","city":"Guntur","id":"msg-123"}'
+```
+
+The answer looks like `{ "data": { "received": 1, "created": 1, "added": 0, "duplicate": 0, "skipped": 0, "results": [{ "result": "created", "lead": "L0001" }] } }`.
+
+Other answers from the link:
+
+- **401**: the key is wrong.
+- **403**: Leads are off for that campus.
+- `?dry=1`: shows what would be read and saves nothing.
+- **Check a sample from your bot** (in Set up): paste one delivery to see the same reading.
+
+**One number, one lead.** The same phone number is the same person, so their next messages join their open lead and show as "New message". If someone closed as "Not interested" or "Wrong number" writes again, the lead opens again as new.
+
+**Meta's WhatsApp Cloud API directly** (no bot company):
+
+1. In Meta for Developers → WhatsApp → Configuration → Webhook, set the **Callback URL** to the leads link with `?key=<key>`.
+2. Set the **Verify token** to the key.
+3. Subscribe to **messages**.
+4. Optional: put the app's **App secret** in Set up. ONE Desk then checks Meta's `X-Hub-Signature-256` on every delivery.
+
+Button and list replies and WhatsApp Flows answers are read. Deliveries that only carry statuses (sent, read) add nothing.
+
+**What WhatsApp itself cannot do.** No WhatsApp API lets the desk pull chat history that is already on a phone or in a bot. Leads arrive from the moment the webhook is on. For older leads, export them from the bot's dashboard as a spreadsheet, save it as **CSV**, and use **Bring in old leads** in Set up:
+
+- The first row must be headings, including a Phone (or Mobile / WhatsApp / Number) column. Name, Course, City, Email, Message and Date are read when present.
+- Day-first dates like 15/10/2026 2:05 pm work.
+- At most 5,000 rows per file.
+- A number that is already a lead joins that lead. Importing the same file twice adds nothing.
+- Nothing is saved if anything fails.
+- You choose to share the leads among the tele-callers now or keep them in a pool that tele-callers take from.
+
+**The tele-caller's day** (Leads → To call):
+
+- **Order of the list:** late leads first, then new ones, then call-backs that are due.
+- **On each lead:** Call (opens the phone dialler) and WhatsApp (opens the chat). Coming back from a call asks how it went.
+- **How the call went:** No answer (try again later by itself), Asked to call back (pick a time), Interested (pick a follow-up), Converted, Not interested (with a reason) or Wrong number. Details learnt on the call (name, course, email, city) can be corrected.
+- **Other screens:** All leads searches by name, phone, course or lead number. Add lead covers someone who phoned or walked in.
+
+**Admins** see every tele-caller's leads and can move a lead between tele-callers or back to the pool. When a tele-caller is removed from Leads, deactivated or stops being a provider, their open leads go to the others.
+
+**Reports** cover:
+
+- leads in, and how many converted
+- how many first calls were on time, and the usual time to a first call
+- calls made, and how they went
+- leads open and late now
+- a row per tele-caller
+- courses asked about, and why people said no
+
+A tele-caller sees only their own numbers. **Download leads (CSV)** gives one row per lead.
+
 ## Replies to requesters
 
 Every public reply (a note, work started, on hold, resumed, closed, rejected) is tidied on this server before the requester sees it (`polish.js`: a British English dictionary, short-forms and four safe typing-slip rules; no API, nothing leaves the machine; names, places, codes, emails and links stay as typed), shown to the provider in **Check before sending** with the exact email, and sent inside a Hi / note / Thank you template signed with the provider's name and team. Ready-made sentences per step are edited on the Email page (whole campus or one team). Brand lines (logo, Learn · Live · Grow, the ONE strip, the welcome message) are edited there too.
@@ -164,7 +243,7 @@ Every public reply (a note, work started, on hold, resumed, closed, rejected) is
 npm test
 ```
 
-Needs a local Postgres where you can create databases (default `postgres://localhost/postgres`; override with `TEST_DATABASE_URL`). Starts ONE Desk on a throwaway database, dropped afterwards (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors.
+Needs a local Postgres where you can create databases (default `postgres://localhost/postgres`; override with `TEST_DATABASE_URL`). Starts ONE Desk on a throwaway database, dropped afterwards (no email flow connected, so nothing is sent), runs every role's flow through the API — first-run setup, campuses, services and form types, raising and tracking tickets, hold / close / reject / transfer / reopen, points, escalation, emails and templates, people and password resets, campus isolation, the canteen, and Leads (every bot format, the tele-callers' calls, imports, reports) — and, when Chrome is installed, loads each screen in headless Chrome and checks for script errors.
 
 ## Campus data from files (provision/)
 
