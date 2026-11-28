@@ -488,7 +488,9 @@ const queueBox = q => q ? `<div class="queuebox">${I('clock', 22)}<div><b>Queue 
 // Many people reporting the same problem the same day share one ticket (see merge.js on the server)
 const knownIssue = n => n > 1 ? `<div class="knownissue">${I('users', 18)}<span><b>Known issue:</b> ${n - 1} other${n === 2 ? '' : 's'} reported this too. The team is fixing it as one job. You will get every update by email, under your own number.</span></div>` : '';
 const sameIssue = d => new Promise(res => {
-  $('#err').innerHTML = `<div class="limitbox">${I('alert', 22)}<div><b>Ticket #${esc(d.ticket_no)} already exists for this problem.</b><div>${esc(d.subject)} · reported by ${d.affected_count} so far. Same issue?</div>
+  // how many and the problem only: another ticket's number or subject would be another student's (a number alone opens their page)
+  const n = Number(d.affected_count) || 1;
+  $('#err').innerHTML = `<div class="limitbox">${I('alert', 22)}<div><b>This problem was already reported here today (${esc(n)} ${n === 1 ? 'person' : 'people'}).</b><div>${esc([d.service, d.problem].filter(Boolean).join(' · '))}${d.service || d.problem ? '. ' : ''}Same issue?</div>
     <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="sy">Yes, add me</button><button type="button" class="btn" id="sn">No, raise new</button></div></div></div>`;
   $('#sy').onclick = () => { $('#err').textContent = ''; res('yes'); }; $('#sn').onclick = () => { $('#err').textContent = ''; res('no'); };
 });

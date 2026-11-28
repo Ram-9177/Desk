@@ -154,9 +154,9 @@ export function food(d) {
     if (from > to) throw bad('From must be on or before To');
     return { from, to, today };
   };
-  // Complaints (tickets, not feedback) raised in the period: how many, still open, by problem and by meal
+  // Complaints (tickets, not feedback) raised in the period: how many, still open, by problem and by meal (one joined into another counts there only)
   const complaintSplit = async (svc, from, to, loc, meals) => {
-    const rows = await all(`SELECT status, meal, food_category FROM tickets WHERE service_id=? AND created_date>=? AND created_date<=? ${loc ? 'AND food_location_id=?' : ''}`, svc.id, from, to, ...(loc ? [loc] : []));
+    const rows = await all(`SELECT status, meal, food_category FROM tickets WHERE service_id=? AND joined_into IS NULL AND created_date>=? AND created_date<=? ${loc ? 'AND food_location_id=?' : ''}`, svc.id, from, to, ...(loc ? [loc] : []));
     const by = f => Object.entries(rows.reduce((m, r) => { const k = f(r) || 'other'; m[k] = (m[k] || 0) + 1; return m; }, {})).sort((a, b) => b[1] - a[1]);
     return { total: rows.length, open: rows.filter(r => ['open', 'in_progress', 'hold'].includes(r.status)).length, closed: rows.filter(r => r.status === 'closed').length,
       by_category: by(r => r.food_category).map(([k, n]) => ({ key: k, label: foodCategory(k), count: n })),

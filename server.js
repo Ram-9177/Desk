@@ -504,7 +504,8 @@ async function createTicket(tenant, b, opts) {
     const m = mergeable && await findMatch(tenant, svc.id, lkey, prob, day);
     if (m) {
       if (mergeMode() === 'confirm' && b.merge !== 'yes') // the form asks "Same issue?" first
-        throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `Ticket ${m.ticket_no} already exists for this problem.`, { ticket_no: m.ticket_no, subject: m.subject, affected_count: m.affected_count });
+        { const n = m.affected_count || 1; // how many and the problem in the asker's own words: a number or subject would be another student's
+          throw new HttpErr(409, 'POSSIBLE_DUPLICATE', `This problem was already reported here today (${n} ${n === 1 ? 'person' : 'people'}). Same issue?`, { affected_count: n, service: svc.name, problem: prob.label }); }
       merged = await joinTicket(m, r, b, contact, opts.actor, ts, tenant);
       if (merged) return merged.ticket;
     }
@@ -2009,7 +2010,7 @@ app.use('/api/mail', M);
 
 app.get('/api/group/report', auth, role('super_admin'), wrap(async () =>
   await all(`SELECT tn.name, tn.code, count(*) FILTER (WHERE t.status IN ('open','in_progress')) open, count(*) FILTER (WHERE t.status='hold') hold, count(*) FILTER (WHERE t.status='closed') closed, count(*) FILTER (WHERE t.status IN ('open','in_progress') AND t.due_at<?) overdue
-    FROM tenants tn LEFT JOIN tickets t ON t.tenant_id=tn.id GROUP BY tn.id ORDER BY tn.name`, now())));
+    FROM tenants tn LEFT JOIN tickets t ON t.tenant_id=tn.id AND t.joined_into IS NULL GROUP BY tn.id ORDER BY tn.name`, now())));
 
 // Food & catering: rate a meal (feedback) or report a problem (ticket); kitchen dashboard; scheduled reports (food.js)
 food({ app, P, S, wrap, bad, notFound, HttpErr, limit, tenantBySlug, createTicket, tenantRow, base, SECRET, getSettings, setSetting, providersFor,

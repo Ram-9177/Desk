@@ -683,7 +683,9 @@ try {
   await ok('super admin switches to confirm mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'confirm' } });
   await fails('a tenant admin cannot switch it', '/merge-mode', { token: T.asha, method: 'PUT', body: { mode: 'silent' } }, 403);
   const ask = await dup('Dupv', '301');
-  check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.ticket_no === bt[0].ticket_no, JSON.stringify(ask.error));
+  check('confirm mode: a match is offered first ("Same issue?")', ask.status === 409 && ask.error.code === 'POSSIBLE_DUPLICATE' && ask.error.details.affected_count === 50, JSON.stringify(ask.error));
+  check('I4: …naming how many reported it and the problem, never that ticket\'s number or subject', !('ticket_no' in ask.error.details) && !('subject' in ask.error.details) && ask.error.details.problem === 'Fan'
+    && !new RegExp(`\\b${bt[0].ticket_no}\\b`).test(JSON.stringify(ask.error)) && /already reported here today \(50 people\)/.test(ask.error.message), JSON.stringify(ask.error));
   const no = (await dup('Dupv', '301', { merge: 'no' })).data, yes = (await dup('Dupw', '301', { merge: 'yes' })).data;
   check('"No, raise new" makes a separate ticket marked not merged; "Yes, add me" joins', !no.merged && (await tk(no.ticket_no)).not_merged === 1 && yes.merged && yes.ticket_no !== bt[0].ticket_no && await onT(yes, bt[0].ticket_no));
   await ok('back to silent mode', '/merge-mode', { token: T.sa, tenant: alpha.id, method: 'PUT', body: { mode: 'silent' } });
@@ -920,6 +922,9 @@ try {
   check("I3: Home search by a joiner's own number finds the shared ticket", ((await api(`/tickets?status=all&q=${rc.ticket_no}`, { token: T.pavan })).data || []).some(x => x.id === tRa.id));
   const sbt = (await api('/bot', { method: 'POST', token: T.pavan, body: { q: `ticket ${rc.ticket_no}` } })).data || {};
   check("I3: the staff bot answers a joiner's number with the shared ticket", sbt.text?.startsWith(`Ticket ${rc.ticket_no} (part of #${ra.ticket_no})`) && sbt.items?.[0]?.href === `#/c/t/${tRa.id}`, sbt.text);
+  // I5: the group report counts a joined ticket's close nowhere
+  const grp = (await api('/group/report', { token: T.sa })).data.find(g => g.code === 'ALPHA');
+  check('I5: the group report leaves joined tickets out of "closed"', grp.closed === (await q("SELECT count(*)::int n FROM tickets WHERE tenant_id=? AND status='closed' AND joined_into IS NULL", alpha.id))[0].n, JSON.stringify(grp));
   }
 
   sec('Team daily queue, provider phone and priority for requestors');
@@ -1307,7 +1312,11 @@ try {
   await ok('admin puts the defaults back', '/food/settings', { ...A, method: 'PUT', body: { meals: before.meals.map(m => ({ ...m, active: true })), chips: before.default_chips } });
   check('back to three meals', (await api('/public/alpha/food')).data.meals.join() === 'breakfast,lunch,dinner');
   const cs = dsh.complaint_split;
-  check('the kitchen sees complaints apart from feedback: total, open, by problem and by meal', cs.total >= 1 && cs.open >= 1 && cs.by_category.length >= 1 && cs.by_meal.reduce((x, y) => x + y.count, 0) === cs.total, JSON.stringify(cs)); }
+  check('the kitchen sees complaints apart from feedback: total, open, by problem and by meal', cs.total >= 1 && cs.open >= 1 && cs.by_category.length >= 1 && cs.by_meal.reduce((x, y) => x + y.count, 0) === cs.total, JSON.stringify(cs));
+  const fj = (await q("SELECT id FROM tickets WHERE service_id=? AND joined_into IS NULL AND created_date=(now() AT TIME ZONE 'Asia/Kolkata')::date LIMIT 1", dsh.service.id))[0];
+  await run('UPDATE tickets SET joined_into=? WHERE id=?', ids.t1, fj.id); // joined into another ticket: that one counts it
+  const cs2 = (await api('/food/dashboard', { token: T.pavan })).data.complaint_split; await run('UPDATE tickets SET joined_into=NULL WHERE id=?', fj.id);
+  check('I5: a complaint joined into another is not counted again on the kitchen dashboard (nor in the food reports)', cs2.total === cs.total - 1, JSON.stringify([cs.total, cs2.total])); }
   check('CSV export', /meal_date,meal,location,rating/.test(await (await fetch(`${API}/food/feedback.csv`, { headers: { authorization: 'Bearer ' + T.pavan } })).text()));
   // reports
   const rep = (per, qs = '', key = 'food-report-key-0123456789') => fetch(`${API}/reports/food/${per}?tenant=alpha&format=json${qs}`, { headers: { 'x-report-key': key } });
