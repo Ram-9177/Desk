@@ -446,7 +446,7 @@ export async function canteenPage(main, { sa }) {
           <label class="chk"><input type="radio" name="kot_where" value="none" ${m.pay.kot_at_counter === false && !m.pay.auto_kot ? 'checked' : ''}> Don't print KOTs (the kitchen works from the screen)</label>
           <p class="row"><button type="button" class="btn" id="cntestp">${I('file', 15)} Print test page</button></p>
           <p class="row"><button class="btn soft">Save payments, delivery &amp; printing</button></p></form></details>` : ''}
-      <p class="row"><button class="btn primary" id="additem">${I('plus', 16)} Add item</button><button class="btn soft" id="addcat">${I('plus', 16)} Add category</button><button class="btn soft" id="eodall">🌙 Sale on everything</button>${all_.some(i => i.deal) ? '<button class="btn" id="enddeals">End all deals</button>' : ''}</p>
+      <p class="row cn-mbtns"><button class="btn primary" id="additem">${I('plus', 16)} Add item</button><button class="btn soft" id="addcat">${I('plus', 16)} Add category</button><button class="btn soft" id="upmenu">${I('file', 16)} Upload menu</button><button class="btn soft" id="eodall">🌙 Sale on everything</button>${all_.some(i => i.deal) ? '<button class="btn" id="enddeals">End all deals</button>' : ''}</p>
       ${groups.map(g => `<section class="cn-cat"><div class="cn-ch"><h2>${esc(g.name)}</h2>${g.id ? `<span><button class="iconbtn" data-up="${g.id}" aria-label="Move ${esc(g.name)} up" ${cats[0]?.id === g.id ? 'disabled' : ''}>▲</button><button class="iconbtn" data-ren="${g.id}" aria-label="Rename">${I('pencil', 15)}</button><button class="iconbtn" data-cdel="${g.id}" aria-label="Remove category">${I('x', 15)}</button></span>` : ''}</div>
         <div class="card cn-list">${g.items.map(itemRow).join('') || '<p class="muted small">No items yet.</p>'}</div></section>`).join('') || '<div class="card empty"><span class="et">Start your menu</span><span>Add a category (Snacks, Meals, Drinks…) and then its items with prices.</span></div>'}`;
     wire();
@@ -486,6 +486,55 @@ export async function canteenPage(main, { sa }) {
       const r = await api('/canteen/deals/all', { method: 'POST', body: { pct: +f.pct.value, minutes: +f.mins.value, kind: f.kind.value } }); toast(`Sale on ${r.items} items`); draw(); });
     const ed = document.getElementById('enddeals'); if (ed) ed.onclick = async () => { if (!confirm('End every deal now?')) return; try { await api('/canteen/deals', { method: 'DELETE' }); toast('All deals ended'); } catch (e) { toast(e.message); } draw(); };
     document.getElementById('additem').onclick = () => dlg(itemForm({ category_id: cats[0]?.id }), async f => { await api('/canteen/items', { method: 'POST', body: body(f) }); toast('Item added'); draw(); });
+    // ---- Upload menu (CSV or Excel): choose a file → match its columns → preview (nothing saved) → Import. The server reads and checks; this only maps. ----
+    const MU_F = [['name', 'Item name', 1], ['price', 'Price (₹)', 1], ['category', 'Category'], ['description', 'Description'], ['is_veg', 'Veg (yes / no)'], ['sold_out', 'Sold out (yes / no)'],
+      ['active', 'On the menu (yes / no)'], ['sort_order', 'Order in its category'], ['deal_pct', 'Deal %'], ['deal_kind', 'Deal type'], ['deal_minutes', 'Deal minutes']];
+    // header names a file may use for each field, compared without case, spaces, underscores or symbols ("Item Name", "item_name", "Price (₹)")
+    const MU_SYN = { name: ['name', 'item', 'itemname', 'dish', 'dishname'], price: ['price', 'rate', 'mrp', 'amount', 'cost'], category: ['category', 'section', 'group'], description: ['description', 'desc', 'details'],
+      is_veg: ['isveg', 'veg', 'type', 'vegnonveg'], sold_out: ['soldout'], active: ['active'], sort_order: ['sortorder', 'order'], deal_pct: ['dealpct', 'deal', 'discount'], deal_kind: ['dealkind', 'dealtype'], deal_minutes: ['dealminutes', 'dealmins'] };
+    const norm = v => String(v).toLowerCase().replace(/[^a-z0-9]/g, ''), muKey = 'canteen-map-' + m.slug;
+    const guess = (cols, saved) => { const used = new Set(), map = {}, take = (f, i) => { if (i >= 0 && !used.has(i)) { map[f] = i; used.add(i); } };
+      for (const [f] of MU_F) take(f, cols.indexOf(saved[f])); // the columns picked last time on this campus come first
+      for (const [f] of MU_F) if (map[f] == null) take(f, cols.findIndex((c, i) => !used.has(i) && MU_SYN[f].includes(norm(c))));
+      return map; };
+    const download = async (path, name, err) => { try { const res = await api(path, { raw: true }); if (!res.ok) throw new Error('Could not download');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); } catch (e) { err.textContent = e.message; } };
+    document.getElementById('upmenu').onclick = () => {
+      const d = dlg('<h3>Upload menu</h3><div id="mu"></div>', async () => {}), f = d.querySelector('form'), box = d.querySelector('#mu'), go = d.querySelector('button[value=ok]'), err = d.querySelector('#derr');
+      d.classList.add('mu'); go.id = 'mugo'; let rd = null, file = '', rows = null, step = 1;
+      const show = (html, label, ready = true) => { box.innerHTML = html; go.textContent = label; go.disabled = !ready; err.textContent = ''; };
+      const pick = () => { step = 1; show(`<p class="muted small">A .csv or .xlsx file with one item per row and the column names in the first row. Next you match its columns, then see what will change before anything is saved.</p>
+        <label class="mu-file">${I('file', 22)}<b>Choose a .csv or .xlsx file</b><span class="muted small">Up to 500 items, 5 MB</span><input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+        <div class="mu-dl"><span class="muted small">Not sure of the layout?</span><button type="button" class="btn soft" data-dl="template">${I('download', 15)} Download template</button><button type="button" class="btn soft" data-dl="sample">${I('download', 15)} Download sample menu</button></div>`, 'Next', false);
+        const inp = box.querySelector('input[type=file]'); inp.onchange = () => { go.disabled = !inp.files.length; if (inp.files.length) act(read); };
+        box.querySelector('[data-dl=template]').onclick = () => download('/canteen/menu-template.csv', 'canteen-menu-template.csv', err);
+        box.querySelector('[data-dl=sample]').onclick = () => download('/canteen/menu-sample.csv', 'canteen-menu-sample.csv', err); };
+      const read = async () => { const fl = box.querySelector('input[type=file]').files[0]; if (!fl) throw new Error('Choose a file first');
+        if (/\.xls$/i.test(fl.name)) throw new Error('This is an old Excel file (.xls). Save it as .xlsx or .csv and upload that');
+        if (fl.size > 5 * 1024 * 1024) throw new Error('The file is bigger than 5 MB: a menu file is usually a few KB');
+        go.textContent = 'Reading…'; const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('Could not open the file')); r.readAsDataURL(fl); });
+        rd = await api('/canteen/menu/read', { method: 'POST', body: { name: fl.name, data } }); file = fl.name; mapping(guess(rd.columns, ls.get(muKey, {}))); };
+      const chosen = () => Object.fromEntries([...box.querySelectorAll('[data-map]')].filter(s => s.value !== '').map(s => [s.dataset.map, +s.value]));
+      const mapping = map => { step = 2; show(`<p class="muted small"><b>${esc(file)}</b> · ${rd.total} row${rd.total === 1 ? '' : 's'}. Pick the column that holds each field; <b>Item name</b> and <b>Price</b> are needed.</p>
+        <div class="mu-map">${MU_F.map(([k, l, req]) => `<label><span>${l}${req ? ' <b class="mu-req" aria-label="needed">*</b>' : ''}</span><select data-map="${k}"><option value="">Not in my file</option>${rd.columns.map((c, i) => `<option value="${i}" ${map[k] === i ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><small class="muted" data-eg="${k}"></small></label>`).join('')}</div>
+        <p><button type="button" class="btn soft" id="muother">Choose another file</button></p>`, 'Preview');
+        const eg = () => { for (const s of box.querySelectorAll('[data-map]')) box.querySelector(`[data-eg=${s.dataset.map}]`).textContent = s.value === '' ? '' : rd.rows[0][+s.value] ? 'e.g. ' + rd.rows[0][+s.value].slice(0, 40) : 'first row: empty';
+          go.disabled = !box.querySelector('[data-map=name]').value || !box.querySelector('[data-map=price]').value; };
+        box.querySelectorAll('[data-map]').forEach(s => s.onchange = eg); eg(); box.querySelector('#muother').onclick = pick; };
+      const preview = async () => { const map = chosen(); ls.set(muKey, Object.fromEntries(Object.entries(map).map(([k, i]) => [k, rd.columns[i]]))); // remembered by column name for the next upload
+        rows = rd.rows.map((r, i) => ({ ...Object.fromEntries(Object.entries(map).map(([k, c]) => [k, r[c]])), row: rd.lines[i] }));
+        go.textContent = 'Checking…'; const p = await api('/canteen/menu/import', { method: 'POST', body: { rows, dry_run: true } }); step = 3;
+        show(`<div class="mu-sum">${[[p.added, 'to add'], [p.updated, 'to update'], [p.categories_created, p.categories_created === 1 ? 'new category' : 'new categories'], [p.rejected.length, 'skipped']].map(([n, l], i) => `<div class="${i === 3 && n ? 'bad' : ''}"><b>${n}</b> ${l}</div>`).join('')}</div>
+          <p class="muted small">An item with the same name in the same category is updated (price, description, veg, sold out, order, deal); the rest are added. Nothing is removed, and nothing is saved until you press Import.</p>
+          ${p.rejected.length ? `<b class="small">Rows that will be skipped</b><ul class="mu-rej">${p.rejected.map(r => `<li><b>Row ${r.row}</b> ${esc(r.reason)}</li>`).join('')}</ul>` : ''}
+          <p><button type="button" class="btn soft" id="muback">Back to the columns</button></p>`, 'Import', p.added + p.updated > 0);
+        box.querySelector('#muback').onclick = () => mapping(map); };
+      const importNow = async () => { go.textContent = 'Importing…'; const r = await api('/canteen/menu/import', { method: 'POST', body: { rows, dry_run: false } }); d.close();
+        toast(`Added ${r.added}, updated ${r.updated}, skipped ${r.rejected.length}`); draw(); };
+      // one button walks the steps (Next → Preview → Import); a failed step stays put with its message
+      const act = async fn => { const label = go.textContent; go.disabled = true; err.textContent = ''; try { await fn(); } catch (e) { err.textContent = e.message; go.textContent = label; go.disabled = false; } };
+      f.onsubmit = e => { if (e.submitter?.value !== 'ok') return; e.preventDefault(); if (!go.disabled) act(step === 1 ? read : step === 2 ? preview : importNow); };
+      pick(); };
     main.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const it = all_.find(x => x.id === b.dataset.edit); dlg(itemForm(it), async f => { await api('/canteen/items/' + it.id, { method: 'PATCH', body: body(f) }); draw(); }); });
     main.querySelectorAll('[data-so]').forEach(b => b.onchange = async () => { try { await api('/canteen/items/' + b.dataset.so, { method: 'PATCH', body: { sold_out: b.checked } }); toast(b.checked ? 'Marked sold out' : 'Back in stock'); } catch (e) { toast(e.message); b.checked = !b.checked; } });
     main.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Remove this item from the menu?')) return; try { await api('/canteen/items/' + b.dataset.del, { method: 'DELETE' }); } catch (e) { toast(e.message); } draw(); });

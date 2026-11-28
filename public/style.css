@@ -951,3 +951,17 @@ dialog .msheet-x{width:40px;height:40px;flex:none;border-radius:50%;border:0;bac
 .cn-stock{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto;margin:8px 0}
 .cn-posbar{display:none}@media(max-width:860px){.cn-posbar:not([hidden]){display:block;position:fixed;left:16px;right:16px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:30;background:var(--brand);color:#fff;text-align:center;font-weight:700;padding:14px;border-radius:14px;box-shadow:0 10px 24px rgba(30,75,143,.35);text-decoration:none}}
 .cn-upid{max-width:380px}.cn-upiqr{display:block;margin:10px auto;width:240px;height:240px;background:#fff;border:1px solid var(--line);border-radius:12px}.cn-upid ol{padding-left:18px;margin:8px 0}
+/* canteen: Upload menu dialog (choose file → match columns → preview) */
+dialog.mu{max-width:640px;max-height:92vh;overflow:auto}
+.mu-file{display:flex;flex-direction:column;align-items:center;gap:4px;margin:14px 0;padding:20px 14px;border:2px dashed var(--line);border-radius:14px;text-align:center;cursor:pointer;color:var(--text-2)}
+.mu-file:hover{border-color:var(--brand);background:var(--brand-2)}.mu-file input{min-height:0;padding:6px;margin-top:8px;max-width:100%;background:none;border:0}
+.mu-dl{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.mu-dl>span{flex-basis:100%}
+.mu-map{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:2px 14px}.mu-map label{margin:8px 0 0;min-width:0}.mu-map label>span{display:block;margin-bottom:4px}
+.mu-map select{min-height:42px;padding:8px 12px}.mu-map small{display:block;min-height:1.3em;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mu-req{color:var(--warn)}
+.mu-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:4px 0 10px}.mu-sum div{background:var(--bg);border-radius:12px;padding:10px 6px;text-align:center;font-size:13px;color:var(--text-3)}
+.mu-sum b{display:block;font-size:22px;color:var(--text)}.mu-sum .bad{background:var(--warn-2)}.mu-sum .bad b{color:var(--warn)}
+.mu-rej{max-height:220px;overflow:auto;margin:6px 0;padding-left:18px;font-size:13.5px}.mu-rej li{margin:3px 0}
+@media (max-width:560px){dialog.mu #df>.row{gap:10px}} /* phones stack form rows with no gap; Cancel and the step button need one */
+@media (max-width:520px){.mu-sum{grid-template-columns:repeat(2,1fr)}.mu-dl .btn{flex:1 1 100%}
+  .mu-map label{display:grid;grid-template-columns:38% 1fr;align-items:center;column-gap:10px;margin-top:6px}.mu-map label>span{margin:0;line-height:1.25}.mu-map small{grid-column:2}} /* name beside its select: half the scrolling */
+@media (max-width:560px){.cn-mbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}} /* Menu tab: five buttons in two columns instead of one squeezed row */
